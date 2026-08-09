@@ -262,6 +262,37 @@ def main():
     except Exception as e:
         results.append(('T5 vm-unit-ops', 'FAIL', repr(e)))
 
+    # ---- T6: 多实例稳定性 (Phase 2c 运行时语义随机化不得改变结果) ----
+    try:
+        n_run = 8
+        bad = 0
+        for _ in range(n_run):
+            code, out, _ = run_demo(stdin=(serial + '\n').encode('utf-8'))
+            if code != 0 or msg_ok not in out:
+                bad += 1
+        ok = (bad == 0)
+        results.append(('T6 multi-run-stable', 'PASS' if ok else 'FAIL',
+                        '%d/%d ok' % (n_run - bad, n_run)))
+    except Exception as e:
+        results.append(('T6 multi-run-stable', 'FAIL', repr(e)))
+
+    # ---- T7: 干净环境 selftest 全 0 (新检测项不得误报) ----
+    try:
+        code, out, _ = run_demo(args=['--selftest'],
+                                stdin=(serial + '\n').encode('utf-8'))
+        suspicious = []
+        for field in ('debug_heap_flags', 'int3_honey'):
+            for line in out.splitlines():
+                if line.strip().startswith(field):
+                    val = line.split(':')[-1].strip()
+                    if val != '0':
+                        suspicious.append(field + '=' + val)
+        ok = (code == 0) and (not suspicious)
+        results.append(('T7 selftest-clean', 'PASS' if ok else 'FAIL',
+                        'code=%d suspicious=%s' % (code, suspicious or 'none')))
+    except Exception as e:
+        results.append(('T7 selftest-clean', 'FAIL', repr(e)))
+
     failed = False
     for name, status, detail in results:
         print('%-14s  %-4s   (%s)' % (name, status, detail), flush=True)

@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-and-verify:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC (Build Tools 2022 x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Verify toolchain
+        run: |
+          cl
+          python --version
+          git --version
+
+      - name: Build (Release), generate build\manifest.json
+        run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto
+
+      - name: Run e2e suite (T1-T7)
+        run: python tests\e2e.py
+
+      - name: Run attack-simulation suite (A1-A4, non-real-machine)
+        run: python tests\attacks.py
+
+      - name: Run VM unit tests
+        run: .\build\vm_unit.exe
+
+      - name: Python syntax check
+        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tests\e2e.py tests\attacks.py"
+
+      - name: Upload verify report
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            build\demo.exe
+            build\vm_unit.exe
+            build\manifest.json
+          if-no-files-found: error
+          retention-days: 7

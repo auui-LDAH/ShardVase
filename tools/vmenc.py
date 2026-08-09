@@ -480,6 +480,20 @@ def compute_expect(serial, machine_id):
     return h, total
 
 
+def parse_machine_id_override(text):
+    """Override 解析: 十进制, 或 0x 前缀十六进制; 保持与 json 整数一致."""
+    if isinstance(text, int):
+        return text & HOSTID_M64
+    s = text.strip()
+    base = 16 if (s.startswith('0x') or s.startswith('0X')) else 10
+    try:
+        if base == 16:
+            s = s[2:]
+        return int(s, base) & HOSTID_M64 if s else 0
+    except ValueError:
+        raise VasmError("machine_id override is not an integer: %r" % text)
+
+
 def cmd_genserial(args):
     with open(args.json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -492,12 +506,14 @@ def cmd_genserial(args):
     except UnicodeEncodeError:
         raise VasmError('serial must be ASCII')
 
-    mid = data.get('machine_id', None)
-    if mid is None or mid == 0 or mid == "auto":
+    mid = args.machine_id_override
+    if mid is None:
+        mid = data.get('machine_id', None)
+    if mid is None or mid == 0 or mid in ('auto', '0'):
         # Phase 4: 默认绑定到本机真实机器标识 (与运行期 prot_hostid_get 一致)
         mid = hostid()
-    if isinstance(mid, str):
-        mid = parse_symbol_hex(mid, 'machine_id')
+    elif isinstance(mid, str) and mid not in ('auto', '0'):
+        mid = parse_machine_id_override(mid)
     elif not isinstance(mid, int):
         raise VasmError('machine_id must be an integer')
 
@@ -542,6 +558,10 @@ def main(argv=None):
     pg = sub.add_parser('genserial', help='compute expect1/expect2 for a serial')
     pg.add_argument('--json', dest='json_path', required=True,
                     help='vm_build.json to read/write')
+    pg.add_argument('--machine-id', dest='machine_id_override', type=str,
+                    default=None,
+                    help='override machine_id (decimal or 0x hex, or "auto"); '
+                         'omit/auto to bind host id (Phase 4)')
     pg.add_argument('--print', action='store_true',
                     help='print human readable result')
     pg.set_defaults(func=cmd_genserial)

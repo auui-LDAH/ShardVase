@@ -12,12 +12,14 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | A | VM 解释器 + CRC32 | `src/vm.c` `src/crc32.c` | ✅ 完成 |
 | B | 反调试 / 完整性 / 字符串 / 机器标识 | `src/antidebug.c` `src/integrity.c` `src/strcrypt.c` `src/hostid.c` | ✅ 完成 |
 | C | 汇编器 / 加密器 / 烧录 | `tools/vmenc.py` `tools/strgen.py` `tools/hashpatch.py` | ✅ 完成 |
-| D | 演示 + 构建 + 测试 | `demo/main.c` `demo/strings.txt` `build.ps1` `tests/e2e.py` | ✅ 完成 |
+| D | 演示 + 构建 + 测试 / 验证 / CI / 产物 | `demo/main.c` `demo/strings.txt` `build.ps1` `verify.ps1` `.github/workflows/ci.yml` `tests/e2e.py` `tests/attacks.py` | ✅ 完成 |
+| ├ | 基础设施（2026-08-09） | Git 基线 + .gitignore/.gitattributes + verify.ps1 + CI + build.ps1(-MachineId/-Config/manifest) + 攻击模拟 A1-A4 | ✅ 完成 |
 
 ## 2. 当前交付验证结果
 
 一键构建 `build.ps1`（genserial → 汇编加密 → 字符串加密 → cl 编译 → CRC 烧录）全绿。
-端到端测试 `tests/e2e.py`：
+一键验证 `verify.ps1`（N 轮随机重建 + e2e + vm_unit + 攻击模拟 + py_compile，JSON 报告）:
+`tests/e2e.py`：
 
 | 用例 | 结果 |
 |------|------|
@@ -25,6 +27,12 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T2 错误序列号 → 退出码 1 / 显示"序列号无效" | ✅ PASS |
 | T3 调试器附加 → 退出码 0xDB | ⚠️ 沙箱无法驱动调试会话记 SKIP，需真机验证 |
 | T4 篡改 .text → 退出码 0xBAD / 显示完整性失败 | ✅ PASS |
+| T5 VM 指令集单测 | ✅ PASS |
+| T6 多实例稳定（Phase 2c 随机化不得改变结果，8 连跑全过） | ✅ PASS |
+| T7 --selftest 干净环境（含 debug_heap_flags/int3_honey）全 0 | ✅ PASS |
+
+`tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
+A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0
 
 ## 3. 本次会话修复记录（2026-08-08）
 
@@ -103,17 +111,34 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
   - 加壳/外部文件装载（demo_mem 从栈扩容或独立 blob）
   - direct syscall 反 hook、线程隐藏 + 反附加定时器（Phase 3 剩余项）
 
+### 4.1 基础设施（2026-08-09 完成，本会话）
+
+| 项 | 说明 | 验证 |
+|----|------|------|
+| Git 版本控制 | `git init` 基线提交，`.gitignore`（build/ demo/gen/ obj exe pdb __pycache__ 等）+ `.gitattributes`（*.c/*.h/*.py 定 LF） | 首次提交 0b33a95 |
+| verify.ps1 一键验证 | 多轮随机重建 + e2e(T1-T7) + vm_unit + attacks(A1-A4) + py_compile → `verify-report.json`（时间戳/每轮种子/SHA/结果表）；`-Minimal` 单轮冒烟 | 3 轮全绿 PASS |
+| CI 流水线 |`.github/workflows/ci.yml`：`ilammy/msvc-dev-cmd` 起 MSVC x64 → build.ps1 → e2e → attacks → vm_unit → py_compile → upload build 产物/清单 | 待推远程后生效 |
+| 构建/产物规范化 | `build.ps1 -MachineId <dec/h0x/auto> -Config`；末尾写 `build\manifest.json`(机器标识/VM 种子指纹/Git SHA/exe SHA256/时间戳)；`verify-artifacts\` 按轮留档（`-KeepArtifacts`） | manifest 正确生成 |
+| 攻击模拟（不需真机） | `tests/e2e.py` 扩 T6 多实例稳定/T7 selftest 干净；新 `tests/attacks.py` A1 machine-bind / A2 VM 密文高熵 / A3 构建指纹 / A4 selftest 干净 | 全 PASS |
+| machine-id 覆盖 | `vmenc.py genserial --machine-id`（十进制/0x/auto），`build.ps1 -MachineId` 贯通;异机绑定用 `-MachineId 42` 复现 T1 拒绝（已实测） | 手动实测 FAIL 正确 |
+
+> 注意：T3（真机调试附加）仍待真机；CI 未推远程因此本地以 verify.ps1 全绿为准。
+
 ## 5. 关键文件速查
 
 | 文件 | 说明 |
 |------|------|
 | `docs/CONTRACT.md` | 契约（算法、指令表、VM 拆分、进程布局、退出码） |
 | `docs/PLAN.md` | 本文档（状态 + 计划） |
+| `docs/ROADMAP.md` | 商业级路线图（Phase 1-5 进度） |
 | `demo/license_hash.vasm` | VM#1: FNV-1a 哈希（Phase 2a） |
 | `demo/license_mix.vasm` | VM#2: GOLDEN 混合（Phase 2a） |
 | `demo/license_verify.vasm` | VM#3: 期望值校验（Phase 2a） |
 | `demo/vm_build.json` | 序列号 + machine_id + expect1/expect2（构建时由 genserial 重算） |
 | `src/hostid.c` | machine_id 运行时计算（Phase 4） |
 | `demo/main.c` | 演示入口，流程见契约 §9 |
-| `tests/e2e.py` | 端到端测试（T1–T4 + T5 VM 单测） |
-| `build.ps1` | 一键构建管线 |
+| `tests/e2e.py` | 端到端测试（T1–T7） |
+| `tests/attacks.py` | 非真机攻击模拟（A1–A4） |
+| `verify.ps1` | 一键验证（多轮重建 + 全套测试 + JSON 报告） |
+| `build.ps1` | 一键构建（-MachineId/-Config + manifest.json） |
+| `.github/workflows/ci.yml` | CI 流水线（MSVC + build + verify + 上传报告） |

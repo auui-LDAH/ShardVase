@@ -45,7 +45,12 @@
 - 每客户独立构建（种子/密钥/随机化），成品互异。
 - signtool 签名、剥离符号、关闭调试路径。
 - 完整性扩展到 `.rdata`/`.pdata`；`PROTCRCP` 标记多态化。
-- 攻击面复盘表 + 每层量化验收指标。
+- ✅ 基础设施（2026-08-09）：Git 基线 + `.gitignore/.gitattributes` +
+  `verify.ps1`（N 轮随机重建 + e2e(T1-T7) + 攻击 A1-A4 + py_compile →
+  `verify-report.json`）+ CI（`.github/workflows/ci.yml`，MSVC x64）+ 
+  `build.ps1 -MachineId/-Config` + `build\manifest.json` 产物清单 +
+  攻击模拟 `tests/attacks.py`。
+- 攻击面复盘表 + 每层量化验收指标（待补）。
 
 ---
 

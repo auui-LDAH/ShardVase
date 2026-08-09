@@ -2,6 +2,15 @@
 # 按 docs/CONTRACT.md §10 管线执行:
 #   genserial -> assemble -> strgen -> cl -> hashpatch
 # 每步失败即中止并打印明确错误。
+#
+# 参数:
+#   -MachineId <值>   覆盖 machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
+#   -Config <Release> 保留扩展位 (当前仅 Release)
+# 输出: build\demo.exe / build\vm_unit.exe / build\manifest.json (产物清单)
+param(
+    [string]$MachineId = 'auto',
+    [string]$Config = 'Release'
+)
 $ErrorActionPreference = 'Stop'
 
 # 锚定到脚本所在目录 (仓库根), 保证相对路径可靠
@@ -24,8 +33,8 @@ if (-not (Test-Path -LiteralPath 'build')) {
     New-Item -ItemType Directory -Path 'build' | Out-Null
 }
 
-# 2. 重算期望常量 (serial/machine_id 保留, expect1/expect2 每次构建重算)
-python tools\vmenc.py genserial --json demo\vm_build.json
+# 2. 重算期望常量 (machine_id 默认 auto=绑定本机; 可 --MachineId 覆盖)
+python tools\vmenc.py genserial --json demo\vm_build.json --machine-id "$MachineId"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py genserial' }
 
 # 3. 汇编 + 加密 VM 镜像 (ROADMAP Phase 2a: 一个校验逻辑拆成 3 个独立小 VM,
@@ -65,6 +74,27 @@ Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 # 7. 跑 VM 指令集单测 (失败即中止构建)
 & .\build\vm_unit.exe
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vm_unit.exe (Phase 1D ops)' }
+
+# 7.5. 产物清单 (基础设施: 每次构建可追溯 -- 机器标识/镜像指纹/时间/Git SHA)
+$seeds = @()
+Get-ChildItem -LiteralPath 'demo\gen' -Filter 'vm_*_blob.c' -File | ForEach-Object {
+    $raw = Get-Content -LiteralPath $_.FullName -Raw
+    $m = [regex]::Matches($raw, '0x([0-9a-fA-F]{16})')
+    if ($m.Count -gt 0) { $seeds += $m[0].Groups[1].Value }
+}
+$jb = Get-Content -LiteralPath demo\vm_build.json -Raw | ConvertFrom-Json
+$machineAuto = ($MachineId -in @('auto', '0'))
+$manifest = [ordered]@{
+    tool       = 'build.ps1'
+    timestamp  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    config     = $Config
+    machine_id = $jb.machine_id
+    machine_auto = $machineAuto
+    sha        = (git rev-parse --short HEAD 2>$null)
+    vm_seeds   = $seeds
+    demo_exe_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath build\demo.exe).Hash
+}
+$manifest | ConvertTo-Json | Set-Content -LiteralPath build\manifest.json -Encoding utf8
 
 # 8.
 Write-Host 'DONE'
