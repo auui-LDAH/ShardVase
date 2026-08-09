@@ -111,7 +111,13 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   - 加壳/外部文件装载（demo_mem 从栈扩容或独立 blob）
   - direct syscall 反 hook、线程隐藏 + 反附加定时器（Phase 3 剩余项）
 
-### 4.1 基础设施（2026-08-09 完成，本会话）
+### 4.1 威胁模型与效果评估（2026-08-09 完成）
+- 新增 `docs/THREATMODEL.md` v1：4 类攻击者 + 成功判据；12 层防护强度评级
+  （破译工时制）；攻击路径成本矩阵；RSA 上限分析（防伪造 = 唯一不可绕层）；
+  3 个技术债；用现有测试（A2/A3/T4/T7 等）把评估钉住。
+- ROADMAP Phase 5"攻击面复盘表待补"已勾除；CONTRACT §3 加引注。后续每阶段更新。
+
+### 4.2 基础设施（2026-08-09 完成，本会话）
 
 | 项 | 说明 | 验证 |
 |----|------|------|
@@ -131,6 +137,7 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | `docs/CONTRACT.md` | 契约（算法、指令表、VM 拆分、进程布局、退出码） |
 | `docs/PLAN.md` | 本文档（状态 + 计划） |
 | `docs/ROADMAP.md` | 商业级路线图（Phase 1-5 进度） |
+| `docs/THREATMODEL.md` | 威胁模型与效果评估（攻击者/成本矩阵/RSA 上限/技术债） |
 | `demo/license_hash.vasm` | VM#1: FNV-1a 哈希（Phase 2a） |
 | `demo/license_mix.vasm` | VM#2: GOLDEN 混合（Phase 2a） |
 | `demo/license_verify.vasm` | VM#3: 期望值校验（Phase 2a） |

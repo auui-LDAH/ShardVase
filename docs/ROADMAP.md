@@ -50,7 +50,8 @@
   `verify-report.json`）+ CI（`.github/workflows/ci.yml`，MSVC x64）+ 
   `build.ps1 -MachineId/-Config` + `build\manifest.json` 产物清单 +
   攻击模拟 `tests/attacks.py`。
-- 攻击面复盘表 + 每层量化验收指标（待补）。
+- 攻击面复盘表 + 每层量化验收指标（✅ 已在 `docs/THREATMODEL.md` 建立 v1：
+  威胁模型/成本矩阵/RSA 上限分析/技术债，2026-08-09；后续随各阶段更新）。
 
 ---
 
