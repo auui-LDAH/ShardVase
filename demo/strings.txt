@@ -1,0 +1,7 @@
+BANNER|== 反逆向保护套件演示 (Anti-Reverse Protection Demo) ==
+PROMPT_SERIAL|请输入序列号: 
+MSG_OK|校验通过，欢迎使用！
+MSG_FAIL|序列号无效。
+MSG_DBG|检测到调试环境，程序即将退出。
+MSG_TAMPER|完整性校验失败，程序可能已被篡改。
+MSG_HWID|机器标识: 

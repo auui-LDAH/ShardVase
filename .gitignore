@@ -1,0 +1,28 @@
+# 构建产物
+build/
+demo/gen/
+
+# 编译器中间文件
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 测试临时产物
+demo_tampered.exe
+
+# 编辑器/系统
+.vs/
+*.user
+Thumbs.db
+.DS_Store
+
+# 验证报告（verify.ps1 生成，可追溯但提交基线时不入库）
+verify-report.json
+verify-report-*.json

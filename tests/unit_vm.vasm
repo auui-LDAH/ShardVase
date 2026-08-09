@@ -1,0 +1,62 @@
+; ============================================================================
+; tests/unit_vm.vasm — VM 指令集单测 (ROADMAP Phase 1d 新指令)
+;
+; 逐个验证 7 条新增指令: nop / lea / pushr / popr / setcon / pushcon / callind。
+; 运行结论写入宿主内存 (由 tests/vm_unit.c 断言):
+;   host[0x1000] = 0x1BAD2F5E   (nop + pushr/popr)
+;   host[0x1004] = 0x101        (setcon + pushcon)
+;   host[0x2000] = 0xC0F0       (lea + callind 间接调用子程序)
+;   host[0]     = 0x2A2A       (整体成功标记)
+; 汇编器: tools/vmenc.py (use '-labs' 支持 lea)。
+; ============================================================================
+
+    ; ---------- Phase A: nop / pushr / popr ----------
+    push32 0x1BAD2F5E
+    popr                 ; R = 0x1BAD2F5E
+    nop                  ; 空转
+    pushr                ; [0x1BAD2F5E]
+    push32 0x1000
+    setbase              ; BR = 0x1000
+    pushbase             ; [0x1BAD2F5E 0x1000]
+    swap                 ; [0x1000 0x1BAD2F5E]
+    store32              ; host[0x1000] = 0x1BAD2F5E
+
+    pushbase
+    push32 4
+    add
+    setbase              ; BR = 0x1004
+
+    ; ---------- Phase B: setcon / pushcon ----------
+    push32 0
+    setcon               ; CON = 0 (值取零)
+    pushcon              ; [0]
+    push32 0xFF
+    setcon               ; CON = 1 (值非零)
+    pushcon              ; [0 1]
+    add                  ; = 1
+    push32 0x101
+    mul                  ; = 0x101
+    pushbase             ; [0x101 0x1004]
+    swap
+    store32              ; host[0x1004] = 0x101
+
+    ; ---------- Phase C: lea + callind 间接调用 ----------
+    lea  sub_r
+    callind              ; 压入返回地址, 跳转 sub_r
+    jmp  done
+
+sub_r:
+    push32 0xC0F0
+    push32 0x2000
+    setbase
+    pushbase
+    swap
+    store32              ; host[0x2000] = 0xC0F0
+    ret                  ; pop 返回地址
+
+done:
+    nop
+    push32 0
+    push32 0x2A2A        ; [addr=0 val=0x2A2A]
+    store32              ; host[0] = 0x2A2A
+    halt

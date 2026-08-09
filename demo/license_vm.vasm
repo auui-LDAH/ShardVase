@@ -1,0 +1,86 @@
+; ============================================================================
+; license_vm.vasm — 序列号校验核心逻辑 (运行在自研 VM 上)
+; 汇编器: tools/vmenc.py   符号 EXPECT1/EXPECT2 由 demo/vm_build.json 注入
+;
+; 宿主内存布局 (demo_mem, 相对 base 偏移):
+;   +0  : char serial[48]     序列号字符串
+;   +48 : u32  serial_len     长度
+;   +52 : u32  result         结果输出 (1=有效 0=无效)
+;   +56 : u64  machine_id     机器标识 (演示固定为 0; 生产可绑定硬件)
+;   +64 : u64  scratch        VM 内部循环计数器 (宿主无需初始化)
+;
+; 约定: storeX 先弹 value 再弹 address (栈顶为 value)。
+;
+; 算法 (与 tools/vmenc.py genserial 保持一致):
+;   h = FNV1a64(serial)
+;   x = h ^ machine_id
+;   x ^= x<<13; x ^= x>>7; x ^= x<<17
+;   total = x + 0x9E3779B97F4A7C15
+;   ok = (h == EXPECT1) && (total == EXPECT2)
+; ============================================================================
+
+    ; scratch@64 = 0 (i)
+    push32 64
+    push32 0
+    store32
+    push64 14695981039346656037   ; h = FNV offset
+
+loop:
+    ; while i < serial_len
+    push32 64
+    load32              ; i
+    push32 48
+    load32              ; serial_len
+    cmpltu
+    jz mix
+    ; h ^= serial[i]
+    push32 64
+    load32              ; i
+    load8               ; serial[i]
+    xor                 ; h ^= b
+    ; h *= FNV prime
+    push64 1099511628211
+    mul
+    ; i++
+    push32 64
+    load32              ; i
+    push32 1
+    add                 ; i+1
+    push32 64
+    swap                ; [64 i+1] -> store32: val=i+1, addr=64
+    store32
+    jmp loop
+
+mix:
+    dup                 ; h x
+    push32 56
+    load64              ; machine_id
+    xor                 ; h x
+    ; x = x ^ (x<<13) ^ (x>>7) ^ (x<<17)
+    dup                 ; h x x
+    push64 13
+    shl
+    xor                 ; h x1
+    dup                 ; h x1 x1
+    push64 7
+    shr
+    xor                 ; h x2
+    dup                 ; h x2 x2
+    push64 17
+    shl
+    xor                 ; h x3
+    ; total = x3 + 0x9E3779B97F4A7C15
+    push64 0x9E3779B97F4A7C15
+    add                 ; h total
+    ; ok = (h == EXPECT1) && (total == EXPECT2)
+    push64 EXPECT2
+    cmpeq               ; h (total==E2)
+    swap
+    push64 EXPECT1
+    cmpeq               ; (total==E2) (h==E1)
+    and                 ; ok
+    ; result = ok
+    push32 52
+    swap                ; [52 ok] -> store32: val=ok, addr=52
+    store32
+    halt

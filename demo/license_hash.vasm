@@ -1,0 +1,56 @@
+; ============================================================================
+; license_hash.vasm — VM #1/3 (Phase 2a): FNV-1a 哈希
+; 独立小 VM, 各自密钥/置换/槽位 (ROADMAP Phase 2a 多 VM 上下文)。
+;
+; 宿主内存布局 (demo_mem, 相对 base 偏移):
+;   +0  : char serial[48]     序列号字符串
+;   +48 : u32  serial_len     长度
+;   +52 : u32  result         结果输出 (1=有效 0=无效, 由 VM#3 写)
+;   +56 : u64  machine_id     机器标识 (演示固定为 0; 生产可绑定硬件)
+;   +64 : u64  vm_h           VM#1 写 h (FNV-1a 结果), VM#2/VM#3 读
+;   +72 : u64  vm_total       VM#2 写 total, VM#3 读
+;   +80 : u64  vm_scratch     VM#1 内部循环计数器 (宿主无需初始化)
+;
+; 本 VM 计算: h = FNV1a64(serial), 写入 +64。
+; 算法与 tools/vmenc.py genserial 的 fnv1a64_serial 完全一致。
+; ============================================================================
+
+    ; i = 0  (vm_scratch@80)
+    push32 80
+    push32 0
+    store32
+    ; h = FNV offset
+    push64 14695981039346656037
+
+loop:
+    ; while i < serial_len
+    push32 80
+    load32              ; i
+    push32 48
+    load32              ; serial_len
+    cmpltu
+    jz store
+    ; h ^= serial[i]
+    push32 80
+    load32              ; i
+    load8               ; serial[i]
+    xor                 ; h ^= b
+    ; h *= FNV prime
+    push64 1099511628211
+    mul
+    ; i++
+    push32 80
+    load32              ; i
+    push32 1
+    add                 ; i+1
+    push32 80
+    swap                ; [80 i+1] -> store32: val=i+1, addr=80
+    store32
+    jmp loop
+
+store:
+    ; vm_h@64 = h: 栈 [h] -> push 64, swap -> [h 64] 经 swap -> [64 h], store64
+    push32 64
+    swap
+    store64
+    halt
