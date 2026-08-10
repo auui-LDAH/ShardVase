@@ -30,9 +30,21 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T5 VM 指令集单测 | ✅ PASS |
 | T6 多实例稳定（Phase 2c 随机化不得改变结果，8 连跑全过） | ✅ PASS |
 | T7 --selftest 干净环境（含 debug_heap_flags/int3_honey）全 0 | ✅ PASS |
+| T8 license-forge：改 1 位签名 → license: 0 / 退出码 1（A1 起） | ✅ PASS |
 
 `tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
-A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0
+A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0 /
+（A1 实现后新增）A5 license-forge 改 1 位签名被拒 / A6 license-other-machine 异机签名被拒
+——防伪造链路全绿。
+
+## 2b. A1 RSA 离线签发（2026-08-10 完成，见 docs/PRODUCTION.md）
+
+- `vmenc.py keygen/sign`（RSA-2048, e=65537, PKCS#1 v1.5 + SHA-256, 纯 Python）；
+  私钥 `build/keys/license_priv.json` gitignore，公钥 BCRYPT_RSAPUBLIC_BLOB 嵌二进制。
+- `src/license.c` BCrypt 验签（`BCRYPT_PKCS1_PADDING_INFO` 必传，NULL → 0xc000000d；
+  公钥 blob 布局需 8 字节零填充，否则 import 0x80090005）。
+- VM#4 门控（`demo/license_gate.vasm`）：`result &= license_ok`，宿主不可单点 patch 绕过。
+- `verify.ps1` 单轮回归全绿；A2 熵判据改为相对熵（gate blob 仅 21B，绝对熵不公平）。
 
 ## 3. 本次会话修复记录（2026-08-08）
 
@@ -130,6 +142,8 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 
 > 注意：T3（真机调试附加）仍待真机；CI 未推远程因此本地以 verify.ps1 全绿为准。
 
+### 4.3 A1 RSA 离线签发（2026-08-10 完成，本会话）
+
 ## 5. 关键文件速查
 
 | 文件 | 说明 |
@@ -142,11 +156,13 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | `demo/license_hash.vasm` | VM#1: FNV-1a 哈希（Phase 2a） |
 | `demo/license_mix.vasm` | VM#2: GOLDEN 混合（Phase 2a） |
 | `demo/license_verify.vasm` | VM#3: 期望值校验（Phase 2a） |
+| `demo/license_gate.vasm` | VM#4: result &= license_ok 门控（A1） |
 | `demo/vm_build.json` | 序列号 + machine_id + expect1/expect2（构建时由 genserial 重算） |
 | `src/hostid.c` | machine_id 运行时计算（Phase 4） |
+| `src/license.c` | RSA-2048 授权验签（A1, BCrypt 公钥） |
 | `demo/main.c` | 演示入口，流程见契约 §9 |
-| `tests/e2e.py` | 端到端测试（T1–T7） |
-| `tests/attacks.py` | 非真机攻击模拟（A1–A4） |
+| `tests/e2e.py` | 端到端测试（T1–T8） |
+| `tests/attacks.py` | 非真机攻击模拟（A1–A6） |
 | `verify.ps1` | 一键验证（多轮重建 + 全套测试 + JSON 报告） |
 | `build.ps1` | 一键构建（-MachineId/-Config + manifest.json） |
 | `.github/workflows/ci.yml` | CI 流水线（MSVC + build + verify + 上传报告） |

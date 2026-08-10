@@ -69,6 +69,12 @@ Phase 4 的 RSA 离线签发 = 把"期望值"换成"公钥验签"：VM 校验的
 RSA 签名，公钥在程序里，私钥离线。攻击者还原全部 VM 也**造不出合法签名**——这才是
 "离线不可破"的锚点，现阶段的 FNV/xorshift 是过渡态实现。
 
+> **2026-08-10 已落地（A1, 见 docs/PRODUCTION.md）**：`vmenc.py keygen/sign` 离线签发
+> RSA-2048，`src/license.c` BCrypt 验签，公钥 blob 嵌入二进制，私钥 gitignore；
+> 宿主只算 `license_ok`，VM#4（`demo/license_gate.vasm`）逐位 AND 门控。
+> 防伪造链路（A5 license-forge / A6 license-other-machine）已在 tests/attacks.py 全绿。
+> 剩余真实短板见 §5-3（内存改 machine_id）+ §6。
+
 ## 5. 实战判断（诚实面）
 
 1. **跨构建问题**：L1a 只让构建互异，不阻断"构建间通用还原"——A3 的还原器覆盖

@@ -18,13 +18,15 @@
 #include "protect/antidebug.h"
 #include "protect/hostid.h"
 #include "protect/integrity.h"
+#include "protect/license.h"
 #include "protect/strcrypt.h"
 #include "protect/vm.h"
 
 #include "vm_hash_blob.h"
 #include "vm_mix_blob.h"
 #include "vm_verify_blob.h"
-/* demo/gen: g_vm_hash_image / g_vm_mix_image / g_vm_verify_image (Phase 2a) */
+#include "vm_gate_blob.h"
+/* demo/gen: g_vm_hash_image / g_vm_mix_image / g_vm_verify_image / g_vm_gate_image */
 
 /* demo_mem 布局 (契约 §9.2, 与 demo/license_*.vasm 偏移注释一致, 勿改) */
 typedef struct demo_mem {
@@ -35,20 +37,25 @@ typedef struct demo_mem {
     uint64_t vm_h;         /* +64 (VM#1 输出: FNV-1a 结果 h) */
     uint64_t vm_total;     /* +72 (VM#2 输出: GOLDEN 混合 total) */
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
-} demo_mem;                /* 总 88 字节 */
+    uint32_t license_ok;   /* +88 (A1: 宿主 RSA 验签结果 0/1, VM#4 并入) */
+    uint32_t _pad;         /* +92 对齐 */
+} demo_mem;                /* 总 96 字节 */
 
 /*
  * 解析 CLI 参数 (契约 §9.1-2):
- *   --selftest   逐项打印检测结果
- *   --wait-ms N  扫描前 Sleep N 毫秒
+ *   --selftest       逐项打印检测结果
+ *   --wait-ms N      扫描前 Sleep N 毫秒
+ *   --license-file F 读入 RSA 授权文件 (A1) 并验签
  * 返回 1 成功, 0 用法错误。
  */
-static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms)
+static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
+                      const char** license_path)
 {
     int i;
 
     *selftest = 0;
     *wait_ms = 0;
+    *license_path = NULL;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             *selftest = 1;
@@ -56,18 +63,25 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms)
             char* end = NULL;
             unsigned long v;
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
                 return 0;
             }
             v = strtoul(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0') {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
                 return 0;
             }
             *wait_ms = (uint32_t)v;
             i++;
+        } else if (strcmp(argv[i], "--license-file") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --license-file F\n");
+                return 0;
+            }
+            *license_path = argv[i + 1];
+            i++;
         } else {
-            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N]\n");
+            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
             return 0;
         }
     }
@@ -89,12 +103,116 @@ static void print_selftest(const prot_antidebug_report* rep)
     printf("  int3_honey: %u\n", rep->int3_honey);
 }
 
+/* base64 解码 (标准 64 字符字母表)。返回解码后字节数; 非法输入返回 (size_t)-1。 */
+static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
+{
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint8_t vals[256];
+    size_t n = 0, i;
+    size_t acc = 0;
+    int bits = 0;
+
+    memset(vals, 0xFF, sizeof(vals));
+    for (i = 0; i < 64; i++)
+        vals[(unsigned char)tbl[i]] = (uint8_t)i;
+
+    for (i = 0; in[i] != '\0'; i++) {
+        int c = (unsigned char)in[i];
+        uint8_t d;
+        if (c == '=' || c == '\r' || c == '\n' || c == ' ')
+            continue;
+        if (c == '\0')
+            break;
+        d = vals[c];
+        if (d == 0xFF)
+            return (size_t)-1;
+        acc = (acc << 6) | d;
+        bits += 6;
+        if (bits >= 8) {
+            if (n >= cap)
+                return (size_t)-1;
+            bits -= 8;
+            out[n++] = (uint8_t)((acc >> bits) & 0xFF);
+        }
+    }
+    return n;
+}
+
+/*
+ * 读 license.txt (A1, 格式见 tools/vmenc.py sign 输出):
+ *   SERIAL=... / MACHINE_ID=0x.. / PRODUCT=... / SIGNATURE=<base64 256B>
+ * 验签通过 -> 返回 1; 文件缺失/字段错/签名无效/机器不匹配 -> 返回 0。
+ */
+static int load_and_verify_license(const char* path, demo_mem* mem)
+{
+    FILE* f;
+    char line[512];
+    uint8_t sig[256];
+    uint8_t msg[256];
+    size_t msg_len;
+    int have_serial = 0, have_prod = 0, have_sig = 0;
+    char f_serial[48] = {0};
+    char f_prod[64] = {0};
+    errno_t err;
+
+    err = fopen_s(&f, path, "rb");
+    if (err != 0 || f == NULL)
+        return 0;
+    memset(sig, 0, sizeof(sig));
+    while (fgets(line, (int)sizeof(line), f) != NULL) {
+        char* eq = strchr(line, '=');
+        if (eq == NULL)
+            continue;
+        *eq = '\0';
+        eq++;
+        /* strip \r\n */
+        {
+            size_t L = strlen(eq);
+            while (L > 0 && (eq[L - 1] == '\r' || eq[L - 1] == '\n'))
+                eq[--L] = '\0';
+        }
+        if (strcmp(line, "SERIAL") == 0) {
+            if (strlen(eq) < sizeof(f_serial)) {
+                strcpy_s(f_serial, sizeof(f_serial), eq);
+                have_serial = 1;
+            }
+        } else if (strcmp(line, "PRODUCT") == 0) {
+            if (strlen(eq) < sizeof(f_prod)) {
+                strcpy_s(f_prod, sizeof(f_prod), eq);
+                have_prod = 1;
+            }
+        } else if (strcmp(line, "SIGNATURE") == 0) {
+            have_sig = 1;
+            {
+                size_t d = b64_decode(eq, sig, sizeof(sig));
+                if (d != 256)
+                    have_sig = 0;
+            }
+        }
+    }
+    fclose(f);
+
+    if (!have_serial || !have_prod || !have_sig)
+        return 0;
+    if (strcmp(f_prod, PROT_LICENSE_PRODUCT) != 0)
+        return 0;
+    if (strcmp(f_serial, mem->serial) != 0)
+        return 0;
+    msg_len = prot_license_build_message(mem->serial, mem->serial_len,
+                                         mem->machine_id, msg, sizeof(msg));
+    if (msg_len == 0u)
+        return 0;
+    return prot_license_verify(msg, msg_len, sig, sizeof(sig));
+}
+
 int main(int argc, char** argv)
 {
     prot_antidebug_report rep;
     demo_mem mem;
     int selftest;
     uint32_t wait_ms;
+    const char* license_path = NULL;
     size_t n;
     prot_status st;
 
@@ -103,7 +221,7 @@ int main(int argc, char** argv)
     SetConsoleCP(65001);
 
     /* §9.1-2: 解析参数 */
-    if (!parse_args(argc, argv, &selftest, &wait_ms)) {
+    if (!parse_args(argc, argv, &selftest, &wait_ms, &license_path)) {
         return 2; /* 用法错误 */
     }
 
@@ -181,6 +299,25 @@ int main(int argc, char** argv)
         exit(1);
     }
     st = prot_vm_run(&g_vm_verify_image, &mem, sizeof(mem));
+    if (st != PROT_OK) {
+        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        exit(1);
+    }
+
+    /* §9.1-9b: RSA 授权 (A1) —— 宿主验签, 结果由 VM#4 并入最终判定位。
+     * 提供 --license-file 时: 验签失败 = license_ok=0, VM#4 使 result 归零;
+     * 未提供时与旧行为一致 (license_ok 默认 1, 不启用 RSA 门)。 */
+    mem.license_ok = 1u;
+    if (license_path != NULL) {
+        mem.license_ok = (uint32_t)load_and_verify_license(license_path, &mem);
+        {
+            char eye[32];
+            snprintf(eye, sizeof(eye), "%u", mem.license_ok);
+            printf("license: %s\n", eye);
+        }
+    }
+
+    st = prot_vm_run(&g_vm_gate_image, &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);

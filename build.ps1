@@ -37,6 +37,13 @@ if (-not (Test-Path -LiteralPath 'build')) {
 python tools\vmenc.py genserial --json demo\vm_build.json --machine-id "$MachineId"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py genserial' }
 
+# 2.5. RSA 授权 (A1): 生成/复用私钥 (build\keys, gitignore, 不入库) 并导出公钥 blob;
+#     对该 json 的 serial/machine_id 签发 -> build\license.txt (供下发与测试用)
+python tools\vmenc.py keygen --key-out "build\keys\license_priv.json" --blob-out "demo\gen\license_pubkey.c"
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py keygen' }
+python tools\vmenc.py sign --key "build\keys\license_priv.json" --json demo\vm_build.json --out "build\license.txt" --print
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py sign' }
+
 # 3. 汇编 + 加密 VM 镜像 (ROADMAP Phase 2a: 一个校验逻辑拆成 3 个独立小 VM,
 #    各自独立密钥/置换/窗口: FNV 哈希 -> GOLDEN 混合 -> 期望值校验)
 python tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image
@@ -48,6 +55,9 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (mix)' }
 python tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (verify)' }
 
+python tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
+
 # 3b. 汇编 VM 指令集单测镜像 (ROADMAP Phase 1d, 每个新指令都要有测试用例)
 python tools\vmenc.py assemble tests\unit_vm.vasm demo\vm_build.json demo\gen\vm_unit_blob.c demo\gen\vm_unit_blob.h --name g_vm_unit_image
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm)' }
@@ -57,7 +67,7 @@ python tools\strgen.py demo\strings.txt demo\gen\strings.c
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
 # 5. 编译 + 链接 (vcvars64 环境; cl 失败即中止)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c /link /SUBSYSTEM:CONSOLE"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c demo\gen\vm_gate_blob.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测

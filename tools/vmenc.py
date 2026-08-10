@@ -1,24 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-tools/vmenc.py — VASM 汇编器 + 加密器 + genserial  (Lane C)
+tools/vmenc.py — VASM 汇编器 + 加密器 + genserial + RSA 授权签发 (Lane C)
 
 Two-pass VASM assembler + rolling-keystream encryptor producing a
-prot_vm_image blob, plus a `genserial` subcommand that computes the
-expected FNV-1a / xorshift license constants for a serial/machine_id.
+prot_vm_image blob, plus:
+
+  * `genserial` — 计算序列号对应的 FNV-1a/xorshift 期望常量 (serial/machine_id).
+  * `keygen`    — 生成 RSA-2048 签名密钥对 (离线, 私钥不入库; e=65537 纯 Python).
+  * `sign`      — 对 (serial, machine_id, product_tag) 的 SHA-256 摘要做
+                  PKCS#1 v1.5 签名, 输出 license.txt (base64).
+  * `pubkey`    — 从私钥文件重导出 BCRYPT_RSAPUBLIC_BLOB C 数组 (嵌入 demo).
+
+RSA 层定位: 见 docs/PRODUCTION.md A1 / docs/THREATMODEL.md §4 —— 让"伪造合法
+校验值"从可计算函数 (FNV/xorshift) 变成 RSA 私钥才能签出 (防伪造)。私钥只存
+`build/keys/license_priv.json` (gitignore), 绝不提交。
 
 Algorithms and CLI are defined in docs/CONTRACT.md (§3, §5).
 
 CLI:
     python tools/vmenc.py assemble <in.vasm> <vm_build.json> <out.c> <out.h>
     python tools/vmenc.py genserial --json <vm_build.json> [--print]
+    python tools/vmenc.py keygen --key-out <priv.json> --blob-out <pub.c>
+    python tools/vmenc.py sign   --key <priv.json> --json <vm_build.json> --out <license.txt>
 """
 
 import argparse
+import base64
 import ctypes
+import hashlib
 import json
 import os
 import random
+import secrets
 import struct
 import sys
 import zlib
@@ -26,6 +40,17 @@ import zlib
 from ctypes import wintypes
 
 M64 = (1 << 64) - 1
+
+# RSA 授权 (A1): 产品标识, 参与签名的载荷 (demo/main.c PROT_LICENSE_PRODUCT 必须一致)
+LICENSE_PRODUCT = 'PROT-DEMO-2026'
+LICENSE_RSA_KEY_BITS = 2048            # modulus 256 字节
+RSA_PUB_MAGIC = 0x31415352             # "RSA1" — BCRYPT_RSAPUBLIC_BLOB 头
+# PKCS#1 v1.5 SHA-256 DigestInfo 前缀 (EMSA-PKCS1-v1_5, RFC 8017)
+DIGEST_INFO_SHA256 = bytes.fromhex('3031300d060960864801650304020105000420')
+
+# 小素数积, 加速确定性筛选 (Miller-Rabin 前先筛)
+_SMALL_PRIMES = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37,
+                 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97)
 
 # FNV-1a 64 位常量 (machine_id, 与 src/hostid.c 一致)
 HOSTID_FNV_BASIS = 0xCBF29CE484222325
@@ -540,6 +565,172 @@ def ensure_parent(path):
         os.makedirs(parent, exist_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# RSA 授权签发 (ROADMAP Phase A1 / PRODUCTION A1, 纯 Python e=65537)
+# 私钥只写 build/keys/license_priv.json (gitignore), 绝不入库;
+# 公钥以 BCRYPT_RSAPUBLIC_BLOB 导出为 C 数组嵌入 demo (src/license.c 用 BCrypt 验签)。
+# ---------------------------------------------------------------------------
+def _is_prime(n):
+    if n < 2:
+        return False
+    for p in _SMALL_PRIMES:
+        if n % p == 0:
+            return n == p
+    d = n - 1
+    s = 0
+    while d % 2 == 0:
+        d //= 2
+        s += 1
+    for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+        if a >= n:
+            continue
+        x = pow(a, d, n)
+        if x == 1 or x == n - 1:
+            continue
+        for _ in range(s - 1):
+            x = x * x % n
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def _gen_prime(bits):
+    while True:
+        v = secrets.randbits(bits) | (1 << (bits - 1)) | 1
+        if _is_prime(v):
+            return v
+
+
+def rsa_gen_keypair(bits=LICENSE_RSA_KEY_BITS):
+    """RSA-2048 密钥对: (n, e, d). e=65537. p/q 各 1024 位."""
+    e = 65537
+    while True:
+        p = _gen_prime(bits // 2)
+        q = _gen_prime(bits // 2)
+        if p == q:
+            continue
+        phi = (p - 1) * (q - 1)
+        n = p * q
+        try:
+            d = pow(e, -1, phi)
+        except ValueError:
+            continue  # gcd(e, phi) != 1 重试
+        return n, e, d
+
+
+def rsa_pub_blob(n, e=65537):
+    """BCRYPT_RSAPUBLIC_BLOB (Windows 实测布局):
+    16 字节头 <IIII> LE + 8 字节对齐填充 + exponent BE + modulus BE.
+    exponent 对齐到 8 字节边界后, 长度取位对数 (65537 -> 3 字节 01 00 01)."""
+    eb = e.to_bytes((e.bit_length() + 7) // 8, 'big')
+    nb = n.to_bytes(LICENSE_RSA_KEY_BITS // 8, 'big')
+    return (struct.pack('<IIII', RSA_PUB_MAGIC, LICENSE_RSA_KEY_BITS,
+                        len(eb), len(nb)) + b'\x00' * 8 + eb + nb)
+
+
+def emsa_pkcs1_v1_5(digest_sha256):
+    """EMSA-PKCS1-v1_5 编码 (k=256), 接收 32 字节 SHA-256."""
+    t = DIGEST_INFO_SHA256 + digest_sha256
+    pslen = (LICENSE_RSA_KEY_BITS // 8) - len(t) - 3
+    if pslen < 8:
+        raise VasmError('emsa pkcs1: insufficient modulus length')
+    return b'\x00\x01' + (b'\xff' * pslen) + b'\x00' + t
+
+
+def rsa_sign(d, n, digest_sha256):
+    """私钥 (d, n) 对 32 字节 SHA-256 摘要签名, 返回 256 字节 sig."""
+    em = emsa_pkcs1_v1_5(digest_sha256)
+    m = int.from_bytes(em, 'big')
+    s = pow(m, d, n)
+    return s.to_bytes(LICENSE_RSA_KEY_BITS // 8, 'big')
+
+
+def license_message(serial, machine_id):
+    """签名载荷: serial ascii + LE64(machine_id) + PRODUCT.
+    demo/main.c 运行期按同一规则构建 (prot_license_build_message)。"""
+    product_b = LICENSE_PRODUCT.encode('ascii')
+    return serial.encode('ascii') + struct.pack('<Q', machine_id) + product_b
+
+
+def _license_sha256(serial, machine_id):
+    return hashlib.sha256(license_message(serial, machine_id)).digest()
+
+
+def cmd_keygen(args):
+    """生成/复用私钥, 并导出公钥 BCRYPT_RSAPUBLIC_BLOB 为 C 数组."""
+    key_path = args.key_out
+    if os.path.isfile(key_path):
+        with open(key_path, 'r', encoding='utf-8') as f:
+            kd = json.load(f)
+        n = int(kd['n'], 16)
+        e = int(kd['e'])
+    else:
+        n, e, _d = rsa_gen_keypair()
+        d_hex = hex(_d)
+        kd = {'n': hex(n), 'e': e, 'd': d_hex, 'bits': LICENSE_RSA_KEY_BITS}
+        ensure_parent(key_path)
+        with open(key_path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(kd, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+        print('vmenc: keygen 2048-bit, n=%d bits' % n.bit_length())
+    blob = rsa_pub_blob(n, e)
+    lines = [', '.join('0x%02x' % b for b in blob[i:i + 12]) + ','
+             for i in range(0, len(blob), 12)]
+    body = (
+        '/* generated by tools/vmenc.py keygen — do not edit */\n'
+        '#include <stdint.h>\n'
+        '\n'
+        'const uint8_t g_prot_license_pubblob[] = {\n'
+        + '\n'.join('    ' + l for l in lines) + '\n'
+        '};\n'
+        '\n'
+        'const size_t g_prot_license_pubblob_len = sizeof(g_prot_license_pubblob);\n'
+    )
+    ensure_parent(args.blob_out)
+    with open(args.blob_out, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(body)
+    print('vmenc: wrote public-key blob %s (%d bytes)' % (args.blob_out, len(blob)))
+
+
+def cmd_sign(args):
+    """对当前 serial/machine_id (json) 生成 license.txt (base64 sig)."""
+    with open(args.key_path, 'r', encoding='utf-8') as f:
+        kd = json.load(f)
+    n = int(kd['n'], 16)
+    e = int(kd['e'])
+    d = int(kd['d'], 16)
+    with open(args.json_path, 'r', encoding='utf-8') as f:
+        jd = json.load(f)
+    serial = jd['serial']
+    mid = args.machine_id_override
+    if mid is None:
+        mid = jd.get('machine_id', None)
+    if mid is None or mid == 0 or mid in ('auto', '0'):
+        mid = hostid()
+    elif isinstance(mid, str):
+        mid = parse_machine_id_override(mid)
+    digest = _license_sha256(serial, mid)
+    sig = rsa_sign(d, n, digest)
+    out = [
+        'SERIAL=' + serial,
+        'MACHINE_ID=0x%x' % mid,
+        'PRODUCT=' + LICENSE_PRODUCT,
+        'SIGNATURE=' + base64.b64encode(sig).decode('ascii'),
+        '',
+    ]
+    ensure_parent(args.license_out)
+    with open(args.license_out, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('\n'.join(out))
+    if args.print:
+        print('signed license: serial=%s machine=0x%x product=%s'
+              % (serial, mid, LICENSE_PRODUCT))
+        print('   sig=%s' % ('%d bytes' % len(sig)))
+    print('vmenc: wrote %s' % args.license_out)
+
+
+# ---------------------------------------------------------------------------
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='vmenc.py',
@@ -565,6 +756,27 @@ def main(argv=None):
     pg.add_argument('--print', action='store_true',
                     help='print human readable result')
     pg.set_defaults(func=cmd_genserial)
+
+    pk = sub.add_parser('keygen', help='generate/reuse RSA-2048 signing keypair')
+    pk.add_argument('--key-out', dest='key_out', required=True,
+                    help='output private key JSON (gitignored)')
+    pk.add_argument('--blob-out', dest='blob_out', required=True,
+                    help='output public-key BCRYPT blob .c (embedded)')
+    pk.set_defaults(func=cmd_keygen)
+
+    ps = sub.add_parser('sign', help='sign serial+machine_id into license.txt')
+    ps.add_argument('--key', dest='key_path', required=True,
+                    help='private key JSON from keygen')
+    ps.add_argument('--json', dest='json_path', required=True,
+                    help='vm_build.json with serial/machine_id')
+    ps.add_argument('--out', dest='license_out', required=True,
+                    help='output license.txt')
+    ps.add_argument('--machine-id', dest='machine_id_override', type=str,
+                    default=None,
+                    help='override machine_id (decimal or 0x hex); omit/auto=hostid')
+    ps.add_argument('--print', action='store_true',
+                    help='print human readable result')
+    ps.set_defaults(func=cmd_sign)
 
     args = parser.parse_args(argv)
     try:

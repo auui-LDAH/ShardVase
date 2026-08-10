@@ -28,6 +28,7 @@ EXE = os.path.join(REPO, 'build', 'demo.exe')
 BUILD = os.path.join(REPO, 'build')
 JSON_PATH = os.path.join(REPO, 'demo', 'vm_build.json')
 STRINGS = os.path.join(REPO, 'demo', 'strings.txt')
+LICENSE = os.path.join(REPO, 'build', 'license.txt')   # A1: build.ps1 sign 产物
 
 KERNEL32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
@@ -175,19 +176,27 @@ def main():
 
     results = []
 
-    # ---- T1: 正确序列号 -------------------------------------------------
+    # ---- T1: 正确序列号 + 有效授权 (A1) --------------------------------
     try:
-        code, out, _ = run_demo(stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == 0) and (msg_ok in out)
-        results.append(('T1 normal-ok', 'PASS' if ok else 'FAIL', 'exit=%d' % code))
+        if not os.path.isfile(LICENSE):
+            raise RuntimeError('license.txt not found (build.ps1 sign step)')
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out) and ('license: 1' in out)
+        results.append(('T1 normal-ok', 'PASS' if ok else 'FAIL',
+                        'exit=%d license_ok=1' % code))
     except Exception as e:
         results.append(('T1 normal-ok', 'FAIL', repr(e)))
 
-    # ---- T2: 错误序列号 -------------------------------------------------
+    # ---- T2: 错误序列号（授权文件亦无法对齐签名载荷） ------------------
     try:
-        code, out, _ = run_demo(stdin=b'WRONG-SERIAL-0000\n')
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE],
+            stdin=b'WRONG-SERIAL-0000\n')
         ok = (code == 1) and (msg_fail in out)
-        results.append(('T2 normal-bad', 'PASS' if ok else 'FAIL', 'exit=%d' % code))
+        results.append(('T2 normal-bad', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
     except Exception as e:
         results.append(('T2 normal-bad', 'FAIL', repr(e)))
 
@@ -245,7 +254,9 @@ def main():
     # ---- T4: 篡改检测 ---------------------------------------------------
     try:
         tampered = make_tampered_copy()
-        code, text, _ = run_demo(exe=tampered, stdin=(serial + '\n').encode('utf-8'))
+        code, text, _ = run_demo(exe=tampered,
+                                 args=['--license-file', LICENSE],
+                                 stdin=(serial + '\n').encode('utf-8'))
         ok = (code == PROT_EXIT_TAMPERED) and (msg_tamper in text)
         results.append(('T4 tamper-detect', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
@@ -267,7 +278,8 @@ def main():
         n_run = 8
         bad = 0
         for _ in range(n_run):
-            code, out, _ = run_demo(stdin=(serial + '\n').encode('utf-8'))
+            code, out, _ = run_demo(args=['--license-file', LICENSE],
+                                    stdin=(serial + '\n').encode('utf-8'))
             if code != 0 or msg_ok not in out:
                 bad += 1
         ok = (bad == 0)
@@ -278,7 +290,7 @@ def main():
 
     # ---- T7: 干净环境 selftest 全 0 (新检测项不得误报) ----
     try:
-        code, out, _ = run_demo(args=['--selftest'],
+        code, out, _ = run_demo(args=['--selftest', '--license-file', LICENSE],
                                 stdin=(serial + '\n').encode('utf-8'))
         suspicious = []
         for field in ('debug_heap_flags', 'int3_honey'):
@@ -292,6 +304,32 @@ def main():
                         'code=%d suspicious=%s' % (code, suspicious or 'none')))
     except Exception as e:
         results.append(('T7 selftest-clean', 'FAIL', repr(e)))
+
+    # ---- T8: RSA 授权防伪造 —— 篡改签名 1 位 -> license_ok=0 ----------
+    try:
+        forged = os.path.join(BUILD, 'license_forged.txt')
+        with open(LICENSE, 'r', encoding='utf-8') as f:
+            lines = f.read().splitlines()
+        out_lines = []
+        for ln in lines:
+            if ln.startswith('SIGNATURE='):
+                s = ln[len('SIGNATURE='):]
+                b = bytearray(s.encode('ascii'))
+                b[len(b) // 2] = b'B'[0]  # 改动 base64 字符, 反则成完全不同字节
+                out_lines.append('SIGNATURE=' + b.decode('ascii'))
+            else:
+                out_lines.append(ln)
+        if not any(l.startswith('SIGNATURE=') for l in out_lines):
+            raise RuntimeError('no SIGNATURE line to forge')
+        with open(forged, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(out_lines) + '\n')
+        code, out, _ = run_demo(args=['--license-file', forged],
+                                stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and ('license: 0' in out) and (msg_fail in out)
+        results.append(('T8 license-forge', 'PASS' if ok else 'FAIL',
+                        'exit=%d license_ok=0' % code))
+    except Exception as e:
+        results.append(('T8 license-forge', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

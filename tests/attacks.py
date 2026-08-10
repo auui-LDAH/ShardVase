@@ -4,12 +4,14 @@ tests/attacks.py - 攻击模拟测试 (基础设施, 不需真机, Lane D)
 
 在随构建生成的产物上做无调试器的"攻击者视角"回归, 验证保护在多种旁路下仍就地:
 
-  A1 machine-bind       本机正确序列号必须通过 (machine_id 绑定成立)
-  A2 vm-ciphertext      VM 镜像 blob 的字节呈高熵均匀分布 (非明文: 静态不可还原)
-  A3 build-fingerprint  记录本轮 VM 镜像内容指纹 (供跨轮对比随机性)
-  A4 selftest-clean     --selftest 干净环境各项为 0 (新检测项无误报, 与 T7 互补)
+  A1 machine-bind         本机正确序列号+有效授权必须通过 (machine_id 绑定成立)
+  A2 vm-ciphertext        VM 镜像 blob 的字节呈高熵均匀分布 (非明文: 静态不可还原)
+  A3 build-fingerprint    记录本轮 VM 镜像内容指纹 (供跨轮对比随机性)
+  A4 selftest-clean       --selftest 干净环境各项为 0 (新检测项无误报, 与 T7 互补)
+  A5 license-forge        改 1 位签名 -> 必须被判无效 (RSA 防伪造)
+  A6 license-other-machine 用同一私钥给异机 machine_id 签 license -> 本机必须拒绝
 
-依赖: 已构建产物 (build\\demo.exe / demo\\gen\\*.c)。
+依赖: 已构建产物 (build\\demo.exe / demo\\gen\\*.c / build\\license.txt)。
 纯黑盒: 不解析 VM 结构, 不修改受保护文件。
 任一 FAIL -> sys.exit(1)。
 """
@@ -24,6 +26,8 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 EXE = os.path.join(REPO, 'build', 'demo.exe')
 JSON_PATH = os.path.join(REPO, 'demo', 'vm_build.json')
 STRINGS = os.path.join(REPO, 'demo', 'strings.txt')
+LICENSE = os.path.join(REPO, 'build', 'license.txt')   # A1: build.ps1 sign 产物
+VMENC = os.path.join(REPO, 'tools', 'vmenc.py')
 
 CLEAN_FIELDS = ('peb_being_debugged', 'peb_nt_global_flag', 'debug_port',
                 'debug_flags', 'debug_object', 'hardware_breakpoints',
@@ -98,27 +102,38 @@ def main():
 
     results = []
 
-    # ---- A1: 本机 machine_id 绑定成立 ---------------------------------
+    # ---- A1: 本机 machine_id 绑定成立 (带有效授权文件) ------------------
     try:
-        code, out = run_demo(stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == 0) and (msg_ok in out)
+        if not os.path.isfile(LICENSE):
+            raise RuntimeError('license.txt not found (run build.ps1)')
+        code, out = run_demo(args=['--license-file', LICENSE],
+                             stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out) and ('license: 1' in out)
         results.append(('A1 machine-bind', 'PASS' if ok else 'FAIL',
                         'code=%d' % code))
     except Exception as e:
         results.append(('A1 machine-bind', 'FAIL', repr(e)))
 
-    # ---- A2: VM blob 密文高熵 (非明文可静态还原) ----------------------
+    # ---- A2: VM 镜像密文高熵 (非明文可静态还原) -----------------------
+    # 只统计 VM blob (vm_*_blob.c); 用相对熵 (ent/log2(len), 上限 1.0),
+    # 小 blob (如 21 字节的 gate) 绝对熵低但比例应接近 1 —— 这才证明是密文。
     try:
         blobs = blob_bytes()
         bad = []
-        for name, data in blobs.items():
-            # 熵接近 8 (均匀) => 非可读明文; 明文 opcode 序列熵显著更低
+        for name, data in sorted(blobs.items()):
+            if not name.startswith('vm_') or not name.endswith('_blob.c'):
+                continue
+            if len(data) < 4:
+                continue
             ent = shannon_entropy(data)
-            if ent < 4.5:
-                bad.append('%s ent=%.2f' % (name, ent))
-        ok = (len(blobs) >= 4) and (not bad)
+            import math
+            rel = ent / math.log2(len(data))
+            if rel < 0.85:
+                bad.append('%s rel=%.2f' % (name, rel))
+        vm_count = sum(1 for n in blobs if n.startswith('vm_') and n.endswith('_blob.c'))
+        ok = (vm_count >= 4) and (not bad)
         results.append(('A2 vm-ciphertext', 'PASS' if ok else 'FAIL',
-                        'blobs=%d %s' % (len(blobs), '; '.join(bad) or 'high-entropy')))
+                        'blobs=%d %s' % (vm_count, '; '.join(bad) or 'high-entropy')))
     except Exception as e:
         results.append(('A2 vm-ciphertext', 'FAIL', repr(e)))
 
@@ -135,7 +150,7 @@ def main():
 
     # ---- A4: --selftest 干净环境全 0 ----------------------------------
     try:
-        code, out = run_demo(args=['--selftest'],
+        code, out = run_demo(args=['--selftest', '--license-file', LICENSE],
                              stdin=(serial + '\n').encode('utf-8'))
         nonzero = []
         for line in out.splitlines():
@@ -152,6 +167,50 @@ def main():
                         'code=%d nonzero=%s' % (code, nonzero or 'none')))
     except Exception as e:
         results.append(('A4 selftest-clean', 'FAIL', repr(e)))
+
+    # ---- A5: 伪造授权 (改签名 1 位) 必须被拒 --------------------------
+    # 演示 RSA 防伪造: 攻击者就算完全复刻 VM/expect 算法, 也造不出合法签名。
+    try:
+        forged = os.path.join(REPO, 'build', 'license_forged.txt')
+        with open(LICENSE, 'r', encoding='utf-8') as f:
+            lines = f.read().splitlines()
+        out_lines = []
+        for ln in lines:
+            if ln.startswith('SIGNATURE='):
+                s = ln[len('SIGNATURE='):]
+                b = bytearray(s.encode('ascii'))
+                b[len(b) // 2] = b'B'[0]
+                out_lines.append('SIGNATURE=' + b.decode('ascii'))
+            else:
+                out_lines.append(ln)
+        with open(forged, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(out_lines) + '\n')
+        code, out = run_demo(args=['--license-file', forged],
+                             stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and ('license: 0' in out)
+        results.append(('A5 license-forge', 'PASS' if ok else 'FAIL',
+                        'code=%d license_ok=0' % code))
+    except Exception as e:
+        results.append(('A5 license-forge', 'FAIL', repr(e)))
+
+    # ---- A6: 异机授权 (机器标识不匹配) 必须被拒 ------------------------
+    # 用同一私钥给「另一台机器 id」签一份 license, 当前机器运行应拒绝
+    # (载荷含 machine_id, 与本地 hostid 不同 -> 验签失败)。
+    try:
+        other = os.path.join(REPO, 'build', 'license_othermachine.txt')
+        subprocess.run(
+            ['python', VMENC, 'sign', '--key',
+             os.path.join(REPO, 'build', 'keys', 'license_priv.json'),
+             '--json', JSON_PATH, '--out', other,
+             '--machine-id', '0x123456789ABCDEF0'],
+            check=True, capture_output=True)
+        code, out = run_demo(args=['--license-file', other],
+                             stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and ('license: 0' in out)
+        results.append(('A6 license-other-machine', 'PASS' if ok else 'FAIL',
+                        'code=%d license_ok=0' % code))
+    except Exception as e:
+        results.append(('A6 license-other-machine', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

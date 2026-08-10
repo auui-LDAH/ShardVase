@@ -21,12 +21,15 @@ src/crc32.c        [Lane A]  prot_crc32 实现
 src/antidebug.c    [Lane B]  反调试
 src/integrity.c    [Lane B]  完整性校验 + 看门狗
 src/strcrypt.c     [Lane B]  prot_str_decrypt 实现
-tools/vmenc.py     [Lane C]  VASM 汇编器 + 加密 + genserial
+src/license.c      [A1]      RSA-2048 授权验签 (BCrypt, 公钥)
+include/protect/license.h     [A1]  license 契约 (常量/函数声明; 与 vmenc.py 一致)
+tools/vmenc.py     [Lane C]  VASM 汇编器 + 加密 + genserial + keygen/sign (A1)
 tools/strgen.py    [Lane C]  字符串加密生成器
 tools/hashpatch.py [Lane C]  PE .text CRC 烧录
 demo/license_hash.vasm    [Phase 2a] VM#1: FNV-1a 哈希
 demo/license_mix.vasm     [Phase 2a] VM#2: GOLDEN 混合
 demo/license_verify.vasm  [Phase 2a] VM#3: 期望值校验
+demo/license_gate.vasm    [A1]      VM#4: result &= license_ok 门控
 demo/vm_build.json   [已存在, 契约, 不可改]   序列号/机器标识/期望常量
 demo/main.c        [Lane D]  演示入口
 demo/strings.txt   [Lane D]  字符串清单
@@ -178,6 +181,8 @@ build/             [构建产物] demo.exe
 ```
 python tools/vmenc.py assemble <in.vasm> <vm_build.json> <out.c> <out.h>
 python tools/vmenc.py genserial --json <vm_build.json> [--print]
+python tools/vmenc.py keygen --key-out <priv.json> --blob-out <pub.c>   (A1)
+python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <license.txt>  (A1)
 ```
 - `assemble`：两遍汇编（先收集标签）→ 明文字节 → 随机 64 位种子 key → 按 §3 加密 →
   输出 `out.c`（含 `static const uint8_t s_code[]`、`const prot_vm_image <name>`）与
@@ -327,8 +332,10 @@ const prot_baked_crc g_prot_baked_crc = { {'P','R','O','T','C','R','C','P'}, 0, 
 9. 构造 `demo_mem`（见下），依次执行 3 个独立 VM（Phase 2a，见 §5.5）：
    `prot_vm_run(&g_vm_hash_image, ...)` → `g_vm_mix_image` → `g_vm_verify_image`；
    任一返回非 PROT_OK → 打印 `PROT_STR_MSG_FAIL` + 错误码，`exit(1)`。
-10. `prot_antidebug_fake_active()` 为真 → `mem.result ^= 1`。
-11. `mem.result` 非 0 → 打印 `PROT_STR_MSG_OK`，`exit(0)`；否则打印 `PROT_STR_MSG_FAIL`，`exit(1)`。
+10. 授权验签（A1，§9.4）：`--license-file F` → 验签设 `mem.license_ok`；未传 → 1。
+11. 执行 VM#4 门控 `g_vm_gate_image`：`result &= license_ok`（§9.4）。
+12. `prot_antidebug_fake_active()` 为真 → `mem.result ^= 1`。
+13. `mem.result` 非 0 → 打印 `PROT_STR_MSG_OK`，`exit(0)`；否则打印 `PROT_STR_MSG_FAIL`，`exit(1)`。
 
 ### 9.2 demo_mem 布局（VM 程序依赖，勿改）
 ```c
@@ -340,11 +347,45 @@ typedef struct demo_mem {
     uint64_t vm_h;         /* +64 (VM#1 写, VM#2/3 读: FNV-1a h) */
     uint64_t vm_total;     /* +72 (VM#2 写, VM#3 读: GOLDEN 混合 total) */
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
-} demo_mem;                /* 总 88 字节 */
+    uint32_t license_ok;   /* +88 (宿主 RSA 验签结果, 0/1; VM#4 门控) */
+    uint32_t _pad;         /* +92 */
+} demo_mem;                /* 总 96 字节 */
 ```
 `machine_id`（Phase 4）由 `prot_hostid_get()` 在运行期计算（= `vm_build.json` 中
 genserial 自动写入的 `hostid()`，见 §5.6）。演示为"绑定本机"简化：换机器后同一
 serial 无法通过。
+
+### 9.4 授权验签（A1, 2026-08-10）
+- 流程（§9.1 第 8 步之后）：`demo --license-file F` 传授权文件；未传时
+  `license_ok=1`（与旧行为兼容）。传了则：
+  1. 逐行解析 `F`：`SERIAL=` / `MACHINE_ID=0x..` / `PRODUCT=` / `SIGNATURE=<base64 344B>`
+     （`SIGNATURE` 在前，`SERIAL`/`MACHINE_ID` 可能在后，供顺序收集）。
+  2. `PRODUCT != PROT_LICENSE_PRODUCT` 或 `SERIAL` 与用户输入不一致 → 拒。
+  3. base64 解码签名（自定义解码器，`\r\n`/空格忽略），长度必须 256。
+  4. `prot_license_build_message(serial, serial_len, machine_id, msg, cap)`
+     = `serial || LE64(machine_id) || "PROT-DEMO-2026"`（与 `vmenc.py license_message` 逐字节一致）。
+  5. `prot_license_verify(msg)`：BCrypt SHA-256 → `BCryptImportKeyPair`（公钥 blob
+     嵌入 `demo/gen/license_pubkey.c`）→ `BCryptVerifySignature`，**必须传**
+     `BCRYPT_PKCS1_PADDING_INFO{B CRYPT_SHA256_ALGORITHM}`（传 NULL 返回 0xc000000d）。
+  6. 过 → 打印 `license: 1` 且 `mem.license_ok=1`；任何一步失败 → 打印 `license: 0`
+     （不泄漏原因），`exit(1)`。
+- **门控进 VM**（防宿主调用点被 patch）：验签通过仅设 `license_ok`；由 VM#4
+  （`demo/license_gate.vasm`，`g_vm_gate_image`）在宿主 VM#1-3 之后执行，
+  对 `mem.result`（+52）与 `mem.license_ok`（+88）逐位 AND 写回 +52。
+  攻击者必须还原并修改 VM 判定逻辑才可绕过。
+- BCrypt 句柄/对象均在函数内即开即关，失败路径统一归 0。
+
+### 9.5 授权签发（离线, tools/vmenc.py, A1）
+- `vmenc.py keygen --key-out build/keys/license_priv.json --blob-out demo/gen/license_pubkey.c`：
+  生成/reuse RSA-2048（e=65537，纯 Python Miller-Rabin）；私钥只写
+  `build/keys/`（gitignore），二进制只嵌公钥 blob。
+- 公钥 blob 为 **BCRYPT_RSAPUBLIC_BLOB**：16 字节头 `<IIII` LE
+  （magic `'RSA1'`/bitlen/cbExp/cbMod）+ **8 字节零填充** + exponent BE + modulus BE
+  （实测：无 8 字节填充时 `BCryptImportKeyPair` 返回 0x80090005）。
+- `vmenc.py sign --key <priv.json> --json demo/vm_build.json --out build/license.txt`：
+  读 json 的 serial/machine_id，载荷 = `license_message`（同 §9.4-4），
+  EMSA-PKCS1-v1_5(SHA-256) 填充 → RSA 私钥签名 → base64 344B 写
+  `build/license.txt`。
 
 ### 9.3 退出码
 0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改。
@@ -356,11 +397,14 @@ $ErrorActionPreference = 'Stop'
 $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
 # 1. 若 demo\vm_build.json 不存在 → 写默认 {"serial":"DEMO-2026-ABCDEFGH","machine_id":0}
 # 2. python tools\vmenc.py genserial --json demo\vm_build.json   (machine_id=0/缺省 -> 自动 hostid)
+# 2.5 python tools\vmenc.py keygen --key-out build\keys\license_priv.json --blob-out demo\gen\license_pubkey.c   (首次; 之后复用库)
+#    python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_build.json --out build\license.txt
 # 3. python tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image
 #    python tools\vmenc.py assemble demo\license_mix.vasm demo\vm_build.json demo\gen\vm_mix_blob.c demo\gen\vm_mix_blob.h --name g_vm_mix_image
 #    python tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image
+#    python tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image
 # 4. python tools\strgen.py demo\strings.txt demo\gen\strings.c
-# 5. cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c /link /SUBSYSTEM:CONSOLE"
+# 5. cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c demo\gen\vm_gate_blob.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib
 # 6. python tools\hashpatch.py build\demo.exe
 # 7. 打印 DONE
 ```
@@ -380,8 +424,16 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
 - 测试 4（篡改检测）：复制 `build\demo.exe` 到 `build\demo_tampered.exe`，用 PE 解析
   （`struct.unpack_from`）找到 `.text` 的 `PointerToRawData`，翻转其中 1 字节，
   运行 → 输出含 `PROT_STR_MSG_TAMPER` 文本且退出码 0xBAD。
+- 测试 5（VM 单测）：`tests/vm_unit.c` 编译为 `build\vm_unit.exe` 运行，Phase 1d
+  新增指令全覆盖。
+- 测试 6（稳定性）：同轮构建 8 次重启 demo（正确序列号）都应先输出
+  `license: 1` 再过校验（A1 起）——`key[0]/key[1]` 逐轮随机，但结果必须稳定。
+- 测试 7（自检）：`--selftest` 输出种各检测项全部 0，退出码 0。
+- 测试 8（license-forge）：把 `SIGNATURE=` 行 base64 改 1 位 → demo 必须输出
+  `license: 0` 且退出码 1（RSA 防伪造）。
 - 输出每项 `PASS/FAIL/SKIP`，任一 FAIL → `sys.exit(1)`。
 - 测试 3/4 的期望文本从 `demo\strings.txt` 读取（避免硬编码中文）。
+- T1-T8 传 `--license-file build\license.txt`（A1 起），避免把"无授权文件"误判。
 
 ## 8. 提交前自检清单
 

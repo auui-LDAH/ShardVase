@@ -1,0 +1,27 @@
+; ============================================================================
+; license_gate.vasm — VM #4/4 (A1): 把宿主侧 RSA 验签结果并入最终判定位
+;
+; 读 (demo_mem, 相对 base 偏移):
+;   +88 : u32  license_ok   宿主 prot_license_verify 的结果 (0/1)
+;   +52 : u32  result       前面 3 个 VM 写好的校验结果 (0/1)
+; 写:
+;   +52 : u32  result = result AND license_ok
+;
+; 目的: 关键判定位仍由 VM 执行 —— 攻击者光 patch 宿主侧 prot_license_verify
+; 调用点无效, 需要同时还原本 VM 才能绕过 RSA 门。独立小 VM, 单独密钥/置换/窗口,
+; 字节码密文与门控常量在二进制中均不可直接静态定位。
+; ============================================================================
+
+    ; result@52
+    push32 52
+    load32
+    ; license_ok@88
+    push32 88
+    load32
+    ; result = result AND license_ok
+    and
+    ; 写回 result@52
+    push32 52
+    swap
+    store32
+    halt
