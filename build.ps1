@@ -6,17 +6,52 @@
 # 参数:
 #   -MachineId <值>   覆盖 machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
 #   -Config <Release> 保留扩展位 (当前仅 Release)
+#   -VcVars <路径>    显式指定 vcvars64.bat; 缺省自动探测 (vswhere/MSVC 常见路径)
 # 输出: build\demo.exe / build\vm_unit.exe / build\manifest.json (产物清单)
 param(
     [string]$MachineId = 'auto',
-    [string]$Config = 'Release'
+    [string]$Config = 'Release',
+    [string]$VcVars = ''
 )
 $ErrorActionPreference = 'Stop'
 
 # 锚定到脚本所在目录 (仓库根), 保证相对路径可靠
 Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
-$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+# 定位 vcvars64.bat: 优先 -VcVars 参数, 否则 vswhere 探测 (含常见手动安装路径)
+function Find-VcVars {
+    param([string]$Explicit)
+    if ($Explicit) {
+        if (-not (Test-Path -LiteralPath $Explicit)) {
+            throw "build FAILED: -VcVars path not found: $Explicit"
+        }
+        return $Explicit
+    }
+    $candidates = @(
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat',
+        'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
+        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $install = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath 2>$null
+        if ($install) {
+            $v = Join-Path $install 'VC\Auxiliary\Build\vcvars64.bat'
+            if (Test-Path -LiteralPath $v) { return $v }
+        }
+    }
+    throw 'build FAILED: cannot locate vcvars64.bat — install VS2022 C++ workload or pass -VcVars <path>'
+}
+$vcvars = Find-VcVars -Explicit $VcVars
+Write-Host "build: vcvars = $vcvars"
 $jsonPath = 'demo\vm_build.json'
 
 # 1. 若 demo\vm_build.json 不存在 -> 写默认值 (machine_id=0 触发 auto=hostid; expect 由 genserial 补算)
