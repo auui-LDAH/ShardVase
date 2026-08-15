@@ -23,6 +23,10 @@
 - ✅ 加密态执行：指令按 64 字节滑动窗口按需解密、用后即焚（`vm_wprune` 丢弃
   已消费字节），CRC 改用流式接口（`prot_crc32_init/step/done`）逐字节预检，
   全程无 malloc、堆上不留全明文（已落地，2026-08-09）。
+- ✅ **镜像外部装载（DBI launcher，技术债 #3）**：VM 密文打包 `vm.blob`
+  （`vmenc.py pack`，NAME/KEY/CRC + BLOB_CRC），launcher（`src/blob.c`）
+  启动时装载校验；exe 不再静态嵌入 VM 逻辑；T13/T14 缺失/篡改 → 0xB10B
+  （2026-08-14）。
 - 运行时语义随机化（等价变形），重放失败（✅ 已落地：`vm_ctx_seed` TSC/QPC/栈
   熵播种 ctx → vm_var 每实例选不同等价路径，2026-08-09）。
 - ✅ **引擎语义随构建变异（A2）**：`sem=[sem0,sem1]` 由 `key[1]` 随机流派生 —
@@ -105,4 +109,6 @@
   单测，2026-08-14）
 - [x] Phase 4 分级授权（试用/正式/增值）：tier 参与 RSA 签名载荷 + TIER 行，
   T12 防篡改全绿（2026-08-14）
+- [x] 技术债 #3 DBI launcher：vm.blob 外部装载，exe 无 VM 逻辑，T13/T14 全绿
+  （2026-08-14）
 - [ ] T3 真机验证（沙箱 SKIP 待补）

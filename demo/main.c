@@ -16,17 +16,20 @@
 #include <windows.h>
 
 #include "protect/antidebug.h"
+#include "protect/blob.h"
 #include "protect/hostid.h"
 #include "protect/integrity.h"
 #include "protect/license.h"
 #include "protect/strcrypt.h"
 #include "protect/vm.h"
 
-#include "vm_hash_blob.h"
-#include "vm_mix_blob.h"
-#include "vm_verify_blob.h"
-#include "vm_gate_blob.h"
-/* demo/gen: g_vm_hash_image / g_vm_mix_image / g_vm_verify_image / g_vm_gate_image */
+/* DBI launcher (技术债 #3): VM 镜像由 build\vm.blob 装载, 不再静态嵌入。
+ * 顺序与 build.ps1 3c 的 pack 入参一致; 名称须与 assemble --bin-name 相同。 */
+static const char* const k_vm_names[4] = {
+    "hash", "mix", "verify", "gate",
+};
+static prot_vm_image g_vm_imgs[4];
+static void* g_vm_blob_buf = NULL;
 
 /* demo_mem 布局 (契约 §9.2, 与 demo/license_*.vasm 偏移注释一致, 勿改) */
 typedef struct demo_mem {
@@ -47,10 +50,12 @@ typedef struct demo_mem {
  *   --wait-ms N      扫描前 Sleep N 毫秒
  *   --wait-after N   看门狗启动后驻留 N 毫秒 (A5 长驻留回归钩子)
  *   --license-file F 读入 RSA 授权文件 (A1) 并验签
+ *   --vm-blob F      VM 镜像 blob 路径 (默认 "vm.blob", DBI launcher)
  * 返回 1 成功, 0 用法错误。
  */
 static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
-                      uint32_t* wait_after_ms, const char** license_path)
+                      uint32_t* wait_after_ms, const char** license_path,
+                      const char** vm_blob_path)
 {
     int i;
 
@@ -58,6 +63,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
     *wait_ms = 0;
     *wait_after_ms = 0;
     *license_path = NULL;
+    *vm_blob_path = NULL;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             *selftest = 1;
@@ -67,12 +73,12 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             char* end = NULL;
             unsigned long v;
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
                 return 0;
             }
             v = strtoul(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0') {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
                 return 0;
             }
             if (after)
@@ -87,8 +93,15 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             }
             *license_path = argv[i + 1];
             i++;
+        } else if (strcmp(argv[i], "--vm-blob") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --vm-blob F\n");
+                return 0;
+            }
+            *vm_blob_path = argv[i + 1];
+            i++;
         } else {
-            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
+            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
             return 0;
         }
     }
@@ -233,6 +246,7 @@ int main(int argc, char** argv)
     uint32_t wait_ms;
     uint32_t wait_after_ms;
     const char* license_path = NULL;
+    const char* vm_blob_path = NULL;
     size_t n;
     prot_status st;
 
@@ -242,7 +256,7 @@ int main(int argc, char** argv)
 
     /* §9.1-2: 解析参数 */
     if (!parse_args(argc, argv, &selftest, &wait_ms, &wait_after_ms,
-                    &license_path)) {
+                    &license_path, &vm_blob_path)) {
         return 2; /* 用法错误 */
     }
 
@@ -285,6 +299,19 @@ int main(int argc, char** argv)
     /* §9.1-6: 看门狗 (每 5 秒 ±40% 抖动复查完整性 + A5 反调试) */
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
 
+    /* §9.1-6b: 装载 VM blob (DBI launcher, 技术债 #3) —— 镜像密文不静态
+     * 嵌入 exe; 缺失/损坏 -> 拒绝运行 (0xB10B)。默认相对 cwd 找 vm.blob。 */
+    {
+        const char* bp = (vm_blob_path != NULL) ? vm_blob_path : "vm.blob";
+        size_t blob_size = 0u;
+        st = prot_vm_blob_load(bp, k_vm_names, 4u, g_vm_imgs,
+                               &g_vm_blob_buf, &blob_size);
+        if (st != PROT_OK) {
+            printf("%s (code=%d)\n", prot_str_get(PROT_STR_MSG_BLOB), (int)st);
+            exit(PROT_EXIT_BLOB_MISSING);
+        }
+    }
+
     /* A5 长驻留回归钩子: 看门狗启动后驻留 N 毫秒, 让周期复查多次触发
      * (e2e T11 用 --wait-after 验证干净环境零误报) */
     if (wait_after_ms > 0) {
@@ -314,18 +341,19 @@ int main(int argc, char** argv)
     }
 
     /* §9.1-9: VM 校验 —— Phase 2a: 拆成 3 个独立小 VM, 各自密钥/置换/窗口。
-     * 依次执行 FNV 哈希 -> GOLDEN 混合 -> 期望值校验, 共享 demo_mem 中间区。 */
-    st = prot_vm_run(&g_vm_hash_image, &mem, sizeof(mem));
+     * 依次执行 FNV 哈希 -> GOLDEN 混合 -> 期望值校验, 共享 demo_mem 中间区。
+     * 镜像来自 §9.1-6b 装载的 vm.blob (DBI launcher)。 */
+    st = prot_vm_run(&g_vm_imgs[0], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = prot_vm_run(&g_vm_mix_image, &mem, sizeof(mem));
+    st = prot_vm_run(&g_vm_imgs[1], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = prot_vm_run(&g_vm_verify_image, &mem, sizeof(mem));
+    st = prot_vm_run(&g_vm_imgs[2], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
@@ -346,7 +374,7 @@ int main(int argc, char** argv)
         }
     }
 
-    st = prot_vm_run(&g_vm_gate_image, &mem, sizeof(mem));
+    st = prot_vm_run(&g_vm_imgs[3], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);

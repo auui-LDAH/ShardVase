@@ -46,8 +46,8 @@
 
     ; ---------- Phase C: lea + callind 间接调用 ----------
     lea  sub_r
-    callind              ; 压入返回地址, 跳转 sub_r
-    jmp  done
+    callind              ; 压入返回地址 (= 下一条 jmp), 跳转 sub_r
+    jmp  p_d             ; ret 返回到这里 -> 转 Phase D
 
 sub_r:
     push32 0xC0F0
@@ -58,13 +58,14 @@ sub_r:
     store32              ; host[0x2000] = 0xC0F0
     ret                  ; pop 返回地址
 
+p_d:
     ; ---------- Phase D (A4): move / loadr32 / storr32 / brk-通过 ----------
     move 0x28            ; R = 0x28 (索引寄存器)
     push32 0x3000
     setbase              ; BR = 0x3000
-    push32 0xCAFEBABE
-    push32 4             ; [val off]
-    storr32              ; host[BR + R + off] = host[0x302C] = 0xCAFEBABE
+    push32 4             ; [off]
+    push32 0xCAFEBABE    ; [off val] (与 store32 同序: 先地址后值)
+    storr32              ; pop val, pop off -> mem[BR + R + off] = host[0x302C]
     push32 4
     loadr32              ; [host[0x302C]] = 0xCAFEBABE
     push32 0x3030

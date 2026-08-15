@@ -109,18 +109,24 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py keygen' }
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py sign' }
 
 # 3. 汇编 + 加密 VM 镜像 (ROADMAP Phase 2a: 一个校验逻辑拆成 3 个独立小 VM,
-#    各自独立密钥/置换/窗口: FNV 哈希 -> GOLDEN 混合 -> 期望值校验)
-& $py tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image
+#    各自独立密钥/置换/窗口: FNV 哈希 -> GOLDEN 混合 -> 期望值校验;
+#    --bin-out/--bin-name: 写单镜像 .bin, 供 3c 打包 vm.blob 由 demo 装载)
+& $py tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image --bin-out demo\gen\vm_hash_blob.bin --bin-name hash
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (hash)' }
 
-& $py tools\vmenc.py assemble demo\license_mix.vasm demo\vm_build.json demo\gen\vm_mix_blob.c demo\gen\vm_mix_blob.h --name g_vm_mix_image
+& $py tools\vmenc.py assemble demo\license_mix.vasm demo\vm_build.json demo\gen\vm_mix_blob.c demo\gen\vm_mix_blob.h --name g_vm_mix_image --bin-out demo\gen\vm_mix_blob.bin --bin-name mix
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (mix)' }
 
-& $py tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image
+& $py tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image --bin-out demo\gen\vm_verify_blob.bin --bin-name verify
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (verify)' }
 
-& $py tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image
+& $py tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image --bin-out demo\gen\vm_gate_blob.bin --bin-name gate
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
+
+# 3c. 打包 VM blob (DBI launcher, 技术债 #3): demo.exe 不再静态嵌入 VM 密文,
+#     启动时由 launcher 装载 build\vm.blob (缺失/损坏 -> 0xB10B)
+& $py tools\vmenc.py pack --out build\vm.blob demo\gen\vm_hash_blob.bin demo\gen\vm_mix_blob.bin demo\gen\vm_verify_blob.bin demo\gen\vm_gate_blob.bin
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py pack' }
 
 # 3b. 汇编 VM 指令集单测镜像 (ROADMAP Phase 1d, 每个新指令都要有测试用例)
 & $py tools\vmenc.py assemble tests\unit_vm.vasm demo\vm_build.json demo\gen\vm_unit_blob.c demo\gen\vm_unit_blob.h --name g_vm_unit_image
@@ -134,7 +140,7 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm_brk)'
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
 # 5. 编译 + 链接 (vcvars64 环境; cl 失败即中止)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c demo\gen\vm_gate_blob.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测

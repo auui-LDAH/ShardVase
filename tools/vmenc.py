@@ -421,6 +421,47 @@ def format_bytes(data, per_line=12):
     return '\n'.join(lines)
 
 
+# VM blob (DBI launcher, 技术债 #3): 镜像二进制格式与 src/blob.c 一致。
+#   单镜像 .bin: NAME[16] | CODE_LEN u32 | KEY0 u64 | KEY1 u64 | CRC u32
+#                | CODE[CODE_LEN]
+#   打包 vm.blob: MAGIC "PROTVMBL" | COUNT u32 LE | entries... | BLOB_CRC u32
+BLOB_MAGIC = b'PROTVMBL'
+BLOB_NAME_LEN = 16
+BLOB_ENTRY_HDR = 32
+
+
+def write_vm_bin(bin_out, name, plaintext, seed, key1):
+    """写出单镜像二进制 (供 pack 合并)。返回 (code_len, crc)。"""
+    cipher = encrypt(plaintext, seed)
+    crc = zlib.crc32(plaintext) & 0xFFFFFFFF
+    name_b = name.encode('ascii')[:BLOB_NAME_LEN - 1].ljust(
+        BLOB_NAME_LEN - 1, b'\x00') + b'\x00'
+    entry = (name_b + struct.pack('<I', len(cipher)) +
+             struct.pack('<Q', seed) + struct.pack('<Q', key1) +
+             struct.pack('<I', crc) + cipher)
+    with open(bin_out, 'wb') as f:
+        f.write(entry)
+    return len(cipher), crc
+
+
+def cmd_pack(args):
+    """合并多个单镜像 .bin 为 vm.blob (加 MAGIC/COUNT/尾部 CRC)."""
+    entries = b''
+    for p in args.bins:
+        with open(p, 'rb') as f:
+            entry = f.read()
+        if len(entry) < BLOB_ENTRY_HDR:
+            raise VasmError('bin too small: %s' % p)
+        entries += entry
+    blob = BLOB_MAGIC + struct.pack('<I', len(args.bins)) + entries
+    blob += struct.pack('<I', zlib.crc32(blob) & 0xFFFFFFFF)
+    ensure_parent(args.out)
+    with open(args.out, 'wb') as f:
+        f.write(blob)
+    print('vmenc: packed %d images -> %s (%d bytes)'
+          % (len(args.bins), args.out, len(blob)))
+
+
 def write_vm_c(out_c, out_h, plaintext, seed, key1, image_name='g_vm_image'):
     cipher = encrypt(plaintext, seed)
     crc = zlib.crc32(plaintext) & 0xFFFFFFFF
@@ -472,6 +513,14 @@ def cmd_assemble(args):
     image_name = getattr(args, 'name', None) or 'g_vm_image'
     code_len, seed, crc = write_vm_c(args.out_c, args.out_h, plaintext, seed,
                                      perm_seed, image_name=image_name)
+    bin_out = getattr(args, 'bin_out', None)
+    if bin_out:
+        if not args.bin_name:
+            raise VasmError('--bin-name is required with --bin-out')
+        if len(args.bin_name) >= BLOB_NAME_LEN:
+            raise VasmError('--bin-name too long (<= %d): %s'
+                            % (BLOB_NAME_LEN - 1, args.bin_name))
+        write_vm_bin(bin_out, args.bin_name, plaintext, seed, perm_seed)
     print('vmenc: assembled %d bytes (opcode perm seed=0x%016x, sem=[%d,%d]), crc=0x%08x, key=0x%016x'
           % (code_len, perm_seed, sem0, sem1, crc, seed))
     print('vmenc: wrote %s and %s' % (args.out_c, args.out_h))
@@ -776,7 +825,20 @@ def main(argv=None):
     pa.add_argument('out_h', help='output .h file')
     pa.add_argument('--name', default='g_vm_image',
                     help='exported prot_vm_image symbol name (default g_vm_image)')
+    pa.add_argument('--bin-out', dest='bin_out', default=None,
+                    help='also write single-image binary (for vmenc pack, '
+                         'DBI launcher)')
+    pa.add_argument('--bin-name', dest='bin_name', default=None,
+                    help='image name inside the .bin/blob (short, <=15; '
+                         'required with --bin-out)')
     pa.set_defaults(func=cmd_assemble)
+
+    pb = sub.add_parser('pack', help='pack single-image bins into vm.blob')
+    pb.add_argument('--out', dest='out', required=True,
+                    help='output vm.blob')
+    pb.add_argument('bins', nargs='+',
+                    help='single-image .bin files (assemble --bin-out)')
+    pb.set_defaults(func=cmd_pack)
 
     pg = sub.add_parser('genserial', help='compute expect1/expect2 for a serial')
     pg.add_argument('--json', dest='json_path', required=True,

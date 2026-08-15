@@ -35,6 +35,7 @@ EXPECTED_ORDER = [
     'MSG_DBG',
     'MSG_TAMPER',
     'MSG_HWID',
+    'MSG_BLOB',
 ]
 
 

@@ -104,6 +104,5 @@
 4. ✅ **A6** 已完成（2026-08-14）— direct syscall 反 hook（syscall_probe 单测）。
    **A 区全部结清**；B 区（真机/远程）见下。
 
-> 更新日志：2026-08-14 v3 — A6 落地，A 区全清（THREATMODEL §6 技术债 #2
-> 结清；L1d 扩到 0x2E；L4a 覆盖 .text/.rdata/.pdata；Phase 3 看门狗复查 +
-> direct syscall）。
+> 更新日志：2026-08-14 v4 — 技术债 #3（DBI launcher）结清：vm.blob 外部
+> 装载，exe 无 VM 逻辑；T13/T14 全绿。THREATMODEL §6 三个技术债全部结清。

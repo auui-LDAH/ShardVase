@@ -35,6 +35,8 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T10 篡改 .pdata → 退出码 0xBAD（A3） | ✅ PASS |
 | T11 --wait-after 14s 驻留，看门狗周期复查零误报（A5） | ✅ PASS |
 | T12 改 TIER 行 → license: 0 / 退出码 1（Phase 4 分级授权防篡改） | ✅ PASS |
+| T13 --vm-blob 指向不存在文件 → 退出码 0xB10B（DBI launcher） | ✅ PASS |
+| T14 篡改 vm.blob 1 字节 → 退出码 0xB10B（DBI launcher） | ✅ PASS |
 
 `tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
 A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0 /
@@ -80,6 +82,17 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   同步）；license.txt 增 `TIER=` 行（缺省 1=正式）；demo 验签后打印
   `license: 1 (tier=N)`，`demo_mem.+92` 由 `_pad` 改名 `license_tier`（布局不变，
   供未来 VM 门控）。T12 改 TIER 行 → 验签失败全绿。
+- **技术债 #3 DBI launcher（2026-08-14 完成，THREATMODEL §6 全清）**：
+  VM 镜像密文不再静态嵌入 exe——`assemble --bin-out/--bin-name` 写单镜像
+  .bin，`vmenc.py pack` 合并为 `build\vm.blob`（MAGIC/COUNT/NAME/KEY/CRC +
+  尾部 BLOB_CRC）；`src/blob.c` `prot_vm_blob_load` 启动时装载校验
+  （缺失 `PROT_ERR_BLOB_MISSING`/损坏 `CORRUPT`/缺名 `NAME`，demo 退出
+  `0xB10B`）；`demo.exe` 不再链接 vm_*_blob.c（vm_unit 单测仍静态链接）。
+  T13/T14 全绿。
+- **A4 单测修复（2026-08-14）**：干净重建暴露 unit_vm.vasm 两个控制流缺陷
+  （storr32 压栈序 `[val,off]` → 按 store32 约定改 `[off,val]`；callind 返回
+  后 `jmp done` 跳过 Phase D、删除后又指向 sub_r 死循环 → 显式 `jmp p_d`）。
+  vm_unit 现输出 "Phase 1D + A4 ops verified"。
 
 ## 3. 本次会话修复记录（2026-08-08）
 
@@ -158,7 +171,8 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   - ✅ 引擎语义随构建变异（A2，2026-08-14 完成）
   - ✅ 反附加定时器（A5，2026-08-14 完成）
   - ✅ direct syscall 反 hook（A6，2026-08-14 完成，A 区全清）
-  - 加壳/外部文件装载（demo_mem 从栈扩容或独立 blob）
+  - ✅ VM 镜像外部装载 vm.blob（技术债 #3，2026-08-14 完成）
+  - 加壳/外部文件装载（blob 加密/签名绑定、网络下发，可选升级）
 
 ### 4.1 威胁模型与效果评估（2026-08-09 完成）
 - 新增 `docs/THREATMODEL.md` v1：4 类攻击者 + 成功判据；12 层防护强度评级

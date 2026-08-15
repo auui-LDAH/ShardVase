@@ -13,6 +13,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T9/T10          翻转 .rdata/.pdata 一个字节 -> 退出码 0xBAD (A3; 消息可能乱码)
   T11 watchdog-stable --wait-after 14s 期间看门狗周期复查零误报 (A5)
   T12 license-tier-forge 改 TIER 行 -> license: 0 / 退出码 1 (Phase 4)
+  T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -390,6 +391,37 @@ def main():
                         'exit=%d license_ok=0' % code))
     except Exception as e:
         results.append(('T12 license-tier-forge', 'FAIL', repr(e)))
+
+    # ---- T13/T14: DBI launcher (技术债 #3) —— blob 缺失/损坏 -> 0xB10B ----
+    PROT_EXIT_BLOB_MISSING = 0xB10B
+    blob_path = os.path.join(BUILD, 'vm.blob')
+    try:
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'no_such_blob.bin')],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == PROT_EXIT_BLOB_MISSING)
+        results.append(('T13 blob-missing', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T13 blob-missing', 'FAIL', repr(e)))
+
+    try:
+        if not os.path.isfile(blob_path):
+            raise RuntimeError('vm.blob not found (run build.ps1)')
+        forged_blob = os.path.join(BUILD, 'vm_corrupt.blob')
+        b = bytearray(open(blob_path, 'rb').read())
+        b[len(b) // 2] ^= 0xFF
+        with open(forged_blob, 'wb') as f:
+            f.write(bytes(b))
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob', forged_blob],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == PROT_EXIT_BLOB_MISSING)
+        results.append(('T14 blob-tamper', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T14 blob-tamper', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

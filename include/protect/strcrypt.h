@@ -17,6 +17,7 @@ typedef enum prot_str_id {
     PROT_STR_MSG_DBG,
     PROT_STR_MSG_TAMPER,
     PROT_STR_MSG_HWID,
+    PROT_STR_MSG_BLOB,      /* VM 镜像装载失败 (DBI launcher) */
     PROT_STR_COUNT
 } prot_str_id;
 

@@ -1,6 +1,6 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-14（v4：A6 + Phase 4 分级授权落地）· 基线提交：`a5c7cfc` 之后
+> 生成日期：2026-08-14（v5：技术债 #3 DBI launcher 结清）· 基线提交：`47f7d5e` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` / `docs/THREATMODEL.md`
 > / `docs/PRODUCTION.md`。**交接任何事项前务必先读本文档 + CONTRACT。**
@@ -23,6 +23,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | **完整性扩三节（A3，2026-08-14 落地）** | `.protcrc` 专用段烧录 `.text/.rdata/.pdata` 3 组 CRC；IAT/重定位字段两侧同掩码归零 | `src/integrity.c`、`tools/hashpatch.py` |
 | **反附加定时器（A5，2026-08-14 落地）** | 看门狗周期重跑 `prot_antidebug_scan` + 间隔 ±40% 抖动 | `src/integrity.c`（watchdog_thread） |
 | **direct syscall（A6，2026-08-14 落地）** | 运行时提取 SSN + 内存生成 12B 直调 stub，关键信息类绕 ntdll hook；失败回退 API 路径 | `src/syscall.c`、`include/protect/syscall.h`、`src/antidebug.c`、`tests/syscall_probe.c` |
+| **VM 外部装载（DBI launcher，2026-08-14 落地）** | VM 密文打包 `build\vm.blob`（`vmenc.py pack`），launcher 启动装载校验；exe 无 VM 逻辑 | `src/blob.c`、`include/protect/blob.h`、`tools/vmenc.py pack/--bin-out`、`demo/main.c --vm-blob` |
 
 核心论断（废 `demo\license_vm.vasm` 的旧单一 VM，2026-08-09 拆为 4 个小 VM）：
 **攻击者即使还原全部 VM 也造不出合法授权 key**（私钥离线），这是 THREATMODEL §4 的"离线不可破"锚点。
@@ -39,6 +40,7 @@ T7 selftest-clean PASS  T8 license-forge PASS
 T9 tamper-rdata   PASS  T10 tamper-pdata PASS   (A3: .rdata/.pdata 篡改也 0xBAD)
 T11 watchdog-stable PASS                              (A5: 14s 驻留周期复查零误报)
 T12 tier-forge    PASS                                  (Phase 4: 改 TIER 行被拒)
+T13 blob-missing  PASS  T14 blob-tamper PASS   (DBI launcher: blob 缺失/篡改 0xB10B)
 A1 machine-bind   PASS  A2 vm-ciphertext PASS  A3 build-fingerprint PASS
 A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
 ```
@@ -125,7 +127,7 @@ python tests\attacks.py
 |--------|----|------|
 | 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区；A 区已全部结清） |
 | 规划 | Phase 4 在线验证 + 吊销（可选），失败降级 + 本地告警而非崩溃 | ROADMAP 规划项，未开工 |
-| 规划 | 技术债 #3：DBI launcher（密文外部装载进内存再解密，明文限活动窗口） | THREATMODEL §6，未开工 |
+| 规划 | vm.blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记，未开工 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
 ### 4.4 常用命令速查

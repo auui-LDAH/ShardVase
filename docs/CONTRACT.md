@@ -177,7 +177,11 @@ build/             [构建产物] demo.exe
 | 0x2B | brk | CON!=0 → PROT_ERR_VM_BREAKPOINT; CON==0 继续 (A4 断言陷阱) |
 | 0x2C | move imm32 | R = 零扩展 imm32 (A4) |
 | 0x2D | loadr32 | pop off; push mem32[BR + R + off] (A4 寄存器索引寻址) |
-| 0x2E | storr32 | pop val, pop off; mem32[BR + R + off] = val (A4) |
+| 0x2E | storr32 | pop val, pop off; mem32[BR + R + off] = val (A4; 压栈序 [off, val], 与 store32 一致) |
+
+- **压栈序约定（A4）**：`storr32`/`store32` 均为**先压地址后压值**
+  （栈顶为值，`pop val` 先于 `pop off/addr`）。VASM 中写
+  `push32 off; push32 val; storr32`。
 
 - 内存访问：`addr` 为相对 BR 的无符号偏移；`addr + 宽度 > mem_size` → `PROT_ERR_VM_OUT_OF_BOUNDS`。
 - 栈：`uint64_t stk[512]`；push 时满 → `PROT_ERR_VM_STACK_OVERFLOW`；pop 时空 → `PROT_ERR_VM_STACK_UNDERFLOW`。
@@ -190,6 +194,27 @@ build/             [构建产物] demo.exe
 `uint32_t prot_crc32_init(void)` / `uint32_t prot_crc32_step(uint32_t crc, uint8_t byte)` /
 `uint32_t prot_crc32_done(uint32_t crc)`；`init -> 若干 step -> done` 与整段
 `prot_crc32` 完全等价。声明在 `include/protect/protdef.h`。
+
+### 4.4 VM blob 装载器（DBI launcher, 技术债 #3, 2026-08-14）
+- 动机：VM 镜像密文**不再静态嵌入 exe**，由构建期 `vmenc.py pack` 打包为
+  独立 `build\vm.blob`，launcher（`src/blob.c` `prot_vm_blob_load`）启动时
+  装载进内存再交给 `prot_vm_run`——静态拿到 exe 拿不到任何 VM 逻辑
+  （"断源"：必须同时拿到分发 blob）。
+- blob 格式（与 `vmenc.py pack` 一致）：
+  ```
+  MAGIC "PROTVMBL"(8) | COUNT u32 LE
+  | 每镜像: NAME[16] | CODE_LEN u32 | KEY0 u64 | KEY1 u64 | CRC u32
+    | CODE[CODE_LEN] (原 key[0] 滚动密钥流加密)
+  | BLOB_CRC u32 (prot_crc32 覆盖以上全部, 防篡改)
+  ```
+  镜像 `name` 由 `assemble --bin-name` 指定（≤15 字节，demo 请求
+  `hash/mix/verify/gate`）。
+- 状态码：`PROT_ERR_BLOB_MISSING`（文件缺失）/ `PROT_ERR_BLOB_CORRUPT`
+  （magic/CRC/长度）/ `PROT_ERR_BLOB_NAME`（缺镜像）。退出码
+  `PROT_EXIT_BLOB_MISSING 0xB10B`。
+- 装载缓冲是**密文**；VM 解释器仍按活动窗口解密 + 用后即焚，明文语义不变。
+- 构建：`assemble --bin-out X --bin-name N` → `vmenc.py pack --out build\vm.blob X...`；
+  `demo.exe` 不再链接 `vm_*_blob.c`（仅 `vm_unit.exe` 单测仍静态链接）。
 
 ## 5. VASM 汇编器 (tools/vmenc.py)
 
@@ -388,13 +413,16 @@ const prot_baked_crc g_prot_baked_crc[3] = {
 1. `SetConsoleOutputCP(65001)` / `SetConsoleCP(65001)`。
 2. 解析参数：`--selftest`（打印每项检测结果）、`--wait-ms N`（扫描前 Sleep N 毫秒）、
    `--wait-after N`（看门狗启动后驻留 N 毫秒，A5 长驻留回归钩子，e2e T11 用）、
-   `--license-file F`（A1 授权文件）。
+   `--license-file F`（A1 授权文件）、`--vm-blob F`（VM blob 路径，默认 `vm.blob`，
+   DBI launcher）。
 3. 打印 `PROT_STR_BANNER`。
 4. `prot_antidebug_scan` → 打印一行摘要（`反调试扫描: 通过` 或 `反调试扫描: 发现可疑`）；
    `--selftest` 时逐项打印 `字段名: 0/1`。`prot_antidebug_apply_policy(PROT_POLICY_EXIT)`；
    若 detected → 打印 `PROT_STR_MSG_DBG` 并 `exit(PROT_EXIT_DEBUG_DETECTED)`。
 5. `prot_integrity_check_self()` 失败 → 打印 `PROT_STR_MSG_TAMPER` 后 `exit(PROT_EXIT_TAMPERED)`。
 6. `prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000)`。
+6b. 装载 VM blob（DBI launcher，§4.4）：`prot_vm_blob_load` 抽出
+    hash/mix/verify/gate 四个镜像；失败 → 打印 MSG_BLOB，`exit(PROT_EXIT_BLOB_MISSING)`。
 7. 打印 `PROT_STR_MSG_HWID` + 机器标识（`prot_hostid_get()`，16 位十六进制，Phase 4）。
 8. 打印 `PROT_STR_PROMPT_SERIAL`，`fgets` 读入，去掉换行，长度上限 47。
 9. 构造 `demo_mem`（见下），依次执行 3 个独立 VM（Phase 2a，见 §5.5）：
@@ -459,7 +487,7 @@ serial 无法通过。
   `TIER=` 行；0=试用 / 1=正式 / 2=增值（`vmenc.py LICENSE_TIER_*`）。
 
 ### 9.3 退出码
-0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改。
+0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改 / 0xB10B VM blob 缺失或损坏。
 
 ## 10. 构建管线 (build.ps1)
 
@@ -501,6 +529,8 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
   复查（完整性 + 反调试）多次触发，干净环境必须零误报：退出码 0 且 `license: 1`。
 - 测试 12（Phase 4 分级授权防篡改）：把 `TIER=` 行改为不同值 → 载荷与签名
   不匹配 → demo 必须输出 `license: 0` 且退出码 1。
+- 测试 13/14（DBI launcher）：`--vm-blob` 指向不存在文件 / 复制 vm.blob 翻
+  转 1 字节 → 退出码 0xB10B（消息可能乱码，只断言退出码）。
 - 测试 5（VM 单测）：`tests/vm_unit.c` 编译为 `build\vm_unit.exe` 运行，Phase 1d
   新增指令全覆盖。
 - 测试 6（稳定性）：同轮构建 8 次重启 demo（正确序列号）都应先输出
