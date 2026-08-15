@@ -31,6 +31,9 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T6 多实例稳定（Phase 2c 随机化不得改变结果，8 连跑全过） | ✅ PASS |
 | T7 --selftest 干净环境（含 debug_heap_flags/int3_honey）全 0 | ✅ PASS |
 | T8 license-forge：改 1 位签名 → license: 0 / 退出码 1（A1 起） | ✅ PASS |
+| T9 篡改 .rdata（+0x1000 避开 IAT）→ 退出码 0xBAD（A3） | ✅ PASS |
+| T10 篡改 .pdata → 退出码 0xBAD（A3） | ✅ PASS |
+| T11 --wait-after 14s 驻留，看门狗周期复查零误报（A5） | ✅ PASS |
 
 `tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
 A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0 /
@@ -45,6 +48,24 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   公钥 blob 布局需 8 字节零填充，否则 import 0x80090005）。
 - VM#4 门控（`demo/license_gate.vasm`）：`result &= license_ok`，宿主不可单点 patch 绕过。
 - `verify.ps1` 单轮回归全绿；A2 熵判据改为相对熵（gate blob 仅 21B，绝对熵不公平）。
+
+## 2c. A2/A3/A4/A5 落地（2026-08-14 完成，见 docs/PRODUCTION.md）
+
+- **A2 引擎语义随构建变异**：`sem=[sem0,sem1]` 由 `key[1]` 随机流在 slot 派生后、
+  var 派生前两侧同位置复算——`sem0`=操作数字节序（LE/BE-SWAP，生成侧
+  `assemble_source` 反转写出、执行侧 `vm_wfetch32/64` 反转读回）；`sem1`=折叠
+  公式 0..3（`vm_fold`，仅影响等价路径选择）。语义逐位一致，连续 8 轮重建全绿。
+- **A3 完整性扩三节**：烧录表迁专用只读段 `.protcrc`（3 组 16B marker：
+  PROTCRCP/PROTCRCD/PROTCRDP）；**ASLR 掩码**为落地关键——`.rdata` 的 IAT
+  （目录项 12，loader 写入导入地址）与基址重定位字段（type 10/3）两侧同掩码
+  归零后再算 CRC。T9/T10 篡改检测全绿，干净环境零误报。
+- **A4 指令集二次扩充**：`brk`（CON!=0 断言陷阱，新增 `PROT_ERR_VM_BREAKPOINT`）/
+  `move imm32`（R←imm32）/ `loadr32` / `storr32`（mem[BR+R+off] 寄存器索引寻址）。
+  opcode 域扩到 0x2E，`OPCODE_SLOTS`/`PROT_VM_OP_COUNT` 同步 0x2F(47)。
+  新增 `tests/unit_vm_brk.vasm`（陷阱路径必须返回 BREAKPOINT 且后续指令不执行）。
+- **A5 反附加定时器**：看门狗线程每次醒来（间隔 ±40% 抖动，xorshift 派生自 QPC）
+  重跑 `prot_antidebug_scan`，命中关键项推同一 EXIT/FAKE/CONTINUE 策略；
+  demo 新增 `--wait-after N` 测试钩子，T11 验证 14s 驻留零误报。
 
 ## 3. 本次会话修复记录（2026-08-08）
 
@@ -117,11 +138,13 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   `hostid.c` 接入 build.ps1 cl 行。构建与运行不同机器时 T1 会失败（体现绑定）。
   连续 3 次重建 e2e 全绿。
 - [ ] P2｜生产增强（演示可扩展方向，非契约内）：
-  - 离线段 RSA 签名 license（后续接入 genserial）
-  - VM 指令集再扩充（brk、move、寄存器索引寻址等）
-  - integrity 覆盖 `.rdata`/`.pdata`（当前只校验 `.text`）
+  - ✅ 离线段 RSA 签名 license（A1，2026-08-10 完成）
+  - ✅ VM 指令集再扩充（brk、move、寄存器索引寻址，A4，2026-08-14 完成）
+  - ✅ integrity 覆盖 `.rdata`/`.pdata`（A3，2026-08-14 完成）
+  - ✅ 引擎语义随构建变异（A2，2026-08-14 完成）
+  - ✅ 反附加定时器（A5，2026-08-14 完成）
   - 加壳/外部文件装载（demo_mem 从栈扩容或独立 blob）
-  - direct syscall 反 hook、线程隐藏 + 反附加定时器（Phase 3 剩余项）
+  - direct syscall 反 hook（A6，低优先）
 
 ### 4.1 威胁模型与效果评估（2026-08-09 完成）
 - 新增 `docs/THREATMODEL.md` v1：4 类攻击者 + 成功判据；12 层防护强度评级
@@ -161,7 +184,8 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | `src/hostid.c` | machine_id 运行时计算（Phase 4） |
 | `src/license.c` | RSA-2048 授权验签（A1, BCrypt 公钥） |
 | `demo/main.c` | 演示入口，流程见契约 §9 |
-| `tests/e2e.py` | 端到端测试（T1–T8） |
+| `tests/e2e.py` | 端到端测试（T1–T11，含 A3/A5 篡改与驻留回归） |
+| `tests/unit_vm_brk.vasm` | A4 brk 断言陷阱路径单测（vm_unit.c 断言 BREAKPOINT） |
 | `tests/attacks.py` | 非真机攻击模拟（A1–A6） |
 | `verify.ps1` | 一键验证（多轮重建 + 全套测试 + JSON 报告） |
 | `build.ps1` | 一键构建（-MachineId/-Config + manifest.json） |

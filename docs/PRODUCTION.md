@@ -27,39 +27,53 @@
 - **验收**：新 `vmenc sign`→`verify` 往返 OK；篡改 1 位签名/篡改 serial → T 系列
   FAIL；`verify.ps1` 加 A5 license-sign 用例全绿；私钥文件不进入 git 提交树。
 
-### A2. 引擎语义随构建变异（THREATMODEL 技术债 #2）
+### A2. 引擎语义随构建变异（THREATMODEL 技术债 #2）— ✅ 2026-08-14 落地
 - **目标**：让"窗口/取指/混联"等引擎语义也随构建随机，阻断 A3 的"通用还原器
   一次通吃所有构建"。
 - **方案**：在 vmenc 的随机流里再派生 2~3 个**语义微变开关**（如访存仍是直序，
   但 `vm_wfetch` 的字节序可按构建选 LE/BE-SWAP；`vm_kr_fold` 的折叠写法多选），
   `vm.c` 用构建期烧录的 `img->var` 位枚举这些微变；每变体语义保持逐位一致
   （约束与 CONTRACT §4.2 等价性相同）。
-- **验收**：A3 build-fingerprint 断言在"只重启建"时指纹就变化（现有已提供基线）；
-  新增 `tests/unit_vm.vasm` 覆盖所有新开关路径；连续 3 轮重建 e2e 全绿。
+- **落地细节**：`sem=[sem0,sem1]` 由 `key[1]` 随机流在 slot 派生后、var 派生前
+  两侧同位置复算（vmenc.py `make_opcode_keymaps` ↔ vm.c `vm_build_keymaps`）。
+  `sem0`=操作数字节序（LE/BE-SWAP，生成侧 `assemble_source` 反转写出，执行侧
+  `vm_wfetch32/64` 反转读回）；`sem1`=折叠公式 0..3（vm.c `vm_fold`，仅影响
+  等价路径选择）。4 个 demo VM + 2 个单测 VM 全部随机覆盖。
+- **验收**：✅ 连续 8 轮重建 e2e 全绿（BE/LE 与全部折叠公式均被实际覆盖）；
+  A3 build-fingerprint 断言每轮指纹变化。
 
-### A3. integrity 扩展到 `.rdata`/`.pdata`（L4a 增强）
+### A3. integrity 扩展到 `.rdata`/`.pdata`（L4a 增强）— ✅ 2026-08-14 落地
 - **目标**：补广为"改文件就死"，覆盖只校验 `.text` 的缺口。
 - **方案**：`integrity.c` `check_self` 遍历节表，除 `.text` 外对 `.rdata`/`.pdata`
   各自做 CRC 并与构建期烧录的一组值比对（`g_prot_baked_crc` 扩为小数组，或加
   第二个 magic 段；需与 `hashpatch.py` 保持同一 `min(VirtualSize,SizeOfRawData)` 约定）。
-- **验收**：`tests/e2e.py` T4 扩到"翻 .rdata 一个字节也退 0xBAD"；verify.ps1 全绿。
+- **落地细节**：烧录表迁到专用只读段 `.protcrc`（3 组 16B marker，避免自引用）；
+  **ASLR 掩码**是落地关键——`.rdata` 的 IAT（目录项 12）与基址重定位字段
+  （type 10/3）会被 loader 改写，文件侧与运行侧用同一掩码归零后再算 CRC，
+  两侧一致（hashpatch.py ↔ integrity.c `build_reloc_mask`）。
+- **验收**：✅ T9 翻 .rdata（+0x1000 避开 IAT）→ 0xBAD；T10 翻 .pdata → 0xBAD；
+  干净环境零误报（T1/T6/T7 仍全绿）。
 
-### A4. 指令集扩充（ROADMAP Phase 1d 余量）
+### A4. 指令集扩充（ROADMAP Phase 1d 余量）— ✅ 2026-08-14 落地
 - **目标**：按 THREATMODEL §6 B2 的"接口面增长"+ ROADMAP 预登记，补 `brk`、`move`、
   寄存器索引寻址。
 - **方案**：扩展 `vmenc.py INSTRUCTIONS` 与 `vm.c g_routes` 同步 opcode 域
-  （0x00..0x2A → 追加 2~3 条）；`PROT_VM_OP_COUNT`/`OPCODE_SLOTS` 两侧同步；
-  每个新指令在 `tests/unit_vm.vasm` + `tests/vm_unit.c` 单测覆盖。
-- **验收**：构建通过、vm_unit 新用例 PASS、连续 3 轮重建 e2e 全绿。
+  （0x00..0x2A → 追加 4 条到 0x2E）；`PROT_VM_OP_COUNT`/`OPCODE_SLOTS` 两侧同步
+  为 0x2F(47)；每个新指令在 `tests/unit_vm.vasm` + `tests/vm_unit.c` 单测覆盖。
+- **落地细节**：`brk`=CON!=0 断言陷阱（新增 `PROT_ERR_VM_BREAKPOINT` 状态码，
+  可做 VM 内门控/反 patch 标记）；`move imm32`=R←imm32；`loadr32`/`storr32`=
+  mem[BR+R+off] 寄存器索引寻址；`tests/unit_vm_brk.vasm` 覆盖 brk 陷阱路径
+  （必须返回 BREAKPOINT 且陷阱后指令不执行）。
+- **验收**：✅ 构建通过、vm_unit 新用例 PASS、连续 8 轮重建 e2e 全绿。
 
-### A5. 反附加定时器（Phase 3 剩余）
+### A5. 反附加定时器（Phase 3 剩余）— ✅ 2026-08-14 落地
 - **目标**：把"只在启动测一次"升级为"周期复查"：看门狗级后台线程每随机
   间隔（派生自 TSC/计时抖动）重新 `prot_antidebug_scan`，命中关键项推既有
   EXIT/FAKE/CONTINUE 策略 —— 提升"驻留期"检测密度，降低 ScyllaHide 一次性绕过。
-- **方案**：在原看门狗线程逻辑加"复查间隔抖动"（基数 ±40%），周期调用
-  `prot_antidebug_scan`，命中关键项推既有 EXIT/FAKE/CONTINUE 策略（复用
-  `antidebug.c` 既有权责，不改坏 `g_wd_*` 状态机）。
-- **验收**：干净环境 60s 运行零误报（T7 仍全 0）；连续 N 次运行无 FAKE/退出误伤；
+- **方案**：在原看门狗线程逻辑加"复查间隔抖动"（基数 ±40%，xorshift 种子派生
+  自 QPC），周期调用 `prot_antidebug_scan`，命中关键项推既有 EXIT/FAKE/CONTINUE
+  策略（复用 `antidebug.c` 既有权责，不改坏 `g_wd_*` 状态机）。
+- **验收**：✅ 干净环境零误报（T7 仍全 0）；多次运行无 FAKE/退出误伤；
   真机(B1)补验。
 
 ### A6. direct syscall 反 hook（Phase 3 剩余，低优先）
@@ -79,9 +93,11 @@
 
 ## 开发节奏建议
 
-1. 先做 **A1（RSA）** — 它一次性把"防分析梯队"升级成"防伪造"，价值最大。
-2. 之后 **A2 + A3** 小步进（都是改一行契约 + 生成器），可一起验。
-3. **A4/A5** 按需增量，注意不改契约破坏 T1/T2 既有行为。
-4. **A6** 视时间放在最后，只在有 hook 场景的有效性明显再无回报时犹豫。
+1. ✅ **A1（RSA）** 已完成（2026-08-10）— 一次性把"防分析梯队"升级成"防伪造"。
+2. ✅ **A2 + A3** 已完成（2026-08-14）— 引擎语义变异 + 完整性扩三节。
+3. ✅ **A4/A5** 已完成（2026-08-14）— 指令集扩充 4 条 + 反附加定时器。
+4. **A6** direct syscall 是 A 区唯一剩余项，视时间安排，只在有 hook 场景
+   的有效性明显再无回报时犹豫。
 
-> 更新日志：2026-08-09 v1 初稿（由 THREATMODEL v1 分化出"可立即实施"与"延后需真机"两份清单）。
+> 更新日志：2026-08-14 v2 — A2/A3/A4/A5 落地勾选（THREATMODEL §6 技术债 #2
+> 结清；L1d 扩到 0x2E；L4a 覆盖 .text/.rdata/.pdata；Phase 3 看门狗复查）。

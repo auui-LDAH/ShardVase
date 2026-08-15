@@ -53,8 +53,12 @@ build/             [构建产物] demo.exe
 - **FNV-1a 64**：offset `14695981039346656037`，prime `1099511628211`。
 - **xorshift64**：`x ^= x<<13; x ^= x>>7; x ^= x<<17`（uint64 回绕）。
 - **常量**：`0x9E3779B97F4A7C15`（黄金比例）。
-- **烧录标记**：8 字节 `"PROTCRCP"` + uint32 crc + uint32 reserved（LE），
-  位于 `integrity.c` 的 `const prot_baked_crc g_prot_baked_crc`。
+- **烧录标记**：**3 组** 16 字节 marker（`magic[8] + crc u32 + reserved u32`，LE），
+  位于专用只读段 `.protcrc`（`#pragma section` + `__declspec(allocate)`，不被任何
+  段 CRC 覆盖，避免自引用）：
+  `PROTCRCP`(.text) / `PROTCRCD`(.rdata) / `PROTCRDP`(.pdata)。
+  下标顺序与 `tools/hashpatch.py` 的 `MAGICS` 完全一致。运行期经
+  `integrity.c` 的 `g_prot_baked_crc[3]` 读取（volatile 防 /O2 常量折叠）。
 
 ## 4. VM (src/vm.c) — 实现 prot_vm_run
 
@@ -106,11 +110,25 @@ build/             [构建产物] demo.exe
 > 逐次不同），但最终校验结果始终一致。entropy 失败（如缺 invokeCPU）时自然回落
 > 回确定路径，不影响正确性。
 >
-> **指令集扩充（ROADMAP Phase 1d）**：规范 opcode 域从 0x00..0x23 扩到
-> 0x00..0x2A，新增 7 条：`nop`/`lea`/`pushr`/`popr`/`setcon`/`pushcon`/`callind`
+> **引擎语义随构建变异（A2，2026-08-14）**：在 `key[1]` 随机流的 slot 派生之后、
+> var 派生之前（生成侧 `vmenc.py make_opcode_keymaps` 与执行侧 `vm.c
+> vm_build_keymaps` 在**同一流位置**）继续取两步 xorshift，抽出 2 个构建期
+> **语义微变开关** `sem`：
+> - `sem[0]` = 操作数字节序：0=LE（现行），1=BE 高位在前。生成侧
+>   `assemble_source(sem0)` 把 imm32/imm64/rel32/labs 操作数字节反转写出，
+>   执行侧 `vm_wfetch32/64` 同步反转读回 —— 语义逐位一致，但跨构建字节布局
+>   完全不同（还原器不能"一次通吃所有构建"）。
+> - `sem[1]` = `vm_fold` 折叠公式 0..3（`vm_var` 里 ctx/ip/op 的折叠写法多选）。
+>   只影响"走哪条等价实现路径"，不参与语义。
+> 约束：生成/执行两侧派生顺序必须逐字节一致（perm → slot → sem → [C 私有 var]）。
+>
+> **指令集扩充（ROADMAP Phase 1d / A4, 2026-08-14）**：规范 opcode 域从 0x00..0x23
+> 扩到 0x00..0x2E，Phase 1d 新增 7 条（`nop`/`lea`/`pushr`/`popr`/`setcon`/
+> `pushcon`/`callind`），A4 追加 4 条：`brk`/`move`/`loadr32`/`storr32`
 > （见下表）。`vm.c` `PROT_VM_OP_COUNT` 与 `vmenc.py OPCODE_SLOTS` 必须同步为
-> 0x2B(43)，置换/槽位/变体派生自动覆盖新域。每组新指令以 `tests/unit_vm.vasm`
-> → `tests/vm_unit.c` 单测覆盖，`build.ps1` 每构建执行，失败即中止。
+> 0x2F(47)，置换/槽位/变体派生自动覆盖新域。新增指令以 `tests/unit_vm.vasm`
+> + `tests/unit_vm_brk.vasm` → `tests/vm_unit.c` 单测覆盖（含 brk 陷阱路径），
+> `build.ps1` 每构建执行，失败即中止。
 | op | 助记符 | 语义 |
 |----|--------|------|
 | 0x00 | halt | 正常结束, 返回 PROT_OK |
@@ -156,6 +174,10 @@ build/             [构建产物] demo.exe
 | 0x28 | setcon | pop; CON = (v!=0)?1:0 (条件寄存器, 初始 0) (Phase 1d) |
 | 0x29 | pushcon | push CON (Phase 1d) |
 | 0x2A | callind | pop 目标绝对地址; push 返回地址(绝对 ip); ip = 目标 (Phase 1d) |
+| 0x2B | brk | CON!=0 → PROT_ERR_VM_BREAKPOINT; CON==0 继续 (A4 断言陷阱) |
+| 0x2C | move imm32 | R = 零扩展 imm32 (A4) |
+| 0x2D | loadr32 | pop off; push mem32[BR + R + off] (A4 寄存器索引寻址) |
+| 0x2E | storr32 | pop val, pop off; mem32[BR + R + off] = val (A4) |
 
 - 内存访问：`addr` 为相对 BR 的无符号偏移；`addr + 宽度 > mem_size` → `PROT_ERR_VM_OUT_OF_BOUNDS`。
 - 栈：`uint64_t stk[512]`；push 时满 → `PROT_ERR_VM_STACK_OVERFLOW`；pop 时空 → `PROT_ERR_VM_STACK_UNDERFLOW`。
@@ -191,7 +213,8 @@ python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <licen
   （Phase 2a: demo 用 3 个镜像 `g_vm_hash_image` / `g_vm_mix_image` / `g_vm_verify_image`）。
   `g_vm_image = { s_code, LEN, { KEY, 0 }, CRC }`，CRC 为明文 `zlib.crc32`。
   `KEY`(key[0]) 为加密种子；`key[1]` 为构建期 opcode 置换种子（§4.2 上方说明），
-  两者每次构建都随机生成。
+  两者每次构建都随机生成。`assemble` 同时从 `key[1]` 流派生 A2 语义微变
+  `sem=[sem0,sem1]`（§4.2：操作数字节序 / 折叠公式），打印在输出行里。
 - `genserial`：读 json 的 `serial`/`machine_id`，按 §3 算法计算 `expect1`/`expect2`
   （十六进制字符串）写回 json；`--print` 时打印人类可读结果。
 - `machine_id`（Phase 4，默认 auto）：json 中 `machine_id` 缺失/为 `0`/为 `"auto"`
@@ -287,23 +310,42 @@ python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <licen
 
 ## 7. 完整性 (src/integrity.c)
 
-### 7.1 烧录结构
+### 7.1 烧录结构（A3, 2026-08-14）
 ```c
 typedef struct prot_baked_crc { uint8_t magic[8]; uint32_t crc; uint32_t reserved; } prot_baked_crc;
-const prot_baked_crc g_prot_baked_crc = { {'P','R','O','T','C','R','C','P'}, 0, 0 };
+/* 专用只读段 .protcrc: 不被任何段 CRC 覆盖 (避免自引用) */
+#pragma section(".protcrc", read)
+__declspec(allocate(".protcrc"))
+const prot_baked_crc g_prot_baked_crc[3] = {
+    { {'P','R','O','T','C','R','C','P'}, 0, 0 },  /* 0: .text  */
+    { {'P','R','O','T','C','R','C','D'}, 0, 0 },  /* 1: .rdata */
+    { {'P','R','O','T','C','R','D','P'}, 0, 0 },  /* 2: .pdata */
+};
 ```
-（hashpatch.py 在构建期把 .text 的 CRC32 写入 `crc` 字段。）
+（hashpatch.py 在构建期把各段的 CRC32 写入对应 `crc` 字段；下标顺序与
+`tools/hashpatch.py` 的 `MAGICS` 一致。）
 
-### 7.2 check_self
-- `GetModuleHandleW(NULL)` → 基址；解析 DOS/PE 头（`IMAGE_DOS_HEADER`/`IMAGE_NT_HEADERS`，
-  `#include <winnt.h>` 已有），遍历节表找 `.text`。
-- 对 `base + VirtualAddress` 处 `min(SizeOfRawData, VirtualSize)` 字节做 `prot_crc32`。
-- 与 `g_prot_baked_crc.crc` 比较：相等 → PROT_OK，否则 → PROT_ERR_INTEGRITY。
+### 7.2 check_self（A3）
+- `GetModuleHandleW(NULL)` → 基址；解析 DOS/PE 头（`IMAGE_DOS_HEADER`/
+  `IMAGE_NT_HEADERS`），遍历节表：对 `.text`/`.rdata`/`.pdata` 各取
+  `min(SizeOfRawData, VirtualSize)` 字节做 CRC32（流式接口），与烧录值比对。
+  任一不匹配 → `PROT_ERR_INTEGRITY`；目标节缺失 → 跳过；`.text` 必须存在。
+- **重定位/IAT 掩码**：ASLR 下 loader 会改写 `.rdata` 中两类字节，文件与
+  运行内存不一致，因此两侧（hashpatch.py ↔ integrity.c `build_reloc_mask`）
+  用**同一规则**把下列字节归零后再算 CRC：
+  1. 基址重定位字段：type 10 (DIR64) 8 字节 / type 3 (HIGHLOW) 4 字节
+     （遍历 `DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]` 块表）；
+  2. IAT 全段（`DataDirectory[12]`，loader 启动时写入导入地址）。
+  `.text`/`.pdata` 无重定位命中，掩码为空。
 
 ### 7.3 看门狗
-- `start_watchdog(pol, interval_ms)`：`CreateThread` 后台线程，循环 `Sleep(interval)` →
+- `start_watchdog(pol, interval_ms)`：`CreateThread` 后台线程，循环
+  `Sleep(interval ± 40% 抖动)`（A5：xorshift 派生自 QPC，防周期可预测）→
   `check_self()` 失败时按 pol 处理（EXIT → `TerminateProcess(PROT_EXIT_TAMPERED)`；
-  FAKE → 置 g_fake；CONTINUE → 计数）。线程句柄 + `volatile LONG` 停止标志。
+  FAKE → 置 g_fake；CONTINUE → 计数）。
+- **A5 反附加周期复查**：同线程每次醒来后重跑 `prot_antidebug_scan`，
+  命中关键项时按同一 pol 处理（EXIT → `PROT_EXIT_DEBUG_DETECTED`），
+  驻留期附加不再只有启动一次检测。
 - `stop_watchdog`：置标志，`WaitForSingleObject` 等待线程退出（幂等）。
 
 ## 8. 字符串 (src/strcrypt.c + tools/strgen.py)
@@ -320,7 +362,9 @@ const prot_baked_crc g_prot_baked_crc = { {'P','R','O','T','C','R','C','P'}, 0, 
 
 ### 9.1 流程
 1. `SetConsoleOutputCP(65001)` / `SetConsoleCP(65001)`。
-2. 解析参数：`--selftest`（打印每项检测结果）、`--wait-ms N`（扫描前 Sleep N 毫秒）。
+2. 解析参数：`--selftest`（打印每项检测结果）、`--wait-ms N`（扫描前 Sleep N 毫秒）、
+   `--wait-after N`（看门狗启动后驻留 N 毫秒，A5 长驻留回归钩子，e2e T11 用）、
+   `--license-file F`（A1 授权文件）。
 3. 打印 `PROT_STR_BANNER`。
 4. `prot_antidebug_scan` → 打印一行摘要（`反调试扫描: 通过` 或 `反调试扫描: 发现可疑`）；
    `--selftest` 时逐项打印 `字段名: 0/1`。`prot_antidebug_apply_policy(PROT_POLICY_EXIT)`；
@@ -422,8 +466,12 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
   `kernel32.DebugActiveProcess(pid)`；若 attach 失败 → 标记 SKIP；否则期望输出含
   `PROT_STR_MSG_DBG` 文本且退出码 0xDBG。
 - 测试 4（篡改检测）：复制 `build\demo.exe` 到 `build\demo_tampered.exe`，用 PE 解析
-  （`struct.unpack_from`）找到 `.text` 的 `PointerToRawData`，翻转其中 1 字节，
-  运行 → 输出含 `PROT_STR_MSG_TAMPER` 文本且退出码 0xBAD。
+  找到 `.text` 的 `PointerToRawData`，翻转其中 1 字节，运行 → 输出含 `PROT_STR_MSG_TAMPER`
+  文本且退出码 0xBAD。
+- 测试 9/10（A3 篡改扩展）：翻转 `.rdata`（+0x1000 处，避开段首 IAT）/ `.pdata`
+  各 1 字节 → 退出码 0xBAD（`.rdata` 被篡改时 MSG_TAMPER 解密即乱码，只断言退出码）。
+- 测试 11（A5 看门狗长驻留）：`--wait-after 14000` 驻留 14s，期间看门狗周期
+  复查（完整性 + 反调试）多次触发，干净环境必须零误报：退出码 0 且 `license: 1`。
 - 测试 5（VM 单测）：`tests/vm_unit.c` 编译为 `build\vm_unit.exe` 运行，Phase 1d
   新增指令全覆盖。
 - 测试 6（稳定性）：同轮构建 8 次重启 demo（正确序列号）都应先输出

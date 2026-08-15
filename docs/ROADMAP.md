@@ -14,6 +14,7 @@
 | 1b 调度间接化：dispatch 表 + 上下文 hash，消除单一调度循环特征 | ✅ 2026-08-08 | 两次构建的调度代码几乎不相似 |
 | 1c 等价 handler 多样性（mul/add/shl 多条实现路径随机） | ✅ 2026-08-08 | 反汇编无法稳定构成"标准操作序列" |
 | 1d 指令集扩充：`nop`、`push/pop`、条件寄存器、间接 call | ✅ 2026-08-08 | 新增指令有测试用例、回归绿 |
+| 1d-A4 二次扩充：`brk` 断言陷阱 / `move` / 寄存器索引寻址 | ✅ 2026-08-14 | unit_vm + unit_vm_brk 单测覆盖、连续 8 轮重建全绿 |
 
 ## Phase 2 — VM 加密与多样性
 - ✅ 多 VM 上下文：序列校验逻辑拆成 3 个独立小 VM（FNV-1a 哈希 / GOLDEN 混合 /
@@ -24,6 +25,9 @@
   全程无 malloc、堆上不留全明文（已落地，2026-08-09）。
 - 运行时语义随机化（等价变形），重放失败（✅ 已落地：`vm_ctx_seed` TSC/QPC/栈
   熵播种 ctx → vm_var 每实例选不同等价路径，2026-08-09）。
+- ✅ **引擎语义随构建变异（A2）**：`sem=[sem0,sem1]` 由 `key[1]` 随机流派生 —
+  操作数字节序 LE/BE-SWAP + 折叠公式 4 选 1，生成/执行两侧同位置复算，
+  语义逐位一致（已落地，2026-08-14，THREATMODEL 债 #2 结清）。
 - 综合：内存转储无法得到完整明文汇编。
 
 ## Phase 3 — 反调试/反探测立体化
@@ -31,8 +35,9 @@
 - ✅ 多轮 QPC/timing 采样（5 轮 × 20ms，抗调度抖动误报，2026-08-09）。
 - ✅ int3 VEH 蜜罐（可执行存根 + VEH，不破坏完整性，2026-08-09）。
 - ✅ 调试堆特征检测（PEB.ProcessHeap ForceFlags，2026-08-09）。
-- 待办：direct syscall 绕过 ntdll hook；线程隐藏 + 反附加定时器。
-- 看门狗 → 周期全量自检 + 随机间隔。
+- ✅ 反附加定时器（A5）：看门狗内周期重跑 `prot_antidebug_scan` + 间隔 ±40%
+  抖动，驻留期附加不再只有启动一次检测（2026-08-14）。
+- 待办：direct syscall 绕过 ntdll hook（A6）。
 
 ## Phase 4 — 授权与分发（商业价值核心）
 - ✅ machine_id 真实绑定（卷序列号 + 计算机名多因子 FNV-1a，C/Python 两则一致，
@@ -44,9 +49,10 @@
 ## Phase 5 — 交付线同化
 - 每客户独立构建（种子/密钥/随机化），成品互异。
 - signtool 签名、剥离符号、关闭调试路径。
-- 完整性扩展到 `.rdata`/`.pdata`；`PROTCRCP` 标记多态化。
+- ✅ 完整性扩展到 `.rdata`/`.pdata`（A3，2026-08-14：`.protcrc` 专用段 3 组
+  marker + IAT/重定位掩码两侧一致；T9/T10 篡改检测全绿）。
 - ✅ 基础设施（2026-08-09）：Git 基线 + `.gitignore/.gitattributes` +
-  `verify.ps1`（N 轮随机重建 + e2e(T1-T7) + 攻击 A1-A4 + py_compile →
+  `verify.ps1`（N 轮随机重建 + e2e(T1-T8) + 攻击 A1-A4 + py_compile →
   `verify-report.json`）+ CI（`.github/workflows/ci.yml`，MSVC x64）+ 
   `build.ps1 -MachineId/-Config` + `build\manifest.json` 产物清单 +
   攻击模拟 `tests/attacks.py`。
@@ -82,4 +88,12 @@
 - [x] Phase 4 machine_id 真实绑定：`src/hostid.c` 与 `vmenc.py hostid()` 同算法
   多因子 FNV-1a（卷序列号 + 计算机名），genserial 自动写回，demo 运行期读取
   （连续 3 次重建 e2e 全绿，2026-08-09）
+- [x] A2 引擎语义随构建变异（sem0 操作数序 + sem1 折叠公式，2026-08-14，
+  连续 8 轮重建全绿）
+- [x] A3 完整性扩 .rdata/.pdata（.protcrc 段 + IAT/重定位掩码，T9/T10 全绿，
+  2026-08-14）
+- [x] A4 指令集二次扩充（brk/move/loadr32/storr32，unit_vm_brk 陷阱单测，
+  2026-08-14）
+- [x] A5 反附加定时器（看门狗周期 antidebug 复查 + 间隔抖动，2026-08-14）
 - [ ] T3 真机验证（沙箱 SKIP 待补）
+- [ ] A6 direct syscall（低优先）

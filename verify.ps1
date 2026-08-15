@@ -10,13 +10,31 @@ param(
     [int]$Rounds = 3,
     [switch]$KeepArtifacts,
     [switch]$SkipPyCompile,
-    [switch]$Minimal
+    [switch]$Minimal,
+    [string]$Python = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
 Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Root = (Get-Location).Path
+
+# 定位 python: 跳过 WindowsApps 商店存根 (同 build.ps1)
+$py = $Python
+if (-not $py) {
+    $cand = @(Get-Command python -ErrorAction SilentlyContinue | Where-Object {
+        $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1)
+    if ($cand) { $py = $cand.Source }
+}
+if (-not $py) {
+    foreach ($p in @('D:\environment\PYTHON\python.exe', 'C:\Python313\python.exe',
+                     'C:\Python312\python.exe', 'C:\Python311\python.exe',
+                     "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe")) {
+        if (Test-Path -LiteralPath $p) { $py = $p; break }
+    }
+}
+if (-not $py) { throw '[verify] cannot locate python — pass -Python <path>' }
+Write-Host "[verify] python = $py"
 $Time = Get-Date -Format 'yyyyMMdd-HHmmss'
 $RptPath = Join-Path $Root 'verify-report.json'
 $ArtsRoot = Join-Path $Root 'verify-artifacts'
@@ -35,11 +53,10 @@ if (-not $SkipPyCompile) {
     Write-Step "py_compile: $($PyFiles -join ', ')"
     foreach ($f in $PyFiles) {
         if (Test-Path -LiteralPath $f) {
-            python -m py_compile $f
+            & $py -m py_compile $f
             if ($LASTEXITCODE -ne 0) { $allGreen = $false; Write-Host "  py_compile FAIL: $f" -ForegroundColor Red }
         }
-    }
-} else {
+    }} else {
     Write-Step 'skip py_compile'
 }
 
@@ -65,7 +82,7 @@ function Invoke-Once([int]$i, [int]$tot) {
     if ($LASTEXITCODE -ne 0) { $ent.build = 'FAIL'; $ent.log = $bl; return $ent }
 
     Write-Step "round $i/$tot : python tests\e2e.py"
-    $eo = @(python tests\e2e.py 2>&1)
+    $eo = @(& $py tests\e2e.py 2>&1)
     if ($LASTEXITCODE -ne 0) { $ent.e2e = 'FAIL'; $ent.log = $eo; return $ent }
 
     Write-Step "round $i/$tot : build\vm_unit.exe"
@@ -74,7 +91,7 @@ function Invoke-Once([int]$i, [int]$tot) {
 
     Write-Step "round $i/$tot : python tests\attacks.py (非真机攻击模拟)"
     if (Test-Path -LiteralPath 'tests\attacks.py') {
-        $at = @(python tests\attacks.py 2>&1)
+        $at = @(& $py tests\attacks.py 2>&1)
         if ($LASTEXITCODE -ne 0) { $ent.attacks = 'FAIL'; $ent.log = $at }
     }
 

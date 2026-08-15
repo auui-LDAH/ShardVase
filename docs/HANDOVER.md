@@ -1,6 +1,6 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-10 · 基线提交：`32fd8e6`
+> 生成日期：2026-08-14（v2：A2/A3/A4/A5 落地）· 基线提交：`64f05b0` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` / `docs/THREATMODEL.md`
 > / `docs/PRODUCTION.md`。**交接任何事项前务必先读本文档 + CONTRACT。**
@@ -18,31 +18,38 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | 字符串加密 | 运行期一次性解密 | `src/strcrypt.c`、`tools/strgen.py`、`demo/strings.txt` |
 | 机器绑定 | hostid 多因子折叠 → machine_id，绑定序列号期望值 | `src/hostid.c` |
 | **RSA 授权（A1，2026-08-10 落地）** | 离线签发 RSA-2048/PKCS#1v1.5/SHA-256；宿主验签 + **VM#4 门控**（`result &= license_ok`） | `src/license.c`、`include/protect/license.h`、`tools/vmenc.py keygen/sign`、`demo/license_gate.vasm` |
+| **引擎语义变异（A2，2026-08-14 落地）** | 操作数字节序 LE/BE-SWAP + 折叠公式 4 选 1（`key[1]` 流派生 `sem`，两侧同位置复算） | `src/vm.c`（`vm_wfetch32/64`、`vm_fold`、`vm_build_keymaps`）、`tools/vmenc.py make_opcode_keymaps` |
+| **完整性扩三节（A3，2026-08-14 落地）** | `.protcrc` 专用段烧录 `.text/.rdata/.pdata` 3 组 CRC；IAT/重定位字段两侧同掩码归零 | `src/integrity.c`、`tools/hashpatch.py` |
+| **反附加定时器（A5，2026-08-14 落地）** | 看门狗周期重跑 `prot_antidebug_scan` + 间隔 ±40% 抖动 | `src/integrity.c`（watchdog_thread） |
 
 核心论断（废 `demo\license_vm.vasm` 的旧单一 VM，2026-08-09 拆为 4 个小 VM）：
 **攻击者即使还原全部 VM 也造不出合法授权 key**（私钥离线），这是 THREATMODEL §4 的"离线不可破"锚点。
 
-## 2. 当前验收状态（2026-08-10 实测基线）
+## 2. 当前验收状态（2026-08-14 实测基线）
 
 一键构建 `powershell -ExecutionPolicy Bypass -File build.ps1` → **DONE**，零 warning。
-`tests\e2e.py` 与 `tests\attacks.py` 在基线提交 `32fd8e6` 之后再次实测：
+`tests\e2e.py` 与 `tests\attacks.py` 在 A2/A3/A4/A5 之后实测：
 
 ```
 T1 normal-ok      PASS  T2 normal-bad   PASS  T3 debug-detect SKIP(需真机)
 T4 tamper-detect  PASS  T5 vm-unit-ops  PASS  T6 multi-run-stable PASS (8/8)
-T7 selftest-clean PASS  T8 license-forge PASS (RSA 防伪造)
+T7 selftest-clean PASS  T8 license-forge PASS
+T9 tamper-rdata   PASS  T10 tamper-pdata PASS   (A3: .rdata/.pdata 篡改也 0xBAD)
+T11 watchdog-stable PASS                              (A5: 14s 驻留周期复查零误报)
 A1 machine-bind   PASS  A2 vm-ciphertext PASS  A3 build-fingerprint PASS
 A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
 ```
 
 `verify.ps1 -Minimal`（单轮全链回归）此前亦 **PASS**；`verify.ps1`（3 轮随机重建）
-是发版 gate（B3 待真机后启用）。
+是发版 gate（B3 待真机后启用）。A2 落地后连续 8 轮随机重建 e2e 全绿
+（BE/LE 操作数序与 4 种折叠公式均被实际覆盖）。
 
 被测行为要点（黑盒断言，勿破坏）：
 - 正确序列号 + 有效 `--license-file build\license.txt` → 输出 `license: 1` 与
   `校验通过`，退出码 0；无 license 参数时 license_ok=1（旧行为兼容）。
 - 错误序列号 / 改 1 位签名 / 异机 license → `license: 0`，退出码 1。
-- 篡改 `.text` → 0xBAD；调试附加 → 0xDB；看门狗 5s。
+- 篡改 `.text`/`.rdata`/`.pdata` → 0xBAD；调试附加 → 0xDB；看门狗 5s（±40% 抖动）
+  周期复查完整性 + 反调试。
 
 ## 3. 迁移到其他电脑 — 交接清单
 
@@ -62,7 +69,8 @@ A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
 # 2. cd <仓库>
 git status                 # 确认干净
 powershell -ExecutionPolicy Bypass -File build.ps1
-#   vcvars 自动探测；如需指定:  -VcVars 'C:\...\vcvars64.bat'
+#   vcvars 自动探测; 如需指定:  -VcVars 'C:\...\vcvars64.bat'
+#   python 自动探测 (跳过 WindowsApps 存根, 含 D:\environment\PYTHON); 如需指定: -Python <path>
 powershell -ExecutionPolicy Bypass -File verify.ps1 -Minimal
 python tests\e2e.py
 python tests\attacks.py
@@ -112,10 +120,7 @@ python tests\attacks.py
 ### 4.3 未完成事项（下一位的待办）
 | 优先级 | 项 | 状态 |
 |--------|----|------|
-| 高 | **A2 引擎语义随构建变异**（THREATMODEL 债 #2：窗口/取指/混联语义也随机，封"还原器跨构建通用"） | 已调研未动手（见 PRODUCTION.md A2 方案 + CONTRACT §4.2 的 1b/1c 注释） |
-| 中 | A3 integrity 扩 `.rdata`/`.pdata`（T4 翻 .rdata 也 0xBAD） | 未开工 |
-| 中 | A4 指令集扩充（brk/move/寄存器索引寻址） | 未开工 |
-| 低 | A5 反附加定时器 / A6 direct syscall | 未开工 |
+| 低 | **A6 direct syscall**（`NtQueryInformationProcess` 等改走 syscall 直调，规避 ntdll hook；仅在 hook 场景有增量） | 未开工（PRODUCTION.md A6） |
 | 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区） |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
