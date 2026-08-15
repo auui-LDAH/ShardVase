@@ -37,7 +37,10 @@
 - ✅ 调试堆特征检测（PEB.ProcessHeap ForceFlags，2026-08-09）。
 - ✅ 反附加定时器（A5）：看门狗内周期重跑 `prot_antidebug_scan` + 间隔 ±40%
   抖动，驻留期附加不再只有启动一次检测（2026-08-14）。
-- 待办：direct syscall 绕过 ntdll hook（A6）。
+- ✅ direct syscall 反 hook（A6）：`NtQueryInformationProcess`/
+  `NtQuerySystemInformation` 关键信息类运行时提取 SSN + 内存生成 12B stub
+  直调进内核，失败回退 API 路径；`syscall_probe` 单测断言直调==API 路径
+  （2026-08-14，Phase 3 剩余项结清）。
 
 ## Phase 4 — 授权与分发（商业价值核心）
 - ✅ machine_id 真实绑定（卷序列号 + 计算机名多因子 FNV-1a，C/Python 两则一致，
@@ -95,5 +98,6 @@
 - [x] A4 指令集二次扩充（brk/move/loadr32/storr32，unit_vm_brk 陷阱单测，
   2026-08-14）
 - [x] A5 反附加定时器（看门狗周期 antidebug 复查 + 间隔抖动，2026-08-14）
+- [x] A6 direct syscall 反 hook（SSN 运行时提取 + 内存 stub，syscall_probe
+  单测，2026-08-14）
 - [ ] T3 真机验证（沙箱 SKIP 待补）
-- [ ] A6 direct syscall（低优先）

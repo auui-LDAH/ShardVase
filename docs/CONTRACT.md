@@ -308,6 +308,30 @@ python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <licen
   FAKE → 置 `static volatile uint32_t g_fake = 1`；CONTINUE → 无操作。返回 PROT_OK。
 - `fake_active`：返回 g_fake。
 
+### 6.3 direct syscall 反 hook（A6, 2026-08-14）
+- 动机：攻击者 inline hook ntdll 导出 stub 入口（改前 5~12 字节跳走）时，
+  `GetProcAddress` 拿到的地址指向被改写的代码。关键信息类查询
+  （DebugPort/DebugFlags/DebugObjectHandle/SystemKernelDebuggerInformation）
+  改为**绕过 stub 直接 syscall 进内核**。
+- 实现（`src/syscall.c` + `include/protect/syscall.h`，纯 C，无 MASM）：
+  1. `GetProcAddress` 定位导出函数（只读地址，与 hook 无关）；
+  2. 在其字节码窗口内扫描 `0F 05`（syscall），向前找最近的 `B8 <imm32>`
+     （mov eax, SSN）提取 **SSN**（不硬编码，跨 Win10/11 版本稳定；
+     inline hook 只改入口字节，syscall 指令仍在后半，不受影响）；
+  3. `VirtualAlloc` 生成 12 字节直调 stub
+     （`mov r10,rcx; mov eax,SSN; syscall; ret`，x64 第 1 参须移入 r10，
+     第 5+ 参由调用者压栈）→ `FlushInstructionCache` →
+     `VirtualProtect(PAGE_EXECUTE_READ)`。二进制中无固定 syscall 代码
+     （运行时生成，反静态分析加分）；CFG 未启用（无 /guard:cf），
+     函数指针调用 stub 不受影响；
+  4. 任何失败（SSN 提取失败/分配失败）→ 返回 `STATUS_UNSUCCESSFUL`，
+     `antidebug.c` 回退 GetProcAddress 路径——与现状等价，不新增误报面。
+- 接入：`antidebug.c` 的 debug_port/debug_flags/debug_object/kernel_debugger
+  四项优先直调，`st < 0` 时回退 `s_pNtQueryInformationProcess` 等。
+- 验收：`tests/syscall_probe.c`（build.ps1 5c/7.1 步编译运行）断言
+  `prot_sys_available()==1` 且直调结果与 API 路径逐项一致；T7 selftest-clean
+  不退化。
+
 ## 7. 完整性 (src/integrity.c)
 
 ### 7.1 烧录结构（A3, 2026-08-14）

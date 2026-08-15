@@ -76,11 +76,16 @@
 - **验收**：✅ 干净环境零误报（T7 仍全 0）；多次运行无 FAKE/退出误伤；
   真机(B1)补验。
 
-### A6. direct syscall 反 hook（Phase 3 剩余，低优先）
+### A6. direct syscall 反 hook（Phase 3 剩余）— ✅ 2026-08-14 落地
 - **目标**：`NtQueryInformationProcess`/`NtQuerySystemInformation` 等关键信息类
   改走 `syscall` 直调，规避 ntdll hook（反钩子）增持。
 - **收益评估**：仅在"攻击者已 hook ntdll"场景有增量；排 A5 后做。
-- **验收**：T7 selftest-clean 不退化；真机(B1)补验后按结论归档。
+- **落地细节**：运行时从 ntdll 原始 stub 提取 SSN（扫 `0F 05` 前最近的
+  `B8 imm32`，不硬编码）+ 可执行内存生成 12B stub（`mov r10,rcx; mov eax,SSN;
+  syscall; ret`，无 MASM、二进制无固定 syscall 代码）；失败回退 GetProcAddress
+  路径，不新增误报面（src/syscall.c + antidebug.c 四项优先直调）。
+- **验收**：✅ `syscall_probe.exe`（build.ps1 内）断言 available=1 且直调 ==
+  API 路径；T7 selftest-clean 不退化；真机(B1)补验后按结论归档。
 
 ## B. 需要真机/远程后延（当前不动）
 
@@ -96,8 +101,9 @@
 1. ✅ **A1（RSA）** 已完成（2026-08-10）— 一次性把"防分析梯队"升级成"防伪造"。
 2. ✅ **A2 + A3** 已完成（2026-08-14）— 引擎语义变异 + 完整性扩三节。
 3. ✅ **A4/A5** 已完成（2026-08-14）— 指令集扩充 4 条 + 反附加定时器。
-4. **A6** direct syscall 是 A 区唯一剩余项，视时间安排，只在有 hook 场景
-   的有效性明显再无回报时犹豫。
+4. ✅ **A6** 已完成（2026-08-14）— direct syscall 反 hook（syscall_probe 单测）。
+   **A 区全部结清**；B 区（真机/远程）见下。
 
-> 更新日志：2026-08-14 v2 — A2/A3/A4/A5 落地勾选（THREATMODEL §6 技术债 #2
-> 结清；L1d 扩到 0x2E；L4a 覆盖 .text/.rdata/.pdata；Phase 3 看门狗复查）。
+> 更新日志：2026-08-14 v3 — A6 落地，A 区全清（THREATMODEL §6 技术债 #2
+> 结清；L1d 扩到 0x2E；L4a 覆盖 .text/.rdata/.pdata；Phase 3 看门狗复查 +
+> direct syscall）。

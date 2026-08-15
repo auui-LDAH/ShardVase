@@ -66,6 +66,13 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 - **A5 反附加定时器**：看门狗线程每次醒来（间隔 ±40% 抖动，xorshift 派生自 QPC）
   重跑 `prot_antidebug_scan`，命中关键项推同一 EXIT/FAKE/CONTINUE 策略；
   demo 新增 `--wait-after N` 测试钩子，T11 验证 14s 驻留零误报。
+- **A6 direct syscall 反 hook（2026-08-14 完成，A 区全清）**：
+  `src/syscall.c` + `include/protect/syscall.h`——运行时从 ntdll 原始 stub
+  提取 SSN（扫 `0F 05` 前最近的 `B8 imm32`，不硬编码），在可执行内存生成
+  12B 直调 stub（`mov r10,rcx; mov eax,SSN; syscall; ret`，无 MASM/无静态
+  syscall 代码）；antidebug 四项（debug_port/flags/object + kdbg）优先直调，
+  失败回退 GetProcAddress。`tests/syscall_probe.c`（build.ps1 5c/7.1）断言
+  available=1 且直调==API 路径；T7 不退化。
 
 ## 3. 本次会话修复记录（2026-08-08）
 
@@ -143,8 +150,8 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   - ✅ integrity 覆盖 `.rdata`/`.pdata`（A3，2026-08-14 完成）
   - ✅ 引擎语义随构建变异（A2，2026-08-14 完成）
   - ✅ 反附加定时器（A5，2026-08-14 完成）
+  - ✅ direct syscall 反 hook（A6，2026-08-14 完成，A 区全清）
   - 加壳/外部文件装载（demo_mem 从栈扩容或独立 blob）
-  - direct syscall 反 hook（A6，低优先）
 
 ### 4.1 威胁模型与效果评估（2026-08-09 完成）
 - 新增 `docs/THREATMODEL.md` v1：4 类攻击者 + 成功判据；12 层防护强度评级

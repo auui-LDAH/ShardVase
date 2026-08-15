@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "protect/antidebug.h"
+#include "protect/syscall.h" /* A6: direct syscall 直调 */
 
 /* Phase 3b: 多轮计时采样配置. 5 轮 × 20ms, 任一轮 < 5ms 判可疑. */
 #define PROT_AD_TIMING_ROUNDS 5u
@@ -169,39 +170,58 @@ prot_status prot_antidebug_scan(prot_antidebug_report* out) {
         }
     }
 
-    /* NtQueryInformationProcess 三项 */
-    if (s_pNtQueryInformationProcess != NULL) {
+    /* NtQueryInformationProcess 三项 (A6: 优先 syscall 直调绕 hook,
+     * 直调不可用 (STATUS_UNSUCCESSFUL) 时回退 GetProcAddress 路径) */
+    if (s_pNtQueryInformationProcess != NULL || prot_sys_available() != 0u) {
         ULONG_PTR port = 0;
         ULONG flags = 0;
         HANDLE hDbg = NULL;
         NTSTATUS st;
 
-        st = s_pNtQueryInformationProcess(GetCurrentProcess(), PROT_PID_DEBUG_PORT,
-                                          &port, sizeof(port), NULL);
+        st = prot_sys_nt_query_information_process(GetCurrentProcess(),
+                                                   PROT_PID_DEBUG_PORT,
+                                                   &port, sizeof(port), NULL);
+        if (st < 0 && s_pNtQueryInformationProcess != NULL)
+            st = s_pNtQueryInformationProcess(GetCurrentProcess(),
+                                              PROT_PID_DEBUG_PORT,
+                                              &port, sizeof(port), NULL);
         if (st >= 0) {
             out->debug_port = (port != 0) ? 1u : 0u;
         }
 
-        st = s_pNtQueryInformationProcess(GetCurrentProcess(), PROT_PID_DEBUG_FLAGS,
-                                          &flags, sizeof(flags), NULL);
+        st = prot_sys_nt_query_information_process(GetCurrentProcess(),
+                                                   PROT_PID_DEBUG_FLAGS,
+                                                   &flags, sizeof(flags), NULL);
+        if (st < 0 && s_pNtQueryInformationProcess != NULL)
+            st = s_pNtQueryInformationProcess(GetCurrentProcess(),
+                                              PROT_PID_DEBUG_FLAGS,
+                                              &flags, sizeof(flags), NULL);
         if (st >= 0) {
             out->debug_flags = (flags != 1) ? 1u : 0u;
         }
 
-        st = s_pNtQueryInformationProcess(GetCurrentProcess(), PROT_PID_DEBUG_OBJECT_HANDLE,
-                                          &hDbg, sizeof(hDbg), NULL);
+        st = prot_sys_nt_query_information_process(GetCurrentProcess(),
+                                                   PROT_PID_DEBUG_OBJECT_HANDLE,
+                                                   &hDbg, sizeof(hDbg), NULL);
+        if (st < 0 && s_pNtQueryInformationProcess != NULL)
+            st = s_pNtQueryInformationProcess(GetCurrentProcess(),
+                                              PROT_PID_DEBUG_OBJECT_HANDLE,
+                                              &hDbg, sizeof(hDbg), NULL);
         if (st >= 0 && hDbg != NULL) {
             out->debug_object = 1u;
             CloseHandle(hDbg); /* 成功后关闭返回的句柄 (契约 §6.1) */
         }
     }
 
-    /* 内核调试器标志 (咨询项) */
-    if (s_pNtQuerySystemInformation != NULL) {
+    /* 内核调试器标志 (咨询项; A6: 优先 syscall 直调) */
+    if (s_pNtQuerySystemInformation != NULL || prot_sys_available() != 0u) {
         NTSTATUS st;
         memset(&kdbg, 0, sizeof(kdbg));
-        st = s_pNtQuerySystemInformation(PROT_SYS_KERNEL_DEBUGGER_INFO,
-                                         &kdbg, sizeof(kdbg), NULL);
+        st = prot_sys_nt_query_system_information(PROT_SYS_KERNEL_DEBUGGER_INFO,
+                                                  &kdbg, sizeof(kdbg), NULL);
+        if (st < 0 && s_pNtQuerySystemInformation != NULL)
+            st = s_pNtQuerySystemInformation(PROT_SYS_KERNEL_DEBUGGER_INFO,
+                                             &kdbg, sizeof(kdbg), NULL);
         if (st >= 0) {
             out->kernel_debugger = (kdbg.DebuggerEnabled != 0) ? 1u : 0u;
         }

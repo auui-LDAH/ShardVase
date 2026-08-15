@@ -1,6 +1,6 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-14（v2：A2/A3/A4/A5 落地）· 基线提交：`64f05b0` 之后
+> 生成日期：2026-08-14（v3：A6 落地，A 区全清）· 基线提交：`e1f3493` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` / `docs/THREATMODEL.md`
 > / `docs/PRODUCTION.md`。**交接任何事项前务必先读本文档 + CONTRACT。**
@@ -21,6 +21,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | **引擎语义变异（A2，2026-08-14 落地）** | 操作数字节序 LE/BE-SWAP + 折叠公式 4 选 1（`key[1]` 流派生 `sem`，两侧同位置复算） | `src/vm.c`（`vm_wfetch32/64`、`vm_fold`、`vm_build_keymaps`）、`tools/vmenc.py make_opcode_keymaps` |
 | **完整性扩三节（A3，2026-08-14 落地）** | `.protcrc` 专用段烧录 `.text/.rdata/.pdata` 3 组 CRC；IAT/重定位字段两侧同掩码归零 | `src/integrity.c`、`tools/hashpatch.py` |
 | **反附加定时器（A5，2026-08-14 落地）** | 看门狗周期重跑 `prot_antidebug_scan` + 间隔 ±40% 抖动 | `src/integrity.c`（watchdog_thread） |
+| **direct syscall（A6，2026-08-14 落地）** | 运行时提取 SSN + 内存生成 12B 直调 stub，关键信息类绕 ntdll hook；失败回退 API 路径 | `src/syscall.c`、`include/protect/syscall.h`、`src/antidebug.c`、`tests/syscall_probe.c` |
 
 核心论断（废 `demo\license_vm.vasm` 的旧单一 VM，2026-08-09 拆为 4 个小 VM）：
 **攻击者即使还原全部 VM 也造不出合法授权 key**（私钥离线），这是 THREATMODEL §4 的"离线不可破"锚点。
@@ -120,8 +121,9 @@ python tests\attacks.py
 ### 4.3 未完成事项（下一位的待办）
 | 优先级 | 项 | 状态 |
 |--------|----|------|
-| 低 | **A6 direct syscall**（`NtQueryInformationProcess` 等改走 syscall 直调，规避 ntdll hook；仅在 hook 场景有增量） | 未开工（PRODUCTION.md A6） |
-| 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区） |
+| 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区；A 区已全部结清） |
+| 规划 | Phase 4 分级授权（试用/正式/增值）+ 在线验证/吊销（可选） | ROADMAP 规划项，未开工 |
+| 规划 | 技术债 #3：DBI launcher（密文外部装载进内存再解密，明文限活动窗口） | THREATMODEL §6，未开工 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
 ### 4.4 常用命令速查
@@ -145,6 +147,6 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 | `tools/strgen.py` / `tools/hashpatch.py` | 字符串加密 / CRC 烧录 |
 | `demo/*.vasm` | 4 个 VM 源（hash/mix/verify/gate） |
 | `demo/vm_build.json` | 序列号/机器标识/期望值（每构建重算，换机会变） |
-| `tests/` | e2e.py(T1-8) / attacks.py(A1-6) / unit_vm.vasm+vm_unit.c |
+| `tests/` | e2e.py(T1-11) / attacks.py(A1-6) / unit_vm.vasm+unit_vm_brk.vasm+vm_unit.c / syscall_probe.c(A6) |
 | `docs/` | CONTRACT / PLAN / ROADMAP / THREATMODEL / PRODUCTION / **HANDOVER(本文件)** |
 | `build/`（gitignore） | 产物 + manifest.json + keys\（私钥） |

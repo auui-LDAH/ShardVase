@@ -134,12 +134,16 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm_brk)'
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
 # 5. 编译 + 链接 (vcvars64 环境; cl 失败即中止)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c demo\gen\vm_gate_blob.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c demo\main.c demo\gen\strings.c demo\gen\vm_hash_blob.c demo\gen\vm_mix_blob.c demo\gen\vm_verify_blob.c demo\gen\vm_gate_blob.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
 cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
+
+# 5c. 编译 A6 direct syscall 单测 (直调结果须与 API 路径一致)
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 
 # 6. 烧录 .text CRC32 到二进制 (integrity 自检依赖)
 & $py tools\hashpatch.py build\demo.exe
@@ -151,6 +155,10 @@ Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 # 7. 跑 VM 指令集单测 (失败即中止构建)
 & .\build\vm_unit.exe
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vm_unit.exe (Phase 1D ops)' }
+
+# 7.1. 跑 A6 direct syscall 单测 (直调 == API 路径; 失败即中止构建)
+& .\build\syscall_probe.exe
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: syscall_probe.exe (A6 direct syscall)' }
 
 # 7.5. 产物清单 (基础设施: 每次构建可追溯 -- 机器标识/镜像指纹/时间/Git SHA)
 $seeds = @()
