@@ -152,5 +152,5 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 | `demo/*.vasm` | 4 个 VM 源（hash/mix/verify/gate） |
 | `demo/vm_build.json` | 序列号/机器标识/期望值（每构建重算，换机会变） |
 | `tests/` | e2e.py(T1-11) / attacks.py(A1-6) / unit_vm.vasm+unit_vm_brk.vasm+vm_unit.c / syscall_probe.c(A6) |
-| `docs/` | CONTRACT / PLAN / ROADMAP / THREATMODEL / PRODUCTION / **HANDOVER(本文件)** |
+| `docs/` | CONTRACT / PLAN / ROADMAP / THREATMODEL / PRODUCTION / **BUSINESS（商业化路线图，2026-08-14）** / HANDOVER(本文件) |
 | `build/`（gitignore） | 产物 + manifest.json + keys\（私钥） |
