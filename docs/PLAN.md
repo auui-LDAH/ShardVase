@@ -204,7 +204,10 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | `docs/ROADMAP.md` | 商业级路线图（Phase 1-5 进度） |
 | `docs/THREATMODEL.md` | 威胁模型与效果评估（攻击者/成本矩阵/RSA 上限/技术债） |
 | `docs/PRODUCTION.md` | 生产实施计划（A 区可立即实施 / B 区需真机延后） |
-| `docs/BUSINESS.md` | 商业化路线图（产品定义/差距清单/阶段 I-III/运营 SOP/决策点，2026-08-14 新增） |
+| `docs/BUSINESS.md` | 商业化路线图·总纲（产品定义/差距总览/阶段 I-III/决策点 D1-D4，2026-08-14） |
+| `docs/RELEASE.md` | 发布与交付工程（版本规范/发行加固/可复现构建/发版 checklist/打包） |
+| `docs/OPS.md` | 运营手册（吊销框架规格/签发 SOP/密钥管理/客户台账/在线 API 规格/EULA） |
+| `docs/COMPAT.md` | 兼容性计划（版本矩阵/误报风险清单/真机用例/硬件绑定/决策点 D5-D7） |
 | `demo/license_hash.vasm` | VM#1: FNV-1a 哈希（Phase 2a） |
 | `demo/license_mix.vasm` | VM#2: GOLDEN 混合（Phase 2a） |
 | `demo/license_verify.vasm` | VM#3: 期望值校验（Phase 2a） |
