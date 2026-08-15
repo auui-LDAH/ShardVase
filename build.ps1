@@ -1,20 +1,44 @@
-# build.ps1 — 一键构建 (Lane D)
+﻿# build.ps1 — 一键构建 (Lane D)
 # 按 docs/CONTRACT.md §10 管线执行:
 #   genserial -> assemble -> strgen -> cl -> hashpatch
 # 每步失败即中止并打印明确错误。
 #
 # 参数:
 #   -MachineId <值>   覆盖 machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
-#   -Config <Release> 保留扩展位 (当前仅 Release)
+#   -Config <Release|Dev>  Release=发行加固 (/DEBUG:NONE /OPT:REF,ICF + 版本资源 + 签名);
+#                           Dev=默认开发构建
 #   -VcVars <路径>    显式指定 vcvars64.bat; 缺省自动探测 (vswhere/MSVC 常见路径)
+#   -Python <路径>    显式指定 python.exe; 缺省自动探测
+#   -SeedsFile <json> 确定性种子表 (RELEASE I3 可复现构建): {"images": {"<镜像名>": {"key0": "0x..", "key1": "0x.."}}}
+#   -RecordSeeds      构建后把本次种子写 build\seeds.json
 # 输出: build\demo.exe / build\vm_unit.exe / build\manifest.json (产物清单)
 param(
     [string]$MachineId = 'auto',
-    [string]$Config = 'Release',
+    [string]$Config = 'Dev',
     [string]$VcVars = '',
-    [string]$Python = ''
+    [string]$Python = '',
+    [string]$SeedsFile = '',
+    [switch]$RecordSeeds,
+    [switch]$SkipSign
 )
 $ErrorActionPreference = 'Stop'
+$isRelease = ($Config -eq 'Release')
+
+# 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子
+$seedMap = @{}
+$strgenSeedArgs = @()
+if ($SeedsFile) {
+    $seedMap = (Get-Content -LiteralPath $SeedsFile -Raw | ConvertFrom-Json).images
+    $sAll = Get-Content -LiteralPath $SeedsFile -Raw | ConvertFrom-Json
+    if ($sAll.strgen) { $strgenSeedArgs = @('--seed', $sAll.strgen) }
+}
+function Get-SeedArgs([string]$name) {
+    if ($seedMap.PSObject.Properties.Name -contains $name) {
+        $s = $seedMap.$name
+        return @('--seed', $s.key0, '--perm-seed', $s.key1)
+    }
+    return @()
+}
 
 # 锚定到脚本所在目录 (仓库根), 保证相对路径可靠
 Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -110,17 +134,18 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py sign' }
 
 # 3. 汇编 + 加密 VM 镜像 (ROADMAP Phase 2a: 一个校验逻辑拆成 3 个独立小 VM,
 #    各自独立密钥/置换/窗口: FNV 哈希 -> GOLDEN 混合 -> 期望值校验;
-#    --bin-out/--bin-name: 写单镜像 .bin, 供 3c 打包 vm.blob 由 demo 装载)
-& $py tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image --bin-out demo\gen\vm_hash_blob.bin --bin-name hash
+#    --bin-out/--bin-name: 写单镜像 .bin, 供 3c 打包 vm.blob 由 demo 装载;
+#    -SeedsFile: 注入确定性种子 (I3 可复现构建))
+& $py tools\vmenc.py assemble demo\license_hash.vasm demo\vm_build.json demo\gen\vm_hash_blob.c demo\gen\vm_hash_blob.h --name g_vm_hash_image --bin-out demo\gen\vm_hash_blob.bin --bin-name hash $(Get-SeedArgs 'g_vm_hash_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (hash)' }
 
-& $py tools\vmenc.py assemble demo\license_mix.vasm demo\vm_build.json demo\gen\vm_mix_blob.c demo\gen\vm_mix_blob.h --name g_vm_mix_image --bin-out demo\gen\vm_mix_blob.bin --bin-name mix
+& $py tools\vmenc.py assemble demo\license_mix.vasm demo\vm_build.json demo\gen\vm_mix_blob.c demo\gen\vm_mix_blob.h --name g_vm_mix_image --bin-out demo\gen\vm_mix_blob.bin --bin-name mix $(Get-SeedArgs 'g_vm_mix_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (mix)' }
 
-& $py tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image --bin-out demo\gen\vm_verify_blob.bin --bin-name verify
+& $py tools\vmenc.py assemble demo\license_verify.vasm demo\vm_build.json demo\gen\vm_verify_blob.c demo\gen\vm_verify_blob.h --name g_vm_verify_image --bin-out demo\gen\vm_verify_blob.bin --bin-name verify $(Get-SeedArgs 'g_vm_verify_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (verify)' }
 
-& $py tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image --bin-out demo\gen\vm_gate_blob.bin --bin-name gate
+& $py tools\vmenc.py assemble demo\license_gate.vasm demo\vm_build.json demo\gen\vm_gate_blob.c demo\gen\vm_gate_blob.h --name g_vm_gate_image --bin-out demo\gen\vm_gate_blob.bin --bin-name gate $(Get-SeedArgs 'g_vm_gate_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
 
 # 3c. 打包 VM blob (DBI launcher, 技术债 #3): demo.exe 不再静态嵌入 VM 密文,
@@ -129,18 +154,32 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py pack' }
 
 # 3b. 汇编 VM 指令集单测镜像 (ROADMAP Phase 1d, 每个新指令都要有测试用例)
-& $py tools\vmenc.py assemble tests\unit_vm.vasm demo\vm_build.json demo\gen\vm_unit_blob.c demo\gen\vm_unit_blob.h --name g_vm_unit_image
+& $py tools\vmenc.py assemble tests\unit_vm.vasm demo\vm_build.json demo\gen\vm_unit_blob.c demo\gen\vm_unit_blob.h --name g_vm_unit_image $(Get-SeedArgs 'g_vm_unit_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm)' }
 
-& $py tools\vmenc.py assemble tests\unit_vm_brk.vasm demo\vm_build.json demo\gen\vm_unit_brk_blob.c demo\gen\vm_unit_brk_blob.h --name g_vm_unit_brk_image
+& $py tools\vmenc.py assemble tests\unit_vm_brk.vasm demo\vm_build.json demo\gen\vm_unit_brk_blob.c demo\gen\vm_unit_brk_blob.h --name g_vm_unit_brk_image $(Get-SeedArgs 'g_vm_unit_brk_image')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm_brk)' }
 
-# 4. 字符串加密
-& $py tools\strgen.py demo\strings.txt demo\gen\strings.c
+# 4. 字符串加密 (I3: -SeedsFile 注入确定性密钥种子; -RecordSeeds 先定种子再构建)
+if ($RecordSeeds -and $strgenSeedArgs.Count -eq 0) {
+    $seedHex = -join (1..16 | ForEach-Object { '{0:x1}' -f (Get-Random -Max 16) })
+    $strgenSeedArgs = @('--seed', ('0x' + $seedHex))
+}
+& $py tools\strgen.py demo\strings.txt demo\gen\strings.c $strgenSeedArgs
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
+# 4b. Release: 编译版本资源 (RELEASE §2.3, 值只来自 version.h)
+if ($isRelease) {
+    cmd /c "`"$vcvars`" >nul 2>&1 && rc /nologo /I include /fo demo\gen\version.res demo\version.rc"
+    if ($LASTEXITCODE -ne 0) { throw 'build FAILED: rc (version resource)' }
+}
+
 # 5. 编译 + 链接 (vcvars64 环境; cl 失败即中止)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
+#    Release 加固 (RELEASE §2/§3): 链接 /DEBUG:NONE 无调试目录, /OPT:REF,ICF 瘦身,
+#    版本资源, /Brepro 可复现 (PE 时间戳/校验和确定性, 同种子两次构建字节一致)
+$linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
+$resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -155,6 +194,23 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 & $py tools\hashpatch.py build\demo.exe
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
 
+# 6.2 Release: 数字签名 (RELEASE §2.4, 自签证书) —— 必须在 hashpatch 之后
+if ($isRelease -and -not $SkipSign) {
+    $pfx = 'build\keys\codesign.pfx'
+    if (Test-Path -LiteralPath $pfx) {
+        $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $signtool) { throw 'build FAILED: signtool.exe not found' }
+        $pass = if ($env:SIGN_PASSWORD) { "/p $env:SIGN_PASSWORD" } else { '' }
+        cmd /c "`"$($signtool.FullName)`" sign /fd SHA256 /f `"$pfx`" $pass /t http://timestamp.digicert.com build\demo.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'build FAILED: signtool sign' }
+        Write-Host "build: signed build\demo.exe with $pfx"
+    } else {
+        Write-Host 'build: codesign.pfx absent - skip signing (RELEASE self-signed cert)'
+    }
+}
+
 # 6.5 清理 cl 留在仓库根目录的中间 .obj (cl 默认把 obj 输出到 cwd)
 Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 
@@ -167,25 +223,60 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vm_unit.exe (Phase 1D ops)' }
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: syscall_probe.exe (A6 direct syscall)' }
 
 # 7.5. 产物清单 (基础设施: 每次构建可追溯 -- 机器标识/镜像指纹/时间/Git SHA)
-$seeds = @()
+$seedPairs = @()
+$seedMapOut = [ordered]@{}
 Get-ChildItem -LiteralPath 'demo\gen' -Filter 'vm_*_blob.c' -File | ForEach-Object {
     $raw = Get-Content -LiteralPath $_.FullName -Raw
     $m = [regex]::Matches($raw, '0x([0-9a-fA-F]{16})')
-    if ($m.Count -gt 0) { $seeds += $m[0].Groups[1].Value }
+    if ($m.Count -ge 2) { $seedPairs += $m[0].Groups[1].Value }
+    $nameM = [regex]::Match($raw, 'const prot_vm_image (\w+) =')
+    if ($nameM.Success -and $m.Count -ge 2) {
+        $seedMapOut[$nameM.Groups[1].Value] = [ordered]@{
+            key0 = ('0x' + $m[0].Groups[1].Value)
+            key1 = ('0x' + $m[1].Groups[1].Value)
+        }
+    }
 }
 $jb = Get-Content -LiteralPath demo\vm_build.json -Raw | ConvertFrom-Json
 $machineAuto = ($MachineId -in @('auto', '0'))
+$toolchain = ''
+if (Test-Path -LiteralPath build\demo.exe) {
+    $clTmp = Join-Path $env:TEMP 'prot_clver.txt'
+    cmd /c "`"$vcvars`" >nul 2>&1 && cl > `"$clTmp`" 2>&1"
+    if (Test-Path -LiteralPath $clTmp) {
+        $clOut = Get-Content -LiteralPath $clTmp -Raw
+        if ($clOut -match '(\d+\.\d+\.\d+(\.\d+)?)') { $toolchain = $Matches[1] }
+        Remove-Item -LiteralPath $clTmp -Force
+    }
+}
+$manifestVersion = '?'
+foreach ($ln in (Get-Content -LiteralPath include\protect\version.h)) {
+    if ($ln -match 'PROT_VERSION_STR "([^"]+)"') { $manifestVersion = $Matches[1]; break }
+}
 $manifest = [ordered]@{
     tool       = 'build.ps1'
     timestamp  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     config     = $Config
+    version    = $manifestVersion
+    toolchain  = $toolchain
+    os         = ((& $py tools\osinfo.py --json) | ConvertFrom-Json)
     machine_id = $jb.machine_id
     machine_auto = $machineAuto
     sha        = (git rev-parse --short HEAD 2>$null)
-    vm_seeds   = $seeds
+    vm_seeds   = $seedPairs
     demo_exe_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath build\demo.exe).Hash
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath build\manifest.json -Encoding utf8
+
+# 7.6. I3 可复现构建: 记录本次种子 -> build\seeds.json (入库?否; 随发布归档)
+if ($RecordSeeds) {
+    $strgenSeed = if ($strgenSeedArgs.Count -ge 2) { $strgenSeedArgs[1] } else { '' }
+    $seedOut = @{ images = $seedMapOut }
+    if ($strgenSeed) { $seedOut['strgen'] = $strgenSeed }
+    $seedOut | ConvertTo-Json -Depth 4 |
+        Set-Content -LiteralPath build\seeds.json -Encoding utf8
+    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed)"
+}
 
 # 8.
 Write-Host 'DONE'

@@ -37,6 +37,11 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T12 改 TIER 行 → license: 0 / 退出码 1（Phase 4 分级授权防篡改） | ✅ PASS |
 | T13 --vm-blob 指向不存在文件 → 退出码 0xB10B（DBI launcher） | ✅ PASS |
 | T14 篡改 vm.blob 1 字节 → 退出码 0xB10B（DBI launcher） | ✅ PASS |
+| T15 黑名单命中 → 0xB1E4（I1 吊销） | ✅ PASS |
+| T16 干净黑名单 → 正常通过（I1） | ✅ PASS |
+| T17 无黑名单文件 → 不阻断（I1 离线优先） | ✅ PASS |
+| T18 损坏黑名单 → 不阻断（I1） | ✅ PASS |
+| T19 warn 策略命中 → 告警继续（I1） | ✅ PASS |
 
 `tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
 A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0 /
@@ -93,6 +98,21 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   （storr32 压栈序 `[val,off]` → 按 store32 约定改 `[off,val]`；callind 返回
   后 `jmp done` 跳过 Phase D、删除后又指向 sub_r 死循环 → 显式 `jmp p_d`）。
   vm_unit 现输出 "Phase 1D + A4 ops verified"。
+- **阶段 I 商业化落地（2026-08-15，见 docs/BUSINESS.md 体系）**：
+  - **I1 吊销框架**：`src/revoke.c`+`include/protect/revoke.h`（revoke.blob 格式、
+    `prot_revoke_check`、strict/warn）、`vmenc.py revoke` 子命令、demo 接入
+    （`--revoke-file/--revoke-policy`，退出码 0xB1E4）、T15-T19 全绿；
+  - **I2 发行加固**：`include/protect/version.h`（单一版本来源）、`--version`、
+    `demo/version.rc`、`-Config Release|Dev`（/DEBUG:NONE /OPT:REF,ICF）、
+    自签证书 signtool 签名（signtool verify /pa 通过）；
+  - **I3 可复现构建**：`assemble --seed/--perm-seed`、`strgen --seed`、
+    `-SeedsFile/-RecordSeeds`（build/seeds.json）、Release `/Brepro`、
+    `verify.ps1 -Reproducible`（无签名产物字节一致, diff=0）；
+  - **I4 兼容骨架**：`tools/osinfo.py`（RtlGetVersion 真实版本）、manifest 记录
+    OS/工具链版本（cl 19.44.35228）；调用点失败回退审计完成（全部有回退）；
+  - **I5 交付/运营**：`vmenc.py issue`（签发+只增日志 build/issue-log.csv）、
+    CHANGELOG.md、docs/templates/EULA.md、docs/templates/customers.csv；
+  - **I6 测试面**：attacks.py A7（tier 篡改）、verify.ps1 每轮展示 syscall_probe。
 
 ## 3. 本次会话修复记录（2026-08-08）
 

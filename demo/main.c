@@ -20,7 +20,9 @@
 #include "protect/hostid.h"
 #include "protect/integrity.h"
 #include "protect/license.h"
+#include "protect/revoke.h"
 #include "protect/strcrypt.h"
+#include "protect/version.h"
 #include "protect/vm.h"
 
 /* DBI launcher (技术债 #3): VM 镜像由 build\vm.blob 装载, 不再静态嵌入。
@@ -51,11 +53,14 @@ typedef struct demo_mem {
  *   --wait-after N   看门狗启动后驻留 N 毫秒 (A5 长驻留回归钩子)
  *   --license-file F 读入 RSA 授权文件 (A1) 并验签
  *   --vm-blob F      VM 镜像 blob 路径 (默认 "vm.blob", DBI launcher)
+ *   --revoke-file F  吊销黑名单路径 (默认 "revoke.blob", I1)
+ *   --revoke-policy  吊销命中策略: strict(默认, 拒绝) / warn(告警继续)
  * 返回 1 成功, 0 用法错误。
  */
 static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                       uint32_t* wait_after_ms, const char** license_path,
-                      const char** vm_blob_path)
+                      const char** vm_blob_path, const char** revoke_path,
+                      int* revoke_strict)
 {
     int i;
 
@@ -64,6 +69,8 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
     *wait_after_ms = 0;
     *license_path = NULL;
     *vm_blob_path = NULL;
+    *revoke_path = NULL;
+    *revoke_strict = 1; /* 默认 strict: 命中即拒绝 */
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             *selftest = 1;
@@ -73,12 +80,12 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             char* end = NULL;
             unsigned long v;
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--revoke-file F] [--revoke-policy strict|warn]\n");
                 return 0;
             }
             v = strtoul(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0') {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--revoke-file F] [--revoke-policy strict|warn]\n");
                 return 0;
             }
             if (after)
@@ -100,8 +107,32 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             }
             *vm_blob_path = argv[i + 1];
             i++;
+        } else if (strcmp(argv[i], "--revoke-file") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --revoke-file F\n");
+                return 0;
+            }
+            *revoke_path = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "--revoke-policy") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --revoke-policy strict|warn\n");
+                return 0;
+            }
+            if (strcmp(argv[i + 1], "strict") == 0) {
+                *revoke_strict = 1;
+            } else if (strcmp(argv[i + 1], "warn") == 0) {
+                *revoke_strict = 0;
+            } else {
+                fprintf(stderr, "usage: demo.exe --revoke-policy strict|warn\n");
+                return 0;
+            }
+            i++;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE §1.2 */
+            exit(0);
         } else {
-            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F]\n");
+            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--revoke-file F] [--revoke-policy strict|warn]\n");
             return 0;
         }
     }
@@ -247,6 +278,8 @@ int main(int argc, char** argv)
     uint32_t wait_after_ms;
     const char* license_path = NULL;
     const char* vm_blob_path = NULL;
+    const char* revoke_path = NULL;
+    int revoke_strict = 1;
     size_t n;
     prot_status st;
 
@@ -256,7 +289,8 @@ int main(int argc, char** argv)
 
     /* §9.1-2: 解析参数 */
     if (!parse_args(argc, argv, &selftest, &wait_ms, &wait_after_ms,
-                    &license_path, &vm_blob_path)) {
+                    &license_path, &vm_blob_path, &revoke_path,
+                    &revoke_strict)) {
         return 2; /* 用法错误 */
     }
 
@@ -371,6 +405,25 @@ int main(int argc, char** argv)
             snprintf(eye, sizeof(eye), "%u (tier=%u)",
                      mem.license_ok, mem.license_tier);
             printf("license: %s\n", eye);
+        }
+    }
+
+    /* §9.1-9c: 吊销检查 (I1) —— 黑名单随 vm.blob 渠道分发, 启动校验。
+     * strict(默认): 命中即拒 (0xB1E4); warn: 告警继续。
+     * 文件缺失/损坏: 不阻断 (离线优先, 不因分发疏漏锁死客户)。 */
+    {
+        const char* rp = (revoke_path != NULL) ? revoke_path : "revoke.blob";
+        uint32_t rver = 0u;
+        prot_revoke_status rs = prot_revoke_check(rp, mem.serial,
+                                                  mem.license_tier, &rver);
+        if (rs == PROT_REVOKE_HIT) {
+            printf("%s\n", prot_str_get(PROT_STR_MSG_REVOKED));
+            fflush(stdout);
+            if (revoke_strict) {
+                exit(PROT_EXIT_REVOKED);
+            }
+        } else if (rs == PROT_REVOKE_CORRUPT) {
+            printf("吊销列表损坏，已忽略 (revoke.blob)\n");
         }
     }
 

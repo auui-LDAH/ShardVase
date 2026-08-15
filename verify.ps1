@@ -5,13 +5,14 @@
 # 任意一步失败 -> 退出码非 0, 供本地回归与 CI 复用。
 #
 # 用法:
-#   powershell -ExecutionPolicy Bypass -File verify.ps1 [-Rounds 3] [-KeepArtifacts] [-SkipPyCompile] [-Minimal]
+#   powershell -ExecutionPolicy Bypass -File verify.ps1 [-Rounds 3] [-KeepArtifacts] [-SkipPyCompile] [-Minimal] [-Reproducible <seeds.json>] [-Python <path>]
 param(
     [int]$Rounds = 3,
     [switch]$KeepArtifacts,
     [switch]$SkipPyCompile,
     [switch]$Minimal,
-    [string]$Python = ''
+    [string]$Python = '',
+    [string]$Reproducible = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,7 +75,8 @@ function Get-SeedFingerprint {
 # --- 单轮验证: build -> e2e -> vm_unit -> attacks ---------------------------
 function Invoke-Once([int]$i, [int]$tot) {
     $ent = [ordered]@{
-        round = $i; build = 'PASS'; e2e = 'PASS'; vm_unit = 'PASS'; attacks = 'PASS'
+        round = $i; build = 'PASS'; e2e = 'PASS'; vm_unit = 'PASS'
+        syscall_probe = 'PASS'; attacks = 'PASS'
         seeds = ''; log = $null
     }
     Write-Step "round $i/$tot : build.ps1"
@@ -88,6 +90,11 @@ function Invoke-Once([int]$i, [int]$tot) {
     Write-Step "round $i/$tot : build\vm_unit.exe"
     $vu = @(& .\build\vm_unit.exe 2>&1)
     if ($LASTEXITCODE -ne 0) { $ent.vm_unit = 'FAIL'; $ent.log = $vu; return $ent }
+
+    Write-Step "round $i/$tot : build\syscall_probe.exe (A6)"
+    $sp = @(& .\build\syscall_probe.exe 2>&1)
+    if ($LASTEXITCODE -ne 0) { $ent.syscall_probe = 'FAIL'; $ent.log = $sp }
+    else { $ent.syscall_probe = 'PASS' }
 
     Write-Step "round $i/$tot : python tests\attacks.py (非真机攻击模拟)"
     if (Test-Path -LiteralPath 'tests\attacks.py') {
@@ -110,13 +117,53 @@ function Invoke-Once([int]$i, [int]$tot) {
 for ($i = 1; $i -le $Rounds; $i++) {
     $ent = Invoke-Once $i $Rounds
     $results += $ent
-    if ($ent.build -ne 'PASS' -or $ent.e2e -ne 'PASS' -or $ent.vm_unit -ne 'PASS' -or $ent.attacks -ne 'PASS') {
+    if ($ent.build -ne 'PASS' -or $ent.e2e -ne 'PASS' -or $ent.vm_unit -ne 'PASS' -or $ent.attacks -ne 'PASS' -or $ent.syscall_probe -ne 'PASS') {
         $allGreen = $false
-        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} attacks={4})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.attacks) -ForegroundColor Red
+        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks) -ForegroundColor Red
     }
 }
 
 # --- 报告 JSON --------------------------------------------------------------
+# I3 可复现构建验证: 同种子两次无签名构建, 比对 demo.exe / vm.blob SHA-256
+# (签名区由 signtool 引入差异, 属预期 —— RELEASE §3/§5)
+$repro = $null
+if ($Reproducible) {
+    if (-not (Test-Path -LiteralPath $Reproducible)) {
+        Write-Host "[verify] -Reproducible: seeds file not found: $Reproducible" -ForegroundColor Red
+        $allGreen = $false
+    } else {
+        Write-Step "reproducible baseline build (Release, no signing)"
+        $rb1 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[verify] reproducible baseline build FAILED' -ForegroundColor Red
+            $allGreen = $false
+        } else {
+            $h1 = @{}
+            foreach ($f in @('build\demo.exe', 'build\vm.blob')) {
+                $h1[$f] = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash
+            }
+            Write-Step "reproducible rebuild (same seeds, Release, no signing)"
+            $rb2 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '[verify] reproducible rebuild FAILED' -ForegroundColor Red
+                $allGreen = $false
+            } else {
+                $repro = [ordered]@{}
+                foreach ($f in @('build\demo.exe', 'build\vm.blob')) {
+                    $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash
+                    $ok = ($h2 -eq $h1[$f])
+                    $repro[$f] = [ordered]@{ match = $ok; sha256 = $h2 }
+                    if (-not $ok) {
+                        Write-Host "[verify] reproducible MISMATCH: $f" -ForegroundColor Red
+                        $allGreen = $false
+                    }
+                }
+                if ($repro) { Write-Host '[verify] reproducible: byte-identical (unsigned) rebuild OK' -ForegroundColor Green }
+            }
+        }
+    }
+}
+
 $j = [ordered]@{
     tool      = 'verify.ps1'
     timestamp = $Time
@@ -124,6 +171,7 @@ $j = [ordered]@{
     sha       = (git rev-parse --short HEAD 2>$null)
     allGreen  = $allGreen
     results   = $results
+    reproducible = $repro
 }
 $dir = Split-Path -Parent $RptPath
 if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }

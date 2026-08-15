@@ -1,9 +1,11 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-14（v5：技术债 #3 DBI launcher 结清）· 基线提交：`47f7d5e` 之后
+> 生成日期：2026-08-15（v6：阶段 I 商业化落地）· 基线提交：`815b1ce` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
-> 见 `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` / `docs/THREATMODEL.md`
-> / `docs/PRODUCTION.md`。**交接任何事项前务必先读本文档 + CONTRACT。**
+> 见 `docs/BUSINESS.md`（总纲）/ `docs/RELEASE.md` / `docs/OPS.md` /
+> `docs/COMPAT.md` / `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` /
+> `docs/THREATMODEL.md` / `docs/PRODUCTION.md`。
+> **交接任何事项前务必先读本文档 + CONTRACT。**
 
 ## 1. 项目是什么
 
@@ -24,6 +26,8 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | **反附加定时器（A5，2026-08-14 落地）** | 看门狗周期重跑 `prot_antidebug_scan` + 间隔 ±40% 抖动 | `src/integrity.c`（watchdog_thread） |
 | **direct syscall（A6，2026-08-14 落地）** | 运行时提取 SSN + 内存生成 12B 直调 stub，关键信息类绕 ntdll hook；失败回退 API 路径 | `src/syscall.c`、`include/protect/syscall.h`、`src/antidebug.c`、`tests/syscall_probe.c` |
 | **VM 外部装载（DBI launcher，2026-08-14 落地）** | VM 密文打包 `build\vm.blob`（`vmenc.py pack`），launcher 启动装载校验；exe 无 VM 逻辑 | `src/blob.c`、`include/protect/blob.h`、`tools/vmenc.py pack/--bin-out`、`demo/main.c --vm-blob` |
+| **授权吊销（I1，2026-08-15 落地）** | 离线黑名单 revoke.blob（版本化+CRC），strict/warn 策略，退出码 0xB1E4 | `src/revoke.c`、`include/protect/revoke.h`、`tools/vmenc.py revoke`、`demo/main.c` |
+| **发行加固+可复现（I2/I3，2026-08-15 落地）** | version.h/--version/版本资源/自签签名；种子注入 + /Brepro（无签名产物字节一致） | `include/protect/version.h`、`demo/version.rc`、`build.ps1 -Config/-SeedsFile/-RecordSeeds`、`verify.ps1 -Reproducible` |
 
 核心论断（废 `demo\license_vm.vasm` 的旧单一 VM，2026-08-09 拆为 4 个小 VM）：
 **攻击者即使还原全部 VM 也造不出合法授权 key**（私钥离线），这是 THREATMODEL §4 的"离线不可破"锚点。
@@ -41,9 +45,15 @@ T9 tamper-rdata   PASS  T10 tamper-pdata PASS   (A3: .rdata/.pdata 篡改也 0xB
 T11 watchdog-stable PASS                              (A5: 14s 驻留周期复查零误报)
 T12 tier-forge    PASS                                  (Phase 4: 改 TIER 行被拒)
 T13 blob-missing  PASS  T14 blob-tamper PASS   (DBI launcher: blob 缺失/篡改 0xB10B)
+T15 revoke-hit    PASS  T16 revoke-clean  PASS          (I1: 黑名单命中 0xB1E4)
+T17 revoke-absent PASS  T18 revoke-corrupt PASS T19 revoke-warn PASS
 A1 machine-bind   PASS  A2 vm-ciphertext PASS  A3 build-fingerprint PASS
 A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
+A7 tier-forge     PASS                                  (Phase 4 attacks 面)
+syscall_probe     PASS                                  (A6: 直调 == API 路径)
 ```
+Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
+(verify.ps1 -Reproducible: 无签名产物字节一致)。
 
 `verify.ps1 -Minimal`（单轮全链回归）此前亦 **PASS**；`verify.ps1`（3 轮随机重建）
 是发版 gate（B3 待真机后启用）。A2 落地后连续 8 轮随机重建 e2e 全绿
@@ -125,9 +135,9 @@ python tests\attacks.py
 ### 4.3 未完成事项（下一位的待办）
 | 优先级 | 项 | 状态 |
 |--------|----|------|
-| 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区；A 区已全部结清） |
-| 规划 | Phase 4 在线验证 + 吊销（可选），失败降级 + 本地告警而非崩溃 | ROADMAP 规划项，未开工 |
-| 规划 | vm.blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记，未开工 |
+| 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 / 阶段 II 兼容矩阵 | 待新机就绪后做（COMPAT.md 用例已备好） |
+| 规划 | Phase 4 在线验证 + 吊销（可选），失败降级 + 本地告警而非崩溃 | OPS §6 API 规格已预留，决策点 D2 |
+| 规划 | blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
 ### 4.4 常用命令速查

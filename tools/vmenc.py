@@ -462,6 +462,73 @@ def cmd_pack(args):
           % (len(args.bins), args.out, len(blob)))
 
 
+# ---------------------------------------------------------------------------
+# 授权吊销 (I1, 离线黑名单 revoke.blob): 格式与 src/revoke.c 一致。
+#   MAGIC "PROTREVK" | VER u32 | COUNT u32
+#   | 每条目: SERIAL[48] (NUL 填充) | TIER u32 (0xFF=全 tier) | REVOKED_AT u64
+#   | BLOB_CRC u32 (prot_crc32 覆盖以上全部)
+# ---------------------------------------------------------------------------
+REVOKE_MAGIC = b'PROTREVK'
+REVOKE_SERIAL_LEN = 48
+REVOKE_ENTRY = REVOKE_SERIAL_LEN + 4 + 8
+
+
+def parse_revoke_blob(path):
+    """读取现有 revoke.blob, 返回 (ver, [entries]). 损坏/缺失 -> VasmError."""
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError as e:
+        raise VasmError('cannot read revoke base %s: %s' % (path, e))
+    if (len(data) < 20 or data[:8] != REVOKE_MAGIC or
+            zlib.crc32(data[:-4]) & 0xFFFFFFFF !=
+            struct.unpack_from('<I', data, len(data) - 4)[0]):
+        raise VasmError('revoke base %s is corrupt' % path)
+    ver = struct.unpack_from('<I', data, 8)[0]
+    count = struct.unpack_from('<I', data, 12)[0]
+    entries = []
+    pos = 16
+    for _ in range(count):
+        if pos + REVOKE_ENTRY > len(data) - 4:
+            raise VasmError('revoke base %s is corrupt (truncated)' % path)
+        serial = data[pos:pos + REVOKE_SERIAL_LEN].split(b'\x00', 1)[0]
+        tier = struct.unpack_from('<I', data, pos + REVOKE_SERIAL_LEN)[0]
+        at = struct.unpack_from('<Q', data, pos + REVOKE_SERIAL_LEN + 4)[0]
+        entries.append((serial.decode('ascii', 'replace'), tier, at))
+        pos += REVOKE_ENTRY
+    return ver, entries
+
+
+def cmd_revoke(args):
+    """生成/追加 revoke.blob: --base 读旧黑名单 (版本+1), --add 追加一条."""
+    ver = 1
+    entries = []
+    if args.base:
+        ver, entries = parse_revoke_blob(args.base)
+        ver += 1
+    if args.add:
+        serial = args.add.encode('ascii')
+        if len(serial) >= REVOKE_SERIAL_LEN:
+            raise VasmError('serial too long for revoke entry (<= %d)'
+                            % (REVOKE_SERIAL_LEN - 1))
+        tier = args.tier if args.tier is not None else 0xFF
+        at = args.at if args.at is not None else 0
+        entries.append((serial.decode('ascii'), tier, at))
+    if args.force_ver is not None:
+        ver = args.force_ver
+    body = (REVOKE_MAGIC + struct.pack('<I', ver) +
+            struct.pack('<I', len(entries)))
+    for serial, tier, at in entries:
+        body += (serial.encode('ascii').ljust(REVOKE_SERIAL_LEN, b'\x00') +
+                 struct.pack('<I', tier) + struct.pack('<Q', at))
+    blob = body + struct.pack('<I', zlib.crc32(body) & 0xFFFFFFFF)
+    ensure_parent(args.out)
+    with open(args.out, 'wb') as f:
+        f.write(blob)
+    print('vmenc: revoke ver=%d entries=%d -> %s (%d bytes)'
+          % (ver, len(entries), args.out, len(blob)))
+
+
 def write_vm_c(out_c, out_h, plaintext, seed, key1, image_name='g_vm_image'):
     cipher = encrypt(plaintext, seed)
     crc = zlib.crc32(plaintext) & 0xFFFFFFFF
@@ -500,12 +567,60 @@ def write_vm_c(out_c, out_h, plaintext, seed, key1, image_name='g_vm_image'):
     return code_len, seed, crc
 
 
+def cmd_issue(args):
+    """签发 + 强制写签发日志 (OPS §2): 与 sign 相同签名逻辑, 追加 issue-log.csv."""
+    with open(args.key_path, 'r', encoding='utf-8') as f:
+        kd = json.load(f)
+    n = int(kd['n'], 16)
+    d = int(kd['d'], 16)
+    with open(args.json_path, 'r', encoding='utf-8') as f:
+        jd = json.load(f)
+    serial = jd['serial']
+    mid = args.machine_id_override
+    if mid is None:
+        mid = jd.get('machine_id', None)
+    if mid is None or mid == 0 or mid in ('auto', '0'):
+        mid = hostid()
+    elif isinstance(mid, str):
+        mid = parse_machine_id_override(mid)
+    tier = args.tier
+    digest = _license_sha256(serial, mid, tier)
+    sig = rsa_sign(d, n, digest)
+    out = [
+        'SERIAL=' + serial,
+        'MACHINE_ID=0x%x' % mid,
+        'PRODUCT=' + LICENSE_PRODUCT,
+        'TIER=%d' % tier,
+        'SIGNATURE=' + base64.b64encode(sig).decode('ascii'),
+        '',
+    ]
+    ensure_parent(args.license_out)
+    with open(args.license_out, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('\n'.join(out))
+
+    # 签发日志 (只增不改, gitignore)
+    import datetime
+    sha = hashlib.sha256(open(args.license_out, 'rb').read()).hexdigest()
+    row = '%s,%s,0x%x,%d,%s,%s,%s\n' % (
+        datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
+        serial, mid, tier, args.customer, args.note, sha)
+    log_path = args.log
+    ensure_parent(log_path)
+    with open(log_path, 'a', encoding='utf-8', newline='\n') as f:
+        f.write(row)
+    print('vmenc: issue serial=%s tier=%d customer=%s -> %s'
+          % (serial, tier, args.customer, args.license_out))
+    print('vmenc: issue log appended: %s' % log_path)
+
+
 def cmd_assemble(args):
     with open(args.in_vasm, 'r', encoding='utf-8') as f:
         text = f.read()
     symbols = load_symbols(args.build_json)
-    seed = random.getrandbits(64)
-    perm_seed = random.getrandbits(64)
+    # RELEASE I3: --seed/--perm-seed 注入确定性种子 (同种子两次构建逐字节一致)
+    seed = args.seed if args.seed is not None else random.getrandbits(64)
+    perm_seed = args.perm_seed if args.perm_seed is not None \
+        else random.getrandbits(64)
     perm, slot, sem0, sem1 = make_opcode_keymaps(perm_seed)
     if sorted(slot) != list(range(OPCODE_SLOTS)):
         raise VasmError('internal: slot permutation is broken')
@@ -831,6 +946,14 @@ def main(argv=None):
     pa.add_argument('--bin-name', dest='bin_name', default=None,
                     help='image name inside the .bin/blob (short, <=15; '
                          'required with --bin-out)')
+    pa.add_argument('--seed', dest='seed', type=lambda s: int(s, 0),
+                    default=None,
+                    help='deterministic key0 (hex/dec; default random) '
+                         '(RELEASE I3 reproducible builds)')
+    pa.add_argument('--perm-seed', dest='perm_seed',
+                    type=lambda s: int(s, 0), default=None,
+                    help='deterministic opcode perm seed key1 (hex/dec; '
+                         'default random)')
     pa.set_defaults(func=cmd_assemble)
 
     pb = sub.add_parser('pack', help='pack single-image bins into vm.blob')
@@ -839,6 +962,21 @@ def main(argv=None):
     pb.add_argument('bins', nargs='+',
                     help='single-image .bin files (assemble --bin-out)')
     pb.set_defaults(func=cmd_pack)
+
+    pr = sub.add_parser('revoke', help='generate/append revoke.blob (I1)')
+    pr.add_argument('--out', dest='out', required=True,
+                    help='output revoke.blob')
+    pr.add_argument('--base', dest='base', default=None,
+                    help='existing revoke.blob to extend (version +1)')
+    pr.add_argument('--add', dest='add', default=None,
+                    help='serial to revoke')
+    pr.add_argument('--tier', dest='tier', type=int, default=None,
+                    help='tier to revoke (0/1/2; default 0xFF = all tiers)')
+    pr.add_argument('--at', dest='at', type=int, default=None,
+                    help='revoked-at unix timestamp (default 0)')
+    pr.add_argument('--force-ver', dest='force_ver', type=int, default=None,
+                    help='override blacklist version')
+    pr.set_defaults(func=cmd_revoke)
 
     pg = sub.add_parser('genserial', help='compute expect1/expect2 for a serial')
     pg.add_argument('--json', dest='json_path', required=True,
@@ -873,6 +1011,26 @@ def main(argv=None):
     ps.add_argument('--print', action='store_true',
                     help='print human readable result')
     ps.set_defaults(func=cmd_sign)
+
+    pi = sub.add_parser('issue', help='sign + append-only issue log (OPS §2)')
+    pi.add_argument('--key', dest='key_path', required=True,
+                    help='private key JSON from keygen')
+    pi.add_argument('--json', dest='json_path', required=True,
+                    help='vm_build.json with serial/machine_id')
+    pi.add_argument('--out', dest='license_out', required=True,
+                    help='output license.txt')
+    pi.add_argument('--tier', dest='tier', type=int, default=LICENSE_TIER_FULL,
+                    help='license tier: 0=trial 1=full(default) 2=premium')
+    pi.add_argument('--machine-id', dest='machine_id_override', type=str,
+                    default=None,
+                    help='override machine_id (decimal or 0x hex); omit/auto=hostid')
+    pi.add_argument('--customer', dest='customer', default='-',
+                    help='customer id/name for the log')
+    pi.add_argument('--note', dest='note', default='',
+                    help='free-form note for the log')
+    pi.add_argument('--log', dest='log', default='build/issue-log.csv',
+                    help='append-only issue log (default build/issue-log.csv)')
+    pi.set_defaults(func=cmd_issue)
 
     args = parser.parse_args(argv)
     try:

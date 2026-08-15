@@ -10,6 +10,7 @@ tests/attacks.py - 攻击模拟测试 (基础设施, 不需真机, Lane D)
   A4 selftest-clean       --selftest 干净环境各项为 0 (新检测项无误报, 与 T7 互补)
   A5 license-forge        改 1 位签名 -> 必须被判无效 (RSA 防伪造)
   A6 license-other-machine 用同一私钥给异机 machine_id 签 license -> 本机必须拒绝
+  A7 license-tier-forge   改 TIER 行 -> 必须被判无效 (Phase 4 分级授权防篡改)
 
 依赖: 已构建产物 (build\\demo.exe / demo\\gen\\*.c / build\\license.txt)。
 纯黑盒: 不解析 VM 结构, 不修改受保护文件。
@@ -211,6 +212,28 @@ def main():
                         'code=%d license_ok=0' % code))
     except Exception as e:
         results.append(('A6 license-other-machine', 'FAIL', repr(e)))
+
+    # ---- A7: 分级授权 tier 篡改 (Phase 4, 与 e2e T12 互补) --------------
+    try:
+        forged = os.path.join(REPO, 'build', 'license_tier_forged.txt')
+        with open(LICENSE, 'r', encoding='utf-8') as f:
+            lines = f.read().splitlines()
+        out_lines = []
+        for ln in lines:
+            if ln.startswith('TIER='):
+                cur = ln[len('TIER='):]
+                out_lines.append('TIER=' + ('2' if cur != '2' else '0'))
+            else:
+                out_lines.append(ln)
+        with open(forged, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(out_lines) + '\n')
+        code, out = run_demo(args=['--license-file', forged],
+                             stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and ('license: 0' in out)
+        results.append(('A7 license-tier-forge', 'PASS' if ok else 'FAIL',
+                        'code=%d license_ok=0' % code))
+    except Exception as e:
+        results.append(('A7 license-tier-forge', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

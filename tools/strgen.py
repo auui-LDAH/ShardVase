@@ -36,6 +36,7 @@ EXPECTED_ORDER = [
     'MSG_TAMPER',
     'MSG_HWID',
     'MSG_BLOB',
+    'MSG_REVOKED',
 ]
 
 
@@ -102,14 +103,17 @@ def format_bytes(data, per_line=12):
     return '\n'.join(lines)
 
 
-def generate_c(entries):
-    """entries: list of (name, utf8_bytes). Returns generated C source."""
+def generate_c(entries, rng=None):
+    """entries: list of (name, utf8_bytes). Returns generated C source.
+    rng: 可选的 random.Random (RELEASE I3: --seed 注入确定性密钥)."""
+    if rng is None:
+        rng = random
     count = len(entries)
     blocks = []
     struct_rows = []
     enc_names = []
     for i, (_name, blob) in enumerate(entries):
-        seed = random.getrandbits(64)
+        seed = rng.getrandbits(64)
         cipher = encrypt(blob, seed)
         enc_name = 's_enc%d' % i
         enc_names.append(enc_name)
@@ -162,11 +166,16 @@ def main(argv=None):
         description='string encryptor generator (Lane C)')
     parser.add_argument('manifest', help='demo/strings.txt (NAME|text lines)')
     parser.add_argument('out_c', help='output demo/gen/strings.c')
+    parser.add_argument('--seed', dest='seed', type=lambda s: int(s, 0),
+                        default=None,
+                        help='deterministic key seed (hex/dec; default '
+                             'random) - RELEASE I3 reproducible builds')
     args = parser.parse_args(argv)
 
     try:
         entries = parse_manifest(args.manifest)
-        src = generate_c(entries)
+        rng = random.Random(args.seed) if args.seed is not None else None
+        src = generate_c(entries, rng)
         parent = os.path.dirname(os.path.abspath(args.out_c))
         if parent and not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)

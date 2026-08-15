@@ -14,6 +14,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T11 watchdog-stable --wait-after 14s 期间看门狗周期复查零误报 (A5)
   T12 license-tier-forge 改 TIER 行 -> license: 0 / 退出码 1 (Phase 4)
   T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
+  T15-T19 吊销黑名单: 命中 0xB1E4 / 干净通过 / 无文件不阻断 / 损坏不阻断 / warn 继续 (I1)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -422,6 +423,83 @@ def main():
                         'exit=%d' % code))
     except Exception as e:
         results.append(('T14 blob-tamper', 'FAIL', repr(e)))
+
+    # ---- T15-T19: 授权吊销 (I1, 离线黑名单) ------------------------------
+    PROT_EXIT_REVOKED = 0xB1E4
+    vmenc = os.path.join(REPO, 'tools', 'vmenc.py')
+    def make_revoke(serial, tier=None, path='revoke.blob'):
+        args = ['python', vmenc, 'revoke', '--out', os.path.join(BUILD, path)]
+        if serial:
+            args += ['--add', serial]
+            if tier is not None:
+                args += ['--tier', str(tier)]
+        subprocess.run(args, check=True, capture_output=True)
+        return os.path.join(BUILD, path)
+
+    try:
+        hit = make_revoke(serial, 1, 'revoke_hit.blob')
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--revoke-file', hit],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == PROT_EXIT_REVOKED)
+        results.append(('T15 revoke-hit', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T15 revoke-hit', 'FAIL', repr(e)))
+
+    try:
+        clean = make_revoke('OTHER-SERIAL-0001', 1, 'revoke_clean.blob')
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--revoke-file', clean],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T16 revoke-clean', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T16 revoke-clean', 'FAIL', repr(e)))
+
+    try:
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'),
+                  '--revoke-file', os.path.join(BUILD, 'no_revoke.blob')],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)  # 离线优先: 无文件不阻断
+        results.append(('T17 revoke-absent', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T17 revoke-absent', 'FAIL', repr(e)))
+
+    try:
+        corrupt = os.path.join(BUILD, 'revoke_corrupt.blob')
+        b = bytearray(open(os.path.join(BUILD, 'revoke_hit.blob'), 'rb').read())
+        b[len(b) // 2] ^= 0xFF
+        with open(corrupt, 'wb') as f:
+            f.write(bytes(b))
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--revoke-file', corrupt],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)  # 损坏: 不阻断 + 告警
+        results.append(('T18 revoke-corrupt', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T18 revoke-corrupt', 'FAIL', repr(e)))
+
+    try:
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'),
+                  '--revoke-file', os.path.join(BUILD, 'revoke_hit.blob'),
+                  '--revoke-policy', 'warn'],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)  # warn: 告警但继续
+        results.append(('T19 revoke-warn', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+    except Exception as e:
+        results.append(('T19 revoke-warn', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

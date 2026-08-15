@@ -1,0 +1,2 @@
+id,customer_name,contact,serial_base,machine_id,seed_file,tier,issue_date,notes
+CUST-001,示例客户,contact@example.com,DEMO-2026-ABC1,0x0000000000000000,build/seeds/CUST-001/seeds.json,1,2026-08-15,占位示例行

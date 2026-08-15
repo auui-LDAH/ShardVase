@@ -414,7 +414,9 @@ const prot_baked_crc g_prot_baked_crc[3] = {
 2. 解析参数：`--selftest`（打印每项检测结果）、`--wait-ms N`（扫描前 Sleep N 毫秒）、
    `--wait-after N`（看门狗启动后驻留 N 毫秒，A5 长驻留回归钩子，e2e T11 用）、
    `--license-file F`（A1 授权文件）、`--vm-blob F`（VM blob 路径，默认 `vm.blob`，
-   DBI launcher）。
+   DBI launcher）、`--revoke-file F`（吊销黑名单，默认 `revoke.blob`，I1）、
+   `--revoke-policy strict|warn`（吊销命中策略，默认 strict）、`--version`
+   （打印 `prot-demo <PROT_VERSION_STR>` 后退出，RELEASE §1.2）。
 3. 打印 `PROT_STR_BANNER`。
 4. `prot_antidebug_scan` → 打印一行摘要（`反调试扫描: 通过` 或 `反调试扫描: 发现可疑`）；
    `--selftest` 时逐项打印 `字段名: 0/1`。`prot_antidebug_apply_policy(PROT_POLICY_EXIT)`；
@@ -485,9 +487,30 @@ serial 无法通过。
   EMSA-PKCS1-v1_5(SHA-256) 填充 → RSA 私钥签名 → base64 344B 写
   `build/license.txt`。`--tier 0|1|2`（Phase 4，默认 1=正式）参与载荷与
   `TIER=` 行；0=试用 / 1=正式 / 2=增值（`vmenc.py LICENSE_TIER_*`）。
+- `vmenc.py issue ...`（OPS §2）：同 sign 签名逻辑，但**强制追加签发日志**
+  `build/issue-log.csv`（timestamp,serial,machine_id,tier,customer,note,
+  license_sha256；只增不改，gitignore）。
+
+### 9.6 授权吊销（I1, 2026-08-15）
+- 黑名单 `revoke.blob` 随 vm.blob 渠道分发；格式（`src/revoke.c` 与
+  `vmenc.py revoke` 一致）：
+  ```
+  MAGIC "PROTREVK"(8) | VER u32 LE | COUNT u32 LE
+  | 每条目: SERIAL[48] (NUL 填充) | TIER u32 (0xFF=全 tier) | REVOKED_AT u64
+  | BLOB_CRC u32 (prot_crc32 覆盖以上全部)
+  ```
+- 客户端 `prot_revoke_check(path, serial, tier, out_ver)`：命中
+  `PROT_REVOKE_HIT`；文件缺失 `NO_FILE`、损坏 `CORRUPT`（均不阻断，离线优先）；
+  版本号单调递增，旧客户端接受新黑名单。
+- demo 接入：license 验签（§9.1-9b）之后、VM#4 门控之前（§9.1-9c）；
+  strict（默认）命中 → 打印 MSG_REVOKED，`exit(PROT_EXIT_REVOKED 0xB1E4)`；
+  warn → 告警继续。黑名单缺失/损坏 → 不阻断 + 告警。
+- 生成：`vmenc.py revoke --out build\revoke.blob [--base 旧] --add <serial>
+  [--tier N]`（版本自动 +1）。
 
 ### 9.3 退出码
-0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改 / 0xB10B VM blob 缺失或损坏。
+0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改 / 0xB10B VM blob 缺失或损坏 /
+0xB1E4 授权被吊销（I1 黑名单）。
 
 ## 10. 构建管线 (build.ps1)
 
@@ -531,6 +554,8 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
   不匹配 → demo 必须输出 `license: 0` 且退出码 1。
 - 测试 13/14（DBI launcher）：`--vm-blob` 指向不存在文件 / 复制 vm.blob 翻
   转 1 字节 → 退出码 0xB10B（消息可能乱码，只断言退出码）。
+- 测试 15-19（I1 吊销）：命中 → 0xB1E4；干净黑名单 → 0；无黑名单文件 →
+  不阻断；损坏黑名单 → 不阻断；warn 策略命中 → 告警但退出 0。
 - 测试 5（VM 单测）：`tests/vm_unit.c` 编译为 `build\vm_unit.exe` 运行，Phase 1d
   新增指令全覆盖。
 - 测试 6（稳定性）：同轮构建 8 次重启 demo（正确序列号）都应先输出
