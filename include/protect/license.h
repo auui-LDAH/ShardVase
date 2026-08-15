@@ -18,16 +18,21 @@
 /* 产品标识, 参与签名载荷 —— 与 tools/vmenc.py LICENSE_PRODUCT 必须一致 */
 #define PROT_LICENSE_PRODUCT "PROT-DEMO-2026"
 
+/* 分级授权 (Phase 4): tier 参与签名载荷, 与 vmenc.py LICENSE_TIER_* 一致 */
+#define PROT_LICENSE_TIER_TRIAL   0
+#define PROT_LICENSE_TIER_FULL    1
+#define PROT_LICENSE_TIER_PREMIUM 2
+
 /* 公钥 blob (BCRYPT_RSAPUBLIC_BLOB, 由 tools/vmenc.py keygen 生成) */
 extern const uint8_t g_prot_license_pubblob[];
 extern const size_t g_prot_license_pubblob_len;
 
 /*
- * 构建签名载荷 = serial(ascii) || machine_id(LE64) || PRODUCT(ascii)。
+ * 构建签名载荷 = serial(ascii) || machine_id(LE64) || PRODUCT(ascii) || tier(1B)。
  * 与 tools/vmenc.py license_message 完全一致。
  */
 size_t prot_license_build_message(const char* serial, size_t serial_len,
-                                  uint64_t machine_id,
+                                  uint64_t machine_id, uint32_t tier,
                                   uint8_t* out_msg, size_t out_cap);
 
 /*

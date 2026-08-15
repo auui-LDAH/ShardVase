@@ -34,6 +34,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 | T9 篡改 .rdata（+0x1000 避开 IAT）→ 退出码 0xBAD（A3） | ✅ PASS |
 | T10 篡改 .pdata → 退出码 0xBAD（A3） | ✅ PASS |
 | T11 --wait-after 14s 驻留，看门狗周期复查零误报（A5） | ✅ PASS |
+| T12 改 TIER 行 → license: 0 / 退出码 1（Phase 4 分级授权防篡改） | ✅ PASS |
 
 `tests/attacks.py`（非真机攻击模拟，Lane D 基础设施）：A1 本机 machine_id 绑定通过 /
 A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --selftest 干净全 0 /
@@ -73,6 +74,12 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   syscall 代码）；antidebug 四项（debug_port/flags/object + kdbg）优先直调，
   失败回退 GetProcAddress。`tests/syscall_probe.c`（build.ps1 5c/7.1）断言
   available=1 且直调==API 路径；T7 不退化。
+- **Phase 4 分级授权（2026-08-14 完成）**：`vmenc.py sign --tier 0|1|2`
+  （试用/正式/增值）——tier 参与 RSA 签名载荷
+  （`serial‖LE64(machine_id)‖PRODUCT‖tier`，`license_message`/`prot_license_build_message`
+  同步）；license.txt 增 `TIER=` 行（缺省 1=正式）；demo 验签后打印
+  `license: 1 (tier=N)`，`demo_mem.+92` 由 `_pad` 改名 `license_tier`（布局不变，
+  供未来 VM 门控）。T12 改 TIER 行 → 验签失败全绿。
 
 ## 3. 本次会话修复记录（2026-08-08）
 

@@ -38,7 +38,7 @@ typedef struct demo_mem {
     uint64_t vm_total;     /* +72 (VM#2 输出: GOLDEN 混合 total) */
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
     uint32_t license_ok;   /* +88 (A1: 宿主 RSA 验签结果 0/1, VM#4 并入) */
-    uint32_t _pad;         /* +92 对齐 */
+    uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
 } demo_mem;                /* 总 96 字节 */
 
 /*
@@ -147,9 +147,11 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
 }
 
 /*
- * 读 license.txt (A1, 格式见 tools/vmenc.py sign 输出):
- *   SERIAL=... / MACHINE_ID=0x.. / PRODUCT=... / SIGNATURE=<base64 256B>
- * 验签通过 -> 返回 1; 文件缺失/字段错/签名无效/机器不匹配 -> 返回 0。
+ * 读 license.txt (A1 + Phase 4 tier, 格式见 tools/vmenc.py sign 输出):
+ *   SERIAL=... / MACHINE_ID=0x.. / PRODUCT=... / TIER=<0|1|2> /
+ *   SIGNATURE=<base64 256B>
+ * 验签通过 -> 返回 1 并写出 tier; 文件缺失/字段错/签名无效/机器不匹配
+ * -> 返回 0 (tier 保持 0)。TIER 行缺省视为 1 (正式, 向后兼容)。
  */
 static int load_and_verify_license(const char* path, demo_mem* mem)
 {
@@ -159,6 +161,7 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
     uint8_t msg[256];
     size_t msg_len;
     int have_serial = 0, have_prod = 0, have_sig = 0;
+    uint32_t tier = PROT_LICENSE_TIER_FULL;
     char f_serial[48] = {0};
     char f_prod[64] = {0};
     errno_t err;
@@ -189,6 +192,11 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
                 strcpy_s(f_prod, sizeof(f_prod), eq);
                 have_prod = 1;
             }
+        } else if (strcmp(line, "TIER") == 0) {
+            char* end = NULL;
+            unsigned long v = strtoul(eq, &end, 10);
+            if (end != eq && *end == '\0' && v <= PROT_LICENSE_TIER_PREMIUM)
+                tier = (uint32_t)v;
         } else if (strcmp(line, "SIGNATURE") == 0) {
             have_sig = 1;
             {
@@ -207,10 +215,14 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
     if (strcmp(f_serial, mem->serial) != 0)
         return 0;
     msg_len = prot_license_build_message(mem->serial, mem->serial_len,
-                                         mem->machine_id, msg, sizeof(msg));
+                                         mem->machine_id, tier, msg,
+                                         sizeof(msg));
     if (msg_len == 0u)
         return 0;
-    return prot_license_verify(msg, msg_len, sig, sizeof(sig));
+    if (!prot_license_verify(msg, msg_len, sig, sizeof(sig)))
+        return 0;
+    mem->license_tier = tier;
+    return 1;
 }
 
 int main(int argc, char** argv)
@@ -319,15 +331,17 @@ int main(int argc, char** argv)
         exit(1);
     }
 
-    /* §9.1-9b: RSA 授权 (A1) —— 宿主验签, 结果由 VM#4 并入最终判定位。
-     * 提供 --license-file 时: 验签失败 = license_ok=0, VM#4 使 result 归零;
-     * 未提供时与旧行为一致 (license_ok 默认 1, 不启用 RSA 门)。 */
+    /* §9.1-9b: RSA 授权 (A1 + Phase 4 tier) —— 宿主验签, 结果由 VM#4 并入
+     * 最终判定位。提供 --license-file 时: 验签失败 = license_ok=0, VM#4
+     * 使 result 归零; 未提供时与旧行为一致 (license_ok=1, tier=正式)。 */
     mem.license_ok = 1u;
+    mem.license_tier = PROT_LICENSE_TIER_FULL;
     if (license_path != NULL) {
         mem.license_ok = (uint32_t)load_and_verify_license(license_path, &mem);
         {
-            char eye[32];
-            snprintf(eye, sizeof(eye), "%u", mem.license_ok);
+            char eye[48];
+            snprintf(eye, sizeof(eye), "%u (tier=%u)",
+                     mem.license_ok, mem.license_tier);
             printf("license: %s\n", eye);
         }
     }

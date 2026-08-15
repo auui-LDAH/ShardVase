@@ -45,8 +45,11 @@
 ## Phase 4 — 授权与分发（商业价值核心）
 - ✅ machine_id 真实绑定（卷序列号 + 计算机名多因子 FNV-1a，C/Python 两则一致，
   2026-08-09）。
-- 离线段签发 CLI（vmenc 扩展）：FNV/xorshift → RSA 签名 license。
-- 分级授权（试用/正式/增值），验证核心放进 VM，私钥离线。
+- ✅ 离线段签发 CLI（vmenc 扩展）：FNV/xorshift → RSA 签名 license（A1，
+  2026-08-10）。
+- ✅ 分级授权（试用/正式/增值）：`sign --tier 0|1|2` 参与签名载荷
+  （serial‖mid‖PRODUCT‖tier），license.txt `TIER=` 行，demo 验签后
+  `license: 1 (tier=N)`；篡改 TIER 行 → 验签失败（T12 全绿，2026-08-14）。
 - 在线验证 + 吊销（可选），失败降级 + 本地告警而非崩溃。
 
 ## Phase 5 — 交付线同化
@@ -100,4 +103,6 @@
 - [x] A5 反附加定时器（看门狗周期 antidebug 复查 + 间隔抖动，2026-08-14）
 - [x] A6 direct syscall 反 hook（SSN 运行时提取 + 内存 stub，syscall_probe
   单测，2026-08-14）
+- [x] Phase 4 分级授权（试用/正式/增值）：tier 参与 RSA 签名载荷 + TIER 行，
+  T12 防篡改全绿（2026-08-14）
 - [ ] T3 真机验证（沙箱 SKIP 待补）

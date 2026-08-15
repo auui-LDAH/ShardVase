@@ -1,6 +1,6 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-14（v3：A6 落地，A 区全清）· 基线提交：`e1f3493` 之后
+> 生成日期：2026-08-14（v4：A6 + Phase 4 分级授权落地）· 基线提交：`a5c7cfc` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` / `docs/THREATMODEL.md`
 > / `docs/PRODUCTION.md`。**交接任何事项前务必先读本文档 + CONTRACT。**
@@ -18,6 +18,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | 字符串加密 | 运行期一次性解密 | `src/strcrypt.c`、`tools/strgen.py`、`demo/strings.txt` |
 | 机器绑定 | hostid 多因子折叠 → machine_id，绑定序列号期望值 | `src/hostid.c` |
 | **RSA 授权（A1，2026-08-10 落地）** | 离线签发 RSA-2048/PKCS#1v1.5/SHA-256；宿主验签 + **VM#4 门控**（`result &= license_ok`） | `src/license.c`、`include/protect/license.h`、`tools/vmenc.py keygen/sign`、`demo/license_gate.vasm` |
+| **分级授权（Phase 4，2026-08-14 落地）** | `--tier 0|1|2`（试用/正式/增值）参与签名载荷 `serial‖mid‖PRODUCT‖tier`；license.txt `TIER=` 行，篡改即验签失败 | `tools/vmenc.py sign --tier`、`src/license.c`、`demo/main.c` |
 | **引擎语义变异（A2，2026-08-14 落地）** | 操作数字节序 LE/BE-SWAP + 折叠公式 4 选 1（`key[1]` 流派生 `sem`，两侧同位置复算） | `src/vm.c`（`vm_wfetch32/64`、`vm_fold`、`vm_build_keymaps`）、`tools/vmenc.py make_opcode_keymaps` |
 | **完整性扩三节（A3，2026-08-14 落地）** | `.protcrc` 专用段烧录 `.text/.rdata/.pdata` 3 组 CRC；IAT/重定位字段两侧同掩码归零 | `src/integrity.c`、`tools/hashpatch.py` |
 | **反附加定时器（A5，2026-08-14 落地）** | 看门狗周期重跑 `prot_antidebug_scan` + 间隔 ±40% 抖动 | `src/integrity.c`（watchdog_thread） |
@@ -37,6 +38,7 @@ T4 tamper-detect  PASS  T5 vm-unit-ops  PASS  T6 multi-run-stable PASS (8/8)
 T7 selftest-clean PASS  T8 license-forge PASS
 T9 tamper-rdata   PASS  T10 tamper-pdata PASS   (A3: .rdata/.pdata 篡改也 0xBAD)
 T11 watchdog-stable PASS                              (A5: 14s 驻留周期复查零误报)
+T12 tier-forge    PASS                                  (Phase 4: 改 TIER 行被拒)
 A1 machine-bind   PASS  A2 vm-ciphertext PASS  A3 build-fingerprint PASS
 A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
 ```
@@ -46,9 +48,9 @@ A4 selftest-clean PASS  A5 license-forge PASS  A6 license-other-machine PASS
 （BE/LE 操作数序与 4 种折叠公式均被实际覆盖）。
 
 被测行为要点（黑盒断言，勿破坏）：
-- 正确序列号 + 有效 `--license-file build\license.txt` → 输出 `license: 1` 与
+- 正确序列号 + 有效 `--license-file build\license.txt` → 输出 `license: 1 (tier=1)` 与
   `校验通过`，退出码 0；无 license 参数时 license_ok=1（旧行为兼容）。
-- 错误序列号 / 改 1 位签名 / 异机 license → `license: 0`，退出码 1。
+- 错误序列号 / 改 1 位签名 / 改 TIER 行 / 异机 license → `license: 0`，退出码 1。
 - 篡改 `.text`/`.rdata`/`.pdata` → 0xBAD；调试附加 → 0xDB；看门狗 5s（±40% 抖动）
   周期复查完整性 + 反调试。
 
@@ -122,7 +124,7 @@ python tests\attacks.py
 | 优先级 | 项 | 状态 |
 |--------|----|------|
 | 需真机 | B1 T3 真机验证 / B2 CI 推远程 / B3 发版 gate / B4 真实硬件绑定 | 待新机就绪后做（PRODUCTION.md B 区；A 区已全部结清） |
-| 规划 | Phase 4 分级授权（试用/正式/增值）+ 在线验证/吊销（可选） | ROADMAP 规划项，未开工 |
+| 规划 | Phase 4 在线验证 + 吊销（可选），失败降级 + 本地告警而非崩溃 | ROADMAP 规划项，未开工 |
 | 规划 | 技术债 #3：DBI launcher（密文外部装载进内存再解密，明文限活动窗口） | THREATMODEL §6，未开工 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 

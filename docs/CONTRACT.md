@@ -204,7 +204,7 @@ build/             [构建产物] demo.exe
 python tools/vmenc.py assemble <in.vasm> <vm_build.json> <out.c> <out.h>
 python tools/vmenc.py genserial --json <vm_build.json> [--print]
 python tools/vmenc.py keygen --key-out <priv.json> --blob-out <pub.c>   (A1)
-python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <license.txt>  (A1)
+python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <license.txt> [--tier 0|1|2]  (A1 + Phase 4)
 ```
 - `assemble`：两遍汇编（先收集标签）→ 明文字节 → 随机 64 位种子 key → 按 §3 加密 →
   输出 `out.c`（含 `static const uint8_t s_code[]`、`const prot_vm_image <name>`）与
@@ -416,27 +416,29 @@ typedef struct demo_mem {
     uint64_t vm_total;     /* +72 (VM#2 写, VM#3 读: GOLDEN 混合 total) */
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
     uint32_t license_ok;   /* +88 (宿主 RSA 验签结果, 0/1; VM#4 门控) */
-    uint32_t _pad;         /* +92 */
+    uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
 } demo_mem;                /* 总 96 字节 */
 ```
 `machine_id`（Phase 4）由 `prot_hostid_get()` 在运行期计算（= `vm_build.json` 中
 genserial 自动写入的 `hostid()`，见 §5.6）。演示为"绑定本机"简化：换机器后同一
 serial 无法通过。
 
-### 9.4 授权验签（A1, 2026-08-10）
+### 9.4 授权验签（A1, 2026-08-10; Phase 4 tier, 2026-08-14）
 - 流程（§9.1 第 8 步之后）：`demo --license-file F` 传授权文件；未传时
   `license_ok=1`（与旧行为兼容）。传了则：
-  1. 逐行解析 `F`：`SERIAL=` / `MACHINE_ID=0x..` / `PRODUCT=` / `SIGNATURE=<base64 344B>`
-     （`SIGNATURE` 在前，`SERIAL`/`MACHINE_ID` 可能在后，供顺序收集）。
+  1. 逐行解析 `F`：`SERIAL=` / `MACHINE_ID=0x..` / `PRODUCT=` / `TIER=<0|1|2>`
+     （缺省视为 1=正式，向后兼容）/ `SIGNATURE=<base64 344B>`
+     （`SIGNATURE` 在前，`SERIAL`/`MACHINE_ID`/`TIER` 可能在后，供顺序收集）。
   2. `PRODUCT != PROT_LICENSE_PRODUCT` 或 `SERIAL` 与用户输入不一致 → 拒。
   3. base64 解码签名（自定义解码器，`\r\n`/空格忽略），长度必须 256。
-  4. `prot_license_build_message(serial, serial_len, machine_id, msg, cap)`
-     = `serial || LE64(machine_id) || "PROT-DEMO-2026"`（与 `vmenc.py license_message` 逐字节一致）。
+  4. `prot_license_build_message(serial, serial_len, machine_id, tier, msg, cap)`
+     = `serial || LE64(machine_id) || "PROT-DEMO-2026" || tier(1B)`
+     （与 `vmenc.py license_message` 逐字节一致）。
   5. `prot_license_verify(msg)`：BCrypt SHA-256 → `BCryptImportKeyPair`（公钥 blob
      嵌入 `demo/gen/license_pubkey.c`）→ `BCryptVerifySignature`，**必须传**
      `BCRYPT_PKCS1_PADDING_INFO{B CRYPT_SHA256_ALGORITHM}`（传 NULL 返回 0xc000000d）。
-  6. 过 → 打印 `license: 1` 且 `mem.license_ok=1`；任何一步失败 → 打印 `license: 0`
-     （不泄漏原因），`exit(1)`。
+  6. 过 → 打印 `license: 1 (tier=N)` 且 `mem.license_ok=1`、`mem.license_tier=N`；
+     任何一步失败 → 打印 `license: 0`（不泄漏原因），`exit(1)`。
 - **门控进 VM**（防宿主调用点被 patch）：验签通过仅设 `license_ok`；由 VM#4
   （`demo/license_gate.vasm`，`g_vm_gate_image`）在宿主 VM#1-3 之后执行，
   对 `mem.result`（+52）与 `mem.license_ok`（+88）逐位 AND 写回 +52。
@@ -453,7 +455,8 @@ serial 无法通过。
 - `vmenc.py sign --key <priv.json> --json demo/vm_build.json --out build/license.txt`：
   读 json 的 serial/machine_id，载荷 = `license_message`（同 §9.4-4），
   EMSA-PKCS1-v1_5(SHA-256) 填充 → RSA 私钥签名 → base64 344B 写
-  `build/license.txt`。
+  `build/license.txt`。`--tier 0|1|2`（Phase 4，默认 1=正式）参与载荷与
+  `TIER=` 行；0=试用 / 1=正式 / 2=增值（`vmenc.py LICENSE_TIER_*`）。
 
 ### 9.3 退出码
 0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改。
@@ -496,6 +499,8 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
   各 1 字节 → 退出码 0xBAD（`.rdata` 被篡改时 MSG_TAMPER 解密即乱码，只断言退出码）。
 - 测试 11（A5 看门狗长驻留）：`--wait-after 14000` 驻留 14s，期间看门狗周期
   复查（完整性 + 反调试）多次触发，干净环境必须零误报：退出码 0 且 `license: 1`。
+- 测试 12（Phase 4 分级授权防篡改）：把 `TIER=` 行改为不同值 → 载荷与签名
+  不匹配 → demo 必须输出 `license: 0` 且退出码 1。
 - 测试 5（VM 单测）：`tests/vm_unit.c` 编译为 `build\vm_unit.exe` 运行，Phase 1d
   新增指令全覆盖。
 - 测试 6（稳定性）：同轮构建 8 次重启 demo（正确序列号）都应先输出
