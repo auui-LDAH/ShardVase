@@ -31,8 +31,8 @@
 /* 虚拟机栈容量 (CONTRACT §4.2) */
 #define PROT_VM_STACK_CAP 512u
 
-/* 规范 opcode 域大小 (CONTRACT §4.2: 0x00..0x2A, Phase 1d 扩充了 7 条) */
-#define PROT_VM_OP_COUNT 0x2Bu
+/* 规范 opcode 域大小 (CONTRACT §4.2: 0x00..0x2E, A4 扩充 brk/move/loadr32/storr32) */
+#define PROT_VM_OP_COUNT 0x2Fu
 
 /* Phase 1b: 上下文散列乘子 (CONTRACT §3 GOLDEN), 取低 32 为变体折叠 */
 #define PROT_CTX_MUL 0x9E3779B97F4A7C15u
@@ -75,6 +75,7 @@ typedef struct prot_vm_rt {
     uint64_t       rr;   /* 通用寄存器 R (Phase 1d), 初始 0 */
     uint64_t       con;  /* 条件寄存器 CON (Phase 1d, 0/1), 初始 0 */
     uint8_t        var[PROT_VM_OP_COUNT]; /* Phase 1c: 每个 op 的构建期变体基准 */
+    uint8_t        sem[2]; /* A2: 构建期语义微变 [0]=操作数序 0=LE/1=BE, [1]=折叠公式 */
 
     /* Phase 2b 窗口状态 */
     uint64_t       kseed; /* 初始密钥流状态 (= img->key[0]) */
@@ -86,14 +87,18 @@ typedef struct prot_vm_rt {
 
 typedef prot_status (*prot_vm_route)(prot_vm_rt*);
 
-/* 从 img->key[1] 重建构建期 opcode 置换与变体选择 (ROADMAP Phase 1a/b/c):
+/* 从 img->key[1] 重建构建期 opcode 置换与变体选择 (ROADMAP Phase 1a/b/c + A2):
  * xorshift64 + Fisher-Yates, 与 tools/vmenc.py 完全一致。
  *   inv[发射字节] = 规范 opcode;  未命中(0xFF)表示非法指令
  *   slot[规范 opcode] = 分发表槽位 (同一条 xorshift 流继续派生第二个置换)
  *   var[规范 opcode] = 该 op 的构建期基准变体
- * 注意: slot/var 只由 C 侧运行时按同一流复算, 字节码生成不依赖它们。 */
+ *   sem[0] = 操作数字节序微变 (0=LE, 1=BE; vm_wfetch32/64 同步反转, A2)
+ *   sem[1] = vm_var 等价路径折叠公式选择 0..3 (A2, 不影响语义)
+ * 注意: sem 与 slot/var 一样只在 C 侧运行时按同一流复算, 字节码生成不依赖它们;
+ * 生成侧 (vmenc.py make_opcode_keymaps) 在同一流位置 (slot 之后) 复算 sem。 */
 static void vm_build_keymaps(const prot_vm_image* img, uint8_t inv[256],
-                             uint8_t slot[PROT_VM_OP_COUNT], uint8_t var[PROT_VM_OP_COUNT])
+                             uint8_t slot[PROT_VM_OP_COUNT], uint8_t var[PROT_VM_OP_COUNT],
+                             uint8_t sem[2])
 {
     uint8_t  pool[PROT_VM_OP_COUNT];
     uint8_t  pool2[PROT_VM_OP_COUNT];
@@ -126,6 +131,13 @@ static void vm_build_keymaps(const prot_vm_image* img, uint8_t inv[256],
         pool2[idx] = pool2[swapi];
         pool2[swapi] = temp;
     }
+
+    /* A2: 继续同一 rng 流 (slot 之后, var 之前 —— 与生成侧 make_opcode_keymaps
+     * 的 sem 派生位置一致), 抽 2 个构建期语义微变开关。 */
+    rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+    sem[0] = (uint8_t)(rng & 1u); /* 操作数字节序 */
+    rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+    sem[1] = (uint8_t)(rng & 3u); /* 折叠公式 */
 
     /* Phase 1c: 继续同一 rng 流, 按 op 字序为有变体的 op 抽取基准变体 */
     for (i = 0; i < PROT_VM_OP_COUNT; i++) {
@@ -222,34 +234,45 @@ static void vm_wprune(prot_vm_rt* s)
     /* k 仍对应 (wlo+wt) 位置, 无需改动 */
 }
 
-/* 取 4 字节小端操作数 (经明文窗口); 越界返回 0 */
+/* 取 4 字节操作数 (经明文窗口); 越界返回 0。
+ * A2 语义微变: sem[0]==1 时按 BE (高位在前) 组装 —— 生成侧 assemble_source
+ * 在同一构建下同步反转写出, 语义逐位一致。 */
 static int vm_wfetch32(prot_vm_rt* s, uint32_t* ip, uint32_t* out)
 {
     uint32_t p = *ip;
+    uint32_t b0, b1, b2, b3;
     if (p + 4u > s->code_len)
         return 0;
-    *out = (uint32_t)vm_wb(s, p)
-         | ((uint32_t)vm_wb(s, p + 1) << 8)
-         | ((uint32_t)vm_wb(s, p + 2) << 16)
-         | ((uint32_t)vm_wb(s, p + 3) << 24);
+    b0 = (uint32_t)vm_wb(s, p);
+    b1 = (uint32_t)vm_wb(s, p + 1);
+    b2 = (uint32_t)vm_wb(s, p + 2);
+    b3 = (uint32_t)vm_wb(s, p + 3);
+    *out = (s->sem[0] & 1u)
+               ? (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+               : b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     *ip = p + 4u;
     return 1;
 }
 
-/* 取 8 字节小端操作数 (经明文窗口); 越界返回 0 */
+/* 取 8 字节操作数 (经明文窗口); 越界返回 0。A2 语义微变同上。 */
 static int vm_wfetch64(prot_vm_rt* s, uint32_t* ip, uint64_t* out)
 {
     uint32_t p = *ip;
+    uint64_t b[8];
+    uint64_t v = 0u;
+    uint32_t j;
     if (p + 8u > s->code_len)
         return 0;
-    *out = (uint64_t)vm_wb(s, p)
-         | ((uint64_t)vm_wb(s, p + 1) << 8)
-         | ((uint64_t)vm_wb(s, p + 2) << 16)
-         | ((uint64_t)vm_wb(s, p + 3) << 24)
-         | ((uint64_t)vm_wb(s, p + 4) << 32)
-         | ((uint64_t)vm_wb(s, p + 5) << 40)
-         | ((uint64_t)vm_wb(s, p + 6) << 48)
-         | ((uint64_t)vm_wb(s, p + 7) << 56);
+    for (j = 0u; j < 8u; j++)
+        b[j] = (uint64_t)vm_wb(s, p + j);
+    if (s->sem[0] & 1u) { /* BE: 最高字节在前 */
+        for (j = 0u; j < 8u; j++)
+            v |= b[j] << (8u * (7u - j));
+    } else { /* LE: 最低字节在前 */
+        for (j = 0u; j < 8u; j++)
+            v |= b[j] << (8u * j);
+    }
+    *out = v;
     *ip = p + 8u;
     return 1;
 }
@@ -289,16 +312,46 @@ static uint64_t vm_ctx_seed(void)
     return acc;
 }
 
+/* A2: 上下文折叠公式按构建期微变 sem[1] 选择 0..3。该值只决定"走哪条等价
+ * 实现路径" (vm_var), 不参与语义 —— 各公式产出不同, 但最终计算结果一致。
+ * 生成侧只派生开关值 (vmenc.py make_opcode_keymaps), 公式本体仅 C 侧存在。 */
+static uint32_t vm_fold(const prot_vm_rt* s, uint8_t op)
+{
+    const uint32_t c  = (uint32_t)s->ctx;
+    const uint32_t ch = (uint32_t)(s->ctx >> 32);
+    const uint32_t ip = s->ip;
+    uint32_t k;
+
+    switch (s->sem[1] & 3u) {
+    case 1: /* 乘加混序 */
+        k = ch ^ c;
+        k = k * 0x9E3779B9u + ip * 0x85EBCA6Bu + (uint32_t)op * 0xC2B2AE35u;
+        return k;
+    case 2: /* xorshift 折叠 */
+        k = c ^ ip;
+        k ^= k << 13; k ^= k >> 7; k ^= k << 17;
+        k += ch ^ ((uint32_t)op * 0x9E3779B9u);
+        return k;
+    case 3: /* 乘异或混 + 半字折叠 */
+        k = c * 0x9E3779B9u;
+        k ^= (ip << 7) ^ ch;
+        k += (uint32_t)op * 0x85EBCA6Bu;
+        return k ^ (k >> 16);
+    default: /* 原式 (case 0): ch ^ c + ip*G + op*K */
+        k = ch ^ c;
+        k += ip * 0x9E3779B9u;
+        k += (uint32_t)op * 0x85EBCA6Bu;
+        return k;
+    }
+}
+
 /* 返回 op 本轮实际要走的路编号: 构建期基准 var[op] 再叠运行时刻 ctx/ip 折叠值 */
 static uint8_t vm_var(const prot_vm_rt* s, uint8_t op)
 {
     uint8_t n = vmk_vr_count[op];
     if (n < 2u)
         return 0u;
-    uint32_t kd = (uint32_t)(s->ctx >> 32) ^ (uint32_t)s->ctx;
-    kd += (uint32_t)s->ip * 0x9E3779B9u;
-    kd += (uint32_t)op * 0x85EBCA6Bu;
-    return (uint8_t)((uint32_t)s->var[op] + kd) % n;
+    return (uint8_t)((uint32_t)s->var[op] + vm_fold(s, op)) % n;
 }
 
 static uint64_t vm_kr_add(uint64_t a, uint64_t b, uint8_t w)
@@ -833,6 +886,57 @@ static prot_status vm_h_callind(prot_vm_rt* s)
     return PROT_OK;
 }
 
+/* 0x2B brk — 断言陷阱 (A4): CON != 0 -> PROT_ERR_VM_BREAKPOINT; CON == 0 继续。
+ * 用途: setcon 后接 brk, 让"校验失败"在 VM 内部直接停机, 不给宿主 patch 点。 */
+static prot_status vm_h_brk(prot_vm_rt* s)
+{
+    if (s->con != 0u)
+        return PROT_ERR_VM_BREAKPOINT;
+    return PROT_OK;
+}
+
+/* 0x2C move imm32 — R = 零扩展 imm32 (A4: 免栈流操作寄存器) */
+static prot_status vm_h_move(prot_vm_rt* s)
+{
+    uint32_t v;
+    if (!vm_wfetch32(s, &s->ip, &v))
+        return PROT_ERR_VM_BAD_OPCODE;
+    s->rr = (uint64_t)v;
+    return PROT_OK;
+}
+
+/* 0x2D loadr32 — 寄存器索引寻址 (A4): pop off; 读 mem[BR + R + off] 4 字节 LE 压栈 */
+static prot_status vm_h_loadr32(prot_vm_rt* s)
+{
+    uint64_t off, addr, v = 0u, j;
+    if (s->sp == 0u)
+        return PROT_ERR_VM_STACK_UNDERFLOW;
+    off = s->stk[--s->sp];
+    addr = s->br + s->rr + off; /* 基址寄存器 + 索引寄存器 + 栈上位移 */
+    if (vm_mem_oob(addr, 4u, s->mem_size))
+        return PROT_ERR_VM_OUT_OF_BOUNDS;
+    for (j = 0u; j < 4u; j++)
+        v |= (uint64_t)s->mem[addr + j] << (8u * j);
+    s->stk[s->sp++] = v;
+    return PROT_OK;
+}
+
+/* 0x2E storr32 — 寄存器索引寻址 (A4): pop val, pop off; 写 mem[BR + R + off] 4 字节 LE */
+static prot_status vm_h_storr32(prot_vm_rt* s)
+{
+    uint64_t val, off, addr, j;
+    if (s->sp < 2u)
+        return PROT_ERR_VM_STACK_UNDERFLOW;
+    val = s->stk[--s->sp];
+    off = s->stk[--s->sp];
+    addr = s->br + s->rr + off;
+    if (vm_mem_oob(addr, 4u, s->mem_size))
+        return PROT_ERR_VM_OUT_OF_BOUNDS;
+    for (j = 0u; j < 4u; j++)
+        s->mem[addr + j] = (uint8_t)(val >> (8u * j));
+    return PROT_OK;
+}
+
 /* 规范顺序的路由表 (Phase 1b: 运行时按 key[1] 派生槽位, 灌入 dt[] 后间接调用) */
 static const prot_vm_route g_routes[PROT_VM_OP_COUNT] = {
     vm_h_halt,     /* 0x00 */
@@ -878,6 +982,10 @@ static const prot_vm_route g_routes[PROT_VM_OP_COUNT] = {
     vm_h_setcon,   /* 0x28 */
     vm_h_pushcon,  /* 0x29 */
     vm_h_callind,  /* 0x2A */
+    vm_h_brk,      /* 0x2B (A4) */
+    vm_h_move,     /* 0x2C (A4) */
+    vm_h_loadr32,  /* 0x2D (A4) */
+    vm_h_storr32,  /* 0x2E (A4) */
 };
 
 prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_size)
@@ -900,12 +1008,13 @@ prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_siz
             return PROT_ERR_VM_CRC;
     }
 
-    /* §4.1 第 3 步: 解释执行 (Phase 1a/1b/1c + Phase 2b 窗口解密) */
+    /* §4.1 第 3 步: 解释执行 (Phase 1a/1b/1c + Phase 2b 窗口解密 + A2 语义微变) */
     uint8_t op_inv[256];
     uint8_t slot[PROT_VM_OP_COUNT];
     uint8_t vr[PROT_VM_OP_COUNT];
+    uint8_t sem[2];
     prot_vm_route dt[PROT_VM_OP_COUNT];
-    vm_build_keymaps(img, op_inv, slot, vr);
+    vm_build_keymaps(img, op_inv, slot, vr, sem);
     for (uint32_t c = 0u; c < PROT_VM_OP_COUNT; c++)
         dt[slot[c]] = g_routes[c]; /* 按构建期槽位随机灌表 */
 
@@ -916,6 +1025,7 @@ prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_siz
     rt.mem_size = mem_size;
     memset(rt.stk, 0, sizeof(rt.stk));
     memcpy(rt.var, vr, sizeof(vr));
+    memcpy(rt.sem, sem, sizeof(sem)); /* A2: 构建期语义微变开关 */
     rt.sp = 0u;
     rt.ip = 0u;
     rt.br = 0u;

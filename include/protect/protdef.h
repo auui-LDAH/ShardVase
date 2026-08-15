@@ -22,6 +22,7 @@ typedef enum prot_status {
     PROT_ERR_VM_STACK_UNDERFLOW,/* VM: 栈下溢 */
     PROT_ERR_VM_OUT_OF_BOUNDS,  /* VM: 内存越界 */
     PROT_ERR_VM_CRC,            /* VM: 程序校验失败(被篡改) */
+    PROT_ERR_VM_BREAKPOINT,     /* VM: brk 断言陷阱 (A4: CON!=0 时停机) */
     PROT_ERR_INTEGRITY          /* 完整性校验失败 */
 } prot_status;
 

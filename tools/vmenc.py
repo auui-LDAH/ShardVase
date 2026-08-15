@@ -119,6 +119,10 @@ INSTRUCTIONS = {
     'setcon':   (0x28, None),   # Phase 1d: pop; CON = (v != 0)
     'pushcon':  (0x29, None),   # Phase 1d: push CON (条件寄存器)
     'callind':  (0x2A, None),   # Phase 1d: pop 目标地址, 压入返回地址后跳转
+    'brk':      (0x2B, None),   # Phase 1d-A4: 断言陷阱 — CON!=0 停机 PROT_ERR_VM_BREAKPOINT
+    'move':     (0x2C, 'imm32'),# Phase 1d-A4: R = 零扩展 imm32
+    'loadr32':  (0x2D, None),   # Phase 1d-A4: pop off; push mem32[BR + R + off] (寄存器索引寻址)
+    'storr32':  (0x2E, None),   # Phase 1d-A4: pop val, pop off; mem32[BR + R + off] = val
 }
 
 # 1 byte opcode; imm32/rel32/labs add 4 bytes; imm64 adds 8 bytes.
@@ -129,7 +133,7 @@ INSN_SIZE = {
 
 RESERVED_SYMBOLS = frozenset(('EXPECT1', 'EXPECT2'))
 
-OPCODE_SLOTS = 0x2B  # canonical opcode domain: 0x00..0x2A (CONTRACT §4.2)
+OPCODE_SLOTS = 0x2F  # canonical opcode domain: 0x00..0x2E (CONTRACT §4.2, A4 扩 4 条)
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +164,22 @@ def make_opcode_permutation(seed):
 
 
 def make_opcode_keymaps(seed):
-    """(perm, slot) — ROADMAP Phase 1b 调度间接化用。
+    """(perm, slot, sem0, sem1) — ROADMAP Phase 1b 调度间接化 + Phase A2 语义变异。
 
     `perm[canon]=emitted_byte` 是 Phase 1a 的取指置换;
     `slot[canon]=dispatch_slot` 是 Phase 1b 追加的第二个置换, 决定规范 opcode
     放进分发表 dt[] 的哪个槽位。两者共用**同一个 xorshift64 流**, 先派生前一个,
     结束时的 rng 状态继续直接派生后一个 —— src/vm.c vm_build_keymaps 用同一
-    seed (img->key[1]) 复算, 保证两遍结果逐字节一致。"""
+    seed (img->key[1]) 复算, 保证两遍结果逐字节一致。
+
+    `sem0`/`sem1` (A2 引擎语义随构建变异): slot 派生结束后, 继续同一 rng 流
+    再取两步, 抽 2 个**构建期语义微变开关**:
+      sem0 = rng & 1  -> 操作数字节序: 0=LE (现行), 1=BE 高位在前。
+            生成侧 (assemble_source) 按 sem0 反转 imm32/imm64/rel32/labs
+            操作数字节, 执行侧 (vm.c vm_wfetch32/64) 同步反转, 语义逐位一致。
+      sem1 = rng & 3  -> vm_var 等价路径折叠公式 0..3 (仅影响选哪条等价路径,
+            不参与语义)。
+    C 侧在同一流位置 (slot 之后、C 私有的 var 派生之前) 复算这两步, 保证一致。"""
     x = seed & M64
     pool = list(range(OPCODE_SLOTS))
     for i in range(OPCODE_SLOTS - 1, 0, -1):
@@ -183,7 +196,12 @@ def make_opcode_keymaps(seed):
     slot = [0] * OPCODE_SLOTS
     for i, c in enumerate(pool2):
         slot[c] = i
-    return perm, slot
+
+    x = xorshift64(x)
+    sem0 = x & 1
+    x = xorshift64(x)
+    sem1 = x & 3
+    return perm, slot, sem0, sem1
 
 
 def invert_permutation(perm):
@@ -308,14 +326,19 @@ def parse_source(text):
     return stmts
 
 
-def assemble_source(text, symbols, perm=None):
+def assemble_source(text, symbols, perm=None, sem0=0):
     """
     Two-pass assembly.
     Pass 1: collect label offsets (size of each instruction is fixed).
     Pass 2: encode opcodes + operands; jumps/calls resolve labels to rel32.
     If `perm` is given, the 1-byte opcode is emitted as perm[opcode]
-    (operand bytes are untouched). Returns plaintext bytearray.
+    (operand bytes are untouched). If `sem0 != 0` (A2 构建期语义微变: 操作数
+    字节序), imm32/imm64/rel32/labs 操作数字节按高位在前 (BE) 写出 ——
+    src/vm.c vm_wfetch32/64 在同一构建下同步反转读回, 语义逐位一致。
+    Returns plaintext bytearray.
     """
+    be = (sem0 & 1) != 0  # A2: 操作数字节序微变
+
     stmts = parse_source(text)
 
     # --- Pass 1: labels ---------------------------------------------------
@@ -353,9 +376,9 @@ def assemble_source(text, symbols, perm=None):
             if kind == 'imm32':
                 if v > 0xFFFFFFFF:
                     raise VasmError("'%s' imm32 out of range: %s" % (mnem, operand))
-                code += struct.pack('<I', v)
+                code += struct.pack('>I' if be else '<I', v)
             else:
-                code += struct.pack('<Q', v)
+                code += struct.pack('>Q' if be else '<Q', v)
         elif kind == 'labs':  # Phase 1d: lea — 绝对地址 (绝对 ip, 用于间接 call)
             if operand is None:
                 raise VasmError("'%s' requires an operand" % mnem)
@@ -367,7 +390,7 @@ def assemble_source(text, symbols, perm=None):
                 raise VasmError("'%s': unknown label or symbol '%s'" % (mnem, operand))
             if v > 0xFFFFFFFF:
                 raise VasmError("'%s': absolute address out of u32: %s" % (mnem, operand))
-            code += struct.pack('<I', v)
+            code += struct.pack('>I' if be else '<I', v)
         else:  # rel32
             if operand is None:
                 raise VasmError("'%s' requires a target label" % mnem)
@@ -378,7 +401,7 @@ def assemble_source(text, symbols, perm=None):
             rel = target - next_ip
             if not (-(1 << 31) <= rel < (1 << 31)):
                 raise VasmError("'%s': rel32 out of range for '%s'" % (mnem, operand))
-            code += struct.pack('<i', rel)
+            code += struct.pack('>i' if be else '<i', rel)
     return bytes(code)
 
 
@@ -437,15 +460,15 @@ def cmd_assemble(args):
     symbols = load_symbols(args.build_json)
     seed = random.getrandbits(64)
     perm_seed = random.getrandbits(64)
-    perm, slot = make_opcode_keymaps(perm_seed)
+    perm, slot, sem0, sem1 = make_opcode_keymaps(perm_seed)
     if sorted(slot) != list(range(OPCODE_SLOTS)):
         raise VasmError('internal: slot permutation is broken')
-    plaintext = assemble_source(text, symbols, perm)
+    plaintext = assemble_source(text, symbols, perm, sem0)
     image_name = getattr(args, 'name', None) or 'g_vm_image'
     code_len, seed, crc = write_vm_c(args.out_c, args.out_h, plaintext, seed,
                                      perm_seed, image_name=image_name)
-    print('vmenc: assembled %d bytes (opcode perm seed=0x%016x), crc=0x%08x, key=0x%016x'
-          % (code_len, perm_seed, crc, seed))
+    print('vmenc: assembled %d bytes (opcode perm seed=0x%016x, sem=[%d,%d]), crc=0x%08x, key=0x%016x'
+          % (code_len, perm_seed, sem0, sem1, crc, seed))
     print('vmenc: wrote %s and %s' % (args.out_c, args.out_h))
 
 
