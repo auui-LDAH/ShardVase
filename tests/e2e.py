@@ -10,6 +10,8 @@ tests/e2e.py - 端到端测试  (Lane D)
   T2 normal-bad   错误序列号 -> MSG_FAIL 文本 + 退出码 1
   T3 debug-detect 附加内核调试器 -> MSG_DBG 文本 + 退出码 0xDB (附加失败则 SKIP)
   T4 tamper-detect 翻转 .text 一个字节 -> MSG_TAMPER 文本 + 退出码 0xBAD
+  T9/T10          翻转 .rdata/.pdata 一个字节 -> 退出码 0xBAD (A3; 消息可能乱码)
+  T11 watchdog-stable --wait-after 14s 期间看门狗周期复查零误报 (A5)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -89,6 +91,11 @@ def pump_and_read(proc, timeout=30):
 
 def pe_text_raw_offset(path):
     """Offset of the first raw byte of .text (PointerToRawData)."""
+    return pe_section_raw_offset(path, '.text')
+
+
+def pe_section_raw_offset(path, sec_name):
+    """Offset of the first raw byte of section `sec_name` (PointerToRawData)."""
     with open(path, 'rb') as f:
         data = f.read()
     e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
@@ -98,15 +105,15 @@ def pe_text_raw_offset(path):
     for i in range(num):
         off = tab + i * 40
         name = data[off:off + 8].rstrip(b'\x00')
-        if name == b'.text':
+        if name == sec_name.encode('ascii'):
             return struct.unpack_from('<I', data, off + 20)[0]
-    raise RuntimeError('.text not found in %s' % path)
+    raise RuntimeError('%s not found in %s' % (sec_name, path))
 
 
-def make_tampered_copy():
+def make_tampered_copy(sec_name='.text', rel_off=0):
     dst = os.path.join(BUILD, 'demo_tampered.exe')
     shutil.copyfile(EXE, dst)
-    ro = pe_text_raw_offset(dst)
+    ro = pe_section_raw_offset(dst, sec_name) + rel_off
     with open(dst, 'r+b') as f:
         f.seek(ro)
         b = f.read(1)
@@ -251,9 +258,9 @@ def main():
     except Exception as e:
         results.append(('T3 debug-detect', 'FAIL', repr(e)))
 
-    # ---- T4: 篡改检测 ---------------------------------------------------
+    # ---- T4: 篡改检测 (.text) -------------------------------------------
     try:
-        tampered = make_tampered_copy()
+        tampered = make_tampered_copy('.text')
         code, text, _ = run_demo(exe=tampered,
                                  args=['--license-file', LICENSE],
                                  stdin=(serial + '\n').encode('utf-8'))
@@ -262,6 +269,23 @@ def main():
                         'exit=%d' % code))
     except Exception as e:
         results.append(('T4 tamper-detect', 'FAIL', repr(e)))
+
+    # ---- T9/T10: 篡改检测扩展 (A3) —— 翻 .rdata/.pdata 一个字节也退 0xBAD
+    # 注意: .rdata 含加密字符串, 篡改后 MSG_TAMPER 解密即乱码, 故只断言退出码;
+    #       .rdata 段首 832 字节是 IAT (加载器启动时覆盖, 掩码排除, 见 CONTRACT
+    #       §7), 篡改它本来就会被 loader 重写, 故测试从 +0x1000 处翻转。
+    for tname, sec, rel in (('T9 tamper-rdata', '.rdata', 0x1000),
+                            ('T10 tamper-pdata', '.pdata', 0)):
+        try:
+            tampered = make_tampered_copy(sec, rel)
+            code, text, _ = run_demo(exe=tampered,
+                                     args=['--license-file', LICENSE],
+                                     stdin=(serial + '\n').encode('utf-8'))
+            ok = (code == PROT_EXIT_TAMPERED)
+            results.append((tname, 'PASS' if ok else 'FAIL',
+                            'exit=%d' % code))
+        except Exception as e:
+            results.append((tname, 'FAIL', repr(e)))
 
     # ---- T5: VM 指令集单测 (Phase 1d 新增指令) ------------------------
     vm_unit = os.path.join(BUILD, 'vm_unit.exe')
@@ -330,6 +354,17 @@ def main():
                         'exit=%d license_ok=0' % code))
     except Exception as e:
         results.append(('T8 license-forge', 'FAIL', repr(e)))
+
+    # ---- T11: A5 看门狗长驻留 —— --wait-after 期间周期复查不得误报 ----
+    try:
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--wait-after', '14000'],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out) and ('license: 1' in out)
+        results.append(('T11 watchdog-stable', 'PASS' if ok else 'FAIL',
+                        'exit=%d (14s residency)' % code))
+    except Exception as e:
+        results.append(('T11 watchdog-stable', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

@@ -45,33 +45,40 @@ typedef struct demo_mem {
  * 解析 CLI 参数 (契约 §9.1-2):
  *   --selftest       逐项打印检测结果
  *   --wait-ms N      扫描前 Sleep N 毫秒
+ *   --wait-after N   看门狗启动后驻留 N 毫秒 (A5 长驻留回归钩子)
  *   --license-file F 读入 RSA 授权文件 (A1) 并验签
  * 返回 1 成功, 0 用法错误。
  */
 static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
-                      const char** license_path)
+                      uint32_t* wait_after_ms, const char** license_path)
 {
     int i;
 
     *selftest = 0;
     *wait_ms = 0;
+    *wait_after_ms = 0;
     *license_path = NULL;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             *selftest = 1;
-        } else if (strcmp(argv[i], "--wait-ms") == 0) {
+        } else if (strcmp(argv[i], "--wait-ms") == 0 ||
+                   strcmp(argv[i], "--wait-after") == 0) {
+            int after = (strcmp(argv[i], "--wait-after") == 0);
             char* end = NULL;
             unsigned long v;
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
                 return 0;
             }
             v = strtoul(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0') {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
                 return 0;
             }
-            *wait_ms = (uint32_t)v;
+            if (after)
+                *wait_after_ms = (uint32_t)v;
+            else
+                *wait_ms = (uint32_t)v;
             i++;
         } else if (strcmp(argv[i], "--license-file") == 0) {
             if (i + 1 >= argc) {
@@ -81,7 +88,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             *license_path = argv[i + 1];
             i++;
         } else {
-            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--license-file F]\n");
+            fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F]\n");
             return 0;
         }
     }
@@ -212,6 +219,7 @@ int main(int argc, char** argv)
     demo_mem mem;
     int selftest;
     uint32_t wait_ms;
+    uint32_t wait_after_ms;
     const char* license_path = NULL;
     size_t n;
     prot_status st;
@@ -221,7 +229,8 @@ int main(int argc, char** argv)
     SetConsoleCP(65001);
 
     /* §9.1-2: 解析参数 */
-    if (!parse_args(argc, argv, &selftest, &wait_ms, &license_path)) {
+    if (!parse_args(argc, argv, &selftest, &wait_ms, &wait_after_ms,
+                    &license_path)) {
         return 2; /* 用法错误 */
     }
 
@@ -261,8 +270,14 @@ int main(int argc, char** argv)
         exit(PROT_EXIT_TAMPERED);
     }
 
-    /* §9.1-6: 看门狗 (每 5 秒复查完整性) */
+    /* §9.1-6: 看门狗 (每 5 秒 ±40% 抖动复查完整性 + A5 反调试) */
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
+
+    /* A5 长驻留回归钩子: 看门狗启动后驻留 N 毫秒, 让周期复查多次触发
+     * (e2e T11 用 --wait-after 验证干净环境零误报) */
+    if (wait_after_ms > 0) {
+        Sleep(wait_after_ms);
+    }
 
     /* §9.1-7: 机器标识 (Phase 4: 真实硬件绑定); 读到序列号前先清零全部区 */
     memset(&mem, 0, sizeof(mem));
