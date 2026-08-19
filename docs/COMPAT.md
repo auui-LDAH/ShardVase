@@ -91,3 +91,4 @@ os_build,arch,date,verify,e2e_t3,selftest_clean,notes
 | hostid 因子不足（克隆通过） | 换机语义被克隆绕过 | **D5：是否补充硬件因子** |
 | Server 版本优先级 | 若面向企业分发，Server 2022 优先于 Win10 | **D6：兼容矩阵优先级** |
 | 32 位/ARM 支持 | 当前 x64 only | **D7：是否扩展（影响面大，建议不扩展）** |
+| **WDAC/托管环境（2026-08-17 实测）** | 启用代码完整性策略的托管 VM 会按文件信誉拦截**新副本**（winerror 4551）：构建产物（已签名/信誉良好）可跑，篡改测试副本被拦 → e2e T4/T9/T10 记 SKIP；解决方案：build.ps1 签名全部测试产物 + 测试识别 4551 转 SKIP | 真机/无 WDAC 环境自动恢复 PASS |

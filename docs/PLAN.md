@@ -113,6 +113,14 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
   - **I5 交付/运营**：`vmenc.py issue`（签发+只增日志 build/issue-log.csv）、
     CHANGELOG.md、docs/templates/EULA.md、docs/templates/customers.csv；
   - **I6 测试面**：attacks.py A7（tier 篡改）、verify.ps1 每轮展示 syscall_probe。
+- **P0 基础设施加固（2026-08-19）**：
+  - verify.ps1 显式统计 e2e PASS/FAIL/SKIP（报告 `t_counts`，打破"伪全绿"）；
+  - `tools/replay.py` 种子重放（给定 seeds.json + 镜像名精确复现，调试失败构建）；
+  - strgen.py 枚举从 strcrypt.h 自动解析（消除 EXPECTED_ORDER 手工对齐）；
+  - build.ps1 冒烟自检（正确 serial 必须整体通过）；
+  - **WDAC 托管环境韧性**：签名全部构建产物（sign.pass 口令文件）、延迟重试/
+    重编译、verify build 失败 90s 重试一次、e2e 篡改副本被拦记 SKIP、
+    verify 各步骤 try/catch（PS5.1 NativeCommandFailed）。
 
 ## 3. 本次会话修复记录（2026-08-08）
 

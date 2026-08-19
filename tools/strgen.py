@@ -26,8 +26,9 @@ KS_ADD = 0x14057B7EF767814F
 
 BUF_SIZE = 128  # per-string plaintext buffer (incl. trailing NUL)
 
-# Must exactly match the prot_str_id enum order in include/protect/strcrypt.h
-EXPECTED_ORDER = [
+# 期望顺序: 优先从 include/protect/strcrypt.h 的 prot_str_id 枚举自动解析 (P0,
+# 消除手工同步), 解析失败时回退到本列表 (并打印警告)。
+FALLBACK_ORDER = [
     'BANNER',
     'PROMPT_SERIAL',
     'MSG_OK',
@@ -38,6 +39,25 @@ EXPECTED_ORDER = [
     'MSG_BLOB',
     'MSG_REVOKED',
 ]
+
+
+def _enum_order_from_header(path):
+    """从 strcrypt.h 解析 prot_str_id 枚举成员顺序; 失败返回 None."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        return None
+    # 定位 enum 块并逐行提取 PROT_STR_ 成员 (排除 *_COUNT)
+    m = __import__('re').search(r'enum\s+prot_str_id\s*\{(.*?)\}', text, __import__('re').S)
+    if not m:
+        return None
+    order = []
+    for name in __import__('re').findall(r'PROT_STR_([A-Z0-9_]+)', m.group(1)):
+        if name == 'COUNT':
+            continue
+        order.append(name)
+    return order or None
 
 
 class StrgenError(Exception):
@@ -79,10 +99,16 @@ def parse_manifest(path):
         entries.append((name, text))
 
     names = [n for n, _ in entries]
-    if names != EXPECTED_ORDER:
+    expected = _enum_order_from_header(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'include', 'protect', 'strcrypt.h'))
+    if expected is None:
+        expected = FALLBACK_ORDER
+        print('strgen: warning: cannot parse strcrypt.h enum, using fallback order')
+    if names != expected:
         raise StrgenError(
             '%s: NAME order/count must exactly match prot_str_id: %s (got %s)'
-            % (path, EXPECTED_ORDER, names))
+            % (path, expected, names))
 
     out = []
     for name, text in entries:

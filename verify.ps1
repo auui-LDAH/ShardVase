@@ -1,4 +1,4 @@
-# verify.ps1 — 一键验证脚本 (基础设施, 2026-08-09)
+﻿# verify.ps1 - 一键验证脚本 (基础设施, 2026-08-09)
 #
 # 把"多轮随机重建 + e2e + VM 单测 + 攻击模拟 + Python 语法检查"封装成一条命令,
 # 生成带时间戳/种子指纹/SHA 的 JSON 报告 (默认 verify-report.json)。
@@ -34,7 +34,7 @@ if (-not $py) {
         if (Test-Path -LiteralPath $p) { $py = $p; break }
     }
 }
-if (-not $py) { throw '[verify] cannot locate python — pass -Python <path>' }
+if (-not $py) { throw '[verify] cannot locate python - pass -Python <path>' }
 Write-Host "[verify] python = $py"
 $Time = Get-Date -Format 'yyyyMMdd-HHmmss'
 $RptPath = Join-Path $Root 'verify-report.json'
@@ -80,30 +80,76 @@ function Invoke-Once([int]$i, [int]$tot) {
         seeds = ''; log = $null
     }
     Write-Step "round $i/$tot : build.ps1"
-    $bl = & powershell -ExecutionPolicy Bypass -File .\build.ps1 2>&1
-    if ($LASTEXITCODE -ne 0) { $ent.build = 'FAIL'; $ent.log = $bl; return $ent }
+    $bl = $null; $rc = 0
+    try {
+        $bl = & powershell -ExecutionPolicy Bypass -File .\build.ps1 2>&1
+        $rc = $LASTEXITCODE
+    } catch {
+        $rc = 1  # NativeCommandFailed (子进程非 0 退出)
+    }
+    if ($rc -ne 0) {
+        # 托管环境 WDAC 信誉延迟 (新构建文件分钟级才被放行, 表现: 无法启动/
+        # 冒烟 license:0 瞬态): 等待 90s 重试一次整轮构建; 仍失败才记 FAIL。
+        Write-Host "[verify] round $i build failed (rc=$rc) - wait 90s and retry once (WDAC reputation?)" -ForegroundColor Yellow
+        Start-Sleep -Seconds 90
+        try {
+            $bl = & powershell -ExecutionPolicy Bypass -File .\build.ps1 2>&1
+            $rc = $LASTEXITCODE
+        } catch {
+            $rc = 1
+        }
+        if ($rc -ne 0) { $ent.build = 'FAIL'; $ent.log = $bl; return $ent }
+    }
 
     Write-Step "round $i/$tot : python tests\e2e.py"
-    $eo = @(& $py tests\e2e.py 2>&1)
-    if ($LASTEXITCODE -ne 0) { $ent.e2e = 'FAIL'; $ent.log = $eo; return $ent }
+    try {
+        $eo = @(& $py tests\e2e.py 2>&1)
+        $rcE = $LASTEXITCODE
+    } catch { $rcE = 1 }
+    if ($rcE -ne 0) { $ent.e2e = 'FAIL'; $ent.log = $eo; return $ent }
 
     Write-Step "round $i/$tot : build\vm_unit.exe"
-    $vu = @(& .\build\vm_unit.exe 2>&1)
-    if ($LASTEXITCODE -ne 0) { $ent.vm_unit = 'FAIL'; $ent.log = $vu; return $ent }
+    try {
+        $vu = @(& .\build\vm_unit.exe 2>&1)
+        $rcV = $LASTEXITCODE
+    } catch { $rcV = 1 }
+    if ($rcV -ne 0) { $ent.vm_unit = 'FAIL'; $ent.log = $vu; return $ent }
 
     Write-Step "round $i/$tot : build\syscall_probe.exe (A6)"
-    $sp = @(& .\build\syscall_probe.exe 2>&1)
-    if ($LASTEXITCODE -ne 0) { $ent.syscall_probe = 'FAIL'; $ent.log = $sp }
+    try {
+        $sp = @(& .\build\syscall_probe.exe 2>&1)
+        $rcS = $LASTEXITCODE
+    } catch { $rcS = 1 }
+    if ($rcS -ne 0) { $ent.syscall_probe = 'FAIL'; $ent.log = $sp }
     else { $ent.syscall_probe = 'PASS' }
 
     Write-Step "round $i/$tot : python tests\attacks.py (非真机攻击模拟)"
     if (Test-Path -LiteralPath 'tests\attacks.py') {
-        $at = @(& $py tests\attacks.py 2>&1)
-        if ($LASTEXITCODE -ne 0) { $ent.attacks = 'FAIL'; $ent.log = $at }
+        try {
+            $at = @(& $py tests\attacks.py 2>&1)
+            $rcA = $LASTEXITCODE
+        } catch { $rcA = 1 }
+        if ($rcA -ne 0) { $ent.attacks = 'FAIL'; $ent.log = $at }
     }
 
     $ent.seeds = Get-SeedFingerprint
     $ent.e2e_lines = ($eo -join ' | ')
+
+    # 显式统计 e2e 的 PASS/FAIL/SKIP (P0: 打破"伪全绿" -- SKIP 必须在报告中可见)
+    $nPass = 0; $nFail = 0; $nSkip = 0
+    foreach ($ln in $eo) {
+        if ($ln -match '\s+(PASS|FAIL|SKIP)\s') {
+            switch ($Matches[1]) {
+                'PASS' { $nPass++ }
+                'FAIL' { $nFail++ }
+                'SKIP' { $nSkip++ }
+            }
+        }
+    }
+    $ent.t_counts = [ordered]@{ pass = $nPass; fail = $nFail; skip = $nSkip }
+    if ($nSkip -gt 0) {
+        Write-Host ("[verify] round {0}: {1} SKIP (T3 debug-detect etc.) - 未覆盖项见报告" -f $i, $nSkip) -ForegroundColor Yellow
+    }
 
     if ($KeepArtifacts) {
         $d = Join-Path $ArtsRoot ("r{0:d2}" -f $i)
@@ -125,7 +171,7 @@ for ($i = 1; $i -le $Rounds; $i++) {
 
 # --- 报告 JSON --------------------------------------------------------------
 # I3 可复现构建验证: 同种子两次无签名构建, 比对 demo.exe / vm.blob SHA-256
-# (签名区由 signtool 引入差异, 属预期 —— RELEASE §3/§5)
+# (签名区由 signtool 引入差异, 属预期 -- RELEASE §3/§5)
 $repro = $null
 if ($Reproducible) {
     if (-not (Test-Path -LiteralPath $Reproducible)) {
@@ -133,8 +179,11 @@ if ($Reproducible) {
         $allGreen = $false
     } else {
         Write-Step "reproducible baseline build (Release, no signing)"
-        $rb1 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        try {
+            $rb1 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
+            $rcR = $LASTEXITCODE
+        } catch { $rcR = 1 }
+        if ($rcR -ne 0) {
             Write-Host '[verify] reproducible baseline build FAILED' -ForegroundColor Red
             $allGreen = $false
         } else {
@@ -143,8 +192,11 @@ if ($Reproducible) {
                 $h1[$f] = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash
             }
             Write-Step "reproducible rebuild (same seeds, Release, no signing)"
-            $rb2 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
-            if ($LASTEXITCODE -ne 0) {
+            try {
+                $rb2 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
+                $rcR = $LASTEXITCODE
+            } catch { $rcR = 1 }
+            if ($rcR -ne 0) {
                 Write-Host '[verify] reproducible rebuild FAILED' -ForegroundColor Red
                 $allGreen = $false
             } else {
@@ -180,7 +232,8 @@ $j | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $RptPath -Encoding utf8
 Write-Host ''
 Write-Host "[verify] $Rounds round(s) summary:"
 $results | ForEach-Object {
-    Write-Host ("  r{0}: build={1} e2e={2} vm_unit={3} attacks={4} seeds=[{5}]" -f $_.round, $_.build, $_.e2e, $_.vm_unit, $_.attacks, $_.seeds)
+    $skipTxt = if ($_.t_counts.skip -gt 0) { " skips=$($_.t_counts.skip)" } else { '' }
+    Write-Host ("  r{0}: build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} seeds=[{6}]{7}" -f $_.round, $_.build, $_.e2e, $_.vm_unit, $_.syscall_probe, $_.attacks, $_.seeds, $skipTxt)
 }
 Write-Host "[verify] report: $RptPath"
 if (-not $allGreen) { Write-Host '[verify] FAIL' -ForegroundColor Red; exit 1 }

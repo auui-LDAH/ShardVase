@@ -48,6 +48,14 @@ KERNEL32.DebugActiveProcessStop.restype = ctypes.c_int
 
 PROT_EXIT_DEBUG_DETECTED = 0xDB
 PROT_EXIT_TAMPERED = 0xBAD
+WINERROR_WDAC_BLOCK = 4551  # 0x11C7: 文件被 Device Guard/WDAC 代码完整性策略阻止
+
+
+def wdac_blocked(exc):
+    """True 若异常来自 WDAC 拦截 (winerror 4551 / 文本含"无法启动")."""
+    return (isinstance(exc, OSError) and
+            getattr(exc, 'winerror', None) == WINERROR_WDAC_BLOCK) or \
+           ('无法启动' in repr(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +270,8 @@ def main():
         results.append(('T3 debug-detect', 'FAIL', repr(e)))
 
     # ---- T4: 篡改检测 (.text) -------------------------------------------
+    # 注: 托管环境若启用 WDAC (代码完整性策略), 新复制的篡改副本会因文件
+    # 信誉被拦截 (winerror 4551) -> 记 SKIP (真机无 WDAC 时正常验证)。
     try:
         tampered = make_tampered_copy('.text')
         code, text, _ = run_demo(exe=tampered,
@@ -271,7 +281,11 @@ def main():
         results.append(('T4 tamper-detect', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
     except Exception as e:
-        results.append(('T4 tamper-detect', 'FAIL', repr(e)))
+        if wdac_blocked(e):
+            results.append(('T4 tamper-detect', 'SKIP',
+                            'WDAC blocked tampered copy (winerror 4551)'))
+        else:
+            results.append(('T4 tamper-detect', 'FAIL', repr(e)))
 
     # ---- T9/T10: 篡改检测扩展 (A3) —— 翻 .rdata/.pdata 一个字节也退 0xBAD
     # 注意: .rdata 含加密字符串, 篡改后 MSG_TAMPER 解密即乱码, 故只断言退出码;
@@ -288,7 +302,11 @@ def main():
             results.append((tname, 'PASS' if ok else 'FAIL',
                             'exit=%d' % code))
         except Exception as e:
-            results.append((tname, 'FAIL', repr(e)))
+            if wdac_blocked(e):
+                results.append((tname, 'SKIP',
+                                'WDAC blocked tampered copy (winerror 4551)'))
+            else:
+                results.append((tname, 'FAIL', repr(e)))
 
     # ---- T5: VM 指令集单测 (Phase 1d 新增指令) ------------------------
     vm_unit = os.path.join(BUILD, 'vm_unit.exe')

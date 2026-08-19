@@ -545,7 +545,8 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
   `PROT_STR_MSG_DBG` 文本且退出码 0xDBG。
 - 测试 4（篡改检测）：复制 `build\demo.exe` 到 `build\demo_tampered.exe`，用 PE 解析
   找到 `.text` 的 `PointerToRawData`，翻转其中 1 字节，运行 → 输出含 `PROT_STR_MSG_TAMPER`
-  文本且退出码 0xBAD。
+  文本且退出码 0xBAD。**托管环境启用 WDAC（代码完整性策略）时，新复制的篡改副本
+  可能被信誉拦截（winerror 4551）→ 记 SKIP（真机无 WDAC 时正常验证）。**
 - 测试 9/10（A3 篡改扩展）：翻转 `.rdata`（+0x1000 处，避开段首 IAT）/ `.pdata`
   各 1 字节 → 退出码 0xBAD（`.rdata` 被篡改时 MSG_TAMPER 解密即乱码，只断言退出码）。
 - 测试 11（A5 看门狗长驻留）：`--wait-after 14000` 驻留 14s，期间看门狗周期

@@ -136,3 +136,9 @@ release-vX.Y.Z/
 - **时间戳**：`/Brepro` 后 PE 时间戳为 0；如需真实时间戳（某些环境依赖），改用
   `--repro` 显式开关而非默认。
 - **版本资源与 CI 解耦**：版本号只改 version.h，任何脚本不得二次硬编码。
+- **WDAC 托管环境（2026-08-19 实测）**：启用 Application Control 策略的托管 VM 会
+  按文件信誉拦截新构建产物（winerror 4551 / 偶发"license: 0"瞬态），表现为
+  构建后立即运行不稳定、数分钟后趋于稳定。已做的韧性：build.ps1 签名全部产物
+  （`build\keys\sign.pass` 口令文件，gitignore）+ WDAC 重试（延迟重跑/重编译）；
+  verify.ps1 build 失败自动 90s 重试一次；e2e 篡改副本被拦记 SKIP。
+  **结论：此类环境仅适合开发，验证 gate 应以无 WDAC 环境为准。**
