@@ -236,6 +236,8 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | `docs/RELEASE.md` | 发布与交付工程（版本规范/发行加固/可复现构建/发版 checklist/打包） |
 | `docs/OPS.md` | 运营手册（吊销框架规格/签发 SOP/密钥管理/客户台账/在线 API 规格/EULA） |
 | `docs/COMPAT.md` | 兼容性计划（版本矩阵/误报风险清单/真机用例/硬件绑定/决策点 D5-D7） |
+| `docs/PHASE2.md` | 阶段 II 真机验证执行计划（步骤/验收/时间估计，2026-08-19） |
+| `docs/PHASE3.md` | 阶段 III 服务端执行计划（架构/API/部署/里程碑，2026-08-19） |
 | `demo/license_hash.vasm` | VM#1: FNV-1a 哈希（Phase 2a） |
 | `demo/license_mix.vasm` | VM#2: GOLDEN 混合（Phase 2a） |
 | `demo/license_verify.vasm` | VM#3: 期望值校验（Phase 2a） |
