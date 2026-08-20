@@ -275,18 +275,44 @@ class Parser:
 # ---------------------------------------------------------------------------
 # 语义 + 布局分配
 # ---------------------------------------------------------------------------
+# 语义 + 布局分配
+# ---------------------------------------------------------------------------
 class Analyzer:
-    def __init__(self):
+    def __init__(self, seed=0):
         self.vars = {}          # name -> offset
-        self.next_off = 0x40     # 从 0x40 起自动分配 (宿主内存槽)
+        self.seed = seed & 0xFFFFFFFF
+        self._slots = None      # 打乱后的槽位序列 (seed!=0 时)
+        self._slot_idx = 0
         self.builtins = {'mem8', 'mem32', 'mem64',
                          'store8', 'store32', 'store64'}
+
+    def _rand(self):
+        """xorshift32 (确定性, 同 seed 同序列)."""
+        x = self.seed
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        self.seed = x & 0xFFFFFFFF
+        return x
+
+    def _make_slots(self):
+        """M3a: 0x40..0xF8 的 24 个槽位, Fisher-Yates 打乱 (确定性)."""
+        slots = [0x40 + i * 8 for i in range(24)]
+        for i in range(len(slots) - 1, 0, -1):
+            j = self._rand() % (i + 1)
+            slots[i], slots[j] = slots[j], slots[i]
+        return slots
 
     def alloc(self, name):
         if name in self.vars:
             raise VmcError('duplicate variable %r' % name)
-        off = self.next_off
-        self.next_off += 8
+        if self.seed == 0:
+            off = 0x40 + len(self.vars) * 8
+        else:
+            if self._slots is None:
+                self._slots = self._make_slots()
+            off = self._slots[self._slot_idx]
+            self._slot_idx += 1
         self.vars[name] = off
         return off
 
@@ -471,15 +497,150 @@ class CodeGen:
 
 
 # ---------------------------------------------------------------------------
-def compile_vmc(src):
+# M3b: 控制流平坦化后处理
+# 把 (mnemonic, operand) 列表改造成"dispatch 循环 + state 表"模式:
+#   entry:  初始化 state=0, 跳 dispatch
+#   dispatch: 读 state, 比较链 -> 各基本块
+#   block_i: 原块指令, 末尾写 next_state + 跳 dispatch
+# state 存宿主内存固定偏移 0x200 (超出 vmc 变量区)。
+# ---------------------------------------------------------------------------
+FLAT_STATE_OFF = 0x200
+
+
+def flatten(insns, seed=0):
+    """控制流平坦化: 按 label/halt 切基本块, 块经 dispatch 循环进入,
+    块间跳转经 state 槽间接化。空标签 (L1: L2: 相邻) 合并到后继块。"""
+    # 1. 切块; 空标签映射到下一个非空块
+    labels = {}
+    blocks = []       # list of [insns]
+    pending = []      # 待定标签 -> 指向"下一个块" (收尾时确定)
+    cur = []
+    insn_list = list(insns)
+    for idx, (mnem, op) in enumerate(insn_list):
+        if mnem == 'label':
+            if cur:
+                blocks.append(cur)
+                for lb in pending:
+                    labels[lb] = len(blocks) - 1   # 指向刚 append 的块
+                pending = []
+                cur = []
+            pending.append(op)
+        elif mnem == 'halt':
+            if cur:
+                blocks.append(cur)
+                for lb in pending:
+                    labels[lb] = len(blocks) - 1   # 指向 halt 前的块
+                pending = []
+                cur = []
+            blocks.append([('halt', None)])
+        elif mnem in ('jz', 'jnz') and idx + 1 < len(insn_list) and \
+                insn_list[idx + 1][0] not in ('label', 'halt'):
+            # 条件跳转后还有直线代码: 条件与 jz 留在本块 (栈语义),
+            # 之后的指令开新块 (jz 的非跳转路指向它)。
+            cur.append((mnem, op))
+            if cur:
+                blocks.append(cur)
+                cur = []
+            for lb in pending:
+                labels[lb] = len(blocks) - 1
+            pending = []
+        else:
+            cur.append((mnem, op))
+    if cur:
+        blocks.append(cur)
+        for lb in pending:
+            labels[lb] = len(blocks) - 1
+    elif pending:
+        for lb in pending:
+            labels[lb] = len(blocks) - 1
+
+    n = len(blocks)
+    if n == 0:
+        return [('halt', None)]
+
+    # 2. 块顺序打乱 (seed) —— entry 块 (原 0) 必须固定在 state 0
+    order = list(range(n))
+    if seed != 0:
+        rest = list(range(1, n))
+        x = seed & 0xFFFFFFFF
+        for i in range(len(rest) - 1, 0, -1):
+            x ^= (x << 13) & 0xFFFFFFFF
+            x ^= x >> 17
+            x ^= (x << 5) & 0xFFFFFFFF
+            j = x % (i + 1)
+            rest[i], rest[j] = rest[j], rest[i]
+        order = [0] + rest
+    pos_of = {orig: new for new, orig in enumerate(order)}
+
+    def jump_to(state_id):
+        return [('push32', '0x%x' % state_id),
+                ('push32', '0x%x' % FLAT_STATE_OFF),
+                ('swap', None),
+                ('store32', None),
+                ('jmp', '__dispatch')]
+
+    out = []
+    out += jump_to(0)
+    out.append(('label', '__dispatch'))
+    for new_idx in range(n):
+        out.append(('push32', '0x%x' % FLAT_STATE_OFF))
+        out.append(('load32', None))
+        out.append(('dup', None))            # [state, state]
+        out.append(('push32', '0x%x' % new_idx))
+        out.append(('cmpeq', None))          # [state, eq]
+        out.append(('jz', '__d%d' % (new_idx + 1)))
+        out.append(('drop', None))           # 清残留 state
+        out.append(('jmp', '__b%d' % new_idx))
+        out.append(('label', '__d%d' % (new_idx + 1)))
+        out.append(('drop', None))           # 清残留 state
+    out.append(('jmp', '__halt'))
+
+    # 3. 块体
+    stub_id = 0
+    for new_idx, orig in enumerate(order):
+        body = blocks[orig]
+        out.append(('label', '__b%d' % new_idx))
+        if body == [('halt', None)]:
+            out.append(('jmp', '__halt'))
+            continue
+        nxt = orig + 1 if orig + 1 < n else None
+        n_state = pos_of[nxt] if nxt is not None else 0
+        for mnem, op in body:
+            if mnem == 'jmp':
+                tgt = labels.get(op)
+                t_state = pos_of[tgt] if tgt is not None else 0
+                out += jump_to(t_state)
+            elif mnem in ('jz', 'jnz'):
+                tgt = labels.get(op)
+                t_state = pos_of[tgt] if tgt is not None else 0
+                stub_id += 1
+                sname = '__s%d' % stub_id
+                out.append((mnem, sname))   # jz/jnz -> 本块 stub
+                out += jump_to(n_state)     # 非目标路 -> 顺序后继
+                out.append(('label', sname))
+                out += jump_to(t_state)     # 目标路 -> 目标块
+            else:
+                out.append((mnem, op))
+        out += jump_to(n_state)             # 块尾顺序后继
+
+    out.append(('label', '__halt'))
+    out.append(('halt', None))
+    return out
+
+
+# ---------------------------------------------------------------------------
+def compile_vmc(src, seed=0, flatten_cf=False):
     toks = tokenize(src)
     ast = Parser(toks).parse_program()
-    an = Analyzer()
+    an = Analyzer(seed)
     an.analyze(ast)
     cg = CodeGen(an)
     cg.gen(ast)
     cg.emit('halt')
-    return cg.ins, an.vars
+    ins = cg.ins
+    if flatten_cf:
+        ins = flatten(ins, seed)
+    return ins, an.vars
 
 
 def insns_to_vasm(insns):
@@ -501,19 +662,28 @@ def main(argv=None):
     parser.add_argument('in_vmc', help='input .vmc source')
     parser.add_argument('out_vasm', help='output .vasm (for vmenc assemble)')
     parser.add_argument('out_layout', help='output layout JSON (var->offset)')
+    parser.add_argument('--seed', dest='seed', type=lambda s: int(s, 0),
+                        default=0,
+                        help='stack-slot randomization seed (M3a; 0=sequential)')
+    parser.add_argument('--flatten', action='store_true',
+                        help='control-flow flattening (M3b; dispatch-loop + '
+                             'state table)')
     args = parser.parse_args(argv)
 
     try:
         with open(args.in_vmc, 'r', encoding='utf-8') as f:
             src = f.read()
-        insns, var_map = compile_vmc(src)
+        insns, var_map = compile_vmc(src, args.seed, args.flatten)
         with open(args.out_vasm, 'w', encoding='utf-8', newline='\n') as f:
             f.write(insns_to_vasm(insns))
         with open(args.out_layout, 'w', encoding='utf-8', newline='\n') as f:
-            json.dump({'result_off': 52, 'vars': var_map}, f, indent=2)
+            json.dump({'result_off': 52, 'seed': args.seed, 'vars': var_map},
+                      f, indent=2)
             f.write('\n')
-        print('vmc: compiled %d instructions -> %s (%s)'
-              % (len(insns), args.out_vasm, args.out_layout))
+        print('vmc: compiled %d instructions (seed=0x%x%s) -> %s (%s)'
+              % (len(insns), args.seed,
+                 ' flatten' if args.flatten else '',
+                 args.out_vasm, args.out_layout))
         return 0
     except VmcError as e:
         print('vmc: error: %s' % e, file=sys.stderr)

@@ -153,4 +153,4 @@ vmc.py check.vmc check.json check.vasm
 |--------|------|---------|
 | M1 反 VM/反沙箱 | ✅ 完成（CPUID/厂商串/进程；I/O 端口因真机异常死循环移除） | 2026-08-20 |
 | M2 vmc 编译器 | ✅ 完成（类 C 子集→VM 字节码；单测 9 项全绿；tool_demo 改用 check.vmc） | 2026-08-20 |
-| M3 控制流平坦化 | 未开始 | — |
+| M3 控制流平坦化 | ✅ 完成（dispatch 循环 + state 槽间接化；`--flatten`；栈槽位随机化 `--seed`；9 项单测全绿，flat 与 plain 结构完全互异） | 2026-08-20 |

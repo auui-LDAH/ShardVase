@@ -1,13 +1,10 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-tests/vmc_tests.py — vmc 编译器端到端单测 (M2)
+tests/vmc_tests.py ??vmc ???????????? (M2)
 
-对每个案例: vmc 编译 -> vmenc assemble -> cl 链接 runner -> 运行断言
-result@52。host 初始化数据经环境变量注入 (runner 读取)。
-
-案例: 算术/位运算、逻辑、if/else、while、mem 内置、EXPECT 符号、
-错误输入必须报错。
-"""
+???????? vmc ??? -> vmenc assemble -> cl ??? runner -> ??????
+result@52??ost ?????????????????? (runner ???)??
+???: ???/????????????f/else??hile??em ?????XPECT ???????????????????"""
 
 import json
 import os
@@ -26,7 +23,7 @@ CASES = []
 
 
 def case(name, src, host_hex=''):
-    """host_hex: 宿主内存初始化的 hex 字符串 (64 字节)."""
+    """host_hex: ???????????? hex ?????(64 ???)."""
     CASES.append((name, src, host_hex))
 
 
@@ -129,7 +126,7 @@ def run_case(name, src, host_hex):
     with open(vmc_src, 'w', encoding='utf-8') as f:
         f.write(src)
     r = subprocess.run([PY, VMC, vmc_src, vmc_vasm,
-                        os.path.join(BUILD, 'vmc_case.layout.json')],
+                        os.path.join(BUILD, 'vmc_case.layout.json'), '--seed', '0x1234', '--flatten'],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return 'COMPILE FAIL: ' + r.stderr.strip()
@@ -178,7 +175,7 @@ def main():
         if not ok:
             failed += 1
 
-    # 错误输入必须报错
+    # ????????????
     err_cases = [
         'uint64 x = y + 1;\n',
         'uint64 x = 1; x = ;\n',
@@ -202,3 +199,5 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
