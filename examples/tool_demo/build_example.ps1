@@ -82,7 +82,7 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
 Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 

@@ -649,6 +649,9 @@ def cmd_assemble(args):
 #   经 FNV-1a 64 折叠。任何一侧改动必须同步。
 # ---------------------------------------------------------------------------
 def hostid_windows():
+    """与 src/hostid.c prot_hostid_get 完全一致 (D5 硬件因子):
+      卷序列号+计算机名 (原有) + SMBIOS UUID + 磁盘物理序列号 (新增)。
+      任何一侧改动必须同步。"""
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=False)
     max_name = 260  # 计算机名缓冲大小
     comp = ctypes.create_unicode_buffer('', max_name)
@@ -677,8 +680,98 @@ def hostid_windows():
         for c in comp.value:
             h ^= (ord(c) & 0xFFFF) & HOSTID_M64
             h = (h * HOSTID_FNV_PRIME) & HOSTID_M64
+
+    # D5: MachineGuid (Windows 安装唯一 ID)
+    guid = machine_guid_string()
+    if guid is not None:
+        for b in guid.encode('ascii', 'replace'):
+            h ^= b & HOSTID_M64
+            h = (h * HOSTID_FNV_PRIME) & HOSTID_M64
+
+    # D5: 磁盘物理序列号 (\\.\PhysicalDrive0 + IOCTL_STORAGE_QUERY_PROPERTY)
+    dserial = disk_serial_string()
+    if dserial is not None:
+        for b in dserial.encode('ascii', 'replace'):
+            h ^= b & HOSTID_M64
+            h = (h * HOSTID_FNV_PRIME) & HOSTID_M64
+
     h ^= h >> 32
     return h & HOSTID_M64
+
+
+def machine_guid_string():
+    """HKLM SOFTWARE Microsoft Cryptography MachineGuid (Windows install ID).
+    与 src/hostid.c machine_guid 一致; 失败返回 None."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r'SOFTWARE\Microsoft\Cryptography') as k:
+            v, _ = winreg.QueryValueEx(k, 'MachineGuid')
+            return str(v)
+    except Exception:
+        return None
+
+
+def disk_serial_string():
+    """系统盘物理序列号 (IOCTL_STORAGE_QUERY_PROPERTY); 失败返回 None.
+    与 src/hostid.c disk_serial 一致 (同一 STORAGE_DEVICE_DESCRIPTOR 布局)."""
+    try:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=False)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                         wintypes.DWORD, ctypes.c_void_p,
+                                         wintypes.DWORD, wintypes.DWORD,
+                                         ctypes.c_void_p]
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.DeviceIoControl.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p]
+        kernel32.DeviceIoControl.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        class StorageDeviceDescriptor(ctypes.Structure):
+            # 布局与本机 SDK 编译的 STORAGE_DEVICE_DESCRIPTOR 一致
+            # (offsetof 实测: Vendor@12 Prod@16 Rev@20 Serial@24 ——
+            #  该版本无 DeviceTypeModifier/RemovableMedia/CommandQueueing)
+            _pack_ = 1
+            _fields_ = [
+                ('Version', wintypes.DWORD),
+                ('Size', wintypes.DWORD),
+                ('DeviceType', wintypes.DWORD),
+                ('VendorIdOffset', wintypes.DWORD),
+                ('ProductIdOffset', wintypes.DWORD),
+                ('ProductRevisionOffset', wintypes.DWORD),
+                ('SerialNumberOffset', wintypes.DWORD),
+            ]
+
+        IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
+        INVALID_HANDLE_VALUE = 0xFFFFFFFFFFFFFFFF
+        h = kernel32.CreateFileW(ctypes.c_wchar_p('\\\\.\\PhysicalDrive0'), 0,
+                                 1 | 2, None, 3, 0, None)
+        if h in (None, 0, INVALID_HANDLE_VALUE):
+            return None
+        try:
+            # STORAGE_PROPERTY_QUERY: PropertyId u32 + QueryType u32 +
+            # AdditionalParameters[1] (12 字节)
+            q = (ctypes.c_ulong * 3)(0, 0, 0)
+            buf = ctypes.create_string_buffer(1024)
+            ret = wintypes.DWORD(0)
+            ok = kernel32.DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY,
+                                          q, ctypes.sizeof(q), buf,
+                                          len(buf), ctypes.byref(ret), None)
+            if not ok:
+                return None
+            d = StorageDeviceDescriptor.from_buffer_copy(buf.raw[:64])
+            off = d.SerialNumberOffset
+            if 0 < off < len(buf.raw) - 1:
+                return buf.raw[off:].split(b'\x00', 1)[0].decode('ascii',
+                                                                 'replace')
+            return None
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return None
 
 
 def hostid():
