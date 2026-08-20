@@ -1,0 +1,2 @@
+os_build,arch,date,verify,e2e_t3,selftest_clean,24h_ok,concurrent_ok,bind_ok,notes
+"Win11 24H2 (26200)","x64","2026-08-20","PASS (e2e T1-T19 除 T3 全绿; attacks A1-A7; vm_unit; syscall_probe)","SKIP (SSH 非交互会话, DebugActiveProcess=AccessDenied 0x5; 需桌面会话)","0/0 (T7 PASS)","PENDING","PENDING","PASS (换机拒绝成立: 本机 mid 构建产物在真机 license:0)","真机=oiahcoiah 物理机, 无 WDAC 拦截 (T4/T9/T10 真实 PASS)"

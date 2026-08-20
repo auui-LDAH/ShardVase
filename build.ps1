@@ -19,7 +19,8 @@ param(
     [string]$Python = '',
     [string]$SeedsFile = '',
     [switch]$RecordSeeds,
-    [switch]$SkipSign
+    [switch]$SkipSign,
+    [switch]$SkipSmoke
 )
 $ErrorActionPreference = 'Stop'
 $isRelease = ($Config -eq 'Release')
@@ -265,28 +266,35 @@ Invoke-Unit 'syscall_probe.exe' $probeCl 'syscall_probe.exe (A6 direct syscall)'
 # 7.2. 冒烟自检 (P0): 正确序列号 + license + vm.blob 必须整体通过 ——
 #      验证 hashpatch 烧录 CRC 与运行期掩码规则一致 (IAT/重定位), 以及
 #      blob/授权链路; 失败即中止, 尽早暴露"两侧不一致"类缺陷。
-#      WDAC 拦截时重签名 (新哈希) 重试, 最多 3 轮。
+#      -SkipSmoke: 绑定"他机" machine_id 构建时 (运行机 != 构建机) 冒烟
+#      必然失败, 属预期 (机器绑定), 跳过之 (真机验证场景)。
+#      WDAC 拦截时重试 (延迟重跑), 最多 3 轮。
 $smokeSerial = (Get-Content -LiteralPath demo\vm_build.json -Raw | ConvertFrom-Json).serial
-$smokeOk = $false
-for ($try = 1; $try -le 3 -and -not $smokeOk; $try++) {
-    try {
-        $smokeOut = "$smokeSerial" | & .\build\demo.exe --license-file build\license.txt --vm-blob build\vm.blob 2>&1
-        if ($LASTEXITCODE -eq 0) { $smokeOk = $true }
-        else {
-            Write-Host "build: smoke try $try exit=$LASTEXITCODE (WDAC 信誉瞬态? retry in 10s)"
+$smokeOk = $true
+if (-not $SkipSmoke) {
+    $smokeOk = $false
+    for ($try = 1; $try -le 3 -and -not $smokeOk; $try++) {
+        try {
+            $smokeOut = "$smokeSerial" | & .\build\demo.exe --license-file build\license.txt --vm-blob build\vm.blob 2>&1
+            if ($LASTEXITCODE -eq 0) { $smokeOk = $true }
+            else {
+                Write-Host "build: smoke try $try exit=$LASTEXITCODE (WDAC 信誉瞬态? retry in 10s)"
+                Start-Sleep -Seconds 10
+            }
+        } catch {
+            Write-Host "build: smoke try $try launch failed: $_ (retry in 10s)"
             Start-Sleep -Seconds 10
         }
-    } catch {
-        Write-Host "build: smoke try $try launch failed: $_ (retry in 10s)"
-        Start-Sleep -Seconds 10
     }
+    if (-not $smokeOk) {
+        Write-Host ($smokeOut | Select-Object -Last 5)
+        Write-Host 'build: smoke FAILED - 若为 WDAC 信誉延迟 (exit 4551/无法启动), 稍后手动重跑验证即可'
+        throw 'build FAILED: smoke test (integrity/blob/license chain)'
+    }
+    Write-Host 'build: smoke test PASS (correct serial accepted)'
+} else {
+    Write-Host 'build: smoke test SKIPPED (-SkipSmoke, cross-machine build)'
 }
-if (-not $smokeOk) {
-    Write-Host ($smokeOut | Select-Object -Last 5)
-    Write-Host 'build: smoke FAILED - 若为 WDAC 信誉延迟 (exit 4551/无法启动), 稍后手动重跑验证即可'
-    throw 'build FAILED: smoke test (integrity/blob/license chain)'
-}
-Write-Host 'build: smoke test PASS (correct serial accepted)'
 
 # 7.5. 产物清单 (基础设施: 每次构建可追溯 -- 机器标识/镜像指纹/时间/Git SHA)
 $seedPairs = @()
