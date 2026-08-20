@@ -90,6 +90,7 @@ docs/OPS.md         运营手册：吊销框架规格、签发 SOP、密钥管�
 docs/COMPAT.md      兼容性计划：Windows 版本矩阵、误报风险清单、真机用例、硬件绑定
 docs/PHASE2.md      阶段 II 真机验证执行计划（步骤/验收/时间）
 docs/PHASE3.md      阶段 III 服务端执行计划（架构/API/部署/里程碑）
+docs/ADVANCED.md    高级能力路线图（反 VM / vmc 类 C 编译器 / 控制流平坦化, 2026-08-20）
 docs/ROADMAP.md     技术路线（Phase 1-5 进度）
 docs/PRODUCTION.md  已立项实施项（A/B 区）
 docs/THREATMODEL.md 威胁模型与效果评估
