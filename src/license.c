@@ -17,9 +17,10 @@
 
 size_t prot_license_build_message(const char* serial, size_t serial_len,
                                   uint64_t machine_id, uint32_t tier,
+                                  uint32_t expires,
                                   uint8_t* out_msg, size_t out_cap)
 {
-    size_t plen = serial_len + 8u + sizeof(PROT_LICENSE_PRODUCT) - 1u + 1u;
+    size_t plen = serial_len + 8u + sizeof(PROT_LICENSE_PRODUCT) - 1u + 1u + 4u;
     size_t i;
     if (out_msg == NULL || out_cap < plen)
         return 0u;
@@ -28,7 +29,10 @@ size_t prot_license_build_message(const char* serial, size_t serial_len,
         out_msg[serial_len + i] = (uint8_t)(machine_id >> (8u * i));
     memcpy(out_msg + serial_len + 8u, PROT_LICENSE_PRODUCT,
            sizeof(PROT_LICENSE_PRODUCT) - 1u);
-    out_msg[plen - 1u] = (uint8_t)(tier & 0xFFu); /* Phase 4: tier 参与签名 */
+    out_msg[serial_len + 8u + sizeof(PROT_LICENSE_PRODUCT) - 1u] =
+        (uint8_t)(tier & 0xFFu); /* tier 参与签名 */
+    for (i = 0u; i < 4u; i++)    /* expires (LE32) 参与签名 */
+        out_msg[plen - 4u + i] = (uint8_t)(expires >> (8u * i));
     return plen;
 }
 

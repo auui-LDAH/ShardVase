@@ -28,11 +28,13 @@ extern const uint8_t g_prot_license_pubblob[];
 extern const size_t g_prot_license_pubblob_len;
 
 /*
- * 构建签名载荷 = serial(ascii) || machine_id(LE64) || PRODUCT(ascii) || tier(1B)。
+ * 构建签名载荷 = serial(ascii) || machine_id(LE64) || PRODUCT(ascii) || tier(1B)
+ *             || expires(4B LE, unix; 0=永久)。
  * 与 tools/vmenc.py license_message 完全一致。
  */
 size_t prot_license_build_message(const char* serial, size_t serial_len,
                                   uint64_t machine_id, uint32_t tier,
+                                  uint32_t expires,
                                   uint8_t* out_msg, size_t out_cap);
 
 /*

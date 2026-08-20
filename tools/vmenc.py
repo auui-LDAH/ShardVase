@@ -584,13 +584,15 @@ def cmd_issue(args):
     elif isinstance(mid, str):
         mid = parse_machine_id_override(mid)
     tier = args.tier
-    digest = _license_sha256(serial, mid, tier)
+    expires = args.expires or 0
+    digest = _license_sha256(serial, mid, tier, expires)
     sig = rsa_sign(d, n, digest)
     out = [
         'SERIAL=' + serial,
         'MACHINE_ID=0x%x' % mid,
         'PRODUCT=' + LICENSE_PRODUCT,
         'TIER=%d' % tier,
+        'EXPIRES=%d' % expires,
         'SIGNATURE=' + base64.b64encode(sig).decode('ascii'),
         '',
     ]
@@ -608,8 +610,8 @@ def cmd_issue(args):
     ensure_parent(log_path)
     with open(log_path, 'a', encoding='utf-8', newline='\n') as f:
         f.write(row)
-    print('vmenc: issue serial=%s tier=%d customer=%s -> %s'
-          % (serial, tier, args.customer, args.license_out))
+    print('vmenc: issue serial=%s tier=%d expires=%d customer=%s -> %s'
+          % (serial, tier, expires, args.customer, args.license_out))
     print('vmenc: issue log appended: %s' % log_path)
 
 
@@ -839,16 +841,17 @@ def rsa_sign(d, n, digest_sha256):
     return s.to_bytes(LICENSE_RSA_KEY_BITS // 8, 'big')
 
 
-def license_message(serial, machine_id, tier=LICENSE_TIER_FULL):
-    """签名载荷: serial ascii + LE64(machine_id) + PRODUCT + tier(1B, Phase 4).
+def license_message(serial, machine_id, tier=LICENSE_TIER_FULL, expires=0):
+    """签名载荷: serial ascii + LE64(machine_id) + PRODUCT + tier(1B)
+    + expires(4B LE, unix, 0=永久) — Phase 4 试用期控制。
     demo/main.c 运行期按同一规则构建 (prot_license_build_message)。"""
     product_b = LICENSE_PRODUCT.encode('ascii')
     return (serial.encode('ascii') + struct.pack('<Q', machine_id) +
-            product_b + bytes([tier & 0xFF]))
+            product_b + bytes([tier & 0xFF]) + struct.pack('<I', expires & 0xFFFFFFFF))
 
 
-def _license_sha256(serial, machine_id, tier=LICENSE_TIER_FULL):
-    return hashlib.sha256(license_message(serial, machine_id, tier)).digest()
+def _license_sha256(serial, machine_id, tier=LICENSE_TIER_FULL, expires=0):
+    return hashlib.sha256(license_message(serial, machine_id, tier, expires)).digest()
 
 
 def cmd_keygen(args):
@@ -905,13 +908,15 @@ def cmd_sign(args):
     elif isinstance(mid, str):
         mid = parse_machine_id_override(mid)
     tier = args.tier
-    digest = _license_sha256(serial, mid, tier)
+    expires = args.expires or 0
+    digest = _license_sha256(serial, mid, tier, expires)
     sig = rsa_sign(d, n, digest)
     out = [
         'SERIAL=' + serial,
         'MACHINE_ID=0x%x' % mid,
         'PRODUCT=' + LICENSE_PRODUCT,
         'TIER=%d' % tier,
+        'EXPIRES=%d' % expires,
         'SIGNATURE=' + base64.b64encode(sig).decode('ascii'),
         '',
     ]
@@ -919,9 +924,9 @@ def cmd_sign(args):
     with open(args.license_out, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(out))
     if args.print:
-        print('signed license: serial=%s machine=0x%x product=%s tier=%d (%s)'
+        print('signed license: serial=%s machine=0x%x product=%s tier=%d (%s) expires=%d'
               % (serial, mid, LICENSE_PRODUCT, tier,
-                 LICENSE_TIER_NAMES.get(tier, '?')))
+                 LICENSE_TIER_NAMES.get(tier, '?'), expires))
         print('   sig=%s' % ('%d bytes' % len(sig)))
     print('vmenc: wrote %s' % args.license_out)
 
@@ -1008,6 +1013,8 @@ def main(argv=None):
                     help='override machine_id (decimal or 0x hex); omit/auto=hostid')
     ps.add_argument('--tier', dest='tier', type=int, default=LICENSE_TIER_FULL,
                     help='license tier: 0=trial 1=full(default) 2=premium (Phase 4)')
+    ps.add_argument('--expires', dest='expires', type=int, default=0,
+                    help='expiry unix timestamp (0=permanent; trial control)')
     ps.add_argument('--print', action='store_true',
                     help='print human readable result')
     ps.set_defaults(func=cmd_sign)
@@ -1021,6 +1028,8 @@ def main(argv=None):
                     help='output license.txt')
     pi.add_argument('--tier', dest='tier', type=int, default=LICENSE_TIER_FULL,
                     help='license tier: 0=trial 1=full(default) 2=premium')
+    pi.add_argument('--expires', dest='expires', type=int, default=0,
+                    help='expiry unix timestamp (0=permanent; trial control)')
     pi.add_argument('--machine-id', dest='machine_id_override', type=str,
                     default=None,
                     help='override machine_id (decimal or 0x hex); omit/auto=hostid')

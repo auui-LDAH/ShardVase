@@ -15,6 +15,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T12 license-tier-forge 改 TIER 行 -> license: 0 / 退出码 1 (Phase 4)
   T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
   T15-T19 吊销黑名单: 命中 0xB1E4 / 干净通过 / 无文件不阻断 / 损坏不阻断 / warn 继续 (I1)
+  T20/T21 试用期: 未来到期通过 / 已过期拒绝 (Phase 4 expires 参与签名)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -518,6 +519,36 @@ def main():
                         'exit=%d' % code))
     except Exception as e:
         results.append(('T19 revoke-warn', 'FAIL', repr(e)))
+
+    # ---- T20/T21: 试用期控制 (Phase 4 expires, 参与签名) ------------------
+    vmenc = os.path.join(REPO, 'tools', 'vmenc.py')
+    def make_license(expires, path):
+        subprocess.run(['python', vmenc, 'sign', '--key',
+                        os.path.join(REPO, 'build', 'keys', 'license_priv.json'),
+                        '--json', JSON_PATH, '--out', os.path.join(BUILD, path),
+                        '--expires', str(expires)],
+                       check=True, capture_output=True)
+        return os.path.join(BUILD, path)
+
+    try:
+        lic_future = make_license(1893456000, 'lic_future.txt')  # 2030-01-01
+        code, out, _ = run_demo(args=['--license-file', lic_future],
+                                stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T20 license-future', 'PASS' if ok else 'FAIL',
+                        'exit=%d (exp=2030)' % code))
+    except Exception as e:
+        results.append(('T20 license-future', 'FAIL', repr(e)))
+
+    try:
+        lic_past = make_license(1, 'lic_past.txt')  # 1970-01-01 (已过期)
+        code, out, _ = run_demo(args=['--license-file', lic_past],
+                                stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and ('license: 0' in out) and (msg_fail in out)
+        results.append(('T21 license-expired', 'PASS' if ok else 'FAIL',
+                        'exit=%d license_ok=0' % code))
+    except Exception as e:
+        results.append(('T21 license-expired', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

@@ -447,7 +447,9 @@ typedef struct demo_mem {
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
     uint32_t license_ok;   /* +88 (宿主 RSA 验签结果, 0/1; VM#4 门控) */
     uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
-} demo_mem;                /* 总 96 字节 */
+    uint32_t license_expires; /* +96 (Phase 4: 到期 unix, 0=永久, 参与签名) */
+    uint32_t _pad2;        /* +100 对齐 */
+} demo_mem;                /* 总 104 字节 (VM 使用的偏移 +0..+88 不变) */
 ```
 `machine_id`（Phase 4）由 `prot_hostid_get()` 在运行期计算（= `vm_build.json` 中
 genserial 自动写入的 `hostid()`，见 §5.6）。演示为"绑定本机"简化：换机器后同一
@@ -461,13 +463,14 @@ serial 无法通过。
      （`SIGNATURE` 在前，`SERIAL`/`MACHINE_ID`/`TIER` 可能在后，供顺序收集）。
   2. `PRODUCT != PROT_LICENSE_PRODUCT` 或 `SERIAL` 与用户输入不一致 → 拒。
   3. base64 解码签名（自定义解码器，`\r\n`/空格忽略），长度必须 256。
-  4. `prot_license_build_message(serial, serial_len, machine_id, tier, msg, cap)`
-     = `serial || LE64(machine_id) || "PROT-DEMO-2026" || tier(1B)`
+  4. `prot_license_build_message(serial, serial_len, machine_id, tier, expires, msg, cap)`
+     = `serial || LE64(machine_id) || "PROT-DEMO-2026" || tier(1B) || expires(4B LE, unix, 0=永久)`
      （与 `vmenc.py license_message` 逐字节一致）。
   5. `prot_license_verify(msg)`：BCrypt SHA-256 → `BCryptImportKeyPair`（公钥 blob
      嵌入 `demo/gen/license_pubkey.c`）→ `BCryptVerifySignature`，**必须传**
      `BCRYPT_PKCS1_PADDING_INFO{B CRYPT_SHA256_ALGORITHM}`（传 NULL 返回 0xc000000d）。
-  6. 过 → 打印 `license: 1 (tier=N)` 且 `mem.license_ok=1`、`mem.license_tier=N`；
+  6. 过 → 打印 `license: 1 (tier=N expires=M)` 且 `mem.license_ok=1`、
+     `mem.license_tier=N`、`mem.license_expires=M`（expires!=0 且已过期 → 拒）；
      任何一步失败 → 打印 `license: 0`（不泄漏原因），`exit(1)`。
 - **门控进 VM**（防宿主调用点被 patch）：验签通过仅设 `license_ok`；由 VM#4
   （`demo/license_gate.vasm`，`g_vm_gate_image`）在宿主 VM#1-3 之后执行，
@@ -485,8 +488,8 @@ serial 无法通过。
 - `vmenc.py sign --key <priv.json> --json demo/vm_build.json --out build/license.txt`：
   读 json 的 serial/machine_id，载荷 = `license_message`（同 §9.4-4），
   EMSA-PKCS1-v1_5(SHA-256) 填充 → RSA 私钥签名 → base64 344B 写
-  `build/license.txt`。`--tier 0|1|2`（Phase 4，默认 1=正式）参与载荷与
-  `TIER=` 行；0=试用 / 1=正式 / 2=增值（`vmenc.py LICENSE_TIER_*`）。
+  `build/license.txt`。`--tier 0|1|2`（Phase 4，默认 1=正式）与
+  `--expires <unix>`（试用期，默认 0=永久）参与载荷与 `TIER=`/`EXPIRES=` 行。
 - `vmenc.py issue ...`（OPS §2）：同 sign 签名逻辑，但**强制追加签发日志**
   `build/issue-log.csv`（timestamp,serial,machine_id,tier,customer,note,
   license_sha256；只增不改，gitignore）。

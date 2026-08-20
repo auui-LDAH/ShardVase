@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <windows.h>
 
@@ -44,7 +45,9 @@ typedef struct demo_mem {
     uint64_t vm_scratch;   /* +80 (VM#1 内部循环计数器, 宿主无需初始化) */
     uint32_t license_ok;   /* +88 (A1: 宿主 RSA 验签结果 0/1, VM#4 并入) */
     uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
-} demo_mem;                /* 总 96 字节 */
+    uint32_t license_expires; /* +96 (Phase 4: 到期 unix, 0=永久, 参与签名) */
+    uint32_t _pad2;        /* +100 对齐 */
+} demo_mem;                /* 总 104 字节 */
 
 /*
  * 解析 CLI 参数 (契约 §9.1-2):
@@ -191,11 +194,11 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
 }
 
 /*
- * 读 license.txt (A1 + Phase 4 tier, 格式见 tools/vmenc.py sign 输出):
+ * 读 license.txt (A1 + Phase 4 tier/expires, 格式见 tools/vmenc.py sign 输出):
  *   SERIAL=... / MACHINE_ID=0x.. / PRODUCT=... / TIER=<0|1|2> /
- *   SIGNATURE=<base64 256B>
- * 验签通过 -> 返回 1 并写出 tier; 文件缺失/字段错/签名无效/机器不匹配
- * -> 返回 0 (tier 保持 0)。TIER 行缺省视为 1 (正式, 向后兼容)。
+ *   EXPIRES=<unix> / SIGNATURE=<base64 256B>
+ * 验签通过 -> 返回 1 并写出 tier/expires; 文件缺失/字段错/签名无效/机器
+ * 不匹配/已过期 -> 返回 0。TIER 缺省 1, EXPIRES 缺省 0 (永久)。
  */
 static int load_and_verify_license(const char* path, demo_mem* mem)
 {
@@ -206,6 +209,7 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
     size_t msg_len;
     int have_serial = 0, have_prod = 0, have_sig = 0;
     uint32_t tier = PROT_LICENSE_TIER_FULL;
+    uint32_t expires = 0u;
     char f_serial[48] = {0};
     char f_prod[64] = {0};
     errno_t err;
@@ -241,6 +245,11 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
             unsigned long v = strtoul(eq, &end, 10);
             if (end != eq && *end == '\0' && v <= PROT_LICENSE_TIER_PREMIUM)
                 tier = (uint32_t)v;
+        } else if (strcmp(line, "EXPIRES") == 0) {
+            char* end = NULL;
+            unsigned long long v = strtoull(eq, &end, 10);
+            if (end != eq && *end == '\0' && v <= 0xFFFFFFFFull)
+                expires = (uint32_t)v;
         } else if (strcmp(line, "SIGNATURE") == 0) {
             have_sig = 1;
             {
@@ -259,13 +268,20 @@ static int load_and_verify_license(const char* path, demo_mem* mem)
     if (strcmp(f_serial, mem->serial) != 0)
         return 0;
     msg_len = prot_license_build_message(mem->serial, mem->serial_len,
-                                         mem->machine_id, tier, msg,
-                                         sizeof(msg));
+                                         mem->machine_id, tier, expires,
+                                         msg, sizeof(msg));
     if (msg_len == 0u)
         return 0;
     if (!prot_license_verify(msg, msg_len, sig, sizeof(sig)))
         return 0;
+    /* 试用期控制: expires != 0 且已过期 -> 拒绝 */
+    if (expires != 0u) {
+        time_t now = time(NULL);
+        if (now < 0 || (uint64_t)now > (uint64_t)expires)
+            return 0;
+    }
     mem->license_tier = tier;
+    mem->license_expires = expires;
     return 1;
 }
 
@@ -393,17 +409,19 @@ int main(int argc, char** argv)
         exit(1);
     }
 
-    /* §9.1-9b: RSA 授权 (A1 + Phase 4 tier) —— 宿主验签, 结果由 VM#4 并入
-     * 最终判定位。提供 --license-file 时: 验签失败 = license_ok=0, VM#4
-     * 使 result 归零; 未提供时与旧行为一致 (license_ok=1, tier=正式)。 */
+    /* §9.1-9b: RSA 授权 (A1 + Phase 4 tier/expires) —— 宿主验签, 结果由
+     * VM#4 并入最终判定位。提供 --license-file 时: 验签失败/过期 =
+     * license_ok=0, VM#4 使 result 归零; 未提供时与旧行为一致
+     * (license_ok=1, tier=正式, 不过期)。 */
     mem.license_ok = 1u;
     mem.license_tier = PROT_LICENSE_TIER_FULL;
+    mem.license_expires = 0u;
     if (license_path != NULL) {
         mem.license_ok = (uint32_t)load_and_verify_license(license_path, &mem);
         {
-            char eye[48];
-            snprintf(eye, sizeof(eye), "%u (tier=%u)",
-                     mem.license_ok, mem.license_tier);
+            char eye[64];
+            snprintf(eye, sizeof(eye), "%u (tier=%u expires=%u)",
+                     mem.license_ok, mem.license_tier, mem.license_expires);
             printf("license: %s\n", eye);
         }
     }
