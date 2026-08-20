@@ -20,6 +20,7 @@
 #include <time.h>
 
 #include <windows.h>
+#include <winhttp.h>
 
 #include "protect/antidebug.h"
 #include "protect/blob.h"
@@ -50,8 +51,9 @@ typedef struct tool_mem {
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: tool_demo.exe --serial <sn> [--license-file F] [--vm-blob F]\n"
-            "                     [--revoke-file F] [--encrypt FILE] [--decrypt FILE]\n");
+            "usage: tool_demo.exe --serial <sn> --license-file F [--vm-blob F]\n"
+            "                     [--revoke-file F] [--check-url URL]\n"
+            "                     [--encrypt FILE] [--decrypt FILE]\n");
 }
 
 /* XOR 加密/解密 (演示算法; 生产可换成任意工具业务逻辑) */
@@ -221,6 +223,7 @@ int main(int argc, char** argv)
     const char* lic_path = NULL;
     const char* blob_path = NULL;
     const char* revoke_path = NULL;
+    const char* check_url = NULL;
     const char* enc_path = NULL;
     const char* dec_path = NULL;
     int i;
@@ -237,6 +240,8 @@ int main(int argc, char** argv)
             blob_path = argv[++i];
         else if (strcmp(argv[i], "--revoke-file") == 0 && i + 1 < argc)
             revoke_path = argv[++i];
+        else if (strcmp(argv[i], "--check-url") == 0 && i + 1 < argc)
+            check_url = argv[++i];
         else if (strcmp(argv[i], "--encrypt") == 0 && i + 1 < argc)
             enc_path = argv[++i];
         else if (strcmp(argv[i], "--decrypt") == 0 && i + 1 < argc)
@@ -286,11 +291,15 @@ int main(int argc, char** argv)
     mem.machine_id = prot_hostid_get();
     printf("tool: machine_id=0x%016llx\n", (unsigned long long)mem.machine_id);
 
-    /* 5. RSA license (可选门): 验签 + 试用期 + 机器绑定 */
+    /* 5. RSA license (授权门): 无 license -> 拒绝 (防未授权使用) */
+    if (lic_path == NULL) {
+        printf("tool: no license provided - access denied\n");
+        return 1;
+    }
     mem.license_ok = 1u;
     mem.license_tier = PROT_LICENSE_TIER_FULL;
     mem.license_expires = 0u;
-    if (lic_path != NULL) {
+    {
         mem.license_ok = (uint32_t)verify_license_file(lic_path, &mem);
         printf("tool: license_ok=%u (tier=%u expires=%u)\n",
                mem.license_ok, mem.license_tier, mem.license_expires);
@@ -312,11 +321,68 @@ int main(int argc, char** argv)
     /* 7. 门控: VM 结果 AND license */
     mem.result &= mem.license_ok;
 
-    /* 8. 吊销检查 (可选) */
-    if (revoke_path != NULL) {
-        uint32_t rver = 0u;
-        if (prot_revoke_check(revoke_path, mem.serial, mem.license_tier, &rver)
-            == PROT_REVOKE_HIT) {
+    /* 8. 吊销检查 (本地黑名单 + M3.1 可选在线查询) */
+    {
+        int revoked = 0;
+        if (revoke_path != NULL) {
+            uint32_t rver = 0u;
+            if (prot_revoke_check(revoke_path, mem.serial, mem.license_tier,
+                                  &rver) == PROT_REVOKE_HIT)
+                revoked = 1;
+        }
+        if (check_url != NULL && !revoked) {
+            char url[1024];
+            char buf[512];
+            DWORD got = 0u;
+            HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
+            _snprintf_s(url, sizeof(url), _TRUNCATE,
+                        "%s?serial=%s&mid=%llx&tier=%u&build=%s",
+                        check_url, mem.serial,
+                        (unsigned long long)mem.machine_id,
+                        mem.license_tier, "1.0.0");
+            hin = WinHttpOpen(L"PROT-ToolDemo/1.0",
+                              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (hin != NULL) {
+                wchar_t whost[256], wpath[512], wurl[1024];
+                URL_COMPONENTS uc;
+                memset(&uc, 0, sizeof(uc));
+                uc.dwStructSize = sizeof(uc);
+                uc.lpszHostName = whost;
+                uc.dwHostNameLength = 256;
+                uc.lpszUrlPath = wpath;
+                uc.dwUrlPathLength = 512;
+                MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024);
+                if (WinHttpCrackUrl(wurl, 0, 0, &uc)) {
+                    hconn = WinHttpConnect(hin, whost, uc.nPort, 0);
+                    if (hconn != NULL) {
+                        hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
+                                                  WINHTTP_NO_REFERER,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+                        if (hreq != NULL &&
+                            WinHttpSendRequest(hreq,
+                                               WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                               WINHTTP_NO_REQUEST_DATA, 0, 0, 3000) &&
+                            WinHttpReceiveResponse(hreq, NULL)) {
+                            DWORD avail = 0u;
+                            if (WinHttpQueryDataAvailable(hreq, &avail) &&
+                                avail > 0u && avail < sizeof(buf) &&
+                                WinHttpReadData(hreq, buf, avail, &got)) {
+                                buf[got] = '\0';
+                                if (strstr(buf, "\"revoked\"") != NULL)
+                                    revoked = 1;
+                            }
+                        }
+                    }
+                }
+                if (hreq != NULL)
+                    WinHttpCloseHandle(hreq);
+                if (hconn != NULL)
+                    WinHttpCloseHandle(hconn);
+                WinHttpCloseHandle(hin);
+            }
+        }
+        if (revoked) {
             printf("tool: license revoked\n");
             return PROT_EXIT_REVOKED;
         }

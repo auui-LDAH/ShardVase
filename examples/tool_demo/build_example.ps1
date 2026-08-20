@@ -82,7 +82,7 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
 Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 
@@ -90,13 +90,16 @@ Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 & $py tools\hashpatch.py build\tool_demo.exe
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: hashpatch' }
 
-# 6. 冒烟: 正确序列号 (从 json 读) 必须通过 (跳过 = 跨机构建时)
+# 6. 冒烟: 正确序列号 + license 必须通过 (跳过 = 跨机构建时)
 $serial = (Get-Content -LiteralPath demo\vm_build.json -Raw | ConvertFrom-Json).serial
 if ($MachineId -in @('auto', '0')) {
+    # 为示例签发 license (本机构建 -> 本机绑定)
+    & $py tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_build.json --out build\license.txt
+    if ($LASTEXITCODE -ne 0) { throw 'example FAILED: sign' }
     Set-Content -LiteralPath build\smoke.txt -Value 'hello protected tool' -Encoding ascii
-    & build\tool_demo.exe --serial $serial --vm-blob build\tool_vm.blob --encrypt build\smoke.txt 2>&1 | Select-Object -Last 3
+    & build\tool_demo.exe --serial $serial --license-file build\license.txt --vm-blob build\tool_vm.blob --encrypt build\smoke.txt 2>&1 | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { throw 'example FAILED: smoke' }
-    & build\tool_demo.exe --serial $serial --vm-blob build\tool_vm.blob --decrypt build\smoke.txt 2>&1 | Select-Object -Last 2
+    & build\tool_demo.exe --serial $serial --license-file build\license.txt --vm-blob build\tool_vm.blob --decrypt build\smoke.txt 2>&1 | Select-Object -Last 2
     if ($LASTEXITCODE -ne 0) { throw 'example FAILED: smoke decrypt' }
 } else {
     Write-Host "example: smoke skipped (cross-machine build)"

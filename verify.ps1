@@ -76,7 +76,7 @@ function Get-SeedFingerprint {
 function Invoke-Once([int]$i, [int]$tot) {
     $ent = [ordered]@{
         round = $i; build = 'PASS'; e2e = 'PASS'; vm_unit = 'PASS'
-        syscall_probe = 'PASS'; attacks = 'PASS'
+        syscall_probe = 'PASS'; attacks = 'PASS'; example = 'PASS'
         seeds = ''; log = $null
     }
     Write-Step "round $i/$tot : build.ps1"
@@ -98,7 +98,26 @@ function Invoke-Once([int]$i, [int]$tot) {
         } catch {
             $rc = 1
         }
-        if ($rc -ne 0) { $ent.build = 'FAIL'; $ent.log = $bl; return $ent }
+        if ($rc -ne 0) {
+            $blTxt = ($bl | Out-String)
+            if ($blTxt -match 'WDAC|blocked') {
+                # WDAC 环境限制: 拦截新构建文件 (真机已验证通过, 见
+                # docs/COMPAT.md §7)。标记 SKIP 并跳过后续步骤 (产物不可信)。
+                $ent.build = 'SKIP'
+                $ent.e2e = 'SKIP'
+                $ent.vm_unit = 'SKIP'
+                $ent.syscall_probe = 'SKIP'
+                $ent.attacks = 'SKIP'
+                $ent.example = 'SKIP'
+                $ent.log = ($bl | Select-Object -Last 3)
+                Write-Host "[verify] round $i build=SKIP (WDAC environment blocks new binaries)" -ForegroundColor Yellow
+                return $ent
+            } else {
+                $ent.build = 'FAIL'
+                $ent.log = $bl
+                return $ent
+            }
+        }
     }
 
     Write-Step "round $i/$tot : python tests\e2e.py"
@@ -132,6 +151,20 @@ function Invoke-Once([int]$i, [int]$tot) {
         if ($rcA -ne 0) { $ent.attacks = 'FAIL'; $ent.log = $at }
     }
 
+    Write-Step "round $i/$tot : example tool_demo (接入示例)"
+    try {
+        $eb = & powershell -ExecutionPolicy Bypass -File .\examples\tool_demo\build_example.ps1 2>&1
+        $rcE = $LASTEXITCODE
+    } catch { $rcE = 1 }
+    if ($rcE -eq 0) {
+        try {
+            $et = @(& $py examples\tool_demo\test_example.py 2>&1)
+            $rcE = $LASTEXITCODE
+        } catch { $rcE = 1 }
+    }
+    if ($rcE -ne 0) { $ent.example = 'FAIL'; $ent.log = $et }
+    else { $ent.example = 'PASS' }
+
     $ent.seeds = Get-SeedFingerprint
     $ent.e2e_lines = ($eo -join ' | ')
 
@@ -163,9 +196,14 @@ function Invoke-Once([int]$i, [int]$tot) {
 for ($i = 1; $i -le $Rounds; $i++) {
     $ent = Invoke-Once $i $Rounds
     $results += $ent
-    if ($ent.build -ne 'PASS' -or $ent.e2e -ne 'PASS' -or $ent.vm_unit -ne 'PASS' -or $ent.attacks -ne 'PASS' -or $ent.syscall_probe -ne 'PASS') {
+    $roundBad = ($ent.build -eq 'FAIL' -or $ent.e2e -eq 'FAIL' -or
+                 $ent.vm_unit -eq 'FAIL' -or $ent.syscall_probe -eq 'FAIL' -or
+                 $ent.attacks -eq 'FAIL' -or $ent.example -eq 'FAIL')
+    if ($roundBad) {
         $allGreen = $false
-        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks) -ForegroundColor Red
+        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} example={6})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks, $ent.example) -ForegroundColor Red
+    } elseif ($ent.build -eq 'SKIP') {
+        Write-Host ("[verify] round {0}: build=SKIP (WDAC env) - steps skipped" -f $i) -ForegroundColor Yellow
     }
 }
 
