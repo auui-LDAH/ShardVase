@@ -16,6 +16,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
   T15-T19 吊销黑名单: 命中 0xB1E4 / 干净通过 / 无文件不阻断 / 损坏不阻断 / warn 继续 (I1)
   T20/T21 试用期: 未来到期通过 / 已过期拒绝 (Phase 4 expires 参与签名)
+  T22-T24 在线验证: 在线吊销 0xB1E4 / 在线 ok 通过 / 服务不可达降级 (M3.1 mock)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -549,6 +550,80 @@ def main():
                         'exit=%d license_ok=0' % code))
     except Exception as e:
         results.append(('T21 license-expired', 'FAIL', repr(e)))
+
+    # ---- T22-T24: 在线验证 (M3.1 mock server) -----------------------------
+    # 起本地 mock server (tools/mock_server.py), 验证 online provider:
+    # revoked -> 0xB1E4; ok -> 正常; 服务不可达 -> 降级本地 (不锁死)。
+    import http.server
+    import threading
+    import urllib.request
+
+    class _CheckHandler(http.server.BaseHTTPRequestHandler):
+        revoke_serial = None
+        def log_message(self, *a):
+            pass
+        def do_GET(self):
+            if '/v1/check' not in self.path:
+                self.send_response(404)
+                self.end_headers()
+                return
+            revoked = (self.revoke_serial is not None and
+                       ('serial=%s' % self.revoke_serial) in self.path)
+            body = b'{"status":"revoked","reason":"e2e"}' if revoked \
+                else b'{"status":"ok","tier":1}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+
+    def start_mock(revoke_serial=None):
+        h = _CheckHandler
+        h.revoke_serial = revoke_serial
+        srv = http.server.HTTPServer(('127.0.0.1', 0), h)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        return srv
+
+    try:
+        srv = start_mock(serial)  # 吊销当前 serial
+        url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--check-url', url],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == PROT_EXIT_REVOKED)
+        results.append(('T22 online-revoked', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T22 online-revoked', 'FAIL', repr(e)))
+
+    try:
+        srv = start_mock(None)  # 不吊销
+        url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--check-url', url],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T23 online-ok', 'PASS' if ok else 'FAIL',
+                        'exit=%d' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T23 online-ok', 'FAIL', repr(e)))
+
+    try:
+        # 服务不可达 (未监听端口) -> 静默降级, 不锁死
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'),
+                  '--check-url', 'http://127.0.0.1:59999/v1/check'],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T24 online-degrade', 'PASS' if ok else 'FAIL',
+                        'exit=%d (offline fallback)' % code))
+    except Exception as e:
+        results.append(('T24 online-degrade', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

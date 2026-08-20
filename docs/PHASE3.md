@@ -1,11 +1,16 @@
 # 阶段 III — 服务端执行计划 (PHASE3)
 
-> 版本：2026-08-19 v1 · 归属：BUSINESS 阶段 III（可选）· 前置：阶段 I 完成 +
+> 版本：2026-08-20 v2（M3.1 完成）· 归属：BUSINESS 阶段 III（可选）· 前置：阶段 I 完成 +
 > **决策点 D2 拍板"是否做服务端"**。若选择"离线优先"（推荐），本文件降级为
 > 规格预留，仅保留 §3 API 与 §5 吊销流程（离线已有，OPS §5）。
 > 技术基础：`docs/OPS.md` §6（在线 API 规格初稿）、`src/revoke.c`（离线吊销，
 > 在线 provider 的挂载点）、`tools/vmenc.py`（RSA 签名核心，服务端复用）。
 > 执行前提：极低规格 VPS（单核 512MB）+ 域名 + TLS 证书。
+>
+> **M3.1 已落地（2026-08-20）**：`tools/mock_server.py`（纯 stdlib，/v1/check
+> 语义）+ demo `--check-url` 在线 provider（WinHttp 完整调用链，3s 超时，
+> 不可达静默降级）+ e2e T22（在线吊销 0xB1E4）/ T23（在线 ok）/ T24
+> （服务不可达降级）全绿。M3.2/M3.3 待 D2 拍板。
 
 ## 1. 目标与范围
 

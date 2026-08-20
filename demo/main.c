@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include <windows.h>
+#include <winhttp.h>
 
 #include "protect/antidebug.h"
 #include "protect/blob.h"
@@ -58,12 +59,13 @@ typedef struct demo_mem {
  *   --vm-blob F      VM 镜像 blob 路径 (默认 "vm.blob", DBI launcher)
  *   --revoke-file F  吊销黑名单路径 (默认 "revoke.blob", I1)
  *   --revoke-policy  吊销命中策略: strict(默认, 拒绝) / warn(告警继续)
+ *   --check-url URL  在线验证端点 (M3.1, 缺省不启用在线; 不可达时降级本地)
  * 返回 1 成功, 0 用法错误。
  */
 static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                       uint32_t* wait_after_ms, const char** license_path,
                       const char** vm_blob_path, const char** revoke_path,
-                      int* revoke_strict)
+                      int* revoke_strict, const char** check_url)
 {
     int i;
 
@@ -74,6 +76,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
     *vm_blob_path = NULL;
     *revoke_path = NULL;
     *revoke_strict = 1; /* 默认 strict: 命中即拒绝 */
+    *check_url = NULL;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             *selftest = 1;
@@ -130,6 +133,13 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                 fprintf(stderr, "usage: demo.exe --revoke-policy strict|warn\n");
                 return 0;
             }
+            i++;
+        } else if (strcmp(argv[i], "--check-url") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --check-url URL\n");
+                return 0;
+            }
+            *check_url = argv[i + 1];
             i++;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE §1.2 */
@@ -295,6 +305,7 @@ int main(int argc, char** argv)
     const char* license_path = NULL;
     const char* vm_blob_path = NULL;
     const char* revoke_path = NULL;
+    const char* check_url = NULL;
     int revoke_strict = 1;
     size_t n;
     prot_status st;
@@ -306,7 +317,7 @@ int main(int argc, char** argv)
     /* §9.1-2: 解析参数 */
     if (!parse_args(argc, argv, &selftest, &wait_ms, &wait_after_ms,
                     &license_path, &vm_blob_path, &revoke_path,
-                    &revoke_strict)) {
+                    &revoke_strict, &check_url)) {
         return 2; /* 用法错误 */
     }
 
@@ -428,20 +439,95 @@ int main(int argc, char** argv)
 
     /* §9.1-9c: 吊销检查 (I1) —— 黑名单随 vm.blob 渠道分发, 启动校验。
      * strict(默认): 命中即拒 (0xB1E4); warn: 告警继续。
-     * 文件缺失/损坏: 不阻断 (离线优先, 不因分发疏漏锁死客户)。 */
+     * 文件缺失/损坏: 不阻断 (离线优先, 不因分发疏漏锁死客户)。
+     * M3.1: --check-url 启用在线查询 (不可达/超时 -> 静默降级本地)。 */
     {
         const char* rp = (revoke_path != NULL) ? revoke_path : "revoke.blob";
         uint32_t rver = 0u;
         prot_revoke_status rs = prot_revoke_check(rp, mem.serial,
                                                   mem.license_tier, &rver);
+        int online_revoked = 0;
         if (rs == PROT_REVOKE_HIT) {
+            online_revoked = 1;
+        } else if (rs == PROT_REVOKE_CORRUPT) {
+            printf("吊销列表损坏，已忽略 (revoke.blob)\n");
+        }
+
+        /* M3.1: 在线查询 (仅本地 mock / 生产 TLS 端点) */
+        if (check_url != NULL && !online_revoked) {
+            char url[1024];
+            char buf[512];
+            DWORD got = 0u;
+            HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
+            BOOL ok = FALSE;
+
+            _snprintf_s(url, sizeof(url), _TRUNCATE,
+                        "%s?serial=%s&mid=%llx&tier=%u&build=%s",
+                        check_url, mem.serial,
+                        (unsigned long long)mem.machine_id,
+                        mem.license_tier, PROT_VERSION_STR);
+            /* 尝试 winhttp; 失败/超时 -> 静默降级 (离线优先) */
+            hin = WinHttpOpen(L"PROT-Demo/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (hin != NULL) {
+                wchar_t whost[256];
+                wchar_t wpath[512];
+                URL_COMPONENTS uc;
+                INTERNET_PORT port;
+                memset(&uc, 0, sizeof(uc));
+                uc.dwStructSize = sizeof(uc);
+                uc.lpszHostName = whost;
+                uc.dwHostNameLength = 256;
+                uc.lpszUrlPath = wpath;
+                uc.dwUrlPathLength = 512;
+                {
+                    wchar_t wurl[1024];
+                    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024);
+                    if (WinHttpCrackUrl(wurl, 0, 0, &uc)) {
+                        port = uc.nPort;
+                        hconn = WinHttpConnect(hin, whost, port, 0);
+                        if (hconn != NULL) {
+                            hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
+                                                     WINHTTP_NO_REFERER,
+                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+                            if (hreq != NULL &&
+                                WinHttpSendRequest(hreq,
+                                                   WINHTTP_NO_ADDITIONAL_HEADERS,
+                                                   0, WINHTTP_NO_REQUEST_DATA,
+                                                   0, 0, 3000) &&
+                                WinHttpReceiveResponse(hreq, NULL)) {
+                                DWORD avail = 0u;
+                                if (WinHttpQueryDataAvailable(hreq, &avail) &&
+                                    avail > 0u && avail < sizeof(buf)) {
+                                    if (WinHttpReadData(hreq, buf, avail, &got)) {
+                                        buf[got] = '\0';
+                                        if (strstr(buf, "\"revoked\"") != NULL)
+                                            online_revoked = 1;
+                                        ok = TRUE;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (hreq != NULL)
+                    WinHttpCloseHandle(hreq);
+                if (hconn != NULL)
+                    WinHttpCloseHandle(hconn);
+                WinHttpCloseHandle(hin);
+            }
+            if (ok) {
+                printf("online check: %s\n", online_revoked ? "revoked" : "ok");
+            }
+            /* !ok = 网络不可达/超时 -> 静默降级本地 (离线优先, 不锁死) */
+        }
+
+        if (online_revoked) {
             printf("%s\n", prot_str_get(PROT_STR_MSG_REVOKED));
             fflush(stdout);
             if (revoke_strict) {
                 exit(PROT_EXIT_REVOKED);
             }
-        } else if (rs == PROT_REVOKE_CORRUPT) {
-            printf("吊销列表损坏，已忽略 (revoke.blob)\n");
         }
     }
 
