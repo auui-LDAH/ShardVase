@@ -162,7 +162,7 @@ def main():
             fname, _, fval = line.partition(':')
             fname = fname.strip()
             fval = fval.strip()
-            if fname.startswith('vm_'):
+            if fname.startswith('vm_') or fname.startswith('dbi_'):
                 if fval != '0':
                     vm_notes.append('%s=%s' % (fname, fval))
             elif fname in CLEAN_FIELDS and fval != '0':

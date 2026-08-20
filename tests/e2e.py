@@ -347,7 +347,9 @@ def main():
                     val = line.split(':')[-1].strip()
                     if val != '0':
                         suspicious.append(field + '=' + val)
-            for field in ('vm_hypervisor', 'vm_vendor', 'vm_processes'):
+            for field in ('vm_hypervisor', 'vm_vendor', 'vm_processes',
+                          'dbi_inline_hooks', 'dbi_frida_agent',
+                          'dbi_rxrw_regions', 'dbi_thread_count'):
                 if line.strip().startswith(field):
                     val = line.split(':')[-1].strip()
                     if val != '0':

@@ -19,6 +19,7 @@
 
 #include "protect/antidebug.h"
 #include "protect/blob.h"
+#include "protect/dbiguard.h"
 #include "protect/hostid.h"
 #include "protect/integrity.h"
 #include "protect/license.h"
@@ -48,8 +49,11 @@ typedef struct demo_mem {
     uint32_t license_ok;   /* +88 (A1: 宿主 RSA 验签结果 0/1, VM#4 并入) */
     uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
     uint32_t license_expires; /* +96 (Phase 4: 到期 unix, 0=永久, 参与签名) */
-    uint32_t _pad2;        /* +100 对齐 */
-} demo_mem;                /* 总 104 字节 */
+    uint32_t result2;      /* +100 (N3: result 副本2, VM#4 写) */
+    uint32_t result3;      /* +104 (N3: result 副本3, VM#4 写) */
+    uint32_t result_sum;   /* +108 (N3: result ^ 0xA5A5A5A5, VM#4 写) */
+    uint32_t _pad2;        /* +112 对齐 */
+} demo_mem;                /* 总 116 字节 (VM 使用的 +0..+96 偏移不变) */
 
 /*
  * 解析 CLI 参数 (契约 §9.1-2):
@@ -338,7 +342,22 @@ int main(int argc, char** argv)
         print_selftest(&rep);
     }
 
-    /* §9.1-4b (M1): 虚拟机/沙箱检测 —— 咨询项, 只报告不触发策略 */
+    /* §9.1-4b (N2): 反 DBI/反 hook 检测 —— 咨询项, 只报告不触发策略 */
+    {
+        prot_dbiguard_report drep;
+        prot_dbiguard_scan(&drep);
+        if (selftest) {
+            printf("  dbi_inline_hooks: %u\n", drep.inline_hooks);
+            printf("  dbi_frida_agent: %u\n", drep.frida_agent);
+            printf("  dbi_rxrw_regions: %u\n", drep.rx_rw_regions);
+            printf("  dbi_thread_count: %u\n", drep.thread_count);
+        }
+        if (prot_dbiguard_suspicious(&drep)) {
+            printf("疑似动态插桩/hook 环境 (咨询项, 不影响运行)\n");
+        }
+    }
+
+    /* §9.1-4c (M1): 虚拟机/沙箱检测 —— 咨询项, 只报告不触发策略 */
     {
         prot_vmdetect_report vmrep;
         prot_vmdetect_scan(&vmrep);
@@ -552,9 +571,33 @@ int main(int argc, char** argv)
         exit(1);
     }
 
-    /* §9.1-10: FAKE 策略伪结果翻转 */
+    /* §9.1-10: N3 数据完整性 —— 三份冗余多数一致 + 校验和 (单点 patch 识破) */
+    {
+        uint32_t r1 = mem.result;
+        uint32_t r2 = mem.result2;
+        uint32_t r3 = mem.result3;
+        uint32_t r;
+        /* 多数一致 */
+        if (r1 == r2)
+            r = r1;
+        else if (r1 == r3)
+            r = r1;
+        else
+            r = r2;
+        /* 校验和 */
+        if ((r ^ 0xA5A5A5A5u) != mem.result_sum) {
+            printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
+            exit(PROT_EXIT_TAMPERED);
+        }
+        mem.result = r; /* 用多数一致值 */
+    }
+
+    /* §9.1-10b: FAKE 策略伪结果翻转 (全部副本, 保持一致性但结果反转) */
     if (prot_antidebug_fake_active()) {
         mem.result ^= 1u;
+        mem.result2 ^= 1u;
+        mem.result3 ^= 1u;
+        mem.result_sum ^= 1u;
     }
 
     /* §9.1-11: 结果与退出码 */
