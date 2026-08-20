@@ -1,0 +1,27 @@
+// examples/tool_demo/check.vmc — 工具授权校验逻辑 (M2: 类 C 源码)
+//
+// 由 tools/vmc.py 编译成 VASM -> vmenc assemble 加密打包。
+// 宿主内存 (tool_mem):
+//   serial[48] @ 0, serial_len @ 48, result @ 52, machine_id @ 56
+// 算法 (与 vmenc.py genserial 一致): FNV-1a(serial) -> xorshift(mid) -> 期望比对
+// EXPECT1/EXPECT2 由 vmenc assemble 期从 vm_build.json 解析。
+
+uint64 i = 0;
+uint64 h = 14695981039346656037;
+while (i < mem32(48)) {
+    h = h ^ mem8(i);
+    h = h * 1099511628211;
+    i = i + 1;
+}
+uint64 x = h ^ mem64(56);
+x = x ^ (x << 13);
+x = x ^ (x >> 7);
+x = x ^ (x << 17);
+uint64 total = x + 0x9E3779B97F4A7C15;
+uint64 ok = 0;
+if (h == EXPECT1) {
+    if (total == EXPECT2) {
+        ok = 1;
+    }
+}
+return ok;

@@ -73,7 +73,11 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: genserial' }
 & $py tools\vmenc.py keygen --key-out build\keys\license_priv.json --blob-out demo\gen\license_pubkey.c
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: keygen' }
 
-# 2. 汇编 check.vasm -> 镜像
+# 2. 汇编 check.vmc -> check.vasm (M2: 类 C 源码自动编译)
+& $py tools\vmc.py examples\tool_demo\check.vmc examples\tool_demo\check.vasm build\tool_check.layout.json
+if ($LASTEXITCODE -ne 0) { throw 'example FAILED: vmc' }
+
+# 2b. assemble check.vasm -> 镜像
 & $py tools\vmenc.py assemble examples\tool_demo\check.vasm demo\vm_build.json demo\gen\tool_check_blob.c demo\gen\tool_check_blob.h --name g_tool_check_image --bin-out demo\gen\tool_check_blob.bin --bin-name check
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 

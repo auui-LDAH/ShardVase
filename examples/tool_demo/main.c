@@ -34,18 +34,16 @@
 static prot_vm_image g_check_img;
 static void* g_blob_buf = NULL;
 
-/* 宿主内存 (与 check.vasm 偏移一致) */
+/* 宿主内存 (与 check.vmc 编译后的布局一致: 变量区 0x40 起由 vmc 分配) */
 typedef struct tool_mem {
-    char     serial[48];
-    uint32_t serial_len;
-    uint32_t result;
-    uint64_t machine_id;
-    uint64_t vm_h;
-    uint64_t vm_total;
-    uint64_t vm_scratch;
-    uint32_t license_ok;
-    uint32_t license_tier;
-    uint32_t license_expires;
+    char     serial[48];      /* +0   */
+    uint32_t serial_len;      /* +48  */
+    uint32_t result;          /* +52  */
+    uint64_t machine_id;      /* +56  */
+    uint64_t vm_vars[8];      /* +64  (vmc 变量区: i/h/x/total/ok 等) */
+    uint32_t license_ok;      /* +128 */
+    uint32_t license_tier;    /* +132 */
+    uint32_t license_expires; /* +136 */
 } tool_mem;
 
 static void usage(void)
@@ -395,7 +393,7 @@ int main(int argc, char** argv)
     printf("tool: authorized (serial=%s)\n", mem.serial);
 
     /* 9. 业务功能: 文件加/解密 */
-    key = (uint8_t)(mem.vm_h & 0xFFu); /* 从 VM 中间值派生业务密钥 */
+    key = (uint8_t)(mem.serial[0] ^ mem.serial[3]); /* 简单业务密钥派生 */
     if (enc_path != NULL)
         return xor_file(enc_path, 1, key) ? 0 : 1;
     if (dec_path != NULL)

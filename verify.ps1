@@ -76,7 +76,7 @@ function Get-SeedFingerprint {
 function Invoke-Once([int]$i, [int]$tot) {
     $ent = [ordered]@{
         round = $i; build = 'PASS'; e2e = 'PASS'; vm_unit = 'PASS'
-        syscall_probe = 'PASS'; attacks = 'PASS'; example = 'PASS'
+        syscall_probe = 'PASS'; attacks = 'PASS'; vmc = 'PASS'; example = 'PASS'
         seeds = ''; log = $null
     }
     Write-Step "round $i/$tot : build.ps1"
@@ -151,6 +151,14 @@ function Invoke-Once([int]$i, [int]$tot) {
         if ($rcA -ne 0) { $ent.attacks = 'FAIL'; $ent.log = $at }
     }
 
+    Write-Step "round $i/$tot : python tests\vmc_tests.py (M2 类 C 编译器)"
+    try {
+        $vt = @(& $py tests\vmc_tests.py 2>&1)
+        $rcVMC = $LASTEXITCODE
+    } catch { $rcVMC = 1 }
+    if ($rcVMC -ne 0) { $ent.vmc = 'FAIL'; $ent.log = $vt }
+    else { $ent.vmc = 'PASS' }
+
     Write-Step "round $i/$tot : example tool_demo (接入示例)"
     try {
         $eb = & powershell -ExecutionPolicy Bypass -File .\examples\tool_demo\build_example.ps1 2>&1
@@ -198,10 +206,11 @@ for ($i = 1; $i -le $Rounds; $i++) {
     $results += $ent
     $roundBad = ($ent.build -eq 'FAIL' -or $ent.e2e -eq 'FAIL' -or
                  $ent.vm_unit -eq 'FAIL' -or $ent.syscall_probe -eq 'FAIL' -or
-                 $ent.attacks -eq 'FAIL' -or $ent.example -eq 'FAIL')
+                 $ent.attacks -eq 'FAIL' -or $ent.vmc -eq 'FAIL' -or
+                 $ent.example -eq 'FAIL')
     if ($roundBad) {
         $allGreen = $false
-        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} example={6})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks, $ent.example) -ForegroundColor Red
+        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} vmc={6} example={7})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks, $ent.vmc, $ent.example) -ForegroundColor Red
     } elseif ($ent.build -eq 'SKIP') {
         Write-Host ("[verify] round {0}: build=SKIP (WDAC env) - steps skipped" -f $i) -ForegroundColor Yellow
     }

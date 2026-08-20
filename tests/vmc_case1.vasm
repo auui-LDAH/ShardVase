@@ -1,0 +1,116 @@
+    push32 0x0
+    push32 0x40
+    swap
+    store64
+    push64 0xcbf29ce484222325
+    push32 0x48
+    swap
+    store64
+L1:
+    push32 0x40
+    load64
+    push32 0x30
+    load32
+    cmpltu
+    jz L2
+    push32 0x48
+    load64
+    push32 0x40
+    load64
+    load8
+    xor
+    push32 0x48
+    swap
+    store64
+    push32 0x48
+    load64
+    push64 0x100000001b3
+    mul
+    push32 0x48
+    swap
+    store64
+    push32 0x40
+    load64
+    push32 0x1
+    add
+    push32 0x40
+    swap
+    store64
+    jmp L1
+L2:
+    push32 0x48
+    load64
+    push32 0x38
+    load64
+    xor
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0xd
+    shl
+    xor
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0x7
+    shr
+    xor
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0x11
+    shl
+    xor
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push64 0x9e3779b97f4a7c15
+    add
+    push32 0x58
+    swap
+    store64
+    push32 0x0
+    push32 0x60
+    swap
+    store64
+    push32 0x48
+    load64
+    push64 EXPECT1
+    cmpeq
+    jz L3
+    push32 0x58
+    load64
+    push64 EXPECT2
+    cmpeq
+    jz L5
+    push32 0x1
+    push32 0x60
+    swap
+    store64
+    jmp L6
+L5:
+L6:
+    jmp L4
+L3:
+L4:
+    push32 0x60
+    load64
+    push32 0x34
+    swap
+    store32
+    halt
+    halt

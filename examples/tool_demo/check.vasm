@@ -1,93 +1,116 @@
-; ============================================================================
-; examples/tool_demo/check.vasm — 小工具授权校验 VM (接入示例)
-;
-; 展示: 把"工具的授权校验逻辑"写进 VM —— 攻击者静态拿到 exe 只能看到
-; 加密字节码, 无法直接读懂/修补校验逻辑。
-;
-; 本 VM 合成: FNV-1a(serial) -> xorshift(mix) -> 与期望值比对。
-; 算法与 tools/vmenc.py genserial 完全一致 (EXPECT1/EXPECT2 来自 vm_build.json)。
-;
-; 宿主内存布局 (tool_mem, 与 demo_mem 偏移兼容):
-;   +0  : char serial[48]   序列号
-;   +48 : u32  serial_len
-;   +52 : u32  result       1=通过 0=拒绝 (本 VM 写)
-;   +56 : u64  machine_id
-;   +64 : u64  vm_h         FNV-1a 结果
-;   +72 : u64  vm_total     xorshift+GOLDEN
-;   +80 : u64  vm_scratch   循环计数器
-;   +88 : u32  license_ok   宿主 RSA 验签 (可选门)
-; ============================================================================
-
-    ; ---- FNV-1a(serial) ----
-    push32 80
-    push32 0
-    store32             ; i = 0
-    push64 14695981039346656037  ; h = offset
-
-loop:
-    push32 80
-    load32              ; i
-    push32 48
-    load32              ; serial_len
-    cmpltu
-    jz mix              ; i >= len -> 混合
-    push32 80
-    load32              ; i
-    load8               ; serial[i]
-    xor                 ; h ^= b
-    push64 1099511628211
-    mul                 ; h *= prime
-    push32 80
-    load32
-    push32 1
-    add
-    push32 80
-    swap
-    store32             ; i++
-    jmp loop
-
-mix:
-    ; vm_h@64 = h
-    push32 64
+    push32 0x0
+    push32 0x40
     swap
     store64
-    ; x = h ^ machine_id
-    push32 64
+    push64 0xcbf29ce484222325
+    push32 0x48
+    swap
+    store64
+L1:
+    push32 0x40
     load64
-    push32 56
+    push32 0x30
+    load32
+    cmpltu
+    jz L2
+    push32 0x48
+    load64
+    push32 0x40
+    load64
+    load8
+    xor
+    push32 0x48
+    swap
+    store64
+    push32 0x48
+    load64
+    push64 0x100000001b3
+    mul
+    push32 0x48
+    swap
+    store64
+    push32 0x40
+    load64
+    push32 0x1
+    add
+    push32 0x40
+    swap
+    store64
+    jmp L1
+L2:
+    push32 0x48
+    load64
+    push32 0x38
     load64
     xor
-    ; x = x^(x<<13) ^ (x>>7) ^ (x<<17)
-    dup
-    push64 13
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0xd
     shl
     xor
-    dup
-    push64 7
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0x7
     shr
     xor
-    dup
-    push64 17
+    push32 0x50
+    swap
+    store64
+    push32 0x50
+    load64
+    push32 0x50
+    load64
+    push32 0x11
     shl
     xor
-    ; total = x + GOLDEN
-    push64 0x9E3779B97F4A7C15
-    add
-    push32 72
+    push32 0x50
     swap
-    store64             ; vm_total@72
-
-    ; ---- 比对期望值 ----
-    push32 64
+    store64
+    push32 0x50
+    load64
+    push64 0x9e3779b97f4a7c15
+    add
+    push32 0x58
+    swap
+    store64
+    push32 0x0
+    push32 0x60
+    swap
+    store64
+    push32 0x48
     load64
     push64 EXPECT1
     cmpeq
-    push32 72
+    jz L3
+    push32 0x58
     load64
     push64 EXPECT2
     cmpeq
-    and                 ; ok = (h==E1) && (total==E2)
-    push32 52
+    jz L5
+    push32 0x1
+    push32 0x60
     swap
-    store32             ; result@52
+    store64
+    jmp L6
+L5:
+L6:
+    jmp L4
+L3:
+L4:
+    push32 0x60
+    load64
+    push32 0x34
+    swap
+    store32
+    halt
     halt

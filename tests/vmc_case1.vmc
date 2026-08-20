@@ -1,0 +1,24 @@
+// tests/vmc_case1.vmc ??FNV-1a(serial) ??? (??? check.vasm ???)
+// serial@0, serial_len@48, machine_id@56, result@52
+uint64 i = 0;
+uint64 h = 14695981039346656037;
+while (i < mem32(48)) {
+    h = h ^ mem8(i);
+    h = h * 1099511628211;
+    i = i + 1;
+}
+// xorshift mix with machine_id
+uint64 x = h ^ mem64(56);
+x = x ^ (x << 13);
+x = x ^ (x >> 7);
+x = x ^ (x << 17);
+uint64 total = x + 0x9E3779B97F4A7C15;
+uint64 ok = 0;
+if (h == EXPECT1) {   // EXPECT1 ??? (??genserial ?????
+    if (total == EXPECT2) {  // EXPECT2 ???
+        ok = 1;
+    }
+}
+return ok;
+
+
