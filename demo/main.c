@@ -26,6 +26,7 @@
 #include "protect/strcrypt.h"
 #include "protect/version.h"
 #include "protect/vm.h"
+#include "protect/vmdetect.h"
 
 /* DBI launcher (技术债 #3): VM 镜像由 build\vm.blob 装载, 不再静态嵌入。
  * 顺序与 build.ps1 3c 的 pack 入参一致; 名称须与 assemble --bin-name 相同。 */
@@ -335,6 +336,20 @@ int main(int argc, char** argv)
            prot_antidebug_detected(&rep) ? "发现可疑" : "通过");
     if (selftest) {
         print_selftest(&rep);
+    }
+
+    /* §9.1-4b (M1): 虚拟机/沙箱检测 —— 咨询项, 只报告不触发策略 */
+    {
+        prot_vmdetect_report vmrep;
+        prot_vmdetect_scan(&vmrep);
+        if (selftest) {
+            printf("  vm_hypervisor: %u\n", vmrep.cpu_hypervisor);
+            printf("  vm_vendor: %u\n", vmrep.hv_vendor);
+            printf("  vm_processes: %u\n", vmrep.vm_processes);
+        }
+        if (prot_vmdetect_suspicious(&vmrep)) {
+            printf("疑似虚拟机环境 (咨询项, 不影响运行)\n");
+        }
     }
 
     /*

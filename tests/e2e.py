@@ -340,15 +340,22 @@ def main():
         code, out, _ = run_demo(args=['--selftest', '--license-file', LICENSE],
                                 stdin=(serial + '\n').encode('utf-8'))
         suspicious = []
-        for field in ('debug_heap_flags', 'int3_honey'):
-            for line in out.splitlines():
+        vm_notes = []
+        for line in out.splitlines():
+            for field in ('debug_heap_flags', 'int3_honey'):
                 if line.strip().startswith(field):
                     val = line.split(':')[-1].strip()
                     if val != '0':
                         suspicious.append(field + '=' + val)
+            for field in ('vm_hypervisor', 'vm_vendor', 'vm_processes'):
+                if line.strip().startswith(field):
+                    val = line.split(':')[-1].strip()
+                    if val != '0':
+                        vm_notes.append(field + '=' + val)
         ok = (code == 0) and (not suspicious)
         results.append(('T7 selftest-clean', 'PASS' if ok else 'FAIL',
-                        'code=%d suspicious=%s' % (code, suspicious or 'none')))
+                        'code=%d suspicious=%s vm=%s' %
+                        (code, suspicious or 'none', vm_notes or 'none')))
     except Exception as e:
         results.append(('T7 selftest-clean', 'FAIL', repr(e)))
 

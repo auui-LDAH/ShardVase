@@ -32,13 +32,12 @@
 ## 3. M1 — 反 VM/反沙箱检测（1-2 天）
 
 ### 3.1 检测项（全部咨询项，只报告不触发策略）
-| 项 | 机制 | 实现 |
-|----|------|------|
-| cpu_hypervisor | CPUID.1:ECX bit31（hypervisor present） | MSVC `__cpuid` |
-| hv_vendor | CPUID.0x40000000 厂商串：Microsoft Hv / KVMKVMKVM / VMwareVMware / VBoxVBoxVBox / XenVMMXenVMM / prl hyperv | `__cpuid`，映射枚举 |
-| vmware_io | VMware 端口 0x5658('VX') I/O 回显 | 运行时生成 `mov dx,5658h; in al,dx; ret` stub + VEH 捕获 #GP（真机 IN 触发 #GP，VMware 拦截返回 'VX'） |
-| vbox_io | VirtualBox 端口 0x5659('VY') 同法 | 同上 |
-| vm_processes | vmtoolsd.exe / vmwaretray.exe / VBoxService.exe / VBoxClient.exe / qemu-ga.exe / xenservices.exe / prl_tools.exe | `CreateToolhelp32Snapshot` 遍历进程名 |
+| 项 | 机制 | 实现 | 状态 |
+|----|------|------|------|
+| cpu_hypervisor | CPUID.1:ECX bit31（hypervisor present） | MSVC `__cpuid` | ✅ |
+| hv_vendor | CPUID.0x40000000 厂商串：Microsoft Hv / KVMKVMKVM / VMwareVMware / VBoxVBoxVBox / XenVMMXenVMM / prl hyperv | `__cpuid`，映射枚举 | ✅ |
+| ~~vmware_io / vbox_io~~ | ~~I/O 端口 0x5658/0x5659 回显~~ | **已移除**：真机实测 `IN` + VEH 在异常分发层触发死循环（Rip 修正后仍挂起），风险不可控 | ❌ 移除 |
+| vm_processes | vmtoolsd.exe / vmwaretray.exe / VBoxService.exe / VBoxClient.exe / qemu-ga.exe / xenservices.exe / prl_tools.exe | `CreateToolhelp32Snapshot` 遍历进程名 | ✅ |
 
 ### 3.2 接入
 - 新文件 `src/vmdetect.c` + `include/protect/vmdetect.h`（report 结构 + scan + suspicious）。
@@ -152,6 +151,6 @@ vmc.py check.vmc check.json check.vasm
 
 | 里程碑 | 状态 | 完成日期 |
 |--------|------|---------|
-| M1 反 VM/反沙箱 | 未开始 | — |
+| M1 反 VM/反沙箱 | ✅ 完成（CPUID/厂商串/进程；I/O 端口因真机异常死循环移除） | 2026-08-20 |
 | M2 vmc 编译器 | 未开始 | — |
 | M3 控制流平坦化 | 未开始 | — |
