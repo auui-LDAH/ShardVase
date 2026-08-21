@@ -7,3 +7,4 @@ MSG_TAMPER|完整性校验失败，程序可能已被篡改。
 MSG_HWID|机器标识: 
 MSG_BLOB|VM 镜像装载失败 (vm.blob 缺失或已损坏)。
 MSG_REVOKED|该授权已被吊销，请与发行方联系。
+LICENSE_FMT|license: %u (tier=%u expires=%u)

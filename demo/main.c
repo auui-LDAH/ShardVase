@@ -465,9 +465,11 @@ int main(int argc, char** argv)
         mem.license_ok = (uint32_t)load_and_verify_license(license_path, &mem);
         {
             char eye[64];
-            snprintf(eye, sizeof(eye), "%u (tier=%u expires=%u)",
-                     mem.license_ok, mem.license_tier, mem.license_expires);
-            printf("license: %s\n", eye);
+            /* 模板串经 strcrypt 加密 (N 加固: 消除明文特征) */
+            _snprintf_s(eye, sizeof(eye), _TRUNCATE,
+                        prot_str_get(PROT_STR_LICENSE_FMT),
+                        mem.license_ok, mem.license_tier, mem.license_expires);
+            printf("%s\n", eye);
         }
     }
 

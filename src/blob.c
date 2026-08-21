@@ -19,11 +19,22 @@
 #include "protect/blob.h"
 #include "protect/protdef.h"
 
-#define PROT_BLOB_MAGIC     "PROTVMBL"
 #define PROT_BLOB_MAGIC_LEN 8u
 #define PROT_BLOB_NAME_LEN  16u
 #define PROT_BLOB_HEADER    (PROT_BLOB_MAGIC_LEN + 4u)
 #define PROT_BLOB_ENTRY_HDR 40u /* NAME16 + CODE_LEN4 + KEY0_8 + KEY1_8 + CRC4 */
+
+/* N 加固: "PROTVMBL" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较。
+ * 生成侧 (vmenc.py pack) 仍写原始字节, 加载器按整数逐段校验。 */
+static int blob_magic_ok(const uint8_t* p)
+{
+    /* "PROTVMBL" 的 LE u32 两段: 前 4 字节 'PROT' = 0x544F5250,
+     * 后 4 字节 'VMBL' = 0x4C424D56. */
+    uint32_t lo, hi;
+    memcpy(&lo, p, 4);
+    memcpy(&hi, p + 4, 4);
+    return (lo == 0x544F5250u && hi == 0x4C424D56u);
+}
 
 static uint32_t blob_u32(const uint8_t* p)
 {
@@ -87,7 +98,7 @@ prot_status prot_vm_blob_load(const char* path,
     fclose(f);
 
     if (size < PROT_BLOB_HEADER + 4u ||
-        memcmp(buf, PROT_BLOB_MAGIC, PROT_BLOB_MAGIC_LEN) != 0) {
+        !blob_magic_ok(buf)) {
         free(buf);
         return PROT_ERR_BLOB_CORRUPT;
     }

@@ -14,11 +14,19 @@
 
 #include "protect/revoke.h"
 
-#define PROT_REVOKE_MAGIC     "PROTREVK"
 #define PROT_REVOKE_MAGIC_LEN 8u
 #define PROT_REVOKE_HEADER    (PROT_REVOKE_MAGIC_LEN + 4u + 4u)
 #define PROT_REVOKE_ENTRY     60u /* SERIAL[48] + TIER u32 + REVOKED_AT u64 */
 #define PROT_REVOKE_MAX_ENTRIES 4096u
+
+/* N 加固: "PROTREVK" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较. */
+static int revoke_magic_ok(const uint8_t* p)
+{
+    uint32_t lo, hi;
+    memcpy(&lo, p, 4);    /* 'PROT' = 0x544F5250 */
+    memcpy(&hi, p + 4, 4);/* 'REVK' = 0x4B564552 */
+    return (lo == 0x544F5250u && hi == 0x4B564552u);
+}
 
 static uint32_t rk_u32(const uint8_t* p)
 {
@@ -70,7 +78,7 @@ prot_revoke_status prot_revoke_check(const char* path,
     fclose(f);
 
     if (size < PROT_REVOKE_HEADER + 4u ||
-        memcmp(buf, PROT_REVOKE_MAGIC, PROT_REVOKE_MAGIC_LEN) != 0) {
+        !revoke_magic_ok(buf)) {
         free(buf);
         return PROT_REVOKE_CORRUPT;
     }
