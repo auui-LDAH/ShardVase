@@ -1,9 +1,10 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-15（v6：阶段 I 商业化落地）· 基线提交：`815b1ce` 之后
+> 生成日期：2026-08-21（v7：阶段 II 收尾 + 已知环境限制）· 基线提交：`9326122` 之后
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/BUSINESS.md`（总纲）/ `docs/RELEASE.md` / `docs/OPS.md` /
-> `docs/COMPAT.md` / `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` /
+> `docs/COMPAT.md` / `docs/PHASE2.md` / `docs/PHASE3.md` / `docs/ADVANCED.md` /
+> `docs/ADVANCED2.md` / `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` /
 > `docs/THREATMODEL.md` / `docs/PRODUCTION.md`。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
 
@@ -132,20 +133,48 @@ python tests\attacks.py
 3. `PROT_LICENSE_PRODUCT` = `PROT-DEMO-2026`（14 字符），与 `vmenc.py
    LICENSE_PRODUCT` 必须逐字节一致；消息 = serial ‖ LE64(machine_id) ‖ PRODUCT。
 
+### 4.2b 运维踩坑记录（2026-08-21）
+1. **SSH `echo | demo` 不可靠**：SSH 会话中 `echo xxx | exe` 的 stdin 传递异常，
+   会导致 demo 读到不干净的 serial → 误判 license: 0。**验证必须用
+   Python subprocess**（e2e.py 的方式），否则会误报"验签失败"。
+2. **真机 hostid 随构建因子变化**：D5 硬件因子（MachineGuid/磁盘序列号）使
+   hostid 与早期构建不同；跨机构建必须用目标机的 `--machine-id`（从运行期
+   hostid 获取）。**构建机与运行机必须用同一 mid，否则 license/EXPECT 全拒。**
+3. **T3/调试附加需交互会话**：SSH、计划任务（含 SYSTEM）下 `DebugActiveProcess`
+   均返回 0x5 —— Windows 会话隔离，非权限问题，无法提权绕过（见 §4.5）。
+
 ### 4.3 未完成事项（下一位的待办）
 | 优先级 | 项 | 状态 |
 |--------|----|------|
-| 阶段 II | 真机验证（T3/兼容矩阵/硬件绑定/24h 驻留）—— 详细计划见 **docs/PHASE2.md** | 待真机就绪 |
-| 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 | 未开工 |
+| 阶段 II 剩余 | T3 真机调试、硬件绑定双机 —— **已知环境限制**（见 §4.5，非代码缺陷） | 待交互桌面会话 / 第二台机器 |
+| 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
+| 可选 | ADVANCED2 N1（引擎自变形增强）/ N4（函数级间接化）/ N5（服务器端兜底） | 可选，未开工 |
 | 规划 | blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
-### 4.4 常用命令速查
+### 4.4 阶段 II 实测记录（2026-08-21）
+- 真机（oiahcoiah，Win11 24H2 26200）：e2e T1-T24 除 T3 全 PASS；attacks A1-A7；vm_unit；syscall_probe；
+  24h 驻留通过（3 进程存活 >24h 零误杀）；**无 WDAC**；篡改检测（T4/T9/T10）真实运行。
+- 攻击模拟（个人破解者视角）：字符串搜索（中文消息全加密）、静态结构（断源生效）、
+  授权伪造/篡改/试用期绕过——**全部拒绝**；发现的静态串暴露已加固（`d7c50bc`）。
+- **SSH/计划任务下 T3 不可行**：`DebugActiveProcess` 在 session 0 被拒（0x5），
+  普通用户与 SYSTEM 均如此——Windows 安全模型，非权限问题。
+
+### 4.5 已知环境限制（非代码缺陷，勿当 bug 排查）
+| 限制 | 说明 | 解锁条件 |
+|------|------|---------|
+| T3 真机调试 | 需**交互式桌面会话**（有人登录/RDP）；SSH、计划任务（含 SYSTEM）均被 session 0 拒绝 | 真机桌面或 RDP 登录后跑 `python tests\e2e.py` |
+| 硬件绑定双机 | 换机拒绝已在单机验证（异机 mid 产物被拒），但"双机实跑"需第二台物理机/VM | 第二台机器（PHASE2 P2-5 用例已备） |
+| 本机 WDAC | 托管 VM 启用 Application Control，新构建 exe 偶发被信誉拦截（4551）；verify 已做 SKIP 容错 | 无 WDAC 环境（真机无此问题） |
+
+### 4.6 常用命令速查
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1            # 构建 + 单测 + manifest
-powershell -ExecutionPolicy Bypass -File verify.ps1 -Minimal  # 单轮冒烟 (build+e2e+vm_unit+attacks)
+powershell -ExecutionPolicy Bypass -File verify.ps1 -Minimal  # 单轮冒烟 (build+e2e+vm_unit+attacks+vmc+example)
 powershell -ExecutionPolicy Bypass -File verify.ps1           # 3 轮随机重建回归 (发版用)
 python tests\e2e.py && python tests\attacks.py                # 直接跑两套测试
+python tests\vmc_tests.py                                     # vmc 编译器单测 (M2/M3)
+python examples\tool_demo\test_example.py                     # 接入示例 E1-E7 (保护 SDK 验收)
 python tools\vmenc.py genserial --json demo\vm_build.json --print  # 看 machine_id/expect
 python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_build.json --out build\license.txt
 "DEMO-2026-ABCDEFGH" | .\build\demo.exe --license-file .\build\license.txt  # 手动演示
@@ -155,12 +184,15 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 
 | 路径 | 作用 |
 |------|------|
-| `include/protect/*.h` | 契约头（protdef/vm/antidebug/integrity/strcrypt/hostid/license），勿改 |
-| `src/*.c` | 实现（vm/crc32/antidebug/integrity/strcrypt/hostid/license） |
-| `tools/vmenc.py` | 汇编器+加密器+genserial+hostid+RSA keygen/sign（A1） |
-| `tools/strgen.py` / `tools/hashpatch.py` | 字符串加密 / CRC 烧录 |
-| `demo/*.vasm` | 4 个 VM 源（hash/mix/verify/gate） |
+| `include/protect/*.h` | 契约头（protdef/vm/antidebug/integrity/strcrypt/hostid/license/revoke/vmdetect/dbiguard/blob/version），勿改 |
+| `src/*.c` | 实现（vm/crc32/antidebug/integrity/strcrypt/hostid/license/revoke/vmdetect/dbiguard/blob/syscall） |
+| `tools/vmenc.py` | 汇编器+加密器+genserial+hostid+RSA keygen/sign/issue/revoke/pack |
+| `tools/vmc.py` | 类 C 编译器 -> VM 字节码（M2），--seed 栈随机化 + --flatten 控制流平坦化（M3） |
+| `tools/strgen.py` / `tools/hashpatch.py` / `tools/mock_server.py` / `tools/osinfo.py` | 字符串加密 / CRC 烧录 / 在线验证 mock / 系统信息 |
+| `demo/*.vasm` | 4 个 VM 源（hash/mix/verify/gate）+ `examples/tool_demo/check.vmc`（类 C 接入示例） |
 | `demo/vm_build.json` | 序列号/机器标识/期望值（每构建重算，换机会变） |
-| `tests/` | e2e.py(T1-11) / attacks.py(A1-6) / unit_vm.vasm+unit_vm_brk.vasm+vm_unit.c / syscall_probe.c(A6) |
+| `tests/` | e2e.py(T1-24) / attacks.py(A1-7) / vmc_tests.py / vm_unit.c+brk / syscall_probe.c / vmdetect_probe.c |
+| `examples/tool_demo/` | 保护 SDK 接入示例（build_example.ps1 + test_example.py E1-E7） |
+| `docs/` | CONTRACT/PLAN/ROADMAP/THREATMODEL/PRODUCTION/BUSINESS/RELEASE/OPS/COMPAT/PHASE2/PHASE3/ADVANCED/ADVANCED2/HANDOVER |
 | `docs/` | CONTRACT / PLAN / ROADMAP / THREATMODEL / PRODUCTION / **BUSINESS（总纲）+ RELEASE + OPS + COMPAT（商业化文档体系，2026-08-14）** / HANDOVER(本文件) |
 | `build/`（gitignore） | 产物 + manifest.json + keys\（私钥） |
