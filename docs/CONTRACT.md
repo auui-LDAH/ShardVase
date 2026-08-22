@@ -427,10 +427,16 @@ const prot_baked_crc g_prot_baked_crc[3] = {
     hash/mix/verify/gate 四个镜像；失败 → 打印 MSG_BLOB，`exit(PROT_EXIT_BLOB_MISSING)`。
 7. 打印 `PROT_STR_MSG_HWID` + 机器标识（`prot_hostid_get()`，16 位十六进制，Phase 4）。
 8. 打印 `PROT_STR_PROMPT_SERIAL`，`fgets` 读入，去掉换行，长度上限 47。
-9. 构造 `demo_mem`（见下），依次执行 3 个独立 VM（Phase 2a，见 §5.5）：
-   `prot_vm_run(&g_vm_hash_image, ...)` → `g_vm_mix_image` → `g_vm_verify_image`；
+9. 构造 `demo_mem`（见下），依次执行 VM#1/VM#2（Phase 2a，见 §5.5）：
+   `prot_vm_run(&g_vm_hash_image, ...)` → `g_vm_mix_image`；
    任一返回非 PROT_OK → 打印 `PROT_STR_MSG_FAIL` + 错误码，`exit(1)`。
 10. 授权验签（A1，§9.4）：`--license-file F` → 验签设 `mem.license_ok`；未传 → 1。
+10b. 吊销检查（I1，§9.5）+ 在线查询（M3.1）：`--check-url` 时 GET /v1/check；
+    N5：响应含 `expect1/expect2`（服务端复算的会话级期望值）时写入
+    `mem.vm_expect1/2`（覆盖第 9 步设的构建期默认），破解者 patch
+    "期望值比较" 只对当次会话有效。
+10c. 执行 VM#3 `g_vm_verify_image`：用 `mem.vm_expect1/2`（+112/+120）
+    校验 h/total 并写 `result`（N5：期望值不再烧录立即数）。
 11. 执行 VM#4 门控 `g_vm_gate_image`：`result &= license_ok`（§9.4）。
 12. `prot_antidebug_fake_active()` 为真 → `mem.result ^= 1`。
 13. `mem.result` 非 0 → 打印 `PROT_STR_MSG_OK`，`exit(0)`；否则打印 `PROT_STR_MSG_FAIL`，`exit(1)`。
@@ -448,8 +454,12 @@ typedef struct demo_mem {
     uint32_t license_ok;   /* +88 (宿主 RSA 验签结果, 0/1; VM#4 门控) */
     uint32_t license_tier; /* +92 (Phase 4: 授权等级 0/1/2, 参与签名不可篡改) */
     uint32_t license_expires; /* +96 (Phase 4: 到期 unix, 0=永久, 参与签名) */
-    uint32_t _pad2;        /* +100 对齐 */
-} demo_mem;                /* 总 104 字节 (VM 使用的偏移 +0..+88 不变) */
+    uint32_t result2;      /* +100 (N3: result 副本2, VM#4 写) */
+    uint32_t result3;      /* +104 (N3: result 副本3, VM#4 写) */
+    uint32_t result_sum;   /* +108 (N3: result ^ 0xA5A5A5A5, VM#4 写) */
+    uint64_t vm_expect1;   /* +112 (N5: VM#3 期望值 h, 会话级; 在线=服务端下发, 离线=构建期默认) */
+    uint64_t vm_expect2;   /* +120 (N5: VM#3 期望值 total, 会话级) */
+} demo_mem;                /* 总 128 字节 (VM 使用的偏移 +0..+108 不变) */
 ```
 `machine_id`（Phase 4）由 `prot_hostid_get()` 在运行期计算（= `vm_build.json` 中
 genserial 自动写入的 `hostid()`，见 §5.6）。演示为"绑定本机"简化：换机器后同一

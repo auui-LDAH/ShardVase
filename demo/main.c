@@ -38,6 +38,9 @@ static const char* const k_vm_names[4] = {
 static prot_vm_image g_vm_imgs[4];
 static void* g_vm_blob_buf = NULL;
 
+/* N5: VM#3 构建期默认期望值 (demo/gen/expect_default.c 生成, 离线兜底) */
+extern const uint64_t g_prot_expect_default[2];
+
 /* demo_mem 布局 (契约 §9.2, 与 demo/license_*.vasm 偏移注释一致, 勿改) */
 typedef struct demo_mem {
     char     serial[48];   /* +0  */
@@ -53,8 +56,9 @@ typedef struct demo_mem {
     uint32_t result2;      /* +100 (N3: result 副本2, VM#4 写) */
     uint32_t result3;      /* +104 (N3: result 副本3, VM#4 写) */
     uint32_t result_sum;   /* +108 (N3: result ^ 0xA5A5A5A5, VM#4 写) */
-    uint32_t _pad2;        /* +112 对齐 */
-} demo_mem;                /* 总 116 字节 (VM 使用的 +0..+96 偏移不变) */
+    uint64_t vm_expect1;   /* +112 (N5: VM#3 期望值 h, 会话级; 离线=构建期默认) */
+    uint64_t vm_expect2;   /* +120 (N5: VM#3 期望值 total, 会话级) */
+} demo_mem;                /* 总 128 字节 (VM 使用的 +0..+108 偏移不变) */
 
 /* N4 函数级间接化: 经间接表解析函数指针后调用 (静态无直接 call)。
  * 泛型函数指针转具体签名 (函数指针互转, MSVC 允许)。 */
@@ -460,13 +464,6 @@ int main(int argc, char** argv)
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
-                            prot_status (*)(const prot_vm_image*, void*, size_t),
-                            &g_vm_imgs[2], &mem, sizeof(mem));
-    if (st != PROT_OK) {
-        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
-        exit(1);
-    }
 
     /* §9.1-9b: RSA 授权 (A1 + Phase 4 tier/expires) —— 宿主验签, 结果由
      * VM#4 并入最终判定位。提供 --license-file 时: 验签失败/过期 =
@@ -488,6 +485,13 @@ int main(int argc, char** argv)
             printf("%s\n", eye);
         }
     }
+
+    /* N5: VM#3 期望值 —— 会话级。先设构建期默认 (g_prot_expect_default,
+     * 与旧行为逐位一致); revoke/online 块若解析到服务端下发的会话
+     * expect1/expect2 会覆盖 (每次启动不同, 破解者 patch "期望值比较"
+     * 只对当次会话有效)。 */
+    mem.vm_expect1 = g_prot_expect_default[0];
+    mem.vm_expect2 = g_prot_expect_default[1];
 
     /* §9.1-9c: 吊销检查 (I1) —— 黑名单随 vm.blob 渠道分发, 启动校验。
      * strict(默认): 命中即拒 (0xB1E4); warn: 告警继续。
@@ -572,6 +576,36 @@ int main(int argc, char** argv)
             }
             if (ok) {
                 char ob[32];
+                /* N5: 解析会话级期望值 (服务端下发, 每次启动不同)。
+                 * 格式: {"status":"ok","tier":1,"expect1":"0x..","expect2":"0x.."}
+                 * 解析失败/缺失 -> 保持构建期默认 (不锁死)。 */
+                if (!online_revoked) {
+                    /* 解析会话级期望值, 格式:
+                     * {"status":"ok","tier":1,"expect1":"0x..","expect2":"0x.."}
+                     * (mock/生产 JSON 可能有空格, 用 strchr 定位值, 健壮解析) */
+                    const char* e1 = strstr(buf, "\"expect1\"");
+                    const char* e2 = strstr(buf, "\"expect2\"");
+                    if (e1 != NULL && e2 != NULL) {
+                        const char* v1 = strchr(e1, ':');
+                        const char* v2 = strchr(e2, ':');
+                        if (v1 != NULL && v2 != NULL) {
+                            v1 = strchr(v1 + 1, '"');
+                            v2 = strchr(v2 + 1, '"');
+                            if (v1 != NULL && v2 != NULL) {
+                                v1++;
+                                v2++;
+                                if (*v1 != '\0' && *v2 != '\0') {
+                                    unsigned long long a1 = strtoull(v1, NULL, 0);
+                                    unsigned long long a2 = strtoull(v2, NULL, 0);
+                                    if (a1 != 0ull || a2 != 0ull) {
+                                        mem.vm_expect1 = a1;
+                                        mem.vm_expect2 = a2;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 _snprintf_s(ob, sizeof(ob), _TRUNCATE,
                             prot_str_get(PROT_STR_ONLINE_FMT),
                             online_revoked ? "revoked" : "ok");
@@ -587,6 +621,16 @@ int main(int argc, char** argv)
                 exit(PROT_EXIT_REVOKED);
             }
         }
+    }
+
+    /* N5: VM#3 期望值校验 —— 期望值已在 revoke/online 块前设默认、
+     * 在线会话被服务端下发值覆盖。 */
+    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                            prot_status (*)(const prot_vm_image*, void*, size_t),
+                            &g_vm_imgs[2], &mem, sizeof(mem));
+    if (st != PROT_OK) {
+        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        exit(1);
     }
 
     st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,

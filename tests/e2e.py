@@ -17,6 +17,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T15-T19 吊销黑名单: 命中 0xB1E4 / 干净通过 / 无文件不阻断 / 损坏不阻断 / warn 继续 (I1)
   T20/T21 试用期: 未来到期通过 / 已过期拒绝 (Phase 4 expires 参与签名)
   T22-T24 在线验证: 在线吊销 0xB1E4 / 在线 ok 通过 / 服务不可达降级 (M3.1 mock)
+  T25/T26 在线会话级期望值: 正确期望值通过 / 错误期望值拒绝 (N5)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -633,6 +634,71 @@ def main():
                         'exit=%d (offline fallback)' % code))
     except Exception as e:
         results.append(('T24 online-degrade', 'FAIL', repr(e)))
+
+    # ---- T25: 在线会话级期望值 (N5) ------------------------------------
+    # 服务端下发正确期望值 -> 通过 (exit 0); 下发错误期望值 -> 拒绝 (exit 1)。
+    # 破解者 patch "期望值比较" 只对当次会话有效 (每次启动期望值不同)。
+    class _ExpectHandler(http.server.BaseHTTPRequestHandler):
+        wrong = False
+        def log_message(self, *a):
+            pass
+        def do_GET(self):
+            if self.wrong:
+                body = b'{"status":"ok","tier":1,"expect1":"0x1111111111111111","expect2":"0x2222222222222222"}'
+            else:
+                # 与 vmenc.compute_expect 一致的正确值 (从请求参数复算)
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(REPO, 'tools'))
+                try:
+                    from vmenc import compute_expect
+                    from urllib.parse import parse_qs, urlparse
+                    qs = parse_qs(urlparse(self.path).query)
+                    serial_q = qs.get('serial', [''])[0]
+                    mid_q = int(qs.get('mid', ['0'])[0], 16)
+                    h, total = compute_expect(serial_q, mid_q)
+                    body = ('{"status":"ok","tier":1,"expect1":"0x%x","expect2":"0x%x"}'
+                            % (h, total)).encode()
+                except Exception:
+                    body = b'{"status":"ok","tier":1}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+
+    def start_expect_mock(wrong):
+        _ExpectHandler.wrong = wrong
+        srv = http.server.HTTPServer(('127.0.0.1', 0), _ExpectHandler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        return srv
+
+    try:
+        srv = start_expect_mock(False)  # 正确期望值
+        url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--check-url', url],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T25 online-expect-ok', 'PASS' if ok else 'FAIL',
+                        'exit=%d (session expect accepted)' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T25 online-expect-ok', 'FAIL', repr(e)))
+
+    try:
+        srv = start_expect_mock(True)  # 错误期望值
+        url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE, '--vm-blob',
+                  os.path.join(BUILD, 'vm.blob'), '--check-url', url],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 1) and (msg_fail in out)
+        results.append(('T26 online-expect-wrong', 'PASS' if ok else 'FAIL',
+                        'exit=%d (session expect rejected)' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T26 online-expect-wrong', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:

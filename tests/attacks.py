@@ -56,10 +56,11 @@ def run_demo(args=None, stdin=None):
 
 
 def blob_bytes():
-    """从 demo/gen/vm_*_blob.c 提取 s_code 字节数组. 返回 {name: bytes}."""
+    """从 demo/gen/vm_*_blob.c 提取 s_code 字节数组. 返回 {name: bytes}.
+    只处理 vm_*_blob.c (排除 expect_default.c 等其他生成物)。"""
     out = {}
     for fn in sorted(os.listdir(os.path.join(REPO, 'demo', 'gen'))):
-        if not fn.endswith('.c'):
+        if not fn.startswith('vm_') or not fn.endswith('_blob.c'):
             continue
         with open(os.path.join(REPO, 'demo', 'gen', fn), 'r', encoding='utf-8') as f:
             text = f.read()
