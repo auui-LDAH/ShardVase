@@ -250,7 +250,7 @@ function Invoke-Unit([string]$exe, [string]$clCmd, [string]$failMsg) {
             Write-Host "build: $exe still blocked - rebuilding (new hash)"
             cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd"
             if ($LASTEXITCODE -ne 0) { throw "build FAILED: recompile $exe" }
-            if (Test-Path -LiteralPath 'build\keys\codesign.pfx') {
+            if (-not $SkipSign -and (Test-Path -LiteralPath 'build\keys\codesign.pfx')) {
                 Sign-Binary "build\$exe"
             }
         }

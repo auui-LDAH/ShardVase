@@ -553,7 +553,11 @@ int main(int argc, char** argv)
                 WinHttpCloseHandle(hin);
             }
             if (ok) {
-                printf("online check: %s\n", online_revoked ? "revoked" : "ok");
+                char ob[32];
+                _snprintf_s(ob, sizeof(ob), _TRUNCATE,
+                            prot_str_get(PROT_STR_ONLINE_FMT),
+                            online_revoked ? "revoked" : "ok");
+                printf("%s\n", ob);
             }
             /* !ok = 网络不可达/超时 -> 静默降级本地 (离线优先, 不锁死) */
         }

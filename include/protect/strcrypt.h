@@ -20,6 +20,7 @@ typedef enum prot_str_id {
     PROT_STR_MSG_BLOB,      /* VM 镜像装载失败 (DBI launcher) */
     PROT_STR_MSG_REVOKED,   /* 授权已被吊销 (I1) */
     PROT_STR_LICENSE_FMT,   /* "license: %u (tier=%u expires=%u)" (N 加固) */
+    PROT_STR_ONLINE_FMT,    /* "online check: %s" (N 加固) */
     PROT_STR_COUNT
 } prot_str_id;
 
