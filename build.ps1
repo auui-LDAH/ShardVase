@@ -25,13 +25,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $isRelease = ($Config -eq 'Release')
 
-# 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子
+# 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子;
+# "indirect" = N4 间接表种子 (标量)
 $seedMap = @{}
 $strgenSeedArgs = @()
+$indirectSeed = $null
 if ($SeedsFile) {
-    $seedMap = (Get-Content -LiteralPath $SeedsFile -Raw | ConvertFrom-Json).images
     $sAll = Get-Content -LiteralPath $SeedsFile -Raw | ConvertFrom-Json
+    $seedMap = $sAll.images
     if ($sAll.strgen) { $strgenSeedArgs = @('--seed', $sAll.strgen) }
+    if ($sAll.indirect) { $indirectSeed = @('--seed', ('0x' + $sAll.indirect)) }
 }
 function Get-SeedArgs([string]$name) {
     if ($seedMap.PSObject.Properties.Name -contains $name) {
@@ -169,6 +172,18 @@ if ($RecordSeeds -and $strgenSeedArgs.Count -eq 0) {
 & $py tools\strgen.py demo\strings.txt demo\gen\strings.c $strgenSeedArgs
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
+# 4c. N4 函数级间接化: 生成槽位随机化函数指针表
+#     (I3: -SeedsFile 注入确定性种子; -RecordSeeds 先定种子再构建)
+if ($RecordSeeds -and $null -eq $indirectSeed) {
+    $indirectSeed = @('--seed', ('0x' + (-join (1..16 | ForEach-Object { '{0:x1}' -f (Get-Random -Max 16) }))))
+}
+if ($indirectSeed) {
+    & $py tools\indirect.py --out demo\gen\indirect_table.c $indirectSeed
+} else {
+    & $py tools\indirect.py --out demo\gen\indirect_table.c
+}
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: indirect.py' }
+
 # 4b. Release: 编译版本资源 (RELEASE §2.3, 值只来自 version.h)
 if ($isRelease) {
     cmd /c "`"$vcvars`" >nul 2>&1 && rc /nologo /I include /fo demo\gen\version.res demo\version.rc"
@@ -180,7 +195,7 @@ if ($isRelease) {
 #    版本资源, /Brepro 可复现 (PE 时间戳/校验和确定性, 同种子两次构建字节一致)
 $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
 $resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -347,9 +362,12 @@ if ($RecordSeeds) {
     $strgenSeed = if ($strgenSeedArgs.Count -ge 2) { $strgenSeedArgs[1] } else { '' }
     $seedOut = @{ images = $seedMapOut }
     if ($strgenSeed) { $seedOut['strgen'] = $strgenSeed }
+    if ($indirectSeed -and $indirectSeed.Count -ge 2) {
+        $seedOut['indirect'] = $indirectSeed[1] -replace '^0x', ''
+    }
     $seedOut | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath build\seeds.json -Encoding utf8
-    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed)"
+    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed indirect=$($seedOut.indirect))"
 }
 
 # 8.

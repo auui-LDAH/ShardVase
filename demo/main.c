@@ -21,6 +21,7 @@
 #include "protect/blob.h"
 #include "protect/dbiguard.h"
 #include "protect/hostid.h"
+#include "protect/indirect.h"
 #include "protect/integrity.h"
 #include "protect/license.h"
 #include "protect/revoke.h"
@@ -54,6 +55,11 @@ typedef struct demo_mem {
     uint32_t result_sum;   /* +108 (N3: result ^ 0xA5A5A5A5, VM#4 写) */
     uint32_t _pad2;        /* +112 对齐 */
 } demo_mem;                /* 总 116 字节 (VM 使用的 +0..+96 偏移不变) */
+
+/* N4 函数级间接化: 经间接表解析函数指针后调用 (静态无直接 call)。
+ * 泛型函数指针转具体签名 (函数指针互转, MSVC 允许)。 */
+#define PROT_INDIRECT_CALL(fn_id, sig, ...) \
+    ((sig)prot_indirect_resolve(fn_id))(__VA_ARGS__)
 
 /*
  * 解析 CLI 参数 (契约 §9.1-2):
@@ -214,8 +220,8 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
  *   EXPIRES=<unix> / SIGNATURE=<base64 256B>
  * 验签通过 -> 返回 1 并写出 tier/expires; 文件缺失/字段错/签名无效/机器
  * 不匹配/已过期 -> 返回 0。TIER 缺省 1, EXPIRES 缺省 0 (永久)。
- */
-static int load_and_verify_license(const char* path, demo_mem* mem)
+ * 非 static: N4 间接表 (demo/gen/indirect_table.c) 引用。 */
+int load_and_verify_license(const char* path, demo_mem* mem)
 {
     FILE* f;
     char line[512];
@@ -416,7 +422,9 @@ int main(int argc, char** argv)
     /* §9.1-7: 机器标识 (Phase 4: 真实硬件绑定); 读到序列号前先清零全部区 */
     memset(&mem, 0, sizeof(mem));
     {
-        uint64_t hwid = prot_hostid_get();
+        /* N4: 机器标识经间接表调用 (静态无直接 call) */
+        uint64_t hwid = PROT_INDIRECT_CALL(PROT_INDIRECT_HOSTID,
+                                           uint64_t (*)(void));
         printf("%s0x%016llx\n", prot_str_get(PROT_STR_MSG_HWID),
                (unsigned long long)hwid);
         mem.machine_id = hwid;
@@ -438,17 +446,23 @@ int main(int argc, char** argv)
     /* §9.1-9: VM 校验 —— Phase 2a: 拆成 3 个独立小 VM, 各自密钥/置换/窗口。
      * 依次执行 FNV 哈希 -> GOLDEN 混合 -> 期望值校验, 共享 demo_mem 中间区。
      * 镜像来自 §9.1-6b 装载的 vm.blob (DBI launcher)。 */
-    st = prot_vm_run(&g_vm_imgs[0], &mem, sizeof(mem));
+    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                            prot_status (*)(const prot_vm_image*, void*, size_t),
+                            &g_vm_imgs[0], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = prot_vm_run(&g_vm_imgs[1], &mem, sizeof(mem));
+    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                            prot_status (*)(const prot_vm_image*, void*, size_t),
+                            &g_vm_imgs[1], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = prot_vm_run(&g_vm_imgs[2], &mem, sizeof(mem));
+    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                            prot_status (*)(const prot_vm_image*, void*, size_t),
+                            &g_vm_imgs[2], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
@@ -462,7 +476,9 @@ int main(int argc, char** argv)
     mem.license_tier = PROT_LICENSE_TIER_FULL;
     mem.license_expires = 0u;
     if (license_path != NULL) {
-        mem.license_ok = (uint32_t)load_and_verify_license(license_path, &mem);
+        mem.license_ok = (uint32_t)PROT_INDIRECT_CALL(
+            PROT_INDIRECT_LICENSE, int (*)(const char*, void*),
+            license_path, &mem);
         {
             char eye[64];
             /* 模板串经 strcrypt 加密 (N 加固: 消除明文特征) */
@@ -480,8 +496,10 @@ int main(int argc, char** argv)
     {
         const char* rp = (revoke_path != NULL) ? revoke_path : "revoke.blob";
         uint32_t rver = 0u;
-        prot_revoke_status rs = prot_revoke_check(rp, mem.serial,
-                                                  mem.license_tier, &rver);
+        prot_revoke_status rs = PROT_INDIRECT_CALL(
+            PROT_INDIRECT_REVOKE,
+            prot_revoke_status (*)(const char*, const char*, uint32_t, uint32_t*),
+            rp, mem.serial, mem.license_tier, &rver);
         int online_revoked = 0;
         if (rs == PROT_REVOKE_HIT) {
             online_revoked = 1;
@@ -571,7 +589,9 @@ int main(int argc, char** argv)
         }
     }
 
-    st = prot_vm_run(&g_vm_imgs[3], &mem, sizeof(mem));
+    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                            prot_status (*)(const prot_vm_image*, void*, size_t),
+                            &g_vm_imgs[3], &mem, sizeof(mem));
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);

@@ -90,21 +90,32 @@ VM 引擎（`src/vm.c` 的解释循环、`vm_build_keymaps`、窗口解密等）
 - 修改校验和字段 → 判定失败；
 - 正常路径零误报（T1-T24 回归）。
 
-## 5. N4 — 函数级间接化（宿主 C 层, 可选）
+## 5. N4 — 函数级间接化（宿主 C 层）
 
 ### 5.1 目标
 宿主关键函数（license 校验/VM 装载入口）**间接调用化**：直接 `call` 改为
 经跳板/调用表，调用关系静态不可直接读。
 
-### 5.2 技术路线
-- `#define PROT_FUNC_TABLE`：关键函数指针表 + 构建期随机化顺序
-  （类似 VM 的 slot 随机化思路，作用在 C 层）；
-- 调用点改为 `table[slot]()`（运行时按 key 派生槽位）；
-- 与 N1 叠加：跳板本身也运行时解密。
+### 5.2 技术路线（2026-08-22 落地）
+- `tools/indirect.py`：从种子（`-SeedsFile`/`-RecordSeeds`，I3 可复现）派生
+  **槽位置换** `perm[fn_id]`（xorshift64 + Fisher-Yates，与 vmenc 同构），
+  生成 `demo/gen/indirect_table.c`：
+  - `s_fn[]` 静态表存规范顺序函数指针（同 vm.c g_routes）；
+  - `s_perm[]` 槽位（每次构建随机，跨构建不可复用 patch）。
+- `include/protect/indirect.h` + `src/indirect.c`：
+  - `prot_indirect_resolve(fn_id)` = `s_fn[s_perm[fn_id]]`，`__declspec(noinline)`
+    防 /O2 内联；
+  - 调用点宏 `PROT_INDIRECT_CALL(fn_id, sig, ...)`。
+- 接入的 4 个关键函数：`prot_vm_run`（VM 执行）、`load_and_verify_license`
+  （RSA 验签）、`prot_revoke_check`（吊销）、`prot_hostid_get`（机器标识）。
+- 构建管线：build.ps1 步骤 4c 生成表 + 编译 `src/indirect.c` + `indirect_table.c`；
+  seeds.json 记录 `indirect` 种子。
 
-### 5.3 验收
-- 静态反汇编中关键函数调用点为间接调用（无直接 `call`）；
-- 功能不回归（e2e 全绿）。
+### 5.3 验收（实测 2026-08-22）
+- 静态反汇编：4 个函数**零直接 call**（`E8 rel32` 扫描 0 命中），调用点形态为
+  `call prot_indirect_resolve` + `call rax`（间接调用）；
+- 功能不回归：e2e T1-T24 / attacks A1-A7 全绿；
+- Release 可复现：同种子两次构建 demo.exe SHA-256 一致。
 
 ## 6. N5 — 服务器端兜底（可选, 离线优先增强）
 
@@ -152,5 +163,5 @@ VM 引擎（`src/vm.c` 的解释循环、`vm_build_keymaps`、窗口解密等）
 | N1 运行时自变形 | 调整为"引擎入口自校验 + 常量派生受限"：与现有完整性/随机化重叠较大，作为后续增强；当前以 N2/N3 为主 | 待定 |
 | N2 反 DBI 检测 | ✅ 完成（inline hook/frida 模块/RX+RW 区/线程数；咨询项接入 selftest；本机实测检测到系统 hook） | 2026-08-20 |
 | N3 数据完整性层 | ✅ 完成（gate VM 写 3 份冗余+校验和，宿主多数一致+校验和检查；模拟器验证写回正确，e2e 零回归） | 2026-08-20 |
-| N4 函数级间接化（可选） | 未开始 | — |
+| N4 函数级间接化（可选） | ✅ 完成（tools/indirect.py 槽位随机化表 + src/indirect.c 运行时 resolve + 调用点宏；静态反汇编 4 关键函数零直接 call，实测 call resolve + call rax 间接形态；种子可复现） | 2026-08-22 |
 | N5 服务器端兜底（可选） | 未开始 | — |
