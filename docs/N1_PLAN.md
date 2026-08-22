@@ -203,37 +203,28 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
 - `demo/main.c` `.protcry` 容器 + init 调用
 - `build.ps1` 步骤 6（selfcrypt → hashpatch 带 mask）
 
-### 阶段 1：构建期加密工具（1-2 天）
+### 阶段 1：构建期加密工具 — ✅ 已落地（`tools/selfcrypt_proto.py` + build.ps1 步骤 6）
 
-- [ ] `tools/selfcrypt.py`（新）：
-  - PE 解析（复用 hashpatch.py 的 `pe_sections`）；
-  - 从 .map/符号表定位目标函数（vm.c 引擎核心）；
-  - XOR 加密 + 写 `.protcrypt` 节 + 生成 `selfcrypt_meta.c`；
-  - `--seed` 支持（I3 可复现）。
-- [ ] `build.ps1` 集成：步骤 6 之后（hashpatch 之前/之后顺序需验证）。
-- [ ] 验收：`dumpbin /DISASM` 中目标函数为密文；同种子可复现。
+- [x] PE 解析 / .map 定位 / .pdata 取大小（复用 pe_sections）；
+- [x] XOR 加密（原位，方案 B）+ meta 写 `.protcrypt`；`--seed`/`--dry-run`/`--disable`；
+- [x] build.ps1 集成（selfcrypt → hashpatch 带 mask）。
+- 验收：dumpbin 目标函数为密文 ✓；同种子可复现 ✓。
 
-### 阶段 2：运行期解密器（1 天）
+### 阶段 2：运行期解密器 — ✅ 已落地（`src/selfcrypt.c`）
 
-- [ ] `src/selfcrypt.c` + `include/protect/selfcrypt.h`：
-  - 定位 `.protcrypt` + 解密 + FlushInstructionCache + RX；
-  - D2a 一次性解密 + D2c 周期重加密（看门狗挂钩，可选）；
-  - 解密态 CRC 校验（失败 → EXIT 0xBAD）；
-  - `PROT_SELFCRYPT_DISABLE` 降级开关。
-- [ ] 完整性：`.protcrypt` 加密态 CRC 烧录（`hashpatch.py` 加第 4 标记
-  `PROTCRYP`，`integrity.c` 加对应读取）。
-- [ ] demo/main.c 接入：早期调用 `prot_selfcrypt_init()`。
+- [x] D2a 一次性解密 + FlushInstructionCache + RX + `PROT_SELFCRYPT_DISABLE`；
+- [x] D1b 掩码（`integrity.c build_selfcrypt_mask`，载荷从 .protcry meta 读）；
+- [ ] 二期待办：解密态 CRC 校验、D2c 周期重加密、D2b 调用级 —— 见
+      `docs/N1_PHASE2_PLAN.md`。
+- [ ] demo/main.c 接入：早期调用 `prot_selfcrypt_init()`（✅ 已接入）。
 
-### 阶段 3：测试与回归（1 天）
+### 阶段 3：测试与回归（1 天）— ✅ 已随一期待办完成
 
-- [ ] e2e T1-T26 全绿（重点 T4/T9/T10 篡改检测、T7 selftest）；
-- [ ] attacks A1-A7 全绿；
-- [ ] 新增 N1 专用测试：
-  - T27：静态 dump 中引擎函数无特征码（`mov r10,rcx` 等）→ 密文；
-  - T28：运行期 dump 中解密态存在（D2a）或窗口极小（D2b）；
-  - T29：解密桩 patch（跳过 selfcrypt）→ 被解密态 CRC 识破（0xBAD）；
-  - T30：`.protcrypt` 密文态篡改 → 加密态 CRC 识破（0xBAD）。
-- [ ] Release 可复现验证（verify.ps1 -Reproducible）。
+- [x] e2e T1-T26 全绿（含 T4 篡改检测 0xBAD）；
+- [x] attacks A1-A7 全绿；
+- [x] Release 可复现验证（同种子两次构建字节一致）。
+- [ ] **二期待办**：解密态 CRC（T29）、密文态篡改（T30）、D2b 运行期 dump 窗口、
+      覆盖更多引擎函数 —— 见 `docs/N1_PHASE2_PLAN.md`。
 
 ---
 
@@ -296,7 +287,7 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
 | N1 阶段 1 构建期加密工具 | ✅ 完成（selfcrypt_proto.py + build.ps1 集成 + hashpatch --mask） | 2026-08-22 |
 | N1 阶段 2 运行期解密器 | ✅ 完成（selfcrypt.c D2a 一次性解密 + D1b 掩码；解密态 CRC 留待增强） | 2026-08-22 |
 | N1 阶段 3 测试回归 | ✅ 完成（T1-T26/A1-A7/vm_unit/vmc 全绿；Release 可复现） | 2026-08-22 |
-| N1 增强（二期，可选） | 解密态 CRC 校验 / D2b 调用级解密 / D2c 周期重加密 / 多函数覆盖 | 待定 |
+| N1 二期增强（II-1/II-2/II-3） | 计划完成，未开工 —— 见 **`docs/N1_PHASE2_PLAN.md`** | 待定 |
 
 ---
 
