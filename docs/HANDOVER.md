@@ -5,7 +5,7 @@
 > 见 `docs/BUSINESS.md`（总纲）/ `docs/RELEASE.md` / `docs/OPS.md` /
 > `docs/COMPAT.md` / `docs/PHASE2.md` / `docs/PHASE3.md` / `docs/ADVANCED.md` /
 > `docs/ADVANCED2.md` / `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` /
-> `docs/THREATMODEL.md` / `docs/PRODUCTION.md`。
+> `docs/THREATMODEL.md` / `docs/PRODUCTION.md` / `docs/N1_PLAN.md`（N1 完备计划，待定）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
 
 ## 1. 项目是什么
@@ -150,7 +150,7 @@ python tests\attacks.py
 |--------|----|------|
 | 阶段 II 剩余 | T3 真机调试、硬件绑定双机 —— **已知环境限制**（见 §4.5，非代码缺陷） | 待交互桌面会话 / 第二台机器 |
 | 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
-| 可选 | ADVANCED2 N1（引擎自变形增强） | 可选，未开工 |
+| 可选 | ADVANCED2 N1（引擎自变形增强）—— 完备计划见 **docs/N1_PLAN.md**（决策点 D1-D5 待拍板，开工前需阶段 0 原型验证） | 可选，待定 |
 | 规划 | blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
