@@ -210,7 +210,7 @@ if ($isRelease) {
 #    版本资源, /Brepro 可复现 (PE 时间戳/校验和确定性, 同种子两次构建字节一致)
 $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
 $resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c src\selfcrypt.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -221,8 +221,20 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
 cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 
-# 6. 烧录 .text CRC32 到二进制 (integrity 自检依赖)
-& $py tools\hashpatch.py build\demo.exe
+# 6. N1 (阶段 0 原型): 引擎函数原位加密 (方案 B) —— 必须在 hashpatch 之前
+#     (加密改 .text, hashpatch 对加密段掩码后烧录, 两侧一致)。
+#     掩码 rva/len 由 selfcrypt_proto.py 写入 build/selfcrypt_mask.txt
+& $py tools\selfcrypt_proto.py build\demo.exe build\demo.map
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: selfcrypt_proto.py' }
+$maskArgs = @()
+if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
+    foreach ($ln in (Get-Content -LiteralPath 'build\selfcrypt_mask.txt')) {
+        $maskArgs += '--mask', $ln.Trim()
+    }
+}
+
+# 6. 烧录 .text CRC32 到二进制 (integrity 自检依赖; 带 selfcrypt 掩码)
+& $py tools\hashpatch.py build\demo.exe @maskArgs
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
 
 # 6.2 Release: 数字签名 (RELEASE §2.4, 自签证书) —— 必须在 hashpatch 之后

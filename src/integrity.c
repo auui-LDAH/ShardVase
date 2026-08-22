@@ -181,6 +181,28 @@ static void build_reloc_mask(uint8_t* base, const IMAGE_NT_HEADERS* nt,
     }
 }
 
+/* N1 (D1b): 把 selfcrypt 加密段 (从 .protcry meta 读 rva/len) 在 mask 中
+ * 置 0xFF —— 加密态(文件)与解密态(运行)该段不参与 .text CRC, 两侧一致。
+ * 规则与 tools/selfcrypt_proto.py 的 MASK 输出一致。 */
+static void build_selfcrypt_mask(uint8_t* mask, uint32_t rva, uint32_t len)
+{
+    extern uint8_t g_prot_selfcrypt_blob[];
+    const uint8_t* blob = g_prot_selfcrypt_blob;
+    uint32_t n;
+    uint32_t i;
+
+    memcpy(&n, blob, 4u);
+    if (n == 0u || n > 4u)
+        return;
+    for (i = 0u; i < n; i++) {
+        uint32_t s_rva, s_len;
+        memcpy(&s_rva, blob + 4u + i * 16u, 4u);
+        memcpy(&s_len, blob + 4u + i * 16u + 4u, 4u);
+        if (s_rva >= rva && s_rva + s_len <= rva + len)
+            memset(mask + (s_rva - rva), 0xFF, s_len);
+    }
+}
+
 /* 流式 CRC: 掩码归零的字节按 0 参与计算 (与整段明文 CRC 等价时跳过掩码字节) */
 static uint32_t section_crc_masked(uint8_t* base, const uint8_t* mask,
                                    uint32_t off, uint32_t len)
@@ -232,6 +254,7 @@ prot_status prot_integrity_check_self(void) {
                 return PROT_ERR_INTEGRITY;
             memset(mask, 0, len);
             build_reloc_mask(base, nt, mask, sec->VirtualAddress, len);
+            build_selfcrypt_mask(mask, sec->VirtualAddress, len); /* N1 D1b */
             crc = section_crc_masked(base, mask, sec->VirtualAddress, len);
             if (crc != read_baked_crc(g_crc_targets[j].idx)) {
                 return PROT_ERR_INTEGRITY;

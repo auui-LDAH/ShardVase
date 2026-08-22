@@ -164,7 +164,7 @@ VM 引擎（`src/vm.c` 的解释循环、`vm_build_keymaps`、窗口解密等）
 
 | 里程碑 | 状态 | 完成日期 |
 |--------|------|---------|
-| N1 运行时自变形 | **待定（计划文档 `docs/N1_PLAN.md` 已完成）**：评估结论——与现有完整性（L4a）/随机化（L2b）重叠大但仍有独特价值（引擎代码本身静态不可读）；冲突点（`.text` CRC）已有解法（D1a 专用节）；风险（SMC 触发杀软）需阶段 0 原型验证；开工前拍板 D1-D5 | 待定 |
+| N1 运行时自变形 | ✅ **完成（阶段 0-3，2026-08-22）**：方案 B 原位加密（方案 C 搬移证伪——函数内 E8 rel32 错位）；`tools/selfcrypt_proto.py` + `src/selfcrypt.c` + D1b 掩码（hashpatch --mask / integrity build_selfcrypt_mask）；静态 dump 引擎函数为密文；e2e/attacks/vm_unit/vmc 零回归；Release 可复现。详见 `docs/N1_PLAN.md` | 2026-08-22 |
 | N2 反 DBI 检测 | ✅ 完成（inline hook/frida 模块/RX+RW 区/线程数；咨询项接入 selftest；本机实测检测到系统 hook） | 2026-08-20 |
 | N3 数据完整性层 | ✅ 完成（gate VM 写 3 份冗余+校验和，宿主多数一致+校验和检查；模拟器验证写回正确，e2e 零回归） | 2026-08-20 |
 | N4 函数级间接化（可选） | ✅ 完成（tools/indirect.py 槽位随机化表 + src/indirect.c 运行时 resolve + 调用点宏；静态反汇编 4 关键函数零直接 call，实测 call resolve + call rax 间接形态；种子可复现） | 2026-08-22 |

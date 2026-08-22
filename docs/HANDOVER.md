@@ -31,6 +31,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序（仓库根目录名�
 | **发行加固+可复现（I2/I3，2026-08-15 落地）** | version.h/--version/版本资源/自签签名；种子注入 + /Brepro（无签名产物字节一致） | `include/protect/version.h`、`demo/version.rc`、`build.ps1 -Config/-SeedsFile/-RecordSeeds`、`verify.ps1 -Reproducible` |
 | **函数级间接化（N4，2026-08-22 落地）** | 4 个关键宿主函数（VM 执行/验签/吊销/机器标识）经槽位随机化指针表间接调用；静态零直接 call，调用点 `call resolve + call rax`；种子可复现 | `src/indirect.c`、`include/protect/indirect.h`、`tools/indirect.py`、`demo/gen/indirect_table.c`（生成）、`demo/main.c`（PROT_INDIRECT_CALL 宏）、`build.ps1` 步骤 4c |
 | **服务器端兜底（N5，2026-08-22 落地）** | `/v1/check` 下发会话级期望值 expect1/expect2（服务端复算）；VM#3 期望值改读 demo_mem +112/+120（在线=会话值，离线=构建期默认）；破解者 patch "期望值比较" 只对当次会话有效 | `tools/mock_server.py`（N5 扩展）、`demo/license_verify.vasm`（改读内存）、`demo/main.c`（解析+填充）、`build.ps1` 步骤 2.2（生成 expect_default.c）、e2e T25/T26 |
+| **运行时自变形（N1，2026-08-22 落地）** | VM 引擎函数（prot_vm_run）构建期 .text 原位 XOR 加密，运行期一次性解密执行；静态 dump 引擎为密文；.text CRC 对加密段掩码（D1b）两侧一致零误报；方案 C（搬移+跳板）因函数内 E8 rel32 错位证伪 | `src/selfcrypt.c`、`include/protect/selfcrypt.h`、`tools/selfcrypt_proto.py`、`demo/main.c`（.protcry 容器+init）、`hashpatch.py --mask`、`integrity.c build_selfcrypt_mask`、`build.ps1` 步骤 6；计划见 `docs/N1_PLAN.md` |
 
 核心论断（废 `demo\license_vm.vasm` 的旧单一 VM，2026-08-09 拆为 4 个小 VM）：
 **攻击者即使还原全部 VM 也造不出合法授权 key**（私钥离线），这是 THREATMODEL §4 的"离线不可破"锚点。
@@ -150,7 +151,7 @@ python tests\attacks.py
 |--------|----|------|
 | 阶段 II 剩余 | T3 真机调试、硬件绑定双机 —— **已知环境限制**（见 §4.5，非代码缺陷） | 待交互桌面会话 / 第二台机器 |
 | 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
-| 可选 | ADVANCED2 N1（引擎自变形增强）—— 完备计划见 **docs/N1_PLAN.md**（决策点 D1-D5 待拍板，开工前需阶段 0 原型验证） | 可选，待定 |
+| 可选 | N1 二期增强（解密态 CRC、调用级解密 D2b、覆盖更多引擎函数）—— 见 **docs/N1_PLAN.md** §10 | 可选，待定 |
 | 规划 | blob 加密/签名绑定、网络下发（DBI launcher 可选升级） | THREATMODEL §6 注记 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 

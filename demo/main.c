@@ -25,6 +25,7 @@
 #include "protect/integrity.h"
 #include "protect/license.h"
 #include "protect/revoke.h"
+#include "protect/selfcrypt.h"
 #include "protect/strcrypt.h"
 #include "protect/version.h"
 #include "protect/vm.h"
@@ -59,6 +60,21 @@ typedef struct demo_mem {
     uint64_t vm_expect1;   /* +112 (N5: VM#3 期望值 h, 会话级; 离线=构建期默认) */
     uint64_t vm_expect2;   /* +120 (N5: VM#3 期望值 total, 会话级) */
 } demo_mem;                /* 总 128 字节 (VM 使用的 +0..+108 偏移不变) */
+
+/* ---------------------------------------------------------------------------
+ * N1 运行时自变形 (阶段 0 原型): .protcrypt 专用节 —— 加密函数体的容器。
+ *  - 链接后此节成为 PE 的独立节 (.protcry), 不进 .text/.rdata/.pdata
+ *    CRC 覆盖区 (D1a);
+ *  - 构建期 tools/selfcrypt_proto.py 写入: [u32 count][entries][密文...]
+ *    (meta 与密文同一 blob, 避免"链接后改写 meta 需重链接"的死循环);
+ *  - 运行期 prot_selfcrypt_init 从 blob 头读 meta, 原地解密, 改 RX 执行;
+ *  - 大小须 >= header + 全部目标函数密文; 原型用 4KB 上限。
+ * ------------------------------------------------------------------------- */
+#pragma section(".protcrypt", read, write)
+__declspec(allocate(".protcrypt"))
+uint8_t g_prot_selfcrypt_blob[4096];
+
+const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
 
 /* N4 函数级间接化: 经间接表解析函数指针后调用 (静态无直接 call)。
  * 泛型函数指针转具体签名 (函数指针互转, MSVC 允许)。 */
@@ -338,6 +354,14 @@ int main(int argc, char** argv)
 
     /* §9.1-3: BANNER */
     printf("%s\n", prot_str_get(PROT_STR_BANNER));
+
+    /* N1 (阶段 0): 解密 .text 原位加密的引擎函数 (方案 B, D1b 掩码) */
+    {
+        prot_status sc = prot_selfcrypt_init();
+        if (sc != PROT_OK) {
+            printf("selfcrypt init failed (%d)\n", (int)sc);
+        }
+    }
 
     /* §9.1-2: --wait-ms N 在扫描前延时 (为调试附加留出窗口) */
     if (wait_ms > 0) {

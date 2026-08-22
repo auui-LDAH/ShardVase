@@ -38,6 +38,15 @@ class HashpatchError(Exception):
     pass
 
 
+# N1 (D1b): selfcrypt 加密段掩码列表 [(rva, len), ...] —— 由
+# tools/selfcrypt_proto.py 的 MASK 输出生成 (--mask "rva,len" 可重复)。
+EXCLUDE_MASKS = []
+
+
+def add_exclude_mask(rva, length):
+    EXCLUDE_MASKS.append((rva, length))
+
+
 def pe_sections(data):
     """Parse the PE section table; return list of dicts (raw file side)."""
     if len(data) < 0x40:
@@ -139,16 +148,31 @@ def compute_section_crc(data, secs, sec):
         for i, m in enumerate(mask):
             if m:
                 raw[i] = 0
+    # N1 (D1b): selfcrypt 加密段同样掩码 (与运行侧 build_selfcrypt_mask 一致)
+    for (mrva, mlen) in EXCLUDE_MASKS:
+        if sec['virtual_addr'] <= mrva and mrva + mlen <= sec['virtual_addr'] + crc_len:
+            o = mrva - sec['virtual_addr']
+            raw[o:o + mlen] = b'\x00' * mlen
     crc = zlib.crc32(bytes(raw)) & 0xFFFFFFFF
     return crc, crc_len
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) != 1:
-        print('usage: python tools/hashpatch.py <exe>', file=sys.stderr)
+    if len(argv) < 1:
+        print('usage: python tools/hashpatch.py <exe> [--mask rva,len]...',
+              file=sys.stderr)
         return 2
     exe_path = argv[0]
+    i = 1
+    while i < len(argv):
+        if argv[i] == '--mask':
+            rva, mlen = argv[i + 1].split(',')
+            add_exclude_mask(int(rva, 0), int(mlen, 0))
+            i += 2
+        else:
+            print('hashpatch: unknown arg: %s' % argv[i], file=sys.stderr)
+            return 2
 
     try:
         with open(exe_path, 'rb') as f:
