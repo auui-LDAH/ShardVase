@@ -170,8 +170,9 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (verify)' }
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
 
 # 3c. 打包 VM blob (DBI launcher, 技术债 #3): demo.exe 不再静态嵌入 VM 密文,
-#     启动时由 launcher 装载 build\vm.blob (缺失/损坏 -> 0xB10B)
-& $py tools\vmenc.py pack --out build\vm.blob demo\gen\vm_hash_blob.bin demo\gen\vm_mix_blob.bin demo\gen\vm_verify_blob.bin demo\gen\vm_gate_blob.bin
+#     启动时由 launcher 装载 build\vm.blob (缺失/损坏 -> 0xB10B)。
+#     BLOB_SIGN_PLAN: --sign 用 A1 私钥签 v1 blob (防伪造)
+& $py tools\vmenc.py pack --sign "build\keys\license_priv.json" --out build\vm.blob demo\gen\vm_hash_blob.bin demo\gen\vm_mix_blob.bin demo\gen\vm_verify_blob.bin demo\gen\vm_gate_blob.bin
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py pack' }
 
 # 3b. 汇编 VM 指令集单测镜像 (ROADMAP Phase 1d, 每个新指令都要有测试用例)

@@ -242,7 +242,7 @@ prot_status prot_integrity_check_self(void) {
     for (i = 0u; i < nt->FileHeader.NumberOfSections; i++, sec++) {
         for (j = 0u; j < 3u; j++) {
             uint32_t crc;
-            uint8_t mask[0x20000]; /* 段 CRC 上限 128KB (栈上) */
+            uint8_t mask[0x40000]; /* 段 CRC 上限 256KB (栈上; .text 已 >128KB) */
             if (!sec_name_eq(sec, g_crc_targets[j].name))
                 continue;
             len = (sec->Misc.VirtualSize < sec->SizeOfRawData)

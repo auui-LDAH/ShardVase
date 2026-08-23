@@ -424,8 +424,14 @@ def format_bytes(data, per_line=12):
 # VM blob (DBI launcher, 技术债 #3): 镜像二进制格式与 src/blob.c 一致。
 #   单镜像 .bin: NAME[16] | CODE_LEN u32 | KEY0 u64 | KEY1 u64 | CRC u32
 #                | CODE[CODE_LEN]
-#   打包 vm.blob: MAGIC "PROTVMBL" | COUNT u32 LE | entries... | BLOB_CRC u32
+#   打包 vm.blob:
+#     v0 (旧): MAGIC "PROTVMBL" | COUNT u32 LE | entries... | BLOB_CRC u32
+#     v1 (BLOB_SIGN_PLAN, 签名版): MAGIC "PROTVMB1" | COUNT u32 LE |
+#         entries... | SIG_LEN u32 | SIG (256B RSA PKCS1 v1.5 SHA-256) |
+#         BLOB_CRC u32 (覆盖以上全部)
+#   签名消息 = [0, SIG_LEN 字段偏移) (即 MAGIC..entries)。
 BLOB_MAGIC = b'PROTVMBL'
+BLOB_MAGIC_V1 = b'PROTVMB1'
 BLOB_NAME_LEN = 16
 BLOB_ENTRY_HDR = 32
 
@@ -445,7 +451,7 @@ def write_vm_bin(bin_out, name, plaintext, seed, key1):
 
 
 def cmd_pack(args):
-    """合并多个单镜像 .bin 为 vm.blob (加 MAGIC/COUNT/尾部 CRC)."""
+    """合并多个单镜像 .bin 为 vm.blob (加 MAGIC/COUNT/尾部 CRC; --sign 加 RSA 签名)."""
     entries = b''
     for p in args.bins:
         with open(p, 'rb') as f:
@@ -453,7 +459,19 @@ def cmd_pack(args):
         if len(entry) < BLOB_ENTRY_HDR:
             raise VasmError('bin too small: %s' % p)
         entries += entry
-    blob = BLOB_MAGIC + struct.pack('<I', len(args.bins)) + entries
+    if args.sign:
+        with open(args.sign, 'r', encoding='utf-8') as f:
+            kd = json.load(f)
+        n = int(kd['n'], 16)
+        d = int(kd['d'], 16)
+        body = BLOB_MAGIC_V1 + struct.pack('<I', len(args.bins)) + entries
+        digest = hashlib.sha256(body).digest()
+        sig = rsa_sign(d, n, digest)
+        blob = body + struct.pack('<I', len(sig)) + sig
+        print('vmenc: pack v1 signed (%d-byte sig)' % len(sig))
+    else:
+        blob = BLOB_MAGIC + struct.pack('<I', len(args.bins)) + entries
+        print('vmenc: pack v0 (unsigned; --sign for RSA binding)')
     blob += struct.pack('<I', zlib.crc32(blob) & 0xFFFFFFFF)
     ensure_parent(args.out)
     with open(args.out, 'wb') as f:
@@ -469,20 +487,21 @@ def cmd_pack(args):
 #   | BLOB_CRC u32 (prot_crc32 覆盖以上全部)
 # ---------------------------------------------------------------------------
 REVOKE_MAGIC = b'PROTREVK'
+REVOKE_MAGIC_V1 = b'PROTREV1'
 REVOKE_SERIAL_LEN = 48
 REVOKE_ENTRY = REVOKE_SERIAL_LEN + 4 + 8
 
 
 def parse_revoke_blob(path):
-    """读取现有 revoke.blob, 返回 (ver, [entries]). 损坏/缺失 -> VasmError."""
+    """读取现有 revoke.blob (v0/v1 兼容), 返回 (ver, [entries]). 损坏/缺失 -> VasmError."""
     try:
         with open(path, 'rb') as f:
             data = f.read()
     except OSError as e:
         raise VasmError('cannot read revoke base %s: %s' % (path, e))
-    if (len(data) < 20 or data[:8] != REVOKE_MAGIC or
-            zlib.crc32(data[:-4]) & 0xFFFFFFFF !=
-            struct.unpack_from('<I', data, len(data) - 4)[0]):
+    if len(data) < 20 or data[:8] not in (REVOKE_MAGIC, REVOKE_MAGIC_V1) or \
+            zlib.crc32(data[:-4]) & 0xFFFFFFFF != \
+            struct.unpack_from('<I', data, len(data) - 4)[0]:
         raise VasmError('revoke base %s is corrupt' % path)
     ver = struct.unpack_from('<I', data, 8)[0]
     count = struct.unpack_from('<I', data, 12)[0]
@@ -500,7 +519,8 @@ def parse_revoke_blob(path):
 
 
 def cmd_revoke(args):
-    """生成/追加 revoke.blob: --base 读旧黑名单 (版本+1), --add 追加一条."""
+    """生成/追加 revoke.blob: --base 读旧黑名单 (版本+1), --add 追加一条.
+    --sign: 输出 v1 签名格式 (BLOB_SIGN_PLAN): MAGIC PROTREV1 + SIG. """
     ver = 1
     entries = []
     if args.base:
@@ -516,11 +536,21 @@ def cmd_revoke(args):
         entries.append((serial.decode('ascii'), tier, at))
     if args.force_ver is not None:
         ver = args.force_ver
-    body = (REVOKE_MAGIC + struct.pack('<I', ver) +
+    magic = REVOKE_MAGIC_V1 if args.sign else REVOKE_MAGIC
+    body = (magic + struct.pack('<I', ver) +
             struct.pack('<I', len(entries)))
     for serial, tier, at in entries:
         body += (serial.encode('ascii').ljust(REVOKE_SERIAL_LEN, b'\x00') +
                  struct.pack('<I', tier) + struct.pack('<Q', at))
+    if args.sign:
+        with open(args.sign, 'r', encoding='utf-8') as f:
+            kd = json.load(f)
+        n = int(kd['n'], 16)
+        d = int(kd['d'], 16)
+        digest = hashlib.sha256(body).digest()
+        sig = rsa_sign(d, n, digest)
+        body += struct.pack('<I', len(sig)) + sig
+        print('vmenc: revoke v1 signed (%d-byte sig)' % len(sig))
     blob = body + struct.pack('<I', zlib.crc32(body) & 0xFFFFFFFF)
     ensure_parent(args.out)
     with open(args.out, 'wb') as f:
@@ -1057,6 +1087,9 @@ def main(argv=None):
     pb = sub.add_parser('pack', help='pack single-image bins into vm.blob')
     pb.add_argument('--out', dest='out', required=True,
                     help='output vm.blob')
+    pb.add_argument('--sign', dest='sign', default=None,
+                    help='RSA private key JSON (keygen output) -> v1 signed '
+                         'blob (BLOB_SIGN_PLAN)')
     pb.add_argument('bins', nargs='+',
                     help='single-image .bin files (assemble --bin-out)')
     pb.set_defaults(func=cmd_pack)
@@ -1066,6 +1099,9 @@ def main(argv=None):
                     help='output revoke.blob')
     pr.add_argument('--base', dest='base', default=None,
                     help='existing revoke.blob to extend (version +1)')
+    pr.add_argument('--sign', dest='sign', default=None,
+                    help='RSA private key JSON -> v1 signed revoke '
+                         '(BLOB_SIGN_PLAN)')
     pr.add_argument('--add', dest='add', default=None,
                     help='serial to revoke')
     pr.add_argument('--tier', dest='tier', type=int, default=None,

@@ -41,13 +41,30 @@ except ImportError:
 
 
 class MockHandler(BaseHTTPRequestHandler):
-    revoked = {}  # serial -> tier or None (全 tier)
+    revoked = {}   # serial -> tier or None (全 tier)
+    blob_path = None  # BLOB_SIGN_PLAN: /v1/blob 下发的 vm.blob 文件
 
     def log_message(self, fmt, *args):
         sys.stderr.write('[mock] %s\n' % (fmt % args))
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == '/v1/blob':
+            # BLOB_SIGN_PLAN: 下发签名版 vm.blob (客户端验签兜底, 防中间人)
+            if not MockHandler.blob_path or \
+                    not __import__('os').path.isfile(MockHandler.blob_path):
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'{"status":"not_found"}')
+                return
+            with open(MockHandler.blob_path, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if u.path != '/v1/check':
             self.send_response(404)
             self.end_headers()
@@ -93,7 +110,10 @@ def main():
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--revoke', action='append', default=[],
                         help='SERIAL or SERIAL,TIER to revoke (repeatable)')
+    parser.add_argument('--blob', default=None,
+                        help='vm.blob file to serve at /v1/blob (BLOB_SIGN_PLAN)')
     args = parser.parse_args()
+    MockHandler.blob_path = args.blob
 
     for item in args.revoke:
         parts = item.split(',')

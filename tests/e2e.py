@@ -18,6 +18,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T20/T21 试用期: 未来到期通过 / 已过期拒绝 (Phase 4 expires 参与签名)
   T22-T24 在线验证: 在线吊销 0xB1E4 / 在线 ok 通过 / 服务不可达降级 (M3.1 mock)
   T25/T26 在线会话级期望值: 正确期望值通过 / 错误期望值拒绝 (N5)
+  T27/T28 在线 blob 下发: 签名版通过 / 篡改版拒绝 (BLOB_SIGN_PLAN)
 
 任一 FAIL -> sys.exit(1)。
 """
@@ -454,11 +455,79 @@ def main():
     except Exception as e:
         results.append(('T14 blob-tamper', 'FAIL', repr(e)))
 
+    # ---- T27/T28: 在线 blob 下发 (BLOB_SIGN_PLAN) ------------------------
+    # T27: /v1/blob 下发签名版 vm.blob -> demo --blob-url 装载验签通过;
+    # T28: 下发篡改版 -> 验签失败 -> 0xB10B。
+    import http.server
+    import threading
+
+    class _BlobHandler(http.server.BaseHTTPRequestHandler):
+        serve_blob = b''
+        def log_message(self, *a):
+            pass
+        def do_GET(self):
+            if '/v1/blob' not in self.path:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(self.serve_blob)))
+            self.end_headers()
+            self.wfile.write(self.serve_blob)
+
+    def start_blob_mock(blob_bytes):
+        _BlobHandler.serve_blob = blob_bytes
+        srv = http.server.HTTPServer(('127.0.0.1', 0), _BlobHandler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        return srv
+
+    try:
+        if not os.path.isfile(blob_path):
+            raise RuntimeError('vm.blob not found (run build.ps1)')
+        good = open(blob_path, 'rb').read()
+        srv = start_blob_mock(good)
+        url = 'http://127.0.0.1:%d/v1/blob' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE,
+                  '--blob-url', url,
+                  '--vm-blob', os.path.join(BUILD, 'vm_missing_placeholder.blob')],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('T27 online-blob-ok', 'PASS' if ok else 'FAIL',
+                        'exit=%d (signed blob via /v1/blob)' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T27 online-blob-ok', 'FAIL', repr(e)))
+
+    try:
+        if not os.path.isfile(blob_path):
+            raise RuntimeError('vm.blob not found (run build.ps1)')
+        bad = bytearray(open(blob_path, 'rb').read())
+        bad[len(bad) // 2] ^= 0xFF  # 篡改: 签名必失效
+        srv = start_blob_mock(bytes(bad))
+        url = 'http://127.0.0.1:%d/v1/blob' % srv.server_address[1]
+        code, out, _ = run_demo(
+            args=['--license-file', LICENSE,
+                  '--blob-url', url,
+                  '--vm-blob', os.path.join(BUILD, 'vm_missing_placeholder.blob')],
+            stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == PROT_EXIT_BLOB_MISSING)
+        results.append(('T28 online-blob-tamper', 'PASS' if ok else 'FAIL',
+                        'exit=%d (tampered blob rejected by signature)' % code))
+        srv.shutdown()
+    except Exception as e:
+        results.append(('T28 online-blob-tamper', 'FAIL', repr(e)))
+
     # ---- T15-T19: 授权吊销 (I1, 离线黑名单) ------------------------------
     PROT_EXIT_REVOKED = 0xB1E4
     vmenc = os.path.join(REPO, 'tools', 'vmenc.py')
-    def make_revoke(serial, tier=None, path='revoke.blob'):
+    privkey = os.path.join(BUILD, 'keys', 'license_priv.json')
+    def make_revoke(serial, tier=None, path='revoke.blob', signed=True):
         args = ['python', vmenc, 'revoke', '--out', os.path.join(BUILD, path)]
+        if signed and os.path.isfile(privkey):
+            args += ['--sign', privkey]  # BLOB_SIGN_PLAN: v1 签名黑名单
         if serial:
             args += ['--add', serial]
             if tier is not None:

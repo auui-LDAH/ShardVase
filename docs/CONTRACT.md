@@ -195,25 +195,30 @@ build/             [构建产物] demo.exe
 `uint32_t prot_crc32_done(uint32_t crc)`；`init -> 若干 step -> done` 与整段
 `prot_crc32` 完全等价。声明在 `include/protect/protdef.h`。
 
-### 4.4 VM blob 装载器（DBI launcher, 技术债 #3, 2026-08-14）
+### 4.4 VM blob 装载器（DBI launcher, 技术债 #3, 2026-08-14; v1 签名 2026-08-22）
 - 动机：VM 镜像密文**不再静态嵌入 exe**，由构建期 `vmenc.py pack` 打包为
   独立 `build\vm.blob`，launcher（`src/blob.c` `prot_vm_blob_load`）启动时
   装载进内存再交给 `prot_vm_run`——静态拿到 exe 拿不到任何 VM 逻辑
   （"断源"：必须同时拿到分发 blob）。
-- blob 格式（与 `vmenc.py pack` 一致）：
+- blob 格式 v1（BLOB_SIGN_PLAN, 签名版, 与 `vmenc.py pack --sign` 一致）：
   ```
-  MAGIC "PROTVMBL"(8) | COUNT u32 LE
+  MAGIC "PROTVMB1"(8) | COUNT u32 LE
   | 每镜像: NAME[16] | CODE_LEN u32 | KEY0 u64 | KEY1 u64 | CRC u32
     | CODE[CODE_LEN] (原 key[0] 滚动密钥流加密)
+  | SIG_LEN u32 (256) | SIG (RSA-2048 PKCS#1 v1.5 SHA-256, 消息=[0, SIG_LEN 字段))
   | BLOB_CRC u32 (prot_crc32 覆盖以上全部, 防篡改)
   ```
-  镜像 `name` 由 `assemble --bin-name` 指定（≤15 字节，demo 请求
+  签名复用 A1 私钥（`build\keys\license_priv.json`），运行期
+  `prot_license_verify` 验签；**v0（未签名 "PROTVMBL"）被拒绝**（D1a 强制 v1）。
+- 镜像 `name` 由 `assemble --bin-name` 指定（≤15 字节，demo 请求
   `hash/mix/verify/gate`）。
 - 状态码：`PROT_ERR_BLOB_MISSING`（文件缺失）/ `PROT_ERR_BLOB_CORRUPT`
-  （magic/CRC/长度）/ `PROT_ERR_BLOB_NAME`（缺镜像）。退出码
+  （magic/CRC/长度/**签名无效**）/ `PROT_ERR_BLOB_NAME`（缺镜像）。退出码
   `PROT_EXIT_BLOB_MISSING 0xB10B`。
 - 装载缓冲是**密文**；VM 解释器仍按活动窗口解密 + 用后即焚，明文语义不变。
-- 构建：`assemble --bin-out X --bin-name N` → `vmenc.py pack --out build\vm.blob X...`；
+- 网络下发（可选）：`--blob-url URL` 先从 `/v1/blob` 下载到临时文件再装载
+  （验签兜底，中间人替换过不了签名）；下载失败/不可达 → 回退本地路径。
+- 构建：`assemble --bin-out X --bin-name N` → `vmenc.py pack --sign <key> --out build\vm.blob X...`；
   `demo.exe` 不再链接 `vm_*_blob.c`（仅 `vm_unit.exe` 单测仍静态链接）。
 
 ## 5. VASM 汇编器 (tools/vmenc.py)

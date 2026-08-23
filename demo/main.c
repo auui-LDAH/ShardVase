@@ -103,6 +103,7 @@ static prot_status vm_run_wrapped(const prot_vm_image* img, void* mem)
  *   --wait-after N   看门狗启动后驻留 N 毫秒 (A5 长驻留回归钩子)
  *   --license-file F 读入 RSA 授权文件 (A1) 并验签
  *   --vm-blob F      VM 镜像 blob 路径 (默认 "vm.blob", DBI launcher)
+ *   --blob-url URL   在线下发 vm.blob 端点 (BLOB_SIGN_PLAN; 不可达回退本地)
  *   --revoke-file F  吊销黑名单路径 (默认 "revoke.blob", I1)
  *   --revoke-policy  吊销命中策略: strict(默认, 拒绝) / warn(告警继续)
  *   --check-url URL  在线验证端点 (M3.1, 缺省不启用在线; 不可达时降级本地)
@@ -110,7 +111,8 @@ static prot_status vm_run_wrapped(const prot_vm_image* img, void* mem)
  */
 static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                       uint32_t* wait_after_ms, const char** license_path,
-                      const char** vm_blob_path, const char** revoke_path,
+                      const char** vm_blob_path, const char** blob_url,
+                      const char** revoke_path,
                       int* revoke_strict, const char** check_url)
 {
     int i;
@@ -120,6 +122,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
     *wait_after_ms = 0;
     *license_path = NULL;
     *vm_blob_path = NULL;
+    *blob_url = NULL;
     *revoke_path = NULL;
     *revoke_strict = 1; /* 默认 strict: 命中即拒绝 */
     *check_url = NULL;
@@ -132,7 +135,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             char* end = NULL;
             unsigned long v;
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--revoke-file F] [--revoke-policy strict|warn]\n");
+                fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--blob-url URL] [--revoke-file F] [--revoke-policy strict|warn]\n");
                 return 0;
             }
             v = strtoul(argv[i + 1], &end, 10);
@@ -158,6 +161,13 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                 return 0;
             }
             *vm_blob_path = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "--blob-url") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --blob-url URL\n");
+                return 0;
+            }
+            *blob_url = argv[i + 1];
             i++;
         } else if (strcmp(argv[i], "--revoke-file") == 0) {
             if (i + 1 >= argc) {
@@ -350,6 +360,7 @@ int main(int argc, char** argv)
     uint32_t wait_after_ms;
     const char* license_path = NULL;
     const char* vm_blob_path = NULL;
+    const char* blob_url = NULL;
     const char* revoke_path = NULL;
     const char* check_url = NULL;
     int revoke_strict = 1;
@@ -362,7 +373,7 @@ int main(int argc, char** argv)
 
     /* §9.1-2: 解析参数 */
     if (!parse_args(argc, argv, &selftest, &wait_ms, &wait_after_ms,
-                    &license_path, &vm_blob_path, &revoke_path,
+                    &license_path, &vm_blob_path, &blob_url, &revoke_path,
                     &revoke_strict, &check_url)) {
         return 2; /* 用法错误 */
     }
@@ -446,10 +457,78 @@ int main(int argc, char** argv)
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
 
     /* §9.1-6b: 装载 VM blob (DBI launcher, 技术债 #3) —— 镜像密文不静态
-     * 嵌入 exe; 缺失/损坏 -> 拒绝运行 (0xB10B)。默认相对 cwd 找 vm.blob。 */
+     * 嵌入 exe; 缺失/损坏 -> 拒绝运行 (0xB10B)。默认相对 cwd 找 vm.blob。
+     * BLOB_SIGN_PLAN: --blob-url 时先从网络下载到临时文件 (验签兜底,
+     * 中间人替换也过不了 RSA 签名); 下载失败/不可达 -> 回退本地路径。 */
     {
         const char* bp = (vm_blob_path != NULL) ? vm_blob_path : "vm.blob";
         size_t blob_size = 0u;
+        if (blob_url != NULL) {
+            static char tmp[64] = "vm_blob_dl.tmp";
+            HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
+            BOOL ok = FALSE;
+            hin = WinHttpOpen(L"PROT-Demo/1.0",
+                              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (hin != NULL) {
+                wchar_t whost[256];
+                wchar_t wpath[512];
+                URL_COMPONENTS uc;
+                INTERNET_PORT port;
+                memset(&uc, 0, sizeof(uc));
+                uc.dwStructSize = sizeof(uc);
+                uc.lpszHostName = whost;
+                uc.dwHostNameLength = 256;
+                uc.lpszUrlPath = wpath;
+                uc.dwUrlPathLength = 512;
+                {
+                    wchar_t wurl[1024];
+                    MultiByteToWideChar(CP_UTF8, 0, blob_url, -1, wurl, 1024);
+                    if (WinHttpCrackUrl(wurl, 0, 0, &uc)) {
+                        port = uc.nPort;
+                        hconn = WinHttpConnect(hin, whost, port, 0);
+                        if (hconn != NULL) {
+                            hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
+                                                     WINHTTP_NO_REFERER,
+                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+                            if (hreq != NULL &&
+                                WinHttpSendRequest(hreq,
+                                                   WINHTTP_NO_ADDITIONAL_HEADERS,
+                                                   0, WINHTTP_NO_REQUEST_DATA,
+                                                   0, 0, 3000) &&
+                                WinHttpReceiveResponse(hreq, NULL)) {
+                                FILE* f = NULL;
+                                DWORD avail = 0u;
+                                if (fopen_s(&f, tmp, "wb") == 0 && f != NULL) {
+                                    while (WinHttpQueryDataAvailable(hreq, &avail) &&
+                                           avail > 0u) {
+                                        uint8_t chunk[4096];
+                                        DWORD got2 = 0u;
+                                        if (!WinHttpReadData(hreq, chunk,
+                                                             (avail < sizeof(chunk))
+                                                                 ? avail : (DWORD)sizeof(chunk),
+                                                             &got2) || got2 == 0u)
+                                            break;
+                                        fwrite(chunk, 1, got2, f);
+                                    }
+                                    fclose(f);
+                                    ok = TRUE;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (hreq != NULL)
+                    WinHttpCloseHandle(hreq);
+                if (hconn != NULL)
+                    WinHttpCloseHandle(hconn);
+                WinHttpCloseHandle(hin);
+            }
+            if (ok) {
+                bp = tmp; /* 用下载的 blob (装载时验签, 失败仍 0xB10B) */
+            }
+            /* !ok = 网络不可达/超时 -> 静默回退本地 (离线优先, 不锁死) */
+        }
         st = prot_vm_blob_load(bp, k_vm_names, 4u, g_vm_imgs,
                                &g_vm_blob_buf, &blob_size);
         if (st != PROT_OK) {

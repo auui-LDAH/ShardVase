@@ -1,9 +1,10 @@
 # Blob 签名绑定 + 网络下发 — 完备实施计划 (BLOB_SIGN_PLAN)
 
-> 版本：2026-08-22 v1 · 状态：**规划完成，未开工** · 关联：`docs/THREATMODEL.md` §6（注记）·
+> 版本：2026-08-22 v2 · 状态：**✅ 全部完成（2026-08-22 落地）** · 关联：`docs/THREATMODEL.md` §6（注记）·
 > `docs/PHASE3.md`（服务端）· `docs/HANDOVER.md` §4.3（待办）· `src/blob.c`（DBI launcher）·
 > `src/license.c`（RSA 验签，A1）· `tools/vmenc.py`（pack/revoke/keygen/sign）。
 > 本文档规划 DBI launcher 的可选升级：**blob 签名绑定**（防伪）+ **网络下发**（分发渠道）。
+> v2 记录落地结果：vm.blob/revoke.blob v1 签名格式、--blob-url 在线下发、e2e T27/T28。
 
 ---
 
@@ -151,10 +152,13 @@ v0 装载器仍可读老 blob 逻辑保留在 git 历史）。
 
 ## 8. 待办清单
 
-1. [ ] 拍板 D1-D5（§4）。
-2. [ ] 步骤 1：vmenc.py pack --sign。
-3. [ ] 步骤 2：blob.c 验签。
-4. [ ] 步骤 3：revoke.blob 签名。
-5. [ ] 步骤 4：网络下发 mock。
-6. [ ] 步骤 5：e2e T27/T28 + 全量回归。
-7. [ ] 步骤 6：文档更新。
+1. [x] 拍板 D1-D5（§4）——D1a 强制 v1 / revoke 同步签名 / 验签复用
+      prot_license_verify / 网络下发本期做 / 复用 A1 私钥。
+2. [x] 步骤 1：vmenc.py pack --sign（v1 格式 + 签名）。
+3. [x] 步骤 2：blob.c 验签（复用 prot_license_verify，v0 拒绝）。
+4. [x] 步骤 3：revoke.blob 签名（vmenc.py revoke --sign + revoke.c 验签）。
+5. [x] 步骤 4：网络下发 mock（/v1/blob + demo --blob-url + 离线回退）。
+6. [x] 步骤 5：e2e T27/T28 + 全量回归（T1-T28 / A1-A7 / vm_unit / vmc / Release 可复现全绿）。
+7. [x] 步骤 6：文档更新（CONTRACT §4.4 / THREATMODEL §6 / HANDOVER）。
+   **附注**：落地时修复 integrity.c mask 数组 128KB→256KB（.text 随新代码
+   增长超限导致 0xBAD 误报）。

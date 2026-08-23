@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "protect/license.h"
 #include "protect/revoke.h"
 
 #define PROT_REVOKE_MAGIC_LEN 8u
@@ -19,13 +20,25 @@
 #define PROT_REVOKE_ENTRY     60u /* SERIAL[48] + TIER u32 + REVOKED_AT u64 */
 #define PROT_REVOKE_MAX_ENTRIES 4096u
 
-/* N 加固: "PROTREVK" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较. */
-static int revoke_magic_ok(const uint8_t* p)
+/* BLOB_SIGN_PLAN: v1 签名 revoke (MAGIC "PROTREV1"):
+ * 布局: MAGIC8 | VER4 | COUNT4 | entries | SIG_LEN4 | SIG(256B) | CRC4 */
+#define PROT_REVOKE_SIG_LEN 256u
+
+/* N 加固: "PROTREVK" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较.
+ * v1 判定: 第 8 字节 '1' (v0 是 'K'). */
+static int revoke_magic_ok(const uint8_t* p, uint32_t* is_v1)
 {
-    uint32_t lo, hi;
-    memcpy(&lo, p, 4);    /* 'PROT' = 0x544F5250 */
-    memcpy(&hi, p + 4, 4);/* 'REVK' = 0x4B564552 */
-    return (lo == 0x544F5250u && hi == 0x4B564552u);
+    static const uint8_t m1[8] = { 'P', 'R', 'O', 'T', 'R', 'E', 'V', '1' };
+    static const uint8_t m0[8] = { 'P', 'R', 'O', 'T', 'R', 'E', 'V', 'K' };
+    if (memcmp(p, m1, 8) == 0) {
+        *is_v1 = 1u;
+        return 1;
+    }
+    if (memcmp(p, m0, 8) == 0) {
+        *is_v1 = 0u;
+        return 1;
+    }
+    return 0;
 }
 
 static uint32_t rk_u32(const uint8_t* p)
@@ -77,15 +90,45 @@ prot_revoke_status prot_revoke_check(const char* path,
     }
     fclose(f);
 
-    if (size < PROT_REVOKE_HEADER + 4u ||
-        !revoke_magic_ok(buf)) {
+    if (size < PROT_REVOKE_HEADER + 4u) {
         free(buf);
         return PROT_REVOKE_CORRUPT;
+    }
+    {
+        uint32_t is_v1 = 0u;
+        if (!revoke_magic_ok(buf, &is_v1)) {
+            free(buf);
+            return PROT_REVOKE_CORRUPT;
+        }
+        /* BLOB_SIGN_PLAN (D1a 扩展): 强制 v1 —— v0 (未签名) 视为损坏 */
+        if (!is_v1) {
+            free(buf);
+            return PROT_REVOKE_CORRUPT;
+        }
     }
     crc = prot_crc32(buf, size - 4u);
     if (crc != rk_u32(buf + size - 4u)) {
         free(buf);
         return PROT_REVOKE_CORRUPT;
+    }
+
+    /* BLOB_SIGN_PLAN: v1 RSA 验签 —— 消息 = [0, sig_len_field) */
+    {
+        uint32_t sig_len;
+        size_t sig_off = PROT_REVOKE_HEADER +
+                         (size_t)rk_u32(buf + PROT_REVOKE_MAGIC_LEN + 4u) *
+                             PROT_REVOKE_ENTRY;
+        if (sig_off + 4u + PROT_REVOKE_SIG_LEN > size - 4u) {
+            free(buf);
+            return PROT_REVOKE_CORRUPT;
+        }
+        sig_len = rk_u32(buf + sig_off);
+        if (sig_len != PROT_REVOKE_SIG_LEN ||
+            !prot_license_verify(buf, sig_off, buf + sig_off + 4u,
+                                 PROT_REVOKE_SIG_LEN)) {
+            free(buf);
+            return PROT_REVOKE_CORRUPT;
+        }
     }
 
     ver = rk_u32(buf + PROT_REVOKE_MAGIC_LEN);
