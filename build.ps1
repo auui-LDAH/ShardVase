@@ -20,10 +20,12 @@ param(
     [string]$SeedsFile = '',
     [switch]$RecordSeeds,
     [switch]$SkipSign,
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [switch]$D2b
 )
 $ErrorActionPreference = 'Stop'
 $isRelease = ($Config -eq 'Release')
+$scDef = if ($D2b) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
 
 # 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子;
 # "indirect" = N4 间接表种子 (标量)
@@ -210,7 +212,7 @@ if ($isRelease) {
 #    版本资源, /Brepro 可复现 (PE 时间戳/校验和确定性, 同种子两次构建字节一致)
 $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
 $resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c src\selfcrypt.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:build\demo.map$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c src\selfcrypt.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测

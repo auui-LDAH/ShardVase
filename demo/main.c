@@ -62,17 +62,17 @@ typedef struct demo_mem {
 } demo_mem;                /* 总 128 字节 (VM 使用的 +0..+108 偏移不变) */
 
 /* ---------------------------------------------------------------------------
- * N1 运行时自变形 (阶段 0 原型): .protcrypt 专用节 —— 加密函数体的容器。
+ * N1 运行时自变形 (.protcrypt 专用节): 引擎函数加密的元数据容器。
  *  - 链接后此节成为 PE 的独立节 (.protcry), 不进 .text/.rdata/.pdata
- *    CRC 覆盖区 (D1a);
- *  - 构建期 tools/selfcrypt_proto.py 写入: [u32 count][entries][密文...]
- *    (meta 与密文同一 blob, 避免"链接后改写 meta 需重链接"的死循环);
- *  - 运行期 prot_selfcrypt_init 从 blob 头读 meta, 原地解密, 改 RX 执行;
- *  - 大小须 >= header + 全部目标函数密文; 原型用 4KB 上限。
+ *    CRC 覆盖区 (D1b 掩码由 integrity.c 按 meta 动态处理);
+ *  - 构建期 tools/selfcrypt_proto.py 写入: [u32 count][entries*20] (meta);
+ *  - 运行期 prot_selfcrypt_init 从 blob 头读 meta, .text 原位解密, RX 执行;
+ *  - 容量: 二期 II-3 多函数 (prot_vm_run + keymaps + wb + wd_fill),
+ *    meta 20B*4 + 余量, 16KB 充足。
  * ------------------------------------------------------------------------- */
 #pragma section(".protcrypt", read, write)
 __declspec(allocate(".protcrypt"))
-uint8_t g_prot_selfcrypt_blob[4096];
+uint8_t g_prot_selfcrypt_blob[16384];
 
 const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
 
@@ -80,6 +80,21 @@ const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
  * 泛型函数指针转具体签名 (函数指针互转, MSVC 允许)。 */
 #define PROT_INDIRECT_CALL(fn_id, sig, ...) \
     ((sig)prot_indirect_resolve(fn_id))(__VA_ARGS__)
+
+/* N1 II-2 (D2b): VM 引擎调用包裹 —— enter 解密函数组 -> 调用 -> leave 重加密。
+ * D2a (默认) 下 enter/leave 空转, 行为与一期一致。
+ * 返回 prot_status: 调用结果; enter 失败 (CRC) 也返回错误。 */
+static prot_status vm_run_wrapped(const prot_vm_image* img, void* mem)
+{
+    prot_status e = prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_VM);
+    if (e != PROT_OK)
+        return e;
+    e = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
+                           prot_status (*)(const prot_vm_image*, void*, size_t),
+                           img, mem, sizeof(*(demo_mem*)mem));
+    prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_VM);
+    return e;
+}
 
 /*
  * 解析 CLI 参数 (契约 §9.1-2):
@@ -355,11 +370,13 @@ int main(int argc, char** argv)
     /* §9.1-3: BANNER */
     printf("%s\n", prot_str_get(PROT_STR_BANNER));
 
-    /* N1 (阶段 0): 解密 .text 原位加密的引擎函数 (方案 B, D1b 掩码) */
+    /* N1 (二期 II-1): 解密引擎函数 + 解密态 CRC 校验; 失败 = 完整性被破坏 */
     {
         prot_status sc = prot_selfcrypt_init();
         if (sc != PROT_OK) {
-            printf("selfcrypt init failed (%d)\n", (int)sc);
+            printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
+            fflush(stdout);
+            exit(PROT_EXIT_TAMPERED);
         }
     }
 
@@ -474,16 +491,12 @@ int main(int argc, char** argv)
     /* §9.1-9: VM 校验 —— Phase 2a: 拆成 3 个独立小 VM, 各自密钥/置换/窗口。
      * 依次执行 FNV 哈希 -> GOLDEN 混合 -> 期望值校验, 共享 demo_mem 中间区。
      * 镜像来自 §9.1-6b 装载的 vm.blob (DBI launcher)。 */
-    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
-                            prot_status (*)(const prot_vm_image*, void*, size_t),
-                            &g_vm_imgs[0], &mem, sizeof(mem));
+    st = vm_run_wrapped(&g_vm_imgs[0], &mem);
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
-    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
-                            prot_status (*)(const prot_vm_image*, void*, size_t),
-                            &g_vm_imgs[1], &mem, sizeof(mem));
+    st = vm_run_wrapped(&g_vm_imgs[1], &mem);
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
@@ -649,17 +662,13 @@ int main(int argc, char** argv)
 
     /* N5: VM#3 期望值校验 —— 期望值已在 revoke/online 块前设默认、
      * 在线会话被服务端下发值覆盖。 */
-    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
-                            prot_status (*)(const prot_vm_image*, void*, size_t),
-                            &g_vm_imgs[2], &mem, sizeof(mem));
+    st = vm_run_wrapped(&g_vm_imgs[2], &mem);
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
 
-    st = PROT_INDIRECT_CALL(PROT_INDIRECT_VM_RUN,
-                            prot_status (*)(const prot_vm_image*, void*, size_t),
-                            &g_vm_imgs[3], &mem, sizeof(mem));
+    st = vm_run_wrapped(&g_vm_imgs[3], &mem);
     if (st != PROT_OK) {
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);

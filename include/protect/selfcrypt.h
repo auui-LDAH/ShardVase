@@ -28,15 +28,31 @@
 /* 密文容器/元数据 (demo/main.c 的 .protcrypt 专用节占位)。
  * blob 布局 (构建期 selfcrypt_proto.py 写入):
  *   [count u32 LE][entry * count]
- *   entry = { rva u32 | len u32 | key0 u64 } (16B; 二期 II-1 加 crc u32 -> 20B)
+ *   entry = { rva u32 | len u32 | key0 u64 | crc32 u32 } (20B, II-1 解密态 CRC)
  * 运行期 prot_selfcrypt_init 从 blob 头读 meta 并原位解密。 */
 extern uint8_t g_prot_selfcrypt_blob[];
 extern const uint32_t g_prot_selfcrypt_blob_size;
 
 /*
  * 解密全部目标函数 (一次性, D2a)。main 早期调用。
- * 返回 PROT_OK 或 PROT_ERR_INTEGRITY (解密态 CRC 失败, 二期 II-1 实现)。
+ * 返回 PROT_OK 或 PROT_ERR_INTEGRITY (解密态 CRC 失败, II-1)。
  */
 prot_status prot_selfcrypt_init(void);
+
+/* 函数组: VM 引擎调用链 (prot_vm_run + vm_build_keymaps + vm_wb + vm_var)。
+ * D2b 下 enter/leave 以组为单位, 保证相互调用时目标已解密。 */
+#define PROT_SELFCRYPT_GROUP_VM 0u
+#define PROT_SELFCRYPT_MAX_FN   16u
+
+/*
+ * II-2 调用级解密 (D2b, 编译开关 PROT_SELFCRYPT_D2B):
+ *   prot_selfcrypt_enter(group): 解密该组全部函数 (若未解密)
+ *   prot_selfcrypt_leave(group): 重加密该组全部函数 (若已解密)
+ * 状态标志 + SRWLock 互斥 (多线程调用安全)。
+ * D2a (默认) 下 enter/leave 为空操作 (函数已由 init 解密, 保持明文)。
+ * 返回 PROT_OK 或 PROT_ERR_INTEGRITY (解密态 CRC 失败)。
+ */
+prot_status prot_selfcrypt_enter(uint32_t group);
+prot_status prot_selfcrypt_leave(uint32_t group);
 
 #endif /* PROT_SELFCRYPT_H */

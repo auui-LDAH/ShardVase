@@ -29,8 +29,18 @@ M64 = (1 << 64) - 1
 KS_MUL = 0x5851F42D4C957F2D
 KS_ADD = 0x14057B7EF767814F
 
-DEFAULT_TARGETS = ('prot_vm_run',)
-BLOB_SIZE = 4096
+# 目标函数 (引擎核心; 二期 II-3 扩展)。
+# 注意: 加密函数间相互调用必须同组解密 (运行期全组一起解密, D2a 无问题;
+# D2b 下用函数组 enter/leave)。
+# 顺序 = .pdata 覆盖顺序; 被内联的函数 (vm_kr_*/vm_ks_seek/vm_wd_fill 等)
+# 无独立 .pdata 条目, 跳过 (它们在 prot_vm_run 内部, 随其加密)。
+DEFAULT_TARGETS = (
+    'prot_vm_run',
+    'vm_build_keymaps',
+    'vm_wb',
+    'vm_var',
+)
+BLOB_SIZE = 16384  # 二期 II-3: .protcry 容器扩容 (main.c 同步)
 
 
 class SelfcryptError(Exception):
@@ -162,16 +172,16 @@ def main(argv=None):
             print('selfcrypt_proto: dry-run, no write')
             return 0
 
-        # meta 写入 .protcrypt blob: [count u32][entry*16]
-        # entry = { rva u32 | len u32 | key0 u64 }
-        hdr = 4 + len(entries) * 16
+        # meta 写入 .protcrypt blob: [count u32][entry*20]
+        # entry = { rva u32 | len u32 | key0 u64 | crc u32 } (20B, II-1 解密态 CRC)
+        hdr = 4 + len(entries) * 20
         if hdr > BLOB_SIZE:
             raise SelfcryptError('meta overflow (%d > %d)' % (hdr, BLOB_SIZE))
         blob_off = prot['ptr_raw']
         data[blob_off:blob_off + 4] = struct.pack('<I', len(entries))
         for i, (rva, size, sd, crc) in enumerate(entries):
-            e_off = blob_off + 4 + i * 16
-            data[e_off:e_off + 16] = struct.pack('<IIQ', rva, size, sd)
+            e_off = blob_off + 4 + i * 20
+            data[e_off:e_off + 20] = struct.pack('<IIQI', rva, size, sd, crc)
 
         with open(args.exe, 'wb') as f:
             f.write(bytes(data))

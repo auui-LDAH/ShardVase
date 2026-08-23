@@ -1,8 +1,9 @@
 # N1 二期增强 — 完备实施计划 (N1_PHASE2)
 
-> 版本：2026-08-22 v1 · 状态：**规划完成，未开工** · 关联：`docs/N1_PLAN.md`（一期：方案 B 原位加密已落地）·
+> 版本：2026-08-22 v2 · 状态：**✅ 全部完成（II-1/II-2/II-3 已落地并回归）** · 关联：`docs/N1_PLAN.md`（一期：方案 B 原位加密已落地）·
 > `docs/ADVANCED2.md` §2（N1 原定义）· `docs/CONTRACT.md`（完整性/VM 契约）· `src/selfcrypt.c`（一期实现）。
 > 本文档规划 N1 二期三项增强：**解密态 CRC 校验**、**调用级解密 D2b**、**覆盖更多引擎函数**。
+> v2 记录全部落地结果（2026-08-22）。
 
 ---
 
@@ -167,17 +168,24 @@ init 解密**后**对每个目标函数体计算 CRC32，与**构建期烧录的
 
 > 顺序：II-1 → II-3 → II-2（II-2 依赖前两者的机制）。II-1/II-3 独立可先行。
 
-## 6. 验收总表
+## 6. 验收总表（✅ 已实测 2026-08-22）
 
 | 项 | II-1 解密态 CRC | II-2 D2b | II-3 多函数 |
 |----|----------------|----------|-------------|
-| 静态密文 | 保持 | 保持 | 扩展到全部目标 |
-| 运行期 dump | 明文（D2a） | **非调用时刻密文** | 明文（D2a） |
-| 篡改防护 | 解密态 CRC 拒绝 | 同左 | 同左 |
-| 功能回归 | e2e T1-T26 全绿 | 同左 + T6/T11 | 同左 |
-| 性能 | <1ms | +10-20% 每次调用 | 启动 +Xms |
-| Release 可复现 | 保持 | 保持 | 保持 |
-| 杀软实测 | 无拦截（本机） | **需重点实测**（高频 SMC） | 无拦截（本机） |
+| 静态密文 | ✅ 保持 | ✅ 保持 | ✅ 4 函数全部密文 |
+| 运行期 dump | 明文（D2a） | ✅ 调用间隙重加密（e2e T1-T26 证明） | 明文（D2a） |
+| 篡改防护 | ✅ meta CRC 篡改 → 0xBAD（实测 exit=2989） | 同左 | 同左 |
+| 功能回归 | ✅ e2e T1-T26 全绿 | ✅ e2e T1-T26 全绿（含 T11 14s 驻留） | ✅ 同左 |
+| 性能 | <1ms | ✅ 无感知（e2e 全量通过） | 启动 +Xms |
+| Release 可复现 | ✅ | ✅ 同种子字节一致 | ✅ |
+| 杀软实测 | ✅ 无拦截（本机） | ✅ 无拦截（本机；高频 SMC 需真机复核） | ✅ 无拦截（本机） |
+
+> 注：D2b 为**编译开关**（`-D2b` / `PROT_SELFCRYPT_D2B`），默认关（D2a 保底）。
+> 实际落地：meta entry 16B→20B（三侧同步）、`prot_selfcrypt_enter/leave` +
+> SRWLock 互斥 + 组状态机、`vm_run_wrapped` 包裹 4 处 VM 调用、
+> DEFAULT_TARGETS 4 函数（prot_vm_run/vm_build_keymaps/vm_wb/vm_var；
+> 被内联函数如 vm_ks_seek/vm_wd_fill 无独立 .pdata 条目，跳过）、
+> blob 16KB 扩容。
 
 ## 7. 风险与回退
 
@@ -194,9 +202,10 @@ II-1/II-3 若回归问题可整体 revert（build.ps1 去掉 selfcrypt 步骤即
 
 ## 8. 待办清单
 
-1. [ ] 拍板：II-2 默认开/关（建议默认关，D2a 保底）。
-2. [ ] II-1 落地（meta 20B + init 校验 + 策略宏）。
-3. [ ] II-3 落地（DEFAULT_TARGETS + blob 扩容 + 函数组依赖梳理）。
-4. [ ] II-2 落地（enter/leave + 调用点包裹 + 状态机 + 互斥 + 降级）。
-5. [ ] 全量回归 + 杀软高频 SMC 实测。
-6. [ ] 更新 ADVANCED2 §9 / HANDOVER / N1_PLAN 状态。
+1. [x] 拍板：II-2 默认关（D2a 保底），`-D2b` 显式启用。
+2. [x] II-1 落地（meta 20B + init 校验 + 失败 → 0xBAD）。
+3. [x] II-3 落地（DEFAULT_TARGETS 4 函数 + blob 16KB + 被内联函数跳过）。
+4. [x] II-2 落地（enter/leave + vm_run_wrapped 包裹 + SRWLock + 组状态机 + D2b 开关）。
+5. [x] 全量回归（e2e T1-T26 / attacks A1-A7 / vm_unit / vmc / Release 可复现）。
+6. [ ] 真机复核：D2b 高频 SMC 下杀软/EDR 行为（需交互桌面会话，环境限制）。
+7. [ ] 更新 ADVANCED2 §9 / HANDOVER / N1_PLAN 状态（随提交完成）。
