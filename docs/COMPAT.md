@@ -45,12 +45,17 @@ build\demo.exe --selftest  # 全部字段 0
 python tests\e2e.py        # 确认 T3 从 SKIP 转 PASS/FAIL 并记录
 ```
 
-结果记录到下表（`docs/compat-matrix.csv`，新）：
+结果记录到下表（`docs/compat-matrix.csv`，2026-08-22 扩展：新增 N1-N5/
+BLOB_SIGN/e2e_latest 列）：
 
 ```
-os_build,arch,date,verify,e2e_t3,selftest_clean,notes
-"Win10 22H2","x64","2026-xx-xx","PASS","PASS","..."
+os_build,arch,date,verify,e2e_t3,selftest_clean,24h_ok,concurrent_ok,bind_ok,
+n1_selfcrypt,n2_dbiguard,n3_redundancy,n4_indirect,n5_session,blob_sign,e2e_latest,notes
+"Win10 22H2","x64","2026-xx-xx","PASS","PASS","...","...","...","...","...","...","...","...","...","...","...","..."
 ```
+
+已记录：2026-08-20 真机（Win11 24H2）、2026-08-22 托管 VM（WDAC 环境）、
+2026-08-22 GitHub Actions CI（待首次远程运行后回填）。
 
 ## 4. 长期驻留与资源稳定性（阶段 II）
 

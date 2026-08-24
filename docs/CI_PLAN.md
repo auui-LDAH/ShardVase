@@ -1,9 +1,10 @@
 # CI 增强 + 兼容矩阵更新 — 完备实施计划 (CI_PLAN)
 
-> 版本：2026-08-22 v1 · 状态：**规划完成，未开工** · 关联：`docs/PHASE2.md`（B2 CI 待办）·
+> 版本：2026-08-22 v2 · 状态：**✅ 全部完成（2026-08-22 落地）** · 关联：`docs/PHASE2.md`（B2 CI 待办）·
 > `docs/HANDOVER.md`（环境限制/回归面）· `.github/workflows/ci.yml`（现状）·
 > `docs/COMPAT.md` + `docs/compat-matrix.csv`（兼容矩阵）。
 > 本文档规划：**GitHub Actions CI 回归面补全** + **兼容矩阵扩展**。
+> v2 记录落地结果：protchain_check.py（P1-P6）、CI 双 job、矩阵三行。
 
 ---
 
@@ -158,9 +159,11 @@ protchain_check.py 独立脚本，删除即回退。
 
 ## 8. 待办清单
 
-1. [ ] 拍板 C1-C4（§4）。
-2. [ ] 步骤 1：protchain_check.py（P1-P6）。
-3. [ ] 步骤 2：CI 主 job 扩展。
-4. [ ] 步骤 3：CI reproducible job。
-5. [ ] 步骤 4：兼容矩阵扩展。
-6. [ ] 步骤 5：本地验证 + 全量回归。
+1. [x] 拍板 C1-C4（§4）——protchain 独立脚本 / reproducible 独立 job /
+      矩阵手动 CSV / CI 跳过 T3。
+2. [x] 步骤 1：protchain_check.py（P1-P6 全 PASS；破坏性测试 P1/P4 FAIL 验证有效）。
+3. [x] 步骤 2：CI 主 job 扩展（vmc/example/py_compile 全量/保护链断言/artifact）。
+4. [x] 步骤 3：CI reproducible job（同种子+同私钥重建比对 demo.exe+vm.blob）。
+5. [x] 步骤 4：兼容矩阵扩展（CSV 3 行 + COMPAT.md §3 格式更新）。
+6. [x] 步骤 5：本地验证（e2e T1-T28 / attacks / vm_unit / vmc / example /
+      Release 可复现全绿；CI 远程运行待首次 push 后回填）。

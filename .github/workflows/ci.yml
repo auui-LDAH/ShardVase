@@ -8,7 +8,7 @@ on:
 jobs:
   build-and-verify:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,28 +23,89 @@ jobs:
           python --version
           git --version
 
-      - name: Build (Release), generate build\manifest.json
-        run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto
+      # CI_PLAN: -RecordSeeds 记录种子供 reproducible job 复用
+      - name: Build (Release), record seeds
+        run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -RecordSeeds -SkipSign
 
-      - name: Run e2e suite (T1-T7)
+      - name: Run e2e suite (T1-T28)
         run: python tests\e2e.py
 
-      - name: Run attack-simulation suite (A1-A4, non-real-machine)
+      - name: Run attack-simulation suite (A1-A7)
         run: python tests\attacks.py
 
       - name: Run VM unit tests
         run: .\build\vm_unit.exe
 
-      - name: Python syntax check
-        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tests\e2e.py tests\attacks.py"
+      - name: Run vmc compiler tests (M2/M3)
+        run: python tests\vmc_tests.py
 
-      - name: Upload verify report
+      - name: Run tool_demo example suite (E1-E7)
+        run: |
+          powershell -ExecutionPolicy Bypass -File examples\tool_demo\build_example.ps1
+          python examples\tool_demo\test_example.py
+
+      # CI_PLAN §2.2: 保护链静态断言 (P1-P6) — 防止保护能力静默失效
+      - name: Protection chain static asserts (P1-P6)
+        run: python tests\protchain_check.py
+
+      - name: Python syntax check (all tools)
+        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\mock_server.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-artifacts
           path: |
             build\demo.exe
             build\vm_unit.exe
+            build\vm.blob
             build\manifest.json
+            build\seeds.json
+            build\keys\license_priv.json
+            demo\vm_build.json
           if-no-files-found: error
           retention-days: 7
+
+  # CI_PLAN §2.3: 可复现门禁 — 同种子两次构建字节一致
+  reproducible:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    needs: build-and-verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC (Build Tools 2022 x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Download seeds from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: build_artifacts
+
+      - name: Reproducible rebuild (same seeds + key, no signing)
+        run: |
+          New-Item -ItemType Directory -Force -Path build\keys | Out-Null
+          Copy-Item build_artifacts\seeds.json build\seeds.json
+          Copy-Item build_artifacts\vm_build.json demo\vm_build.json
+          Copy-Item build_artifacts\license_priv.json build\keys\license_priv.json
+          powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -SkipSign -SkipSmoke -SeedsFile build\seeds.json
+
+      - name: Compare SHA-256 with first build
+        shell: pwsh
+        run: |
+          $a = (Get-FileHash build_artifacts\demo.exe -Algorithm SHA256).Hash
+          $b = (Get-FileHash build\demo.exe -Algorithm SHA256).Hash
+          if ($a -ne $b) {
+            Write-Host "MISMATCH demo.exe`n  first=$a`n  second=$b"
+            exit 1
+          }
+          $c = (Get-FileHash build_artifacts\vm.blob -Algorithm SHA256).Hash
+          $d = (Get-FileHash build\vm.blob -Algorithm SHA256).Hash
+          if ($c -ne $d) {
+            Write-Host "MISMATCH vm.blob`n  first=$c`n  second=$d"
+            exit 1
+          }
+          Write-Host "reproducible: demo.exe + vm.blob byte-identical"
