@@ -381,7 +381,9 @@ $manifest = [ordered]@{
     os         = ((& $py tools\osinfo.py --json) | ConvertFrom-Json)
     machine_id = $jb.machine_id
     machine_auto = $machineAuto
-    sha        = (git rev-parse --short HEAD 2>$null)
+    sha        = if (Get-Command git -ErrorAction SilentlyContinue) {
+                     (git rev-parse --short HEAD 2>$null)
+                 } else { 'no-git' }
     vm_seeds   = $seedPairs
     demo_exe_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath build\demo.exe).Hash
 }

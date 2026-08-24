@@ -276,7 +276,9 @@ $j = [ordered]@{
     tool      = 'verify.ps1'
     timestamp = $Time
     rounds    = $Rounds
-    sha       = (git rev-parse --short HEAD 2>$null)
+    sha       = if (Get-Command git -ErrorAction SilentlyContinue) {
+                    (git rev-parse --short HEAD 2>$null)
+                } else { 'no-git' }
     allGreen  = $allGreen
     results   = $results
     reproducible = $repro
