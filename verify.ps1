@@ -1,7 +1,7 @@
-﻿# verify.ps1 - 一键验证脚本 (基础设施, 2026-08-09)
+﻿# verify.ps1 - 一键验证脚本 (基础设施, 2026-08-09; protchain 2026-08-22)
 #
-# 把"多轮随机重建 + e2e + VM 单测 + 攻击模拟 + Python 语法检查"封装成一条命令,
-# 生成带时间戳/种子指纹/SHA 的 JSON 报告 (默认 verify-report.json)。
+# 把"多轮随机重建 + e2e + VM 单测 + 攻击模拟 + 保护链静态断言 + Python 语法检查"
+# 封装成一条命令, 生成带时间戳/种子指纹/SHA 的 JSON 报告 (默认 verify-report.json)。
 # 任意一步失败 -> 退出码非 0, 供本地回归与 CI 复用。
 #
 # 用法:
@@ -42,7 +42,7 @@ $ArtsRoot = Join-Path $Root 'verify-artifacts'
 if ($Minimal) { $Rounds = 1 }
 
 $PyFiles = @('tools\vmenc.py', 'tools\strgen.py', 'tools\hashpatch.py',
-             'tests\e2e.py', 'tests\attacks.py')
+             'tests\e2e.py', 'tests\attacks.py', 'tests\protchain_check.py')
 
 function Write-Step([string]$msg) { Write-Host "[verify] $msg" -ForegroundColor Cyan }
 
@@ -77,7 +77,7 @@ function Invoke-Once([int]$i, [int]$tot) {
     $ent = [ordered]@{
         round = $i; build = 'PASS'; e2e = 'PASS'; vm_unit = 'PASS'
         syscall_probe = 'PASS'; attacks = 'PASS'; vmc = 'PASS'; example = 'PASS'
-        seeds = ''; log = $null
+        protchain = 'PASS'; seeds = ''; log = $null
     }
     Write-Step "round $i/$tot : build.ps1"
     $bl = $null; $rc = 0
@@ -108,7 +108,9 @@ function Invoke-Once([int]$i, [int]$tot) {
                 $ent.vm_unit = 'SKIP'
                 $ent.syscall_probe = 'SKIP'
                 $ent.attacks = 'SKIP'
+                $ent.vmc = 'SKIP'
                 $ent.example = 'SKIP'
+                $ent.protchain = 'SKIP'
                 $ent.log = ($bl | Select-Object -Last 3)
                 Write-Host "[verify] round $i build=SKIP (WDAC environment blocks new binaries)" -ForegroundColor Yellow
                 return $ent
@@ -119,6 +121,13 @@ function Invoke-Once([int]$i, [int]$tot) {
             }
         }
     }
+
+    Write-Step "round $i/$tot : python tests\protchain_check.py (P1-P6 保护链静态断言)"
+    try {
+        $pc = @(& $py tests\protchain_check.py 2>&1)
+        $rcP = $LASTEXITCODE
+    } catch { $rcP = 1 }
+    if ($rcP -ne 0) { $ent.protchain = 'FAIL'; $ent.log = $pc; return $ent }
 
     Write-Step "round $i/$tot : python tests\e2e.py"
     try {
@@ -207,10 +216,10 @@ for ($i = 1; $i -le $Rounds; $i++) {
     $roundBad = ($ent.build -eq 'FAIL' -or $ent.e2e -eq 'FAIL' -or
                  $ent.vm_unit -eq 'FAIL' -or $ent.syscall_probe -eq 'FAIL' -or
                  $ent.attacks -eq 'FAIL' -or $ent.vmc -eq 'FAIL' -or
-                 $ent.example -eq 'FAIL')
+                 $ent.example -eq 'FAIL' -or $ent.protchain -eq 'FAIL')
     if ($roundBad) {
         $allGreen = $false
-        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} vmc={6} example={7})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks, $ent.vmc, $ent.example) -ForegroundColor Red
+        Write-Host ("[verify] round {0} FAILED (build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} vmc={6} example={7} protchain={8})" -f $i, $ent.build, $ent.e2e, $ent.vm_unit, $ent.syscall_probe, $ent.attacks, $ent.vmc, $ent.example, $ent.protchain) -ForegroundColor Red
     } elseif ($ent.build -eq 'SKIP') {
         Write-Host ("[verify] round {0}: build=SKIP (WDAC env) - steps skipped" -f $i) -ForegroundColor Yellow
     }
@@ -280,7 +289,7 @@ Write-Host ''
 Write-Host "[verify] $Rounds round(s) summary:"
 $results | ForEach-Object {
     $skipTxt = if ($_.t_counts.skip -gt 0) { " skips=$($_.t_counts.skip)" } else { '' }
-    Write-Host ("  r{0}: build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} seeds=[{6}]{7}" -f $_.round, $_.build, $_.e2e, $_.vm_unit, $_.syscall_probe, $_.attacks, $_.seeds, $skipTxt)
+    Write-Host ("  r{0}: build={1} e2e={2} vm_unit={3} syscall_probe={4} attacks={5} vmc={6} example={7} protchain={8} seeds=[{9}]{10}" -f $_.round, $_.build, $_.e2e, $_.vm_unit, $_.syscall_probe, $_.attacks, $_.vmc, $_.example, $_.protchain, $_.seeds, $skipTxt)
 }
 Write-Host "[verify] report: $RptPath"
 if (-not $allGreen) { Write-Host '[verify] FAIL' -ForegroundColor Red; exit 1 }

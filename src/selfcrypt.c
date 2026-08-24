@@ -22,6 +22,16 @@
 #include <windows.h>
 #include <string.h>
 
+/* .protcrypt 专用节容器 (N1): 构建期 selfcrypt_proto.py 写入 meta
+ * [count u32][entry*20] (rva/len/key/crc)。
+ * 定义在本实现文件: 链接 selfcrypt.c 的模块 (demo/example) 共用,
+ * 避免"容器在 main.c 导致 example 链接缺符号"。 */
+#pragma section(".protcrypt", read, write)
+__declspec(allocate(".protcrypt"))
+uint8_t g_prot_selfcrypt_blob[16384];
+
+const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
+
 #ifdef PROT_SELFCRYPT_DISABLE
 
 prot_status prot_selfcrypt_init(void)

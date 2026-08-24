@@ -62,19 +62,9 @@ typedef struct demo_mem {
 } demo_mem;                /* 总 128 字节 (VM 使用的 +0..+108 偏移不变) */
 
 /* ---------------------------------------------------------------------------
- * N1 运行时自变形 (.protcrypt 专用节): 引擎函数加密的元数据容器。
- *  - 链接后此节成为 PE 的独立节 (.protcry), 不进 .text/.rdata/.pdata
- *    CRC 覆盖区 (D1b 掩码由 integrity.c 按 meta 动态处理);
- *  - 构建期 tools/selfcrypt_proto.py 写入: [u32 count][entries*20] (meta);
- *  - 运行期 prot_selfcrypt_init 从 blob 头读 meta, .text 原位解密, RX 执行;
- *  - 容量: 二期 II-3 多函数 (prot_vm_run + keymaps + wb + wd_fill),
- *    meta 20B*4 + 余量, 16KB 充足。
+ * N1 运行时自变形: .protcrypt 容器 (g_prot_selfcrypt_blob) 定义在
+ * src/selfcrypt.c (实现文件), 供所有链接 selfcrypt.c 的模块使用。
  * ------------------------------------------------------------------------- */
-#pragma section(".protcrypt", read, write)
-__declspec(allocate(".protcrypt"))
-uint8_t g_prot_selfcrypt_blob[16384];
-
-const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
 
 /* N4 函数级间接化: 经间接表解析函数指针后调用 (静态无直接 call)。
  * 泛型函数指针转具体签名 (函数指针互转, MSVC 允许)。 */

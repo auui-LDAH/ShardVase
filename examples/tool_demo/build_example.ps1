@@ -81,12 +81,12 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: vmc' }
 & $py tools\vmenc.py assemble examples\tool_demo\check.vasm demo\vm_build.json demo\gen\tool_check_blob.c demo\gen\tool_check_blob.h --name g_tool_check_image --bin-out demo\gen\tool_check_blob.bin --bin-name check
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 
-# 3. 打包 vm.blob (断源)
-& $py tools\vmenc.py pack --out build\tool_vm.blob demo\gen\tool_check_blob.bin
+# 3. 打包 vm.blob (断源; BLOB_SIGN: --sign v1, 装载器强制 v1)
+& $py tools\vmenc.py pack --sign build\keys\license_priv.json --out build\tool_vm.blob demo\gen\tool_check_blob.bin
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c src\selfcrypt.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
 Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
 

@@ -98,9 +98,11 @@ def main():
                      '--vm-blob', BLOB, '--encrypt', TMP])
     check('E4 expired', code == 1 and 'expired' in out, 'exit=%d' % code)
 
-    # E5: 本地黑名单吊销 -> 0xB1E4
+    # E5: 本地黑名单吊销 -> 0xB1E4 (BLOB_SIGN: v1 签名黑名单)
     revoke = os.path.join(BUILD, 'tool_revoke.blob')
-    subprocess.run(['python', VMENC, 'revoke', '--out', revoke,
+    subprocess.run(['python', VMENC, 'revoke', '--sign',
+                    os.path.join(REPO, 'build', 'keys', 'license_priv.json'),
+                    '--out', revoke,
                     '--add', serial, '--tier', '1'],
                    check=True, capture_output=True)
     code, out = run(['--serial', serial, '--license-file', lic,

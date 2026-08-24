@@ -1,9 +1,10 @@
 # verify 门禁增强 + 收口计划 (VERIFY_PLAN)
 
-> 版本：2026-08-22 v1 · 状态：**规划完成，未开工** · 关联：`verify.ps1`（发版门禁）·
+> 版本：2026-08-22 v2 · 状态：**✅ 全部完成（2026-08-22 落地）** · 关联：`verify.ps1`（发版门禁）·
 > `tests/protchain_check.py`（保护链断言 P1-P6，CI_PLAN 产物）· `tests/attacks.py`（A1-A12）·
 > `docs/CI_PLAN.md` / `docs/ATTACK_PLAN.md` / `docs/HANDOVER.md`（剩余事项）。
 > 本文档规划：**verify.ps1 同步保护链断言**（本地门禁 = CI 门禁）+ 剩余事项收口盘点。
+> v2 记录落地结果 + 附带修复（example 适配 BLOB_SIGN）。
 
 ---
 
@@ -102,7 +103,11 @@ CI（ci.yml）已跑 protchain；verify 补上后本地/远程门禁完全一致
 
 ## 8. 待办清单
 
-1. [ ] 拍板 V1-V3（§4）。
-2. [ ] 步骤 1：verify.ps1 加 protchain。
-3. [ ] 步骤 2：破坏性验证。
-4. [ ] 步骤 3：全量回归。
+1. [x] 拍板 V1-V3（§4）——纳入 verify / 标记 FAIL 不中止 / license_vm.vasm 保留。
+2. [x] 步骤 1：verify.ps1 加 protchain（ent 字段 + build 后步骤 + roundBad + 报告行）。
+3. [x] 步骤 2：破坏性验证（改密文为序言 → P1 FAIL，断言有效）。
+4. [x] 步骤 3：全量回归（verify -Minimal 全绿 PASS：build/e2e/vm_unit/
+      syscall_probe/attacks/vmc/example/protchain）。
+   **附带修复**：example 适配 BLOB_SIGN——.protcrypt 容器从 demo/main.c 移到
+   src/selfcrypt.c（example 链接不缺符号）；build_example.ps1 pack/revoke 加
+   --sign（blob.c/revoke.c 强制 v1）；test_example.py E5 revoke --sign。
