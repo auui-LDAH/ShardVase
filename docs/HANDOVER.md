@@ -7,7 +7,8 @@
 > `docs/ADVANCED2.md` / `docs/CONTRACT.md` / `docs/PLAN.md` / `docs/ROADMAP.md` /
 > `docs/THREATMODEL.md` / `docs/PRODUCTION.md` / `docs/N1_PLAN.md`（N1 一期计划）/
 > `docs/N1_PHASE2_PLAN.md`（N1 二期增强计划）/ `docs/BLOB_SIGN_PLAN.md`（blob 签名+网络下发计划）/
-> `docs/CI_PLAN.md`（CI 增强计划）/ `docs/ATTACK_PLAN.md`（攻击模拟扩展计划）。
+> `docs/CI_PLAN.md`（CI 增强计划）/ `docs/ATTACK_PLAN.md`（攻击模拟扩展计划）/
+> `docs/VERIFY_PLAN.md`（verify 门禁增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
 
 ## 1. 项目是什么
@@ -158,6 +159,7 @@ python tests\attacks.py
 | 可选 | N1 真机复核（D2b 高频 SMC 杀软行为）—— 见 **docs/N1_PHASE2_PLAN.md** §8 | 需交互桌面会话（环境限制） |
 | 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**：A10/A11 静态断言本地 PASS；A8/A9/A12 进程类断言待无 WDAC 环境（CI/真机）确认 —— 见 docs/ATTACK_PLAN.md | 代码完成，进程确认待 CI/真机 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
+| verify 增强 | **verify.ps1 同步 protchain 保护链断言（本地门禁=CI 门禁）—— 完备计划见 docs/VERIFY_PLAN.md**（决策点 V1-V3 待拍板） | 规划完成，未开工 |
 
 ### 4.4 阶段 II 实测记录（2026-08-21）
 - 真机（oiahcoiah，Win11 24H2 26200）：e2e T1-T24 除 T3 全 PASS；attacks A1-A7；vm_unit；syscall_probe；
