@@ -156,7 +156,7 @@ python tests\attacks.py
 | CI | **CI 增强已完成（2026-08-22）**：protchain_check.py P1-P6 静态断言 + vmc/example 覆盖 + reproducible job（同种子比对）—— 见 docs/CI_PLAN.md；首次远程 CI 运行结果待回填 compat-matrix.csv | 远程运行待验证 |
 | 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
 | 可选 | N1 真机复核（D2b 高频 SMC 杀软行为）—— 见 **docs/N1_PHASE2_PLAN.md** §8 | 需交互桌面会话（环境限制） |
-| 攻击模拟扩展 | **A8-A12 攻击视角测试（伪造 blob/revoke、N4 静态追踪、N1 dump、N5 边界）—— 完备计划见 docs/ATTACK_PLAN.md**（决策点 D1-D4 待拍板） | 规划完成，未开工 |
+| 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**：A10/A11 静态断言本地 PASS；A8/A9/A12 进程类断言待无 WDAC 环境（CI/真机）确认 —— 见 docs/ATTACK_PLAN.md | 代码完成，进程确认待 CI/真机 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 
 ### 4.4 阶段 II 实测记录（2026-08-21）

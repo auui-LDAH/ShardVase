@@ -115,6 +115,11 @@ RSA 签名，公钥在程序里，私钥离线。攻击者还原全部 VM 也**�
 | L3：干净环境无关键误报 | `tests/e2e.py` T7 selftest-clean |
 | L4a：.text/.rdata/.pdata 单字节篡改 | `tests/e2e.py` T4 / T9 / T10 |
 | T3 真机调试（尚未自动化） | 真机人肉跑 `python tests\e2e.py`，T3 应 SKIP→PASS/FAIL |
+| N1 自变形：引擎静态密文（2026-08-22） | `tests/attacks.py` A11 selfcrypt-dump + `tests/protchain_check.py` P1/P2 |
+| N4 间接化：受保护函数无直接 call（2026-08-22） | `tests/attacks.py` A10 static-trace + `tests/protchain_check.py` P5 |
+| BLOB_SIGN：伪造 blob 拒绝（2026-08-22） | `tests/attacks.py` A8 blob-forge + e2e T14/T28 + protchain P3/P4 |
+| revoke 签名：伪造黑名单不阻断（2026-08-22） | `tests/attacks.py` A9 revoke-forge + e2e T18 |
+| N5 会话期望值：在线覆盖本地固定值（2026-08-22） | `tests/attacks.py` A12 + e2e T25/T26 |
 
 ## 8. 结论
 

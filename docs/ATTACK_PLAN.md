@@ -1,10 +1,11 @@
 # 攻击模拟扩展 — 完备实施计划 (ATTACK_PLAN)
 
-> 版本：2026-08-22 v1 · 状态：**规划完成，未开工** · 关联：`docs/THREATMODEL.md`（威胁模型 §7 测试钉住）·
+> 版本：2026-08-22 v2 · 状态：**✅ 已实现（A8-A12 代码落地；A10/A11 本地 PASS；A8/A9/A12 需无 WDAC 环境补跑进程类断言）** ·
+> 关联：`docs/THREATMODEL.md`（威胁模型 §7 测试钉住）·
 > `tests/attacks.py`（现有 A1-A7）· `tests/protchain_check.py`（静态断言 P1-P6，CI_PLAN）·
 > `docs/N1_PHASE2_PLAN.md` / `docs/BLOB_SIGN_PLAN.md`（新保护层）。
 > 本文档规划：把**攻击者视角**回归从 A1-A7 扩展到新保护层（N1-N5/BLOB_SIGN），
-> 并用攻击模拟结果更新 THREATMODEL §7。
+> 并用攻击模拟结果更新 THREATMODEL §7。v2 记录落地结果。
 
 ---
 
@@ -138,9 +139,12 @@
 
 ## 8. 待办清单
 
-1. [ ] 拍板 D1-D4（§4）。
-2. [ ] 步骤 1：A8/A9（伪造 blob/revoke 拒绝）。
-3. [ ] 步骤 2：A10（N4 静态追踪成本）。
-4. [ ] 步骤 3：A11（N1 dump 静态密文）。
-5. [ ] 步骤 4：A12（N5 边界诚实记录）。
-6. [ ] 步骤 5：THREATMODEL §7 + 全量回归。
+1. [x] 拍板 D1-D4（§4）——A11 静态必测/运行期待真机；与 protchain 互补；
+      并入 attacks.py；THREATMODEL 手动更新。
+2. [x] 步骤 1：A8 blob-forge + A9 revoke-forge（v0 伪造拒绝，代码落地）。
+3. [x] 步骤 2：A10 static-trace（N4 无直接 call，本地 PASS）。
+4. [x] 步骤 3：A11 selfcrypt-dump（静态密文，本地 PASS）。
+5. [x] 步骤 4：A12 offline-fix-expect（N5 边界，代码落地）。
+6. [x] 步骤 5：THREATMODEL §7 更新。
+7. [ ] **待补**：A8/A9/A12 进程类断言在无 WDAC 环境（真机/CI）补跑确认；
+      本环境 WDAC 间歇拦截（HANDOVER §4.5 已知限制）。

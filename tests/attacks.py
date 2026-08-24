@@ -11,6 +11,11 @@ tests/attacks.py - 攻击模拟测试 (基础设施, 不需真机, Lane D)
   A5 license-forge        改 1 位签名 -> 必须被判无效 (RSA 防伪造)
   A6 license-other-machine 用同一私钥给异机 machine_id 签 license -> 本机必须拒绝
   A7 license-tier-forge   改 TIER 行 -> 必须被判无效 (Phase 4 分级授权防篡改)
+  A8 blob-forge           构造 v0 blob (无签名) -> 拒绝 (D1a 强制 v1, BLOB_SIGN)
+  A9 revoke-forge         构造 v0 黑名单 -> 不阻断 (签名强制, revoke 签名)
+  A10 static-trace        静态扫描 N4 受保护函数无直接 call (间接化成本)
+  A11 selfcrypt-dump      静态 dump 引擎函数无序言特征 (N1 密文)
+  A12 offline-fix-expect  在线会话值覆盖本地固定期望值 (N5 边界)
 
 依赖: 已构建产物 (build\\demo.exe / demo\\gen\\*.c / build\\license.txt)。
 纯黑盒: 不解析 VM 结构, 不修改受保护文件。
@@ -20,8 +25,10 @@ tests/attacks.py - 攻击模拟测试 (基础设施, 不需真机, Lane D)
 import hashlib
 import json
 import os
+import struct
 import subprocess
 import sys
+import zlib
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 EXE = os.path.join(REPO, 'build', 'demo.exe')
@@ -101,6 +108,7 @@ def main():
         cfg = json.load(f)
     serial = cfg['serial']
     msg_ok = _msg('MSG_OK')
+    msg_fail = _msg('MSG_FAIL')
 
     results = []
 
@@ -240,6 +248,144 @@ def main():
                         'code=%d license_ok=0' % code))
     except Exception as e:
         results.append(('A7 license-tier-forge', 'FAIL', repr(e)))
+
+    # ---- A8: 伪造签名 blob (ATTACK_PLAN) ---------------------------------
+    # 攻击者手段: 理解格式后构造 v0 blob (无签名, 自算 CRC) —— D1a 强制 v1
+    # 应拒绝。从现有 v1 blob 剥离签名区构造 v0 (不改动保护文件)。
+    try:
+        blob_path = os.path.join(REPO, 'build', 'vm.blob')
+        if not os.path.isfile(blob_path):
+            raise RuntimeError('vm.blob not found (run build.ps1)')
+        v1 = open(blob_path, 'rb').read()
+        # v1: MAGIC8|COUNT4|entries|SIG_LEN4|SIG256|CRC4 -> v0: MAGIC8|COUNT4|entries|CRC4
+        sig_off = len(v1) - 4 - 256 - 4
+        body = b'PROTVMBL' + v1[8:sig_off]
+        v0 = body + struct.pack('<I', zlib.crc32(body) & 0xFFFFFFFF)
+        forged_path = os.path.join(REPO, 'build', 'vm_forged_v0.blob')
+        with open(forged_path, 'wb') as f:
+            f.write(v0)
+        code, out = run_demo(args=['--license-file', LICENSE,
+                                   '--vm-blob', forged_path],
+                             stdin=(serial + '\n').encode('utf-8'))
+        ok = (code == 0xB10B)  # PROT_EXIT_BLOB_MISSING
+        results.append(('A8 blob-forge', 'PASS' if ok else 'FAIL',
+                        'code=%d (v0 forged blob rejected)' % code))
+    except Exception as e:
+        results.append(('A8 blob-forge', 'FAIL', repr(e)))
+
+    # ---- A9: 伪造黑名单 (ATTACK_PLAN) ------------------------------------
+    # 攻击者手段: 构造 v0 黑名单 (PROTREVK, 自算 CRC) 想吊销他人/绕过 ——
+    # 签名强制下应 CORRUPT 不阻断; 且真实 v1 黑名单命中语义不变。
+    try:
+        revoke_path = os.path.join(REPO, 'build', 'revoke_forged_v0.blob')
+        body = (b'PROTREVK' + struct.pack('<I', 1) + struct.pack('<I', 1) +
+                b'VICTIM-SERIAL-0001'.ljust(48, b'\x00') +
+                struct.pack('<I', 0xFF) + struct.pack('<Q', 0))
+        v0 = body + struct.pack('<I', zlib.crc32(body) & 0xFFFFFFFF)
+        with open(revoke_path, 'wb') as f:
+            f.write(v0)
+        code, out = run_demo(args=['--license-file', LICENSE,
+                                   '--vm-blob', os.path.join(REPO, 'build', 'vm.blob'),
+                                   '--revoke-file', revoke_path],
+                             stdin=(serial + '\n').encode('utf-8'))
+        # 伪造 v0 黑名单: 损坏 -> 不阻断 (CORRUPT 语义), 正常通过
+        ok = (code == 0) and (msg_ok in out)
+        results.append(('A9 revoke-forge', 'PASS' if ok else 'FAIL',
+                        'code=%d (forged v0 blacklist non-blocking)' % code))
+    except Exception as e:
+        results.append(('A9 revoke-forge', 'FAIL', repr(e)))
+
+    # ---- A10: 静态追踪 N4 间接链 (ATTACK_PLAN) ---------------------------
+    # 攻击者手段: dumpbin/反汇编静态追踪, 找 prot_vm_run 等目标函数的直接
+    # call 或从间接表定位 —— N4 间接化应使"直接 call"不存在。
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(REPO, 'tests'))
+        from protchain_check import pe_sections, scan_e8_calls
+        exe_data = open(EXE, 'rb').read()
+        secs = pe_sections(exe_data)
+        text = next(s for s in secs if s['name'] == '.text')
+        t = exe_data[text['ptr_raw']:text['ptr_raw'] + text['size_raw']]
+        targets = scan_e8_calls(t)
+        # 从 .protcry meta 读受保护函数 rva
+        prot = next(s for s in secs if s['name'] in ('.protcrypt', '.protcry'))
+        blob = exe_data[prot['ptr_raw']:prot['ptr_raw'] + 256]
+        n = struct.unpack_from('<I', blob, 0)[0]
+        fns = []
+        for i in range(n):
+            rva, _ln = struct.unpack_from('<II', blob, 4 + i * 20)
+            fns.append(rva)
+        hits = [rva for rva in fns if rva in targets]
+        ok = (not hits)
+        results.append(('A10 static-trace', 'PASS' if ok else 'FAIL',
+                        'direct-call=%s (N4 indirect, 0 direct)' %
+                        ([hex(h) for h in hits] or 'none')))
+    except Exception as e:
+        results.append(('A10 static-trace', 'FAIL', repr(e)))
+
+    # ---- A11: dump 视角验证 N1 自变形 (ATTACK_PLAN) ----------------------
+    # 攻击者手段: 静态 dump 引擎函数做特征扫描 (找 x64 序言) —— 加密态
+    # 应无序言特征; 运行期 dump 为 D2a 明文, 属设计语义 (诚实记录)。
+    try:
+        import sys as _sys2
+        _sys2.path.insert(0, os.path.join(REPO, 'tests'))
+        from protchain_check import pe_sections as _ps
+        exe_data = open(EXE, 'rb').read()
+        secs = _ps(exe_data)
+        prot = next(s for s in secs if s['name'] in ('.protcrypt', '.protcry'))
+        text = next(s for s in secs if s['name'] == '.text')
+        blob = exe_data[prot['ptr_raw']:prot['ptr_raw'] + 256]
+        n = struct.unpack_from('<I', blob, 0)[0]
+        plain = []
+        for i in range(n):
+            rva, ln = struct.unpack_from('<II', blob, 4 + i * 20)
+            toff = text['ptr_raw'] + (rva - text['virtual_addr'])
+            head = exe_data[toff:toff + 8]
+            if head.startswith((b'\x40\x55', b'\x40\x56', b'\x40\x57',
+                                b'\x48\x89', b'\x48\x83')):
+                plain.append(hex(rva))
+        ok = (not plain)
+        results.append(('A11 selfcrypt-dump', 'PASS' if ok else 'FAIL',
+                        'plaintext-fns=%s (static ciphertext)' %
+                        (plain or 'none')))
+    except Exception as e:
+        results.append(('A11 selfcrypt-dump', 'FAIL', repr(e)))
+
+    # ---- A12: 离线固定期望值对抗 N5 会话值 (ATTACK_PLAN) ------------------
+    # 攻击者手段: 认为"固定本地期望值可一劳永逸"——在线会话下服务端下发
+    # 不同值, 固定值失效。此处用错误期望值模拟"攻击者固定值"。
+    try:
+        import http.server as _hs
+        import threading as _th
+
+        class _H(_hs.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                # 错误期望值: 攻击者固定的值 (与服务端真实值不同)
+                body = (b'{"status":"ok","tier":1,'
+                        b'"expect1":"0x1111111111111111",'
+                        b'"expect2":"0x2222222222222222"}')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = _hs.HTTPServer(('127.0.0.1', 0), _H)
+        th = _th.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
+        code, out = run_demo(args=['--license-file', LICENSE,
+                                   '--vm-blob', os.path.join(REPO, 'build', 'vm.blob'),
+                                   '--check-url', url],
+                             stdin=(serial + '\n').encode('utf-8'))
+        srv.shutdown()
+        ok = (code == 1) and (msg_fail in out)
+        results.append(('A12 offline-fix-expect', 'PASS' if ok else 'FAIL',
+                        'code=%d (online session value overrides local fix)' % code))
+    except Exception as e:
+        results.append(('A12 offline-fix-expect', 'FAIL', repr(e)))
 
     failed = False
     for name, status, detail in results:
