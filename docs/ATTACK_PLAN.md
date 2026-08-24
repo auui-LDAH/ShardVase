@@ -146,5 +146,6 @@
 4. [x] 步骤 3：A11 selfcrypt-dump（静态密文，本地 PASS）。
 5. [x] 步骤 4：A12 offline-fix-expect（N5 边界，代码落地）。
 6. [x] 步骤 5：THREATMODEL §7 更新。
-7. [ ] **待补**：A8/A9/A12 进程类断言在无 WDAC 环境（真机/CI）补跑确认；
-      本环境 WDAC 间歇拦截（HANDOVER §4.5 已知限制）。
+7. [x] **待补**：A8/A9/A12 进程类断言在无 WDAC 环境（CI/真机）补跑确认——
+      **2026-08-24 真机 A1-A12 全 PASS**（含 A8 blob-forge 0xB10B /
+      A9 revoke-forge 不阻断 / A12 在线覆盖本地固定值）。

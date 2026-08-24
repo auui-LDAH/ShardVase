@@ -153,16 +153,24 @@ python tests\attacks.py
 ### 4.3 未完成事项（下一位的待办）
 | 优先级 | 项 | 状态 |
 |--------|----|------|
-| 阶段 II 剩余 | T3 真机调试、硬件绑定双机 —— **已知环境限制**（见 §4.5，非代码缺陷） | 待交互桌面会话 / 第二台机器 |
+| 阶段 II 剩余 | T3 真机调试（**2026-08-24 真机复验仍 SKIP**：SSH 会话限制，DebugActiveProcess rc=1——需**交互桌面会话**）；硬件绑定双机 **PASS**（本机产物在真机拒绝） | T3 待桌面会话；双机已验 |
 | CI | **CI 增强已完成（2026-08-22）**：protchain_check.py P1-P6 静态断言 + vmc/example 覆盖 + reproducible job（同种子比对）—— 见 docs/CI_PLAN.md；首次远程 CI 运行结果待回填 compat-matrix.csv | 远程运行待验证 |
 | 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
-| 可选 | N1 真机复核（D2b 高频 SMC 杀软行为）—— 见 **docs/N1_PHASE2_PLAN.md** §8 | 需交互桌面会话（环境限制） |
-| 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**：A10/A11 静态断言本地 PASS；A8/A9/A12 进程类断言待无 WDAC 环境（CI/真机）确认 —— 见 docs/ATTACK_PLAN.md | 代码完成，进程确认待 CI/真机 |
+| N1 真机复核 | **✅ 完成（2026-08-24）**：D2b 高频 SMC 真机无杀软拦截，e2e T1/T6/T11 全过 —— 见 docs/N1_PHASE2_PLAN.md §8 | 完成 |
+| 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**；**2026-08-24 真机 A1-A12 全 PASS**（含 A8/A9/A12 进程类）—— 见 docs/ATTACK_PLAN.md | 完成 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 | verify 增强 | **verify.ps1 已同步 protchain 保护链断言（2026-08-22）**：本地门禁=CI 门禁；附带修复 example 适配 BLOB_SIGN（容器移 selfcrypt.c + pack/revoke --sign）—— 见 docs/VERIFY_PLAN.md | 完成 |
 
-### 4.4 阶段 II 实测记录（2026-08-21）
-- 真机（oiahcoiah，Win11 24H2 26200）：e2e T1-T24 除 T3 全 PASS；attacks A1-A7；vm_unit；syscall_probe；
+### 4.4 阶段 II 实测记录（2026-08-21；2026-08-24 真机复验全能力）
+- 真机（test-host，100.x.x.x，Win11 家庭版 24H2 26200，2026-08-24 复验）：
+  **verify -Minimal 全绿**（build/e2e/vm_unit/syscall_probe/attacks/vmc/example/protchain）；
+  e2e T1-T28 除 T3 全 PASS（T10 tamper-pdata 真机 PASS，本机 WDAC SKIP 补齐）；
+  attacks **A1-A12 全 PASS**（含本机 WDAC 无法跑的 A8/A9/A12——伪造 blob/revoke 拒绝、N5 边界）；
+  N1 **D2b 真机复核 PASS**（高频 SMC 无杀软拦截，e2e T1/T6/T11 全过）；
+  双机绑定 PASS（本机构建 exe+blob+license 在真机 exit=1 拒绝）；
+  24h 驻留 3 进程（进行中）；**T3 仍 SKIP**（SSH 会话限制，DebugActiveProcess rc=1）。
+  真机新装 VS2022 BuildTools（原无编译器）；**无 git** → build.ps1/verify.ps1 已加 git 容错。
+- 真机（oiahcoiah，Win11 24H2 26200，2026-08-21）：e2e T1-T24 除 T3 全 PASS；attacks A1-A7；vm_unit；syscall_probe；
   24h 驻留通过（3 进程存活 >24h 零误杀）；**无 WDAC**；篡改检测（T4/T9/T10）真实运行。
 - 攻击模拟（个人破解者视角）：字符串搜索（中文消息全加密）、静态结构（断源生效）、
   授权伪造/篡改/试用期绕过——**全部拒绝**；发现的静态串暴露已加固（`d7c50bc`）。
