@@ -121,6 +121,7 @@ RSA 签名，公钥在程序里，私钥离线。攻击者还原全部 VM 也**�
 | revoke 签名：伪造黑名单不阻断（2026-08-22） | `tests/attacks.py` A9 revoke-forge + e2e T18 |
 | N5 会话期望值：在线覆盖本地固定值（2026-08-22） | `tests/attacks.py` A12 + e2e T25/T26 |
 | **批量攻防演练：6 类 23 项拦截率（2026-08-25）** | `tests/attack_drill.py`：S/F/P/O 全拦；E 咨询项报告；D2 已知边界；报告 `archive/attack-drill-real-20260825.json` |
+| **第三轮组合链：C1-C5 + 回归 R1-R4（2026-08-25）** | `tests/attack_drill3.py`：组合链 7/7 拦（G2/D1a/签名/复查）；暂停+改写 IAT 不可绕过（快照提前设计）；驻留注入被周期检测（0xDB）；零误杀；报告 `archive/attack-drill3-20260825.json` |
 
 ## 8. 结论
 

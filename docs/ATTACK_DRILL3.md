@@ -1,11 +1,11 @@
 # 第三轮攻防演练 — 完整计划 (ATTACK_DRILL3)
 
-> 版本：2026-08-25 v1 · 状态：**规划完成，未开工** · 关联：`docs/ATTACK_DRILL.md`（第一轮 23 项）·
+> 版本：2026-08-25 v2 · 状态：**✅ 已实施（2026-08-25 真机：9 项 7 BLOCKED / 0 BREACHED / 2 PARTIAL / 0 SKIP）** · 关联：`docs/ATTACK_DRILL.md`（第一轮 23 项）·
 > `docs/ATTACK_DRILL2.md`（第二轮 13 项 + G2 IAT 补洞/E2-2 策略）·
 > `commit e90bb96`（IAT 运行期校验）· `commit d526102`（N2 EXIT 策略）。
 > 本文档规划第三轮：**纵深组合攻击 + 防御回归验证**——前两轮是单点攻击，
 > 第三轮验证"组合攻击链"能否突破多层防御，并回归确认新修复（IAT 校验/
-> EXIT 策略）本身不引入漏洞。
+> EXIT 策略）本身不引入漏洞。v2 记录演练结果。
 
 ---
 
@@ -147,6 +147,18 @@
 **回退**：第三轮纯增量（新脚本 + 评估），删除即回退；不修改产品代码除非发现需修复项。
 
 ## 9. 待办清单
-1. [ ] 拍板 D1-D4。
-2. [ ] 步骤 1-4：attack_drill3.py + 回归项。
-3. [ ] 步骤 5：真机演练 + 报告 + THREATMODEL 更新。
+1. [x] 拍板 D1-D4。
+2. [x] 步骤 1-4：attack_drill3.py（C1-C5 + R1-R4）。
+3. [x] 步骤 5：真机演练（2026-08-25）结果：
+   - **C1 BLOCKED**：注入→IAT hook 组合链 3.1s 被 G2 拦（止于 step2）；
+   - **C2 BLOCKED**：伪造 v0→替换 止于 step1（D1a）；
+   - **C3 BLOCKED**：暂停进程 + .text patch → 0xBAD（恢复后复查，纵深有效；
+     中途一次 BREACHED 是测试 patch 位置 bug（0x600 越界无效写入），修正后确认）；
+   - **C4 PARTIAL**：引擎明文 dump=已知边界，完整还原需天级，私钥锚点阻断；
+   - **C5 BLOCKED**：MITM blob 签名拦（止于 step1）；
+   - **R1 BLOCKED**：暂停+改写 IAT → 0xBAD（快照提前建立防绕过有效）；
+   - **R2 BLOCKED**：启动后注入 + EXIT → 0xDB（驻留期周期检测有效）；
+   - **R3 BLOCKED**：12s 驻留零误杀（IAT 校验/EXIT 策略无误杀）；
+   - **R4 PARTIAL**：建议清单（见报告 advisories）。
+   - **9 项 7 BLOCKED / 0 BREACHED / 2 PARTIAL / 0 SKIP**；
+     报告归档 `archive/attack-drill3-20260825.json`。
