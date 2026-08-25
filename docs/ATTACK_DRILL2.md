@@ -6,6 +6,7 @@
 > 本文档规划第二轮演练：**深化第一轮 8 个 PARTIAL**（内存写实战/实策略/实战 PEB）+ **新增高级攻击面**，
 > 目标是把 PARTIAL 转成确定结论、覆盖真实攻击者的进阶手法。
 > v2 记录核心演练结果（5 项全结论：1 BLOCKED / 4 PARTIAL / 0 SKIP）。
+> v3 记录完整 13 项（2026-08-25 真机终整：3 BLOCKED / 10 PARTIAL / 0 SKIP）。
 
 ---
 
@@ -163,5 +164,20 @@
      内存防线（单次流程窗口小）。
    - **结论**：第二轮揭示真实边界（循环重算/验签时序/内存 patch 范围），
      非防御失效；报告归档 `archive/attack-drill2-real-20260825.json`。
-4. [ ] 待补：G1-G6 高级攻击面（DLL 注入/跨进程需真机桌面会话；G5 双开/
-      G6 畸形 blob 可 SSH 做）+ E2-2/E3-2 策略测试（需 FAKE/EXIT 构建）。
+4. [x] **G1-G6 + E2-2/E3-2 全部实现并真机执行（2026-08-25）**：
+   - **G1 PARTIAL**：user32.dll 经 CreateRemoteThread+LoadLibrary 注入成功
+     （跨进程注入能力确认；dbiguard 咨询项可报告）；
+   - **G2 PARTIAL**：IAT 导入表项改写成功（.rdata 运行期可写——
+     **揭示边界：A3 .rdata CRC 是文件级，运行期 IAT 改写不在覆盖内**，
+     需运行期 IAT 自校验增强）；
+   - **G3 PARTIAL**：NtSuspendProcess 暂停→patch→resume 存活
+     （同 E4-2：内存 patch 非文件 CRC 范围=已知边界）；
+   - **G4 BLOCKED**：dump→patch→重打包 v0 被 blob 签名拒绝；
+   - **G5 PARTIAL**：3 实例同机全过（share mid=授权语义设计边界）；
+   - **G6 BLOCKED**：COUNT=0xFFFFFFFF 畸形 blob 被边界拒绝；
+   - **E2-2/E3-2 PARTIAL**：selftest 报告 hook=1/hypervisor=1
+     （咨询项；FAKE/EXIT 策略构建待补）。
+   - **终整 13 项：3 BLOCKED / 10 PARTIAL / 0 SKIP**；
+     报告归档 `archive/attack-drill2-20260825-final.json`。
+5. [ ] 待补（可 SSH 完成）：E2-2/E3-2 真策略构建（FAKE/EXIT）——当前咨询项。
+6. [ ] 待补（需桌面会话）：G2 的 IAT 运行期自校验增强（防御侧）。

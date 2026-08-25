@@ -160,7 +160,7 @@ python tests\attacks.py
 | N1 真机复核 | **✅ 完成（2026-08-24）**：D2b 高频 SMC 真机无杀软拦截，e2e T1/T6/T11 全过 —— 见 docs/N1_PHASE2_PLAN.md §8 | 完成 |
 | 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**；**2026-08-24 真机 A1-A12 全 PASS**（含 A8/A9/A12 进程类）—— 见 docs/ATTACK_PLAN.md | 完成 |
 | 批量攻防演练 | **batch red-team 已实施（2026-08-25）**：6 类 23 项，真机 15 BLOCKED/0 BREACHED/8 PARTIAL/0 SKIP；内存类疑难项已修复（psapi）全有结论 —— 见 docs/ATTACK_DRILL.md | 第一轮完成 |
-| 第二轮攻防演练 | **核心已实施（2026-08-25 真机）**：D3-2 D2b 间隙重加密实测确认（BLOCKED）；P4/P5/E1/E4 揭示时序/范围边界（loop 重算覆盖/验签时序/内存 patch 非 watchdog 范围）；5 项全结论 1 BLOCKED/4 PARTIAL/0 SKIP —— 见 docs/ATTACK_DRILL2.md | 核心完成；G1-G6/策略测试待桌面会话 |
+| 第二轮攻防演练 | **完整 13 项已实施（2026-08-25 真机）**：3 BLOCKED / 10 PARTIAL / 0 SKIP；G4/G6 伪造与畸形 blob 全拦；G1/G2 注入与 IAT hook 可行（揭示"运行期 .rdata 改写不在文件 CRC 覆盖"边界，建议 IAT 运行期自校验）；G3/E4 确认内存 patch 非 watchdog 范围（已知）—— 见 docs/ATTACK_DRILL2.md | 完成；IAT 自校验增强待桌面会话 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 | verify 增强 | **verify.ps1 已同步 protchain 保护链断言（2026-08-22）**：本地门禁=CI 门禁；附带修复 example 适配 BLOB_SIGN（容器移 selfcrypt.c + pack/revoke --sign）—— 见 docs/VERIFY_PLAN.md | 完成 |
 
