@@ -5,6 +5,7 @@
 > 本文档规划第四轮：**还原/取证/隐蔽性攻击面** —— 前三轮覆盖"攻击手法"
 > （注入/伪造/补丁/组合链）全被拦；第四轮转向 VM 保护的天敌与真实破解者
 > 的核心手段，**目标是从"能防住手法"升级为"实证还原/取证成本"**。
+> v2 记录演练结果（10 项：6 BLOCKED / 0 BREACHED / 4 PARTIAL / 0 SKIP）。
 
 ---
 
@@ -121,9 +122,25 @@
 **回退**：第四轮全增量（新工具+新脚本），删除即回退。
 
 ## 8. 待办清单
-1. [ ] 拍板 D1-D5。
-2. [ ] 步骤 1：vm_reduce.py + R1/R3。
-3. [ ] 步骤 2：procdump_like.py + F1-F3。
-4. [ ] 步骤 3：H1-H4 隐蔽类。
-5. [ ] 步骤 4：O1/O2。
-6. [ ] 步骤 5：真机演练 + 报告 + THREATMODEL。
+1. [x] 拍板 D1-D5（`vm_reduce.py` 部分还原 / 全地址转储 / H1 记录修复 / mock
+      重放 / 无 angr）。
+2. [x] 步骤 1-4：vm_reduce.py + procdump_like.py + 隐蔽类 + 在线类。
+3. [x] 步骤 5：真机演练（2026-08-25）结果：
+   - **R1-4 PARTIAL**：verify 镜像语义已还原（cmpeq/and 轨迹）——单镜像
+     可还原=设计已知，私钥锚点阻断最终绕过；
+   - **R3-4 BLOCKED**：单镜像还原只见比较逻辑，需 hash+mix 级联 + N5
+     会话值 → 不足以通过（多 VM + N5 联合有效）；
+   - **F1-4 PARTIAL**：Procdump 风格全转储 16.9MB，引擎明文（0x40 55）
+     在场——D2a 明文取证可行（已知边界实证；修 procdump_like 的
+     c_void_p None 加法 bug 后成功）；
+   - **F2-4 BLOCKED**：dump 现场含 result=1 但不能重放（需私钥+N5）；
+   - **H1-4 BLOCKED**：精确挂 4 线程 + .text patch → **0xC0000005 崩溃**
+     （既非绕过也非干净 0xBAD——挂起导致破坏性后果，仍阻止通过）；
+   - **H2-4 PARTIAL**：Thread32 枚举 5 线程，watchdog 线程在列可定位；
+   - **H3-4 PARTIAL**：PEB 清除后存活（启动扫描已过；驻留无周期
+     antidebug 复查=审查项，建议待 D 期）；
+   - **H4-4 BLOCKED**：DR 寄存器用户态不可清（检测有效）；
+   - **O1-4 BLOCKED**：重放固定 expect 被拒（N5 会话校验防重放）；
+   - **O2-4 BLOCKED**：离线降级不锁死（预期）。
+   - **10 项 6 BLOCKED / 0 BREACHED / 4 PARTIAL / 0 SKIP**；
+     报告归档 `archive/attack-drill4-20260825.json`。
