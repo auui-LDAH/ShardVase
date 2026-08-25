@@ -13,6 +13,7 @@
  */
 
 #include <windows.h>
+#include <stdlib.h>      /* malloc */
 #include <string.h>
 
 #include "protect/antidebug.h"
@@ -85,6 +86,22 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
                 case PROT_POLICY_EXIT:
                     TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
                     break; /* 失败则进程已终止 */
+                case PROT_POLICY_FAKE:
+                    InterlockedExchange(&g_wd_fake, 1);
+                    break;
+                case PROT_POLICY_CONTINUE:
+                default:
+                    InterlockedIncrement(&g_wd_tamper);
+                    break;
+            }
+        }
+        /* G2 补洞: 运行期 IAT 改写 (hook 导入表) 周期复查 ——
+         * 文件级 CRC 不覆盖 loader 写入的 IAT, 这里快照比对 detect。 */
+        if (prot_integrity_check_iat() != PROT_OK) {
+            switch (g_wd_policy) {
+                case PROT_POLICY_EXIT:
+                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                    break;
                 case PROT_POLICY_FAKE:
                     InterlockedExchange(&g_wd_fake, 1);
                     break;
@@ -271,6 +288,84 @@ prot_status prot_integrity_check_self(void) {
     return PROT_OK;
 }
 
+/* --- 运行期 IAT 完整性 (G2 补洞, ATTACK_DRILL2) ---
+ * loader 启动时写入 IAT 导入地址 (合法); 攻击者运行期改写 IAT (hook 导入
+ * 表) 不在文件级 CRC 覆盖内。这里快照 IAT 初始值, 周期比对 detect 改写。
+ * 首次调用建立快照; 之后逐项比对。使用 InitOnce 保证线程安全单次初始化。 */
+static INIT_ONCE g_iat_once = INIT_ONCE_STATIC_INIT;
+static volatile LONG g_iat_ready = 0;
+static uint8_t* g_iat_snap = NULL;      /* IAT 快照 */
+static uint32_t g_iat_snap_len = 0u;
+
+static BOOL CALLBACK iat_snapshot_init(PINIT_ONCE once, PVOID p, PVOID* ctx)
+{
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_DATA_DIRECTORY* iat;
+    uint8_t* base;
+    (void)once;
+    (void)p;
+    (void)ctx;
+
+    base = (uint8_t*)GetModuleHandleW(NULL);
+    if (base == NULL) {
+        return TRUE; /* 失败也视为完成 (后续 check 直接失败) */
+    }
+    dos = (const IMAGE_DOS_HEADER*)base;
+    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    if (iat->VirtualAddress == 0u || iat->Size == 0u) {
+        return TRUE; /* 无 IAT (静态链接/无导入) */
+    }
+    g_iat_snap_len = iat->Size;
+    g_iat_snap = (uint8_t*)malloc(g_iat_snap_len);
+    if (g_iat_snap == NULL) {
+        g_iat_snap_len = 0u;
+        return TRUE;
+    }
+    memcpy(g_iat_snap, base + iat->VirtualAddress, g_iat_snap_len);
+    InterlockedExchange(&g_iat_ready, 1);
+    return TRUE;
+}
+
+prot_status prot_integrity_check_iat(void)
+{
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_DATA_DIRECTORY* iat;
+    uint8_t* base;
+    uint32_t i;
+
+    InitOnceExecuteOnce(&g_iat_once, iat_snapshot_init, NULL, NULL);
+    if (!g_iat_ready) {
+        /*
+         * 快照未建立: 无 IAT (纯静态) 视为 OK; 其他情况 (malloc 失败) 忽略
+         * —— watchdog 不因资源问题误杀 (与 MDL 完整性语义一致)。
+         */
+        return PROT_OK;
+    }
+
+    base = (uint8_t*)GetModuleHandleW(NULL);
+    if (base == NULL) {
+        return PROT_ERR_INTEGRITY;
+    }
+    dos = (const IMAGE_DOS_HEADER*)base;
+    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    if (iat->VirtualAddress == 0u || iat->Size != g_iat_snap_len) {
+        return PROT_ERR_INTEGRITY; /* IAT 目录异常 */
+    }
+
+    /* 逐项比对: 运行期改写 (hook) 会与快照不一致 */
+    for (i = 0u; i < g_iat_snap_len; i++) {
+        if (((volatile uint8_t*)base)[iat->VirtualAddress + i] !=
+            g_iat_snap[i]) {
+            return PROT_ERR_INTEGRITY;
+        }
+    }
+    return PROT_OK;
+}
+
 prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms) {
     if (interval_ms == 0) {
         return PROT_ERR_INVALID_ARG;
@@ -286,6 +381,11 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
     InterlockedExchange(&g_wd_stop, 0);
     g_wd_policy = pol;
     g_wd_interval = interval_ms;
+
+    /* G2: watchdog 启动时立即建立 IAT 快照 (早于攻击者可改写窗口)。
+     * 若延迟到首轮循环 (3-7s 抖动后) 才快照, 攻击者可在启动早期改写
+     * IAT 使快照记录被改值 -> 后续比对恒一致 -> 绕过。 */
+    (void)prot_integrity_check_iat();
 
     g_wd_thread = CreateThread(NULL, 0, watchdog_thread, NULL, 0, NULL);
     if (g_wd_thread == NULL) {

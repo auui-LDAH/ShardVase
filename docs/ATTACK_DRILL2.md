@@ -178,7 +178,10 @@
 5. [x] **完整 13 项终报：4 BLOCKED / 9 PARTIAL / 0 SKIP**（用 build.ps1
       `-Drill` 全链构建，避免手动后处理不一致）；
       报告归档 `archive/attack-drill2-20260825-v3.json`。
-6. [ ] 待补（防御侧建议）：G2 的 IAT 运行期自校验（watchdog 复查 .rdata
-      或 IAT 完整性）—— 需桌面会话/后续增强。
+6. [x] **G2 边界已补洞（2026-08-25）**：新增 `prot_integrity_check_iat()`
+       ——运行期 IAT 快照 + watchdog 周期比对；`start_watchdog` 时**立即
+       建立快照**（防"攻击者在首轮循环前改写使快照记录被改值"绕过）；
+       真机实测：改写 IAT 后 **1.9s 内被识破（exit 0xBAD）**——G2 从
+       "可 hook 而检测不到"变为"hook 被周期捕获"。protchain/e2e 回归零影响。
 7. [ ] 注记：24h 驻留验证（真机 pid 4248/4316/8692）运行 ~7.5h 后因
       补测需要被中断，未跑满 24h——可后续重启完整 24h 复验。
