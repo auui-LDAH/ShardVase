@@ -165,19 +165,20 @@
    - **结论**：第二轮揭示真实边界（循环重算/验签时序/内存 patch 范围），
      非防御失效；报告归档 `archive/attack-drill2-real-20260825.json`。
 4. [x] **G1-G6 + E2-2/E3-2 全部实现并真机执行（2026-08-25）**：
-   - **G1 PARTIAL**：user32.dll 经 CreateRemoteThread+LoadLibrary 注入成功
-     （跨进程注入能力确认；dbiguard 咨询项可报告）；
-   - **G2 PARTIAL**：IAT 导入表项改写成功（.rdata 运行期可写——
-     **揭示边界：A3 .rdata CRC 是文件级，运行期 IAT 改写不在覆盖内**，
-     需运行期 IAT 自校验增强）；
-   - **G3 PARTIAL**：NtSuspendProcess 暂停→patch→resume 存活
-     （同 E4-2：内存 patch 非文件 CRC 范围=已知边界）；
+   - **G1 PARTIAL**：user32.dll 经 CreateRemoteThread+LoadLibrary 注入成功；
+   - **G2 PARTIAL**：IAT 导入表改写成功（揭示"运行期 .rdata 改写不在
+     文件 CRC 覆盖"边界）；
+   - **G3 PARTIAL**：suspend-patch-resume 存活（内存 patch 已知边界）；
    - **G4 BLOCKED**：dump→patch→重打包 v0 被 blob 签名拒绝；
-   - **G5 PARTIAL**：3 实例同机全过（share mid=授权语义设计边界）；
-   - **G6 BLOCKED**：COUNT=0xFFFFFFFF 畸形 blob 被边界拒绝；
-   - **E2-2/E3-2 PARTIAL**：selftest 报告 hook=1/hypervisor=1
-     （咨询项；FAKE/EXIT 策略构建待补）。
-   - **终整 13 项：3 BLOCKED / 10 PARTIAL / 0 SKIP**；
-     报告归档 `archive/attack-drill2-20260825-final.json`。
-5. [ ] 待补（可 SSH 完成）：E2-2/E3-2 真策略构建（FAKE/EXIT）——当前咨询项。
-6. [ ] 待补（需桌面会话）：G2 的 IAT 运行期自校验增强（防御侧）。
+   - **G5 PARTIAL**：3 实例同机全过（share mid=设计边界）；
+   - **G6 BLOCKED**：COUNT=0xFFFFFFFF 畸形 blob 拒绝；
+   - **E2-2 BLOCKED**：新增 `--dbiguard-policy EXIT` 策略（生产可用配置），
+     hook 环境实测 0xDB（N2 从咨询升级为可配置 EXIT）；
+   - **E3-2 PARTIAL**：vmdetect 咨询项报告（hypervisor=1/vendor=1）。
+5. [x] **完整 13 项终报：4 BLOCKED / 9 PARTIAL / 0 SKIP**（用 build.ps1
+      `-Drill` 全链构建，避免手动后处理不一致）；
+      报告归档 `archive/attack-drill2-20260825-v3.json`。
+6. [ ] 待补（防御侧建议）：G2 的 IAT 运行期自校验（watchdog 复查 .rdata
+      或 IAT 完整性）—— 需桌面会话/后续增强。
+7. [ ] 注记：24h 驻留验证（真机 pid 4248/4316/8692）运行 ~7.5h 后因
+      补测需要被中断，未跑满 24h——可后续重启完整 24h 复验。

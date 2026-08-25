@@ -21,11 +21,13 @@ param(
     [switch]$RecordSeeds,
     [switch]$SkipSign,
     [switch]$SkipSmoke,
-    [switch]$D2b
+    [switch]$D2b,
+    [switch]$Drill
 )
 $ErrorActionPreference = 'Stop'
 $isRelease = ($Config -eq 'Release')
 $scDef = if ($D2b) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
+if ($Drill) { $scDef += ' /DPROT_DRILL_HOOK' }
 
 # 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子;
 # "indirect" = N4 间接表种子 (标量)

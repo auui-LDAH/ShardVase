@@ -44,6 +44,9 @@ static void* g_vm_blob_buf = NULL;
 uint32_t g_loop_vm = 0u;
 #endif /* PROT_DRILL_HOOK */
 
+/* N2 策略 (ATTACK_DRILL2 E2-2): --dbiguard-policy EXIT 时 hook 检测即终止 */
+int dbiguard_exit_policy = 0;
+
 /* N5: VM#3 构建期默认期望值 (demo/gen/expect_default.c 生成, 离线兜底) */
 extern const uint64_t g_prot_expect_default[2];
 
@@ -191,6 +194,18 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
                 return 0;
             }
             *check_url = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "--dbiguard-policy") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --dbiguard-policy EXIT\n");
+                return 0;
+            }
+            if (strcmp(argv[i + 1], "EXIT") == 0) {
+                dbiguard_exit_policy = 1;
+            } else {
+                fprintf(stderr, "usage: demo.exe --dbiguard-policy EXIT\n");
+                return 0;
+            }
             i++;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE §1.2 */
@@ -421,6 +436,13 @@ int main(int argc, char** argv)
         }
         if (prot_dbiguard_suspicious(&drep)) {
             printf("疑似动态插桩/hook 环境 (咨询项, 不影响运行)\n");
+            /* N2 策略 (ATTACK_DRILL2 E2-2): --dbiguard-policy EXIT
+             * 时 hook 检测到 -> 终止 (0xDB), 防注入 hook 被忽略 */
+            if (dbiguard_exit_policy) {
+                printf("%s\n", prot_str_get(PROT_STR_MSG_DBG));
+                fflush(stdout);
+                exit(PROT_EXIT_DEBUG_DETECTED);
+            }
         }
     }
 
