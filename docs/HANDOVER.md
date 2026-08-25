@@ -158,7 +158,7 @@ python tests\attacks.py
 | 阶段 III | 服务端（可选）—— 详细计划见 **docs/PHASE3.md**；决策点 D2 已定离线优先（M3.1 已完成） | 未开工（按 D2 不启动 M3.2/M3.3） |
 | N1 真机复核 | **✅ 完成（2026-08-24）**：D2b 高频 SMC 真机无杀软拦截，e2e T1/T6/T11 全过 —— 见 docs/N1_PHASE2_PLAN.md §8 | 完成 |
 | 攻击模拟扩展 | **A8-A12 已实现（2026-08-22）**；**2026-08-24 真机 A1-A12 全 PASS**（含 A8/A9/A12 进程类）—— 见 docs/ATTACK_PLAN.md | 完成 |
-| 批量攻防演练 | **6 类 22 项攻击矩阵 + 拦截率报告 —— 完备计划见 docs/ATTACK_DRILL.md**（决策点 D1-D5 待拍板） | 规划完成，未开工 |
+| 批量攻防演练 | **batch red-team 已实施（2026-08-25）**：6 类 23 项，真机 15 BLOCKED/0 BREACHED/3 PARTIAL/5 SKIP，拦截率 83.3%（可评估项 100%）；P4/P5/D2/E1 需交互桌面补（SSH 会话无法跨进程内存写）；D3 需 -D2b 预构建 —— 见 docs/ATTACK_DRILL.md | 完成（内存类待桌面会话） |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 | verify 增强 | **verify.ps1 已同步 protchain 保护链断言（2026-08-22）**：本地门禁=CI 门禁；附带修复 example 适配 BLOB_SIGN（容器移 selfcrypt.c + pack/revoke --sign）—— 见 docs/VERIFY_PLAN.md | 完成 |
 

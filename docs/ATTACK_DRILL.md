@@ -1,10 +1,11 @@
 # 批量攻防演练 — 完整计划 (ATTACK_DRILL)
 
-> 版本：2026-08-25 v1 · 状态：**规划完成，未开工** · 关联：`docs/THREATMODEL.md`（威胁模型）·
+> 版本：2026-08-25 v2 · 状态：**✅ 已实施（2026-08-25 真机完整演练）** · 关联：`docs/THREATMODEL.md`（威胁模型）·
 > `tests/attacks.py`（A1-A12 单项攻击）· `tests/protchain_check.py`（P1-P6 静态断言）·
 > `docs/ATTACK_PLAN.md`（攻击模拟扩展）· `docs/HANDOVER.md`（环境限制）。
 > 本文档规划：**模拟真实攻击者的完整攻击链**，批量尝试多类攻击手法，
 > 验证防御拦截率，统计**破防点**（诚实面）并输出演练报告。
+> v2 记录演练实跑结果：23 项中 15 BLOCKED / 0 BREACHED / 3 PARTIAL / 5 SKIP。
 
 ---
 
@@ -188,8 +189,16 @@ build（当前构建产物）→ attack_drill.py
 
 ## 9. 待办清单
 
-1. [ ] 拍板 D1-D5（§5）。
-2. [ ] 步骤 1：框架 + 报告输出。
-3. [ ] 步骤 2-5：六类攻击实现。
-4. [ ] 步骤 6：本机 + 真机演练 + 归档。
-5. [ ] 更新 THREATMODEL/COMPAT 引用演练结果。
+1. [x] 拍板 D1-D5（§5）——known-boundary / 副本 / 预构建 D2b / SKIP / 不入 git。
+2. [x] 步骤 1-5：attack_drill.py 全部实现（6 类 23 项）。
+3. [x] 步骤 6：真机完整演练（2026-08-25）：
+   - **15 BLOCKED / 0 BREACHED / 3 PARTIAL / 5 SKIP**；
+   - S1-S4 静态分析全拦；F1-F5 伪造全拦；P1-P3 补丁全拦（0xBAD）；
+     O1/O2 在线对抗全拦；
+   - E2/E3/E4 PARTIAL（咨询项报告 hook/VM/时序，符合设计）；
+   - P4/P5/D2/E1 SKIP（SSH 会话无法 OpenProcess 写另一进程内存——
+     服务会话隔离，需交互桌面补）；D3 SKIP（需 -D2b 预构建，驻留验证
+     优先未切构建）；
+   - 拦截率 83.3%（可评估项 100% 拦截，0 破防点）；
+   - 报告归档 `archive/attack-drill-real-20260825.json`。
+4. [x] 更新 THREATMODEL/COMPAT 引用演练结果。
