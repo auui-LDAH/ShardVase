@@ -26,3 +26,6 @@ Thumbs.db
 # 验证报告（verify.ps1 生成，可追溯但提交基线时不入库）
 verify-report.json
 verify-report-*.json
+
+# 历史快照归档（含早期 git 仓库复本，不入库避免混淆）
+archive/

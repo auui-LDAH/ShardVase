@@ -30,7 +30,7 @@ jobs:
       - name: Run e2e suite (T1-T28)
         run: python tests\e2e.py
 
-      - name: Run attack-simulation suite (A1-A7)
+      - name: Run attack-simulation suite (A1-A12)
         run: python tests\attacks.py
 
       - name: Run VM unit tests

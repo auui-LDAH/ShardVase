@@ -489,20 +489,36 @@ int main(int argc, char** argv)
                                 WinHttpReceiveResponse(hreq, NULL)) {
                                 FILE* f = NULL;
                                 DWORD avail = 0u;
+                                unsigned long long total = 0ull;
+                                /* blob 上限防 DoS: 恶意服务端无法写盘填满 */
+                                const unsigned long long MAX_BLOB_DL_SIZE =
+                                    2ull * 1024ull * 1024ull;
+                                int overflow = 0;
                                 if (fopen_s(&f, tmp, "wb") == 0 && f != NULL) {
                                     while (WinHttpQueryDataAvailable(hreq, &avail) &&
-                                           avail > 0u) {
+                                           avail > 0u && !overflow) {
                                         uint8_t chunk[4096];
                                         DWORD got2 = 0u;
-                                        if (!WinHttpReadData(hreq, chunk,
-                                                             (avail < sizeof(chunk))
-                                                                 ? avail : (DWORD)sizeof(chunk),
-                                                             &got2) || got2 == 0u)
+                                        DWORD want = (avail < (DWORD)sizeof(chunk))
+                                                         ? avail : (DWORD)sizeof(chunk);
+                                        if (!WinHttpReadData(hreq, chunk, want, &got2) ||
+                                            got2 == 0u)
                                             break;
+                                        if (total + got2 > MAX_BLOB_DL_SIZE) {
+                                            overflow = 1; /* 超限: 中止, 不落盘 */
+                                            break;
+                                        }
+                                        total += got2;
                                         fwrite(chunk, 1, got2, f);
                                     }
                                     fclose(f);
-                                    ok = TRUE;
+                                    if (overflow) {
+                                        /* 删掉截断的临时文件, 回退本地 */
+                                        remove(tmp);
+                                        tmp[0] = '\0';
+                                    } else {
+                                        ok = TRUE;
+                                    }
                                 }
                             }
                         }
