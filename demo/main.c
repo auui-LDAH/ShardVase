@@ -39,6 +39,11 @@ static const char* const k_vm_names[4] = {
 static prot_vm_image g_vm_imgs[4];
 static void* g_vm_blob_buf = NULL;
 
+#ifdef PROT_DRILL_HOOK
+/* 演练钩子 (ATTACK_DRILL2): --loop-vm N 循环校验次数 */
+uint32_t g_loop_vm = 0u;
+#endif /* PROT_DRILL_HOOK */
+
 /* N5: VM#3 构建期默认期望值 (demo/gen/expect_default.c 生成, 离线兜底) */
 extern const uint64_t g_prot_expect_default[2];
 
@@ -190,6 +195,16 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE §1.2 */
             exit(0);
+#ifdef PROT_DRILL_HOOK
+        } else if (strcmp(argv[i], "--loop-vm") == 0) {
+            /* 演练钩子 (ATTACK_DRILL2): 循环 VM 校验 N 次, 供外部 dump/写验证 */
+            if (i + 1 >= argc) {
+                fprintf(stderr, "usage: demo.exe --loop-vm N\n");
+                return 0;
+            }
+            g_loop_vm = (uint32_t)strtoul(argv[i + 1], NULL, 10);
+            i++;
+#endif /* PROT_DRILL_HOOK */
         } else {
             fprintf(stderr, "usage: demo.exe [--selftest] [--wait-ms N] [--wait-after N] [--license-file F] [--vm-blob F] [--revoke-file F] [--revoke-policy strict|warn]\n");
             return 0;
@@ -758,6 +773,28 @@ int main(int argc, char** argv)
         printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
         exit(1);
     }
+
+#ifdef PROT_DRILL_HOOK
+    /* 演练钩子 (ATTACK_DRILL2): --loop-vm N 循环校验, 间隙 Sleep 给外部
+     * dump/内存写留窗口. 仅测试构建启用, 发布构建无此代码. */
+    {
+        extern uint32_t g_loop_vm;
+        uint32_t li;
+        for (li = 0u; li < g_loop_vm && g_loop_vm > 0u; li++) {
+            st = vm_run_wrapped(&g_vm_imgs[1], &mem); /* 循环 mix+verify */
+            if (st != PROT_OK) {
+                printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+                exit(1);
+            }
+            st = vm_run_wrapped(&g_vm_imgs[2], &mem);
+            if (st != PROT_OK) {
+                printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+                exit(1);
+            }
+            Sleep(500); /* 留出观测窗口 (D2b 下间隙为密文) */
+        }
+    }
+#endif /* PROT_DRILL_HOOK */
 
     /* §9.1-10: N3 数据完整性 —— 三份冗余多数一致 + 校验和 (单点 patch 识破) */
     {

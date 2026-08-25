@@ -1,10 +1,11 @@
 # 第二轮攻防演练 — 完整计划 (ATTACK_DRILL2)
 
-> 版本：2026-08-25 v1 · 状态：**规划完成，未开工** · 关联：`docs/ATTACK_DRILL.md`（第一轮 23 项，已实施）·
+> 版本：2026-08-25 v2 · 状态：**✅ 核心已实施（2026-08-25 真机）** · 关联：`docs/ATTACK_DRILL.md`（第一轮 23 项，已实施）·
 > `archive/attack-drill-real-20260825-final.json`（第一轮结果：15 BLOCKED/0 BREACHED/8 PARTIAL/0 SKIP）·
 > `docs/THREATMODEL.md`（威胁模型）。
 > 本文档规划第二轮演练：**深化第一轮 8 个 PARTIAL**（内存写实战/实策略/实战 PEB）+ **新增高级攻击面**，
 > 目标是把 PARTIAL 转成确定结论、覆盖真实攻击者的进阶手法。
+> v2 记录核心演练结果（5 项全结论：1 BLOCKED / 4 PARTIAL / 0 SKIP）。
 
 ---
 
@@ -143,10 +144,24 @@
 
 ## 9. 待办清单
 
-1. [ ] 拍板 D1-D4（§5）。
-2. [ ] 步骤 1：内存定位工具。
-3. [ ] 步骤 2：P4/P5/E1 写实战。
-4. [ ] 步骤 3：D3 长驻留（--loop-vm）。
-5. [ ] 步骤 4：E2/E3 策略 + E4 时序。
-6. [ ] 步骤 5：G1-G6。
-7. [ ] 步骤 6：真机演练 + 对比报告。
+1. [x] 拍板 D1-D4（§5）——#ifdef 钩子 / G5 设计边界 / E4 转判断 / G1 真注入（待补）。
+2. [x] 步骤 1-3 核心：内存定位（VirtualQueryEx+serial 搜 demo_mem）、
+      --loop-vm 钩子（#ifdef PROT_DRILL_HOOK，测试构建）、P4-2/P5-2/E1-2
+      写实战、D3-2 长驻留。
+3. [x] 真机核心演练（2026-08-25）：
+   - **D3-2 BLOCKED**：D2b 调用间隙重加密**实测确认**（rva=0x1e30 密文）——
+     第一轮无法验证的 D3 转确定结论；
+   - **P4-2 PARTIAL**：持续写 result（158 次）exit=None——loop 中 VM#2
+     verify **重写 result 覆盖攻击**（等效"一次 patch 被重算覆盖"），
+     N3 单次流程的识破由 e2e T4/vm_unit 保证；
+   - **P5-2 PARTIAL**：写 mid 无影响——license 已在写前验签（攻击时序
+     受限，验签时刻才有效）；
+   - **E1-2 PARTIAL**：清 PEB 后存活——demo 反调试扫描在 loop 前已过
+     （时序受限，非多因子失效）；
+   - **E4-2 PARTIAL**：内存 patch 不被文件 CRC watchdog 捕获（>10s 未退）
+     ——**确认 THREATMODEL 已知边界："仅内存改写"不防**，N3 是唯一
+     内存防线（单次流程窗口小）。
+   - **结论**：第二轮揭示真实边界（循环重算/验签时序/内存 patch 范围），
+     非防御失效；报告归档 `archive/attack-drill2-real-20260825.json`。
+4. [ ] 待补：G1-G6 高级攻击面（DLL 注入/跨进程需真机桌面会话；G5 双开/
+      G6 畸形 blob 可 SSH 做）+ E2-2/E3-2 策略测试（需 FAKE/EXIT 构建）。
