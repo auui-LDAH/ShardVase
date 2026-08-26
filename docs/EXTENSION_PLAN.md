@@ -1,6 +1,6 @@
 # 保护体系延申规划 — Android 原生 SO（A）+ 跨平台许可服务化（C）
 
-> 版本：2026-08-25 v1 · 状态：**规划完成，未开工** · 关联：`docs/THREATMODEL.md`（威胁模型）·
+> 版本：2026-08-26 v2 · 状态：**C1/A1/A2/A3 已完成（源码就绪，NDK 实编待环境）** · 关联：`docs/THREATMODEL.md`（威胁模型）·
 > `docs/CONTRACT.md`（契约/算法）· `tools/vmenc.py`（RSA 签发核心）· `docs/ATTACK_DRILL*.md`（攻防实证）。
 > 本文档规划保护套件**跨越 Windows x64 平台**的延申：
 > **A** Android 原生 .so 保护（ARM/ELF 移植）+ **C** 跨平台许可与授权服务化 SDK。
@@ -177,5 +177,10 @@ size_t prot_auth_build_message(const char* serial, uint64_t mid,
 4. [x] **A2 完成（2026-08-26）**：libprot.c 增 nativeDetectHook（frida/gum/
    xposed maps 扫描）+ pthread 看门狗（5s 周期）+ Prot.java（JCA
    SHA256withRSA 验签 + envCheck 汇总 + watchdog 绑定）；CMake 链 log/pthread/dl。
-5. [ ] A3：轻量混淆（OLLVM/自加密段）。
+5. [x] **A3 完成（2026-08-26）**：轻量自加密段 ——
+   `examples/cross_platform/android/selfcrypt_android.c`（GCC/Clang + MSVC
+   跨平台，宿主编译 SELFTEST PASS）+ `tools/selfcrypt_elf.py`（ELF64
+   .symtab/.dynsym 符号定位骨架，NDK 产物上执行加密）。**A3b（OLLVM）
+   文档化**：后续在 NDK 环境引入 -flto/优化混淆即增强；自加密段不依赖
+   编译器即可用。
 6. [ ] T1：Android 攻防测试矩阵（需 NDK 构建产物/真机）。
