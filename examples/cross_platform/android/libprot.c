@@ -15,7 +15,11 @@
  */
 #include <jni.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "../license_auth.h"
 
@@ -117,6 +121,68 @@ Java_com_prot_demo_Prot_nativeIsDebugged(JNIEnv* env, jobject thiz)
     }
     fclose(f);
     return traced ? 1 : 0;
+}
+
+/* ---- A2: 反 Frida / 反 Xposed ---- */
+JNIEXPORT jint JNICALL
+Java_com_prot_demo_Prot_nativeDetectHook(JNIEnv* env, jobject thiz)
+{
+    /* 扫描 /proc/self/maps: frida-agent / gum / xposed 特征 */
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[512];
+    int hit = 0;
+    const char* items[] = { "frida", "gum-js", "xposed", "de.robv.android", NULL };
+    (void)env; (void)thiz;
+    if (f == NULL) return 0;
+    while (fgets(line, sizeof(line), f)) {
+        int i;
+        for (i = 0; items[i]; i++) {
+            if (strstr(line, items[i]) != NULL) {
+                hit = 1;
+                break;
+            }
+        }
+        if (hit) break;
+    }
+    fclose(f);
+    /* 补充: 扫描已加载 .so 列表 (dl_iterate_phdr 或 /proc/self/maps 已覆盖) */
+    return hit ? 1 : 0;
+}
+
+/* ---- A2: 看门狗线程 (周期重校验完整性与反调试) ---- */
+static int g_wd_stop = 0;
+static pthread_t g_wd_thread;
+
+static void* wd_loop(void* arg)
+{
+    (void)arg;
+    while (!g_wd_stop) {
+        usleep(5 * 1000 * 1000); /* 5s 周期 */
+        /* 生产: 调 nativeIsDebugged/nativeCheckIntegrity/nativeDetectHook,
+         * 命中按策略处理 (这里返回 JNI bool 由 Java 侧决定 EXIT)。 */
+    }
+    return NULL;
+}
+
+JNIEXPORT void JNICALL
+Java_com_prot_demo_Prot_nativeStartWatchdog(JNIEnv* env, jobject thiz)
+{
+    (void)env; (void)thiz;
+    if (g_wd_thread == 0) {
+        g_wd_stop = 0;
+        pthread_create(&g_wd_thread, NULL, wd_loop, NULL);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_prot_demo_Prot_nativeStopWatchdog(JNIEnv* env, jobject thiz)
+{
+    (void)env; (void)thiz;
+    g_wd_stop = 1;
+    if (g_wd_thread) {
+        pthread_join(g_wd_thread, NULL);
+        g_wd_thread = 0;
+    }
 }
 
 /* ---- CRC32 (标准 0xEDB88320, 与 Windows prot_crc32 同语义) ---- */

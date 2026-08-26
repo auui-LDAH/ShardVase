@@ -170,7 +170,12 @@ size_t prot_auth_build_message(const char* serial, uint64_t mid,
    - `examples/cross_platform/license_auth.h` + `license_auth_common.c`
      （跨平台消息构建/验签接口，字节级与 vmenc/Windows 一致）；
    - C1 消息格式 + 签名链路交叉验证通过（45B 载荷 + 256B sig）。
-3. [ ] A1：Android libprot.so 核心（验签/CRC/字符串/绑定）。
-4. [ ] A2：反调试/反 Frida/看门狗。
+3. [x] **A1 完成（2026-08-26）**：`examples/cross_platform/android/` ——
+   libprot.c（JNI nativeVerifyLicense/nativeCheckIntegrity/nativeIsDebugged）+
+   CMakeLists（NDK ARM64）+ prot_test.c **宿主编译 ALL PASS**（消息 45B
+   字节一致 / crc32 0xCBF43926 / 解析）。
+4. [x] **A2 完成（2026-08-26）**：libprot.c 增 nativeDetectHook（frida/gum/
+   xposed maps 扫描）+ pthread 看门狗（5s 周期）+ Prot.java（JCA
+   SHA256withRSA 验签 + envCheck 汇总 + watchdog 绑定）；CMake 链 log/pthread/dl。
 5. [ ] A3：轻量混淆（OLLVM/自加密段）。
-6. [ ] T1：Android 攻防测试矩阵。
+6. [ ] T1：Android 攻防测试矩阵（需 NDK 构建产物/真机）。

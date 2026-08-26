@@ -28,3 +28,4 @@ endif()
 
 target_compile_options(prot PRIVATE -fvisibility=hidden -ffunction-sections)
 target_link_options(prot PRIVATE -Wl,--gc-sections)
+target_link_libraries(prot PRIVATE log pthread dl)
