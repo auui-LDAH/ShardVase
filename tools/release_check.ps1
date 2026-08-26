@@ -43,7 +43,8 @@ function Check([string]$name, [scriptblock]$cond) {
 Write-Host '=== Release Gate ===' -ForegroundColor Yellow
 
 Check 'git 工作区干净' {
-    ($(git status --porcelain 2>$null) -eq '') -or ($null -eq $LASTEXITCODE)
+    $dirty = git status --porcelain 2>$null
+    [string]::IsNullOrEmpty(($dirty -join ''))
 }
 
 Check 'manifest.json 版本非占位' {
