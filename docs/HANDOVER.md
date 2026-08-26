@@ -143,7 +143,13 @@ python tests\attacks.py
 3. `PROT_LICENSE_PRODUCT` = `PROT-DEMO-2026`（14 字符），与 `vmenc.py
    LICENSE_PRODUCT` 必须逐字节一致；消息 = serial ‖ LE64(machine_id) ‖ PRODUCT。
 
-### 4.2b 运维踩坑记录（2026-08-21）
+### 4.2b 运维踩坑记录（2026-08-21；2026-08-26 服务化）
+0. **24h 驻留已服务化（2026-08-26）**：真机 `prot_resguard` 服务（NSSM 包装
+   `residency_guard.py`）——SERVICE_AUTO_START 开机自启 + AppExit 崩溃自动重启
+   + 守护循环保 3 个 demo 实例（被杀自动拉起，实测 RESILIENT）。服务用
+   LocalSystem 运行，`run_guard.cmd` 需用 python 绝对路径（用户 AppData）；
+   停止/启动：`nssm stop/start prot_resguard`（nssm 在
+   `C:\Users\devuser\nssm\nssm-2.24\win64\`）。
 1. **SSH `echo | demo` 不可靠**：SSH 会话中 `echo xxx | exe` 的 stdin 传递异常，
    会导致 demo 读到不干净的 serial → 误判 license: 0。**验证必须用
    Python subprocess**（e2e.py 的方式），否则会误报"验签失败"。
