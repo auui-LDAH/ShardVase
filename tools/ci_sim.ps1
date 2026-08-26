@@ -1,4 +1,4 @@
-# tools/ci_sim.ps1 — 本地 CI 模拟器 (INFRA_PLAN I1)
+﻿# tools/ci_sim.ps1 — 本地 CI 模拟器 (INFRA_PLAN I1)
 #
 # 在无 GitHub 远程时, 本地等效执行 .github/workflows/ci.yml 的步骤,
 # 验证 CI 配置的步骤顺序/命令可执行/可复现判定。

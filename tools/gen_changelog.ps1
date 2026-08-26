@@ -1,4 +1,4 @@
-# tools/gen_changelog.ps1 — 从 git log 生成 CHANGELOG 草稿 (INFRA_PLAN I6)
+﻿# tools/gen_changelog.ps1 — 从 git log 生成 CHANGELOG 草稿 (INFRA_PLAN I6)
 #
 # 按 commit 前缀分类 (feat/fix/docs/test/chore), 生成 CHANGELOG 新增段草稿。
 # 用法:

@@ -1,4 +1,4 @@
-# tools/clean_build.ps1 — 清理构建/演练产物 (INFRA_PLAN I5)
+﻿# tools/clean_build.ps1 — 清理构建/演练产物 (INFRA_PLAN I5)
 #
 # 删除 build/drill*, verify-artifacts, 测试临时物; **保留 build\keys** (私钥).
 # 用法:

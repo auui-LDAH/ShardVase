@@ -1,4 +1,4 @@
-# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
+﻿# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
 #
 # 一键确认发版所有前置条件:
 #   1. git 工作区干净
@@ -80,7 +80,7 @@ if (Test-Path -LiteralPath 'build\keys\codesign.pfx') {
         $LASTEXITCODE -eq 0
     }
 } else {
-    Write-Host '[info] 无 codesign.pfx - 跳过签名验证 (仅演示/无签名发布)' -ForegroundColor DarkYellow
+    Write-Host '[info] codesign.pfx absent - sign check skipped (demo/unsigned build only)' -ForegroundColor DarkYellow
 }
 
 Write-Host ''

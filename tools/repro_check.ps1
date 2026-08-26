@@ -1,4 +1,4 @@
-# tools/repro_check.ps1 — 可复现构建判定 (INFRA_PLAN I2)
+﻿# tools/repro_check.ps1 — 可复现构建判定 (INFRA_PLAN I2)
 #
 # 统一: verify.ps1 -Reproducible 与 CI reproducible job 的判定逻辑.
 # 用 seeds.json 同种子两次构建 (Release, SkipSign), 比对 demo.exe + vm.blob
