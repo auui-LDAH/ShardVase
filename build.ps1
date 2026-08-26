@@ -11,6 +11,9 @@
 #   -Python <路径>    显式指定 python.exe; 缺省自动探测
 #   -SeedsFile <json> 确定性种子表 (RELEASE I3 可复现构建): {"images": {"<镜像名>": {"key0": "0x..", "key1": "0x.."}}}
 #   -RecordSeeds      构建后把本次种子写 build\seeds.json
+#   -D2b              N1 调用级解密 (D2b) — PROT_SELFCRYPT_D2B
+#   -Drill            演练钩子 (ATTACK framework) — PROT_DRILL_HOOK
+#   -Help             打印本帮助 (INFRA_PLAN I4)
 # 输出: build\demo.exe / build\vm_unit.exe / build\manifest.json (产物清单)
 param(
     [string]$MachineId = 'auto',
@@ -22,9 +25,46 @@ param(
     [switch]$SkipSign,
     [switch]$SkipSmoke,
     [switch]$D2b,
-    [switch]$Drill
+    [switch]$Drill,
+    [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
+
+# I4: --help / 参数校验
+if ($Help) {
+    Write-Host @'
+用法: powershell -ExecutionPolicy Bypass -File build.ps1 [选项]
+
+选项:
+  -MachineId <值>   machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
+  -Config <Type>    Release|Dev (Release: 发行加固/签名/可复现)
+  -VcVars <path>    vcvars64.bat 路径 (缺省自动探测)
+  -Python <path>    python.exe 路径 (缺省自动探测)
+  -SeedsFile <json> 确定性种子表 (I3 可复现)
+  -RecordSeeds      记录本次种子到 build\seeds.json
+  -SkipSign         跳过数字签名
+  -SkipSmoke        跳过构建期冒烟测试 (跨机绑定构建用)
+  -D2b              N1 调用级解密 (D2b)
+  -Drill            演练钩子 (PROT_DRILL_HOOK, 测试构建)
+  -Help             打印本帮助
+
+输出: build\demo.exe / build\vm_unit.exe / build\syscall_probe.exe /
+      build\manifest.json (产物清单)
+'@
+    exit 0
+}
+if ($Config -notin @('Dev', 'Release')) {
+    Write-Host "build FAILED: -Config must be Dev or Release (got $Config)" -ForegroundColor Red
+    exit 2
+}
+if ($SeedsFile -and -not (Test-Path -LiteralPath $SeedsFile)) {
+    Write-Host "build FAILED: -SeedsFile not found: $SeedsFile" -ForegroundColor Red
+    exit 2
+}
+if ($MachineId -and $MachineId -notmatch '^(auto|0|[0-9]+|0x[0-9a-fA-F]+)$') {
+    Write-Host "build FAILED: -MachineId invalid: $MachineId (expect auto|0|decimal|0xhex)" -ForegroundColor Red
+    exit 2
+}
 $isRelease = ($Config -eq 'Release')
 $scDef = if ($D2b) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
 if ($Drill) { $scDef += ' /DPROT_DRILL_HOOK' }

@@ -1,6 +1,6 @@
 # 基础设施完善计划 (INFRA_PLAN)
 
-> 版本：2026-08-26 v1 · 状态：**规划完成，未开工** · 关联：构建/验证/CI/测试/部署·
+> 版本：2026-08-26 v2 · 状态：**✅ I1-I6 全部完成（2026-08-26）** · 关联：构建/验证/CI/测试/部署·
 > `docs/CI_PLAN.md`（CI 增强）· `docs/HANDOVER.md`（现状）。
 > 本文档规划**完善现有基础设施**——目标是让构建/测试/发布链路：
 > 可复现、可审计、可回归、可运维，并补齐 CI 从不实际运行的缺口。
@@ -113,9 +113,16 @@
 **回退**：全部是增量新脚本/参数，删除即回退。
 
 ## 7. 待办清单
-1. [ ] 拍板 D1-D4。
-2. [ ] I1: ci_sim.ps1。
-3. [ ] I2: repro_check.ps1 + 接入。
-4. [ ] I3: release_check.ps1。
-5. [ ] I4-I6: build help + clean + changelog。
-6. [ ] 回归 + 文档更新。
+1. [x] 拍板 D1-D4（本地 CI 模拟 / 独立 repro / gate 必跑 / 脚本+人工）。
+2. [x] I1: ci_sim.ps1 —— 本地跑通 PASS（build+repro_check 一致）。
+3. [x] I2: repro_check.ps1 —— demo.exe/vm.blob SHA-256 identical；verify.ps1
+       -Reproducible 已接入统一判定。
+4. [x] I3: release_check.ps1 —— 发版 gate（clean/Release/repro/test/sig/manifest）。
+5. [x] I4: build.ps1 -Help + 参数校验（Config Bad 拒绝）。
+6. [x] I5: clean_build.ps1（drill 清理 + keys 保留）已验证。
+7. [x] I6: gen_changelog.ps1 —— 按 feat/fix/docs 分类生成草稿。
+   **剩余待办**（非本轮阻断）：
+   - release_check.ps1 完整实跑（全 test）作为下次发版前 gate；
+   - ci_sim 未来接真实 GitHub push 后替换为真 CI；
+   - Android T1（攻防矩阵）需 NDK/真机；
+   - 24h 驻留服务期满确认（8/27 12:33）。

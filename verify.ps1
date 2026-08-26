@@ -226,48 +226,27 @@ for ($i = 1; $i -le $Rounds; $i++) {
 }
 
 # --- 报告 JSON --------------------------------------------------------------
-# I3 可复现构建验证: 同种子两次无签名构建, 比对 demo.exe / vm.blob SHA-256
-# (签名区由 signtool 引入差异, 属预期 -- RELEASE §3/§5)
+# I2 (INFRA_PLAN): 可复现判定统一走 tools/repro_check.ps1 (同种子两次无签名
+# 构建, 比对 demo.exe/vm.blob SHA-256) —— 与 CI reproducible job 逻辑一致。
 $repro = $null
 if ($Reproducible) {
     if (-not (Test-Path -LiteralPath $Reproducible)) {
         Write-Host "[verify] -Reproducible: seeds file not found: $Reproducible" -ForegroundColor Red
         $allGreen = $false
     } else {
-        Write-Step "reproducible baseline build (Release, no signing)"
+        Write-Step "reproducible check (repro_check.ps1, seeds=$Reproducible)"
         try {
-            $rb1 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
+            $rr = & powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1 -SeedsFile $Reproducible 2>&1
             $rcR = $LASTEXITCODE
         } catch { $rcR = 1 }
         if ($rcR -ne 0) {
-            Write-Host '[verify] reproducible baseline build FAILED' -ForegroundColor Red
+            Write-Host '[verify] reproducible FAILED (see repro_check output)' -ForegroundColor Red
             $allGreen = $false
         } else {
-            $h1 = @{}
-            foreach ($f in @('build\demo.exe', 'build\vm.blob')) {
-                $h1[$f] = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash
+            $repro = [ordered]@{
+                demo_exe = 'identical'; vm_blob = 'identical'; tool = 'repro_check.ps1'
             }
-            Write-Step "reproducible rebuild (same seeds, Release, no signing)"
-            try {
-                $rb2 = & powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -SeedsFile $Reproducible -SkipSign 2>&1
-                $rcR = $LASTEXITCODE
-            } catch { $rcR = 1 }
-            if ($rcR -ne 0) {
-                Write-Host '[verify] reproducible rebuild FAILED' -ForegroundColor Red
-                $allGreen = $false
-            } else {
-                $repro = [ordered]@{}
-                foreach ($f in @('build\demo.exe', 'build\vm.blob')) {
-                    $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash
-                    $ok = ($h2 -eq $h1[$f])
-                    $repro[$f] = [ordered]@{ match = $ok; sha256 = $h2 }
-                    if (-not $ok) {
-                        Write-Host "[verify] reproducible MISMATCH: $f" -ForegroundColor Red
-                        $allGreen = $false
-                    }
-                }
-                if ($repro) { Write-Host '[verify] reproducible: byte-identical (unsigned) rebuild OK' -ForegroundColor Green }
-            }
+            Write-Host '[verify] reproducible: byte-identical (unsigned) rebuild OK' -ForegroundColor Green
         }
     }
 }
