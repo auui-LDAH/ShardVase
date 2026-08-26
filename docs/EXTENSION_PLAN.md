@@ -163,8 +163,13 @@ size_t prot_auth_build_message(const char* serial, uint64_t mid,
 | E4 | 是否做 iOS | 备好 impl / 暂不做 | **备好代码，暂不发布**（iOS 受限平台） |
 
 ## 8. 待办清单
-1. [ ] 拍板 E1-E4。
-2. [ ] C1：跨平台许可 SDK（vmenc DER 导出 + license_common + Android impl）。
+1. [x] 拍板 E1-E4（C 先行 / 轻量混淆 / 离线可选 / iOS 备好）。
+2. [x] **C1 完成（2026-08-26）**：
+   - vmenc.py `keygen --blob-out-der` 导出 **DER SPKI 公钥**（Android JCA /
+     iOS SecKey），cryptography 8 轮权威验证全 VALID（294/293B）；
+   - `examples/cross_platform/license_auth.h` + `license_auth_common.c`
+     （跨平台消息构建/验签接口，字节级与 vmenc/Windows 一致）；
+   - C1 消息格式 + 签名链路交叉验证通过（45B 载荷 + 256B sig）。
 3. [ ] A1：Android libprot.so 核心（验签/CRC/字符串/绑定）。
 4. [ ] A2：反调试/反 Frida/看门狗。
 5. [ ] A3：轻量混淆（OLLVM/自加密段）。
