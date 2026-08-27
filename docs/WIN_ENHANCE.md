@@ -129,6 +129,11 @@ watchdog 周期检测。
 5. [x] W4：Release 收敛错误输出（`PROT_LOG_VM_ERR` 宏隐藏 prot_status 码，
        `-DPROT_RELEASE_CONCEAL`）。
 6. [x] 回归：Release 构建 + protchain P1-P6 全过。
+   **验证记录（2026-08-27）**：W2 在本机 loop-vm 场景实测——result 单副本
+   patch 后 80s 未触发 0xBAD，原因：**loop 中 verify 每轮重写 result 覆盖
+   攻击**（与 P4-2 一致）——这是防御本身（patch 被正确重算覆盖）。W2 周期
+   复查的价值在**无重算的长驻留程序**；demo 单次流程 N3 识破已由 P4-2/
+   e2e T4 证。因此 W2 结论：**机制正确，demo 场景下被重算覆盖（=防御有效）**。
    **剩余待办**（非本轮阻断）：
-   - W2 在长驻留应用（loop-vm/服务）下实跑验证周期识破；
-   - Release D2b 在真机/杀软环境的最终确认（-NoD2b 可回退）。
+   - W2 在无重算长驻留应用（真实 SDK 集成）下实跑验证周期识破；
+   - Release D2b 真机/杀软环境的最终确认（-NoD2b 可回退）。
