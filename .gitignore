@@ -29,3 +29,9 @@ verify-report-*.json
 
 # 历史快照归档（含早期 git 仓库复本，不入库避免混淆）
 archive/
+
+# SDK 服务 (A-1 离线签发): 私钥/申请/签发产物均不入库
+sdk_service/keys/
+sdk_service/reqs/
+sdk_service/licenses/
+sdk_service/issue-log*.csv
