@@ -69,6 +69,14 @@
   | 种子注入（§3） | 随机 | 可选 -SeedsFile |
 - **验收**：`build.ps1 -Config Release` 全链通过且满足 §2.2-2.4 全部检查；dev 构建行为不变。
 
+### 2.6 部署要求：安装目录 ACL（WIN_ENHANCE W3，DLL 劫持缓解）
+- **硬性要求**：安装目录 ACL 必须**只读于普通用户**（仅 Administrators/INSTALLER
+  可写）。理由：Windows 同目录 DLL 优先加载，若目录可写则攻击者可植入同名
+  `winhttp.dll` 等劫持（D5 攻防实证 BREACHED —— 环境约束，标准缓解即 ACL）。
+- 实现：安装器以 `icacls <dir> /inheritance:r /grant "Users:RX" /grant "Administrators:F"`；
+  运行时自检可加"目录可写检测"（可选）。
+- 影响：防 DLL 盗用 + 在线校验篡改入口。
+
 ## 3. I3 可复现构建（审计用）
 
 ### 3.1 目标

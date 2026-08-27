@@ -30,4 +30,10 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
 /* 停止看门狗 (幂等) */
 prot_status prot_integrity_stop_watchdog(void);
 
+/* W2 (WIN_ENHANCE): 注册周期回调 —— 看门狗每轮额外调用 (返回 PROT_OK 通过;
+ * 非 PROT_OK 按 policy 处理). 用于运行期数据自校验 (N3 冗余/关键字段).
+ * callback 必须线程安全; NULL 取消注册. */
+typedef prot_status (*prot_wd_callback)(void);
+void prot_integrity_set_watchdog_callback(prot_wd_callback cb);
+
 #endif /* PROT_INTEGRITY_H */

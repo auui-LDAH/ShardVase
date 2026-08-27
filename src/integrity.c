@@ -54,6 +54,17 @@ static uint32_t       g_wd_interval;/* 检查间隔 (ms) */
 static volatile LONG  g_wd_fake;    /* FAKE 策略伪结果标志 */
 static volatile LONG  g_wd_tamper;  /* CONTINUE 策略失败计数 */
 
+/* W2 (WIN_ENHANCE): 周期回调 (demo 注册 N3 数据自校验等) */
+static prot_wd_callback g_wd_cb = NULL;
+static SRWLOCK          g_wd_cb_lock = SRWLOCK_INIT;
+
+void prot_integrity_set_watchdog_callback(prot_wd_callback cb)
+{
+    AcquireSRWLockExclusive(&g_wd_cb_lock);
+    g_wd_cb = cb;
+    ReleaseSRWLockExclusive(&g_wd_cb_lock);
+}
+
 /* A5: 间隔抖动用的 xorshift64 (种子派生自 QPC) */
 static uint64_t wd_jitter_next(uint64_t rng)
 {
@@ -125,6 +136,27 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
                 default:
                     InterlockedIncrement(&g_wd_tamper);
                     break;
+            }
+        }
+        /* W2 (WIN_ENHANCE): 周期回调 (demo N3 数据自校验等) */
+        {
+            prot_wd_callback cb;
+            AcquireSRWLockShared(&g_wd_cb_lock);
+            cb = g_wd_cb;
+            ReleaseSRWLockShared(&g_wd_cb_lock);
+            if (cb != NULL && cb() != PROT_OK) {
+                switch (g_wd_policy) {
+                    case PROT_POLICY_EXIT:
+                        TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                        break;
+                    case PROT_POLICY_FAKE:
+                        InterlockedExchange(&g_wd_fake, 1);
+                        break;
+                    case PROT_POLICY_CONTINUE:
+                    default:
+                        InterlockedIncrement(&g_wd_tamper);
+                        break;
+                }
             }
         }
     }

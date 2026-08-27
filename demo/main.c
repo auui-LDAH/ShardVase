@@ -69,6 +69,16 @@ typedef struct demo_mem {
     uint64_t vm_expect2;   /* +120 (N5: VM#3 期望值 total, 会话级) */
 } demo_mem;                /* 总 128 字节 (VM 使用的 +0..+108 偏移不变) */
 
+/* W4 (WIN_ENHANCE): Release 隐藏内部 prot_status 码 (仅显示统一失败提示).
+ * Dev 保留错误码便于调试. */
+#ifdef PROT_RELEASE_CONCEAL
+#define PROT_LOG_VM_ERR(st) \
+    printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL))
+#else
+#define PROT_LOG_VM_ERR(st) \
+    printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)(st))
+#endif
+
 /* ---------------------------------------------------------------------------
  * N1 运行时自变形: .protcrypt 容器 (g_prot_selfcrypt_blob) 定义在
  * src/selfcrypt.c (实现文件), 供所有链接 selfcrypt.c 的模块使用。
@@ -92,6 +102,39 @@ static prot_status vm_run_wrapped(const prot_vm_image* img, void* mem)
                            img, mem, sizeof(*(demo_mem*)mem));
     prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_VM);
     return e;
+}
+
+/* W2 (WIN_ENHANCE): 看门狗周期回调 —— N3 数据冗余 + dbiguard 复查。
+ * demo_mem 在 main() 栈上, 这里用全局指针引用 (VM 链完成后设置).
+ * 返回 PROT_OK 一致 / PROT_ERR_INTEGRITY 不一致 (看门狗按 policy 处理). */
+static volatile int g_demo_mem_ready = 0;
+static demo_mem* g_demo_mem_ptr = NULL;
+static prot_status wd_n3_recheck(void)
+{
+    demo_mem* m;
+    uint32_t r1, r2, r3, r;
+    if (!g_demo_mem_ready)
+        return PROT_OK;
+    m = g_demo_mem_ptr;
+    if (m == NULL)
+        return PROT_OK;
+    /* N3: result 三副本多数一致 + 校验和 */
+    r1 = m->result;
+    r2 = m->result2;
+    r3 = m->result3;
+    r = (r1 == r2) ? r1 : ((r1 == r3) ? r1 : r2);
+    if ((r ^ 0xA5A5A5A5u) != m->result_sum)
+        return PROT_ERR_INTEGRITY;
+    if (r1 != r && r2 != r && r3 != r)
+        return PROT_ERR_INTEGRITY;
+    /* W2b: dbiguard 周期复查 (N2 从启动一次升级为周期) */
+    {
+        prot_dbiguard_report drep;
+        prot_dbiguard_scan(&drep);
+        if (prot_dbiguard_suspicious(&drep))
+            return PROT_ERR_INTEGRITY; /* hook 检测到 -> 按 policy (EXIT) */
+    }
+    return PROT_OK;
 }
 
 /*
@@ -615,12 +658,12 @@ int main(int argc, char** argv)
      * 镜像来自 §9.1-6b 装载的 vm.blob (DBI launcher)。 */
     st = vm_run_wrapped(&g_vm_imgs[0], &mem);
     if (st != PROT_OK) {
-        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        PROT_LOG_VM_ERR(st);
         exit(1);
     }
     st = vm_run_wrapped(&g_vm_imgs[1], &mem);
     if (st != PROT_OK) {
-        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        PROT_LOG_VM_ERR(st);
         exit(1);
     }
 
@@ -786,13 +829,13 @@ int main(int argc, char** argv)
      * 在线会话被服务端下发值覆盖。 */
     st = vm_run_wrapped(&g_vm_imgs[2], &mem);
     if (st != PROT_OK) {
-        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        PROT_LOG_VM_ERR(st);
         exit(1);
     }
 
     st = vm_run_wrapped(&g_vm_imgs[3], &mem);
     if (st != PROT_OK) {
-        printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+        PROT_LOG_VM_ERR(st);
         exit(1);
     }
 
@@ -805,12 +848,12 @@ int main(int argc, char** argv)
         for (li = 0u; li < g_loop_vm && g_loop_vm > 0u; li++) {
             st = vm_run_wrapped(&g_vm_imgs[1], &mem); /* 循环 mix+verify */
             if (st != PROT_OK) {
-                printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+                PROT_LOG_VM_ERR(st);
                 exit(1);
             }
             st = vm_run_wrapped(&g_vm_imgs[2], &mem);
             if (st != PROT_OK) {
-                printf("%s (vm error %d)\n", prot_str_get(PROT_STR_MSG_FAIL), (int)st);
+                PROT_LOG_VM_ERR(st);
                 exit(1);
             }
             Sleep(500); /* 留出观测窗口 (D2b 下间隙为密文) */
@@ -844,8 +887,15 @@ int main(int argc, char** argv)
         mem.result ^= 1u;
         mem.result2 ^= 1u;
         mem.result3 ^= 1u;
-        mem.result_sum ^= 1u;
+        mem.result_sum ^= 1u; /* W2: 翻转同步校验和, 保持一致 */
     }
+
+    /* W2 (WIN_ENHANCE): 注册看门狗周期回调 (N3 冗余 + dbiguard 复查).
+     * demo_mem 在 exit 前一直有效; FAKE 翻转后置就绪, 一致则复查生效.
+     * 驻留场景 (loop/long-run) 下 watchdog 每轮复查关键字段. */
+    g_demo_mem_ptr = &mem;
+    g_demo_mem_ready = 1;
+    prot_integrity_set_watchdog_callback(wd_n3_recheck);
 
     /* §9.1-11: 结果与退出码 */
     if (mem.result != 0) {

@@ -1,6 +1,6 @@
 # Windows 侧增强计划 (WIN_ENHANCE)
 
-> 版本：2026-08-26 v1 · 状态：**规划完成，未开工** · 关联：四轮攻防实证（0 破防点，已知边界）·
+> 版本：2026-08-26 v2 · 状态：**✅ W1-W4 已实施（2026-08-26）** · 关联：四轮攻防实证（0 破防点，已知边界）·
 > `docs/THREATMODEL.md`（边界）· `docs/N1_PHASE2_PLAN.md`（D2b 已实现）·
 > `src/integrity.c`（watchdog/IAT 校验）· `src/antidebug.c`。
 > 本文档规划 **Windows 侧工程化增强**——把四轮攻防"已知边界"中**低成本可缓解**
@@ -119,9 +119,16 @@ watchdog 周期检测。
 **回退**：W1a 由 Release 默认改回（`-NoD2b` 语义）；W2/W4 纯增量，删除即回退。
 
 ## 7. 待办清单
-1. [ ] 拍板 D1-D4。
-2. [ ] W1a：Release 默认 D2b。
-3. [ ] W2a+b：watchdog 周期 N3 + dbiguard。
-4. [ ] W3：ACL 文档。
-5. [ ] W4：输出收敛。
-6. [ ] 回归 + 真机验证。
+1. [x] 拍板 D1-D4（Release 默认 D2b / 保持 D2b / 做 W2 / Release 收敛输出）。
+2. [x] W1a：build.ps1 Release 默认 D2b + `-NoD2b` 回退（实测 enter/leave
+       有实体 = D2b 生效）。
+3. [x] W2a+b：watchdog 周期回调（`prot_integrity_set_watchdog_callback`）
+       —— demo 注册 N3 冗余复查 + dbiguard 周期扫描；**前置修复 FAKE
+       翻转同步 result_sum**（原逻辑漏翻校验和，周期复查会误杀）。
+4. [x] W3：RELEASE §2.6 安装目录 ACL 硬性要求（DLL 劫持缓解）。
+5. [x] W4：Release 收敛错误输出（`PROT_LOG_VM_ERR` 宏隐藏 prot_status 码，
+       `-DPROT_RELEASE_CONCEAL`）。
+6. [x] 回归：Release 构建 + protchain P1-P6 全过。
+   **剩余待办**（非本轮阻断）：
+   - W2 在长驻留应用（loop-vm/服务）下实跑验证周期识破；
+   - Release D2b 在真机/杀软环境的最终确认（-NoD2b 可回退）。

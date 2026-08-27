@@ -26,6 +26,7 @@ param(
     [switch]$SkipSmoke,
     [switch]$D2b,
     [switch]$Drill,
+    [switch]$NoD2b,
     [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
@@ -44,7 +45,8 @@ if ($Help) {
   -RecordSeeds      记录本次种子到 build\seeds.json
   -SkipSign         跳过数字签名
   -SkipSmoke        跳过构建期冒烟测试 (跨机绑定构建用)
-  -D2b              N1 调用级解密 (D2b)
+  -D2b              N1 调用级解密 (D2b) — Release 默认开启 (WIN_ENHANCE W1)
+  -NoD2b            显式关闭 D2b (回退 D2a; 杀软敏感/调试环境用)
   -Drill            演练钩子 (PROT_DRILL_HOOK, 测试构建)
   -Help             打印本帮助
 
@@ -66,8 +68,12 @@ if ($MachineId -and $MachineId -notmatch '^(auto|0|[0-9]+|0x[0-9a-fA-F]+)$') {
     exit 2
 }
 $isRelease = ($Config -eq 'Release')
-$scDef = if ($D2b) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
+# W1 (WIN_ENHANCE): Release 默认 D2b (运行期间隙密文, 缩明文窗口);
+# Dev 默认 D2a (调试平坦). -NoD2b / -D2b 显式覆盖.
+$scDef = if ($D2b -or (-not $NoD2b -and $isRelease)) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
 if ($Drill) { $scDef += ' /DPROT_DRILL_HOOK' }
+# W4 (WIN_ENHANCE): Release 收敛内部错误输出 (隐藏 prot_status 码)
+if ($isRelease) { $scDef += ' /DPROT_RELEASE_CONCEAL' }
 
 # 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子;
 # "indirect" = N4 间接表种子 (标量)
