@@ -152,25 +152,25 @@ def p4_blob_signature(data):
     nb_len = struct.unpack_from('<I', pub, 12)[0]
     exp = int.from_bytes(pub[24:24 + eb_len], 'big')
     mod = int.from_bytes(pub[24 + eb_len:24 + eb_len + nb_len], 'big')
-    # 定位签名区: 尾部 [CRC4][SIG 256B][SIG_LEN4]
+    # 定位签名区: 尾部 [CRC4][SIG 384B][SIG_LEN4]
     size = len(data)
-    sig_len = struct.unpack_from('<I', data, size - 4 - 256 - 4)[0]
-    if sig_len != 256:
-        return False, 'sig_len %d != 256' % sig_len
-    sig = data[size - 4 - 256:size - 4]
-    msg = data[:size - 4 - 256 - 4]
+    sig_len = struct.unpack_from('<I', data, size - 4 - 384 - 4)[0]
+    if sig_len != 384:
+        return False, 'sig_len %d != 384' % sig_len
+    sig = data[size - 4 - 384:size - 4]
+    msg = data[:size - 4 - 384 - 4]
     digest = hashlib_sha256(msg)
     # PKCS#1 v1.5: EM = 00 01 FF..FF 00 T (T = DigestInfo(SHA-256) + digest)
     t = bytes([0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
                0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20]) + digest
-    pslen = 256 - len(t) - 3
+    pslen = 384 - len(t) - 3
     if pslen < 8:
         return False, 'pslen too small'
     em = b'\x00\x01' + (b'\xff' * pslen) + b'\x00' + t
     m = int.from_bytes(em, 'big')
     s = int.from_bytes(sig, 'big')
     v = pow(s, exp, mod)
-    return (v == m, 'RSA-2048 verify ok' if v == m else 'signature mismatch')
+    return (v == m, 'RSA-3072 verify ok' if v == m else 'signature mismatch')
 
 
 def hashlib_sha256(b):

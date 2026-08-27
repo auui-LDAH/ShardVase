@@ -7,7 +7,7 @@ Two-pass VASM assembler + rolling-keystream encryptor producing a
 prot_vm_image blob, plus:
 
   * `genserial` — 计算序列号对应的 FNV-1a/xorshift 期望常量 (serial/machine_id).
-  * `keygen`    — 生成 RSA-2048 签名密钥对 (离线, 私钥不入库; e=65537 纯 Python).
+  * `keygen`    — 生成 RSA-3072 签名密钥对 (离线, 私钥不入库; e=65537 纯 Python).
   * `sign`      — 对 (serial, machine_id, product_tag) 的 SHA-256 摘要做
                   PKCS#1 v1.5 签名, 输出 license.txt (base64).
   * `pubkey`    — 从私钥文件重导出 BCRYPT_RSAPUBLIC_BLOB C 数组 (嵌入 demo).
@@ -48,7 +48,7 @@ LICENSE_TIER_TRIAL = 0
 LICENSE_TIER_FULL = 1
 LICENSE_TIER_PREMIUM = 2
 LICENSE_TIER_NAMES = {0: 'trial', 1: 'full', 2: 'premium'}
-LICENSE_RSA_KEY_BITS = 2048            # modulus 256 字节
+LICENSE_RSA_KEY_BITS = 3072            # modulus 384 字节 (RSA-3072, 2026-08-27 升级)
 RSA_PUB_MAGIC = 0x31415352             # "RSA1" — BCRYPT_RSAPUBLIC_BLOB 头
 # PKCS#1 v1.5 SHA-256 DigestInfo 前缀 (EMSA-PKCS1-v1_5, RFC 8017)
 DIGEST_INFO_SHA256 = bytes.fromhex('3031300d060960864801650304020105000420')
@@ -921,7 +921,7 @@ def _gen_prime(bits):
 
 
 def rsa_gen_keypair(bits=LICENSE_RSA_KEY_BITS):
-    """RSA-2048 密钥对: (n, e, d). e=65537. p/q 各 1024 位."""
+    """RSA-3072 密钥对: (n, e, d). e=65537. p/q 各 1536 位."""
     e = 65537
     while True:
         p = _gen_prime(bits // 2)
@@ -976,7 +976,7 @@ def rsa_pub_spki_der(n, e=65537):
 
 
 def emsa_pkcs1_v1_5(digest_sha256):
-    """EMSA-PKCS1-v1_5 编码 (k=256), 接收 32 字节 SHA-256."""
+    """EMSA-PKCS1-v1_5 编码 (k=384), 接收 32 字节 SHA-256."""
     t = DIGEST_INFO_SHA256 + digest_sha256
     pslen = (LICENSE_RSA_KEY_BITS // 8) - len(t) - 3
     if pslen < 8:
@@ -985,7 +985,7 @@ def emsa_pkcs1_v1_5(digest_sha256):
 
 
 def rsa_sign(d, n, digest_sha256):
-    """私钥 (d, n) 对 32 字节 SHA-256 摘要签名, 返回 256 字节 sig."""
+    """私钥 (d, n) 对 32 字节 SHA-256 摘要签名, 返回 384 字节 sig."""
     em = emsa_pkcs1_v1_5(digest_sha256)
     m = int.from_bytes(em, 'big')
     s = pow(m, d, n)
@@ -1021,7 +1021,8 @@ def cmd_keygen(args):
         with open(key_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(kd, f, ensure_ascii=False, indent=2)
             f.write('\n')
-        print('vmenc: keygen 2048-bit, n=%d bits' % n.bit_length())
+        print('vmenc: keygen %d-bit, n=%d bits' % (LICENSE_RSA_KEY_BITS,
+                                                    n.bit_length()))
     blob = rsa_pub_blob(n, e)
     lines = [', '.join('0x%02x' % b for b in blob[i:i + 12]) + ','
              for i in range(0, len(blob), 12)]
@@ -1172,7 +1173,7 @@ def main(argv=None):
                     help='print human readable result')
     pg.set_defaults(func=cmd_genserial)
 
-    pk = sub.add_parser('keygen', help='generate/reuse RSA-2048 signing keypair')
+    pk = sub.add_parser('keygen', help='generate/reuse RSA-3072 signing keypair')
     pk.add_argument('--key-out', dest='key_out', required=True,
                     help='output private key JSON (gitignored)')
     pk.add_argument('--blob-out', dest='blob_out', required=True,

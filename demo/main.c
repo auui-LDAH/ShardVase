@@ -325,15 +325,15 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
 /*
  * 读 license.txt (A1 + Phase 4 tier/expires, 格式见 tools/vmenc.py sign 输出):
  *   SERIAL=... / MACHINE_ID=0x.. / PRODUCT=... / TIER=<0|1|2> /
- *   EXPIRES=<unix> / SIGNATURE=<base64 256B>
+ *   EXPIRES=<unix> / SIGNATURE=<base64 384B>
  * 验签通过 -> 返回 1 并写出 tier/expires; 文件缺失/字段错/签名无效/机器
  * 不匹配/已过期 -> 返回 0。TIER 缺省 1, EXPIRES 缺省 0 (永久)。
  * 非 static: N4 间接表 (demo/gen/indirect_table.c) 引用。 */
 int load_and_verify_license(const char* path, demo_mem* mem)
 {
     FILE* f;
-    char line[512];
-    uint8_t sig[256];
+    char line[1024];
+    uint8_t sig[384];
     uint8_t msg[256];
     size_t msg_len;
     int have_serial = 0, have_prod = 0, have_sig = 0;
@@ -383,7 +383,7 @@ int load_and_verify_license(const char* path, demo_mem* mem)
             have_sig = 1;
             {
                 size_t d = b64_decode(eq, sig, sizeof(sig));
-                if (d != 256)
+                if (d != 384)
                     have_sig = 0;
             }
         }

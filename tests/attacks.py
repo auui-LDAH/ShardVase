@@ -257,8 +257,8 @@ def main():
         if not os.path.isfile(blob_path):
             raise RuntimeError('vm.blob not found (run build.ps1)')
         v1 = open(blob_path, 'rb').read()
-        # v1: MAGIC8|COUNT4|entries|SIG_LEN4|SIG256|CRC4 -> v0: MAGIC8|COUNT4|entries|CRC4
-        sig_off = len(v1) - 4 - 256 - 4
+        # v1: MAGIC8|COUNT4|entries|SIG_LEN4|SIG384|CRC4 -> v0: MAGIC8|COUNT4|entries|CRC4
+        sig_off = len(v1) - 4 - 384 - 4
         body = b'PROTVMBL' + v1[8:sig_off]
         v0 = body + struct.pack('<I', zlib.crc32(body) & 0xFFFFFFFF)
         forged_path = os.path.join(REPO, 'build', 'vm_forged_v0.blob')

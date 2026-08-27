@@ -135,8 +135,8 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
 static int verify_license_file(const char* path, tool_mem* mem)
 {
     FILE* f;
-    char line[512];
-    uint8_t sig[256];
+    char line[1024];
+    uint8_t sig[384];
     uint8_t msg[256];
     size_t msg_len;
     int have_serial = 0, have_prod = 0, have_sig = 0;
@@ -185,7 +185,7 @@ static int verify_license_file(const char* path, tool_mem* mem)
             have_sig = 1;
             {
                 size_t d = b64_decode(eq, sig, sizeof(sig));
-                if (d != 256)
+                if (d != 384)
                     have_sig = 0;
             }
         }

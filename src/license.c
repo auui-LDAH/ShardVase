@@ -71,7 +71,7 @@ int prot_license_verify(const uint8_t* msg, size_t msg_len,
 
     if (g_prot_license_pubblob == NULL || g_prot_license_pubblob_len == 0u)
         return 0;
-    if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != 256u)
+    if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != 384u)
         return 0;
     if (!sha256_digest(msg, msg_len, digest))
         return 0;

@@ -46,7 +46,7 @@ Java_com_prot_demo_Prot_nativeVerifyLicense(JNIEnv* env, jobject thiz,
     char s_serial[64] = {0};
     char s_prod[64] = {0};
     char s_sig_b64[1024] = {0};
-    char line[512];
+    char line[1024];
     uint32_t tier = PROT_TIER_FULL;
     uint32_t expires = 0;
     int have_serial = 0, have_prod = 0, have_sig = 0;

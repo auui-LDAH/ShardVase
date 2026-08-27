@@ -28,7 +28,7 @@
 /* BLOB_SIGN_PLAN: v1 签名 blob (MAGIC "PROTVMB1")。
  * 布局: MAGIC8 | COUNT4 | entries | SIG_LEN4 | SIG(256B) | BLOB_CRC4 */
 #define PROT_BLOB_MAGIC_V1  "PROTVMB1"
-#define PROT_BLOB_SIG_LEN   256u
+#define PROT_BLOB_SIG_LEN   384u
 
 /* N 加固: "PROTVMBL" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较。
  * 生成侧 (vmenc.py pack) 仍写原始字节, 加载器按整数逐段校验。

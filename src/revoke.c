@@ -22,7 +22,7 @@
 
 /* BLOB_SIGN_PLAN: v1 签名 revoke (MAGIC "PROTREV1"):
  * 布局: MAGIC8 | VER4 | COUNT4 | entries | SIG_LEN4 | SIG(256B) | CRC4 */
-#define PROT_REVOKE_SIG_LEN 256u
+#define PROT_REVOKE_SIG_LEN 384u
 
 /* N 加固: "PROTREVK" 不以连续字符串出现 —— 拆成两个 u32 (LE) 比较.
  * v1 判定: 第 8 字节 '1' (v0 是 'K'). */

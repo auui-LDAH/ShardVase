@@ -38,10 +38,10 @@ size_t prot_license_build_message(const char* serial, size_t serial_len,
                                   uint8_t* out_msg, size_t out_cap);
 
 /*
- * 验签 (RSA-2048 + PKCS#1 v1.5 + SHA-256):
+ * 验签 (RSA-3072 + PKCS#1 v1.5 + SHA-256):
  *   msg:    prot_license_build_message 的结果
  *   msg_len: 载荷长度
- *   sig:    256 字节 RSA 签名 (base64 解码后)
+ *   sig:    384 字节 RSA 签名 (base64 解码后)
  * 返回 1 签名有效, 0 无效/参数错误/内部失败。
  */
 int prot_license_verify(const uint8_t* msg, size_t msg_len,
