@@ -12,7 +12,7 @@
 > `docs/ATTACK_DRILL2.md`（第二轮攻防演练计划）/ `docs/ATTACK_DRILL3.md`（第三轮攻防演练计划）/
 > `docs/ATTACK_DRILL4.md`（第四轮攻防演练计划）/ `docs/ATTACK_DRILL5.md`（D5/E5 补充）/
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
-> `docs/INFRA_PLAN.md`（基础设施完善计划）。
+> `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
 
 ## 1. 项目是什么
@@ -178,6 +178,7 @@ python tests\attacks.py
 | 平台延申 | **Android 原生 SO（A）+ 跨平台许可服务化（C）—— 完备计划见 docs/EXTENSION_PLAN.md**（C1/**A1/A2/A3 已完成源码，NDK 实编待环境） | 源码就绪 |
 | 基础设施完善 | **I1-I6 全部完成（2026-08-26）**：ci_sim 本地 CI 模拟 / repro_check 统一 / release_check gate / build.ps1 --help+校验 / clean_build / changelog —— 见 docs/INFRA_PLAN.md | 完成 |
 | **剩余待办（迁移）** | ① release_check 全量实跑（下次发版前 gate）② Android T1 攻防矩阵（需 NDK/真机）③ GitHub 真实 push 后 CI 实跑替换 ci_sim ④ 24h 驻留期满确认（8/27）⑤ EXTENSION A 的 NDK 实编 | 见对应文档 |
+| Windows 侧增强 | **W1-W4：Release 默认 D2b / watchdog 周期 N3+dbiguard / ACL 部署要求 / 输出收敛 —— 完备计划见 docs/WIN_ENHANCE.md**（决策点 D1-D4 待拍板） | 规划完成，未开工 |
 | 清理 | `demo\license_vm.vasm` 为历史遗留（已被 4 小 VM 取代），保留作参考 | — |
 | verify 增强 | **verify.ps1 已同步 protchain 保护链断言（2026-08-22）**：本地门禁=CI 门禁；附带修复 example 适配 BLOB_SIGN（容器移 selfcrypt.c + pack/revoke --sign）—— 见 docs/VERIFY_PLAN.md | 完成 |
 
