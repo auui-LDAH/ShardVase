@@ -25,18 +25,13 @@
 
 ## 2. 形态设计
 
-### 2.1 仓库布局（组织 or 单仓库）
+### 2.1 仓库布局（个人账号 + 前缀仓库，2026-08-28 变更：原"组织多仓库"
+因账号决策降级为个人账号 `ShardVase-*` 前缀——完全免费、效果等效，
+后续可迁组织）
 ```
-prot-guard/                # 主仓库（公开）
-  README.md                # 首页: 一句话价值 + 演示图 + 三种"下一步"
-  docs/
-    capabilities.md        # 能力与效果表（每条带测试证据链接）
-    boundaries.md          # 诚实边界（可回拨/可换钥/不承诺永不破解）
-    attack-record.md       # 攻防轮次总结页（7 轮+矩阵结论）
-    earning.md (可选)      # 暂不公开
-  releases/                # 演示包（hashcalc + 评估 license + 使用说明）
-  issues/                  # 模板: 咨询/评估申请/漏洞报告
-prot-guard-docs (Pages)    # 文档站: 折页式 Landing（能力→演示→咨询）
+ShardVase-docs/           # 公开：README 首页 + capabilities/boundaries/attack-record + Issues 模板
+ShardVase-demo/           # 公开：演示包 Releases（hashcalc + 评估授权）
+ShardVase-website/        # 可选：landing.html → GitHub Pages
 ```
 
 ### 2.2 内容引流（docs/marketing/ 是我的产出）
