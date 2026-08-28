@@ -17,6 +17,9 @@ prot_sdk/
     build_skeleton.ps1    构建流水线 (读 build-skeleton.json)
   wizard/
     prot_wizard.py        接入向导 (tkinter GUI; generate_project/build_project 可无头调用)
+  showcase/
+    business_hash.c       演示业务: 批量 SHA-256 校验工具 (分级 tier1/tier2)
+    README.md             评估者视角演示说明
   QUICKSTART.md           3 步接入文档
 ```
 
@@ -41,6 +44,11 @@ prot_sdk/
 - 全新工程 `my_tool`：向导生成 → 构建（new 模式 smoke PASS：
   license:1 + business 执行）→ pub 模式 + 服务器补签/签发 →
   真机运行 `license: 1` + 业务执行 ✓
+- 攻防矩阵覆盖骨架产物（`tests/attack_sdk_matrix.py`，14 项全 PASS）：
+  字段篡改/空签/换机/无授权/过期/无 blob/v0 伪造/v1 篡改/黑名单命中/
+  黑名单伪造，行为与 demo 基线一致（报告 `archive/attack-drill-sdk1-20260828.json`）
+- showcase `hashcalc`：pub 模式构建 → 服务器补签 blob + 7 天评估授权
+  (Tier1) 与高级授权 (Tier2) 双验：授权门/机器绑定/分级/哈希计算全通
 - 防御回归：serial/tier/空签篡改全拒，与 demo 基线行为一致
 - 快速回归 A 类语义等价 demo；深层攻防矩阵见 docs/ATTACK_DRILL.md + 5/6 轮
 
