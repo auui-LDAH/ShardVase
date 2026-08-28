@@ -97,6 +97,19 @@ sdk_service/
 - 台账仍然追加 `sdk_service/issue-log.csv`；签发动作与 GUI 解耦（`issue_direct`），已测 VALID
 - Taildrop 落盘目录 = `~/Downloads`（Tailscale 桌面端），界面一键打开
 
+## 台账防御（D-D1/D-D2/D-D4，2026-08-28 落地）
+
+- **D-D1 重放拦截**：`issue_from_req` 检查历史台账，同 nonce 的 .req 拒签
+  （`--allow-replay` 为逃生阀）；GUI 后同样生效
+- **D-D2 台账哈希链**：每行追加 `prev=SHA256(上一行 body)`；校验用
+  `python sdk_service\verify_ledger.py --log issue-log.csv`——
+  改/删任意行即失配（篡改/删除可检测）；旧行视为 legacy 链起点可兼容
+- **D-D4 字段卫生**：`serial ≤64 / customer ≤64 / note ≤512`，且拒绝
+  `,`、CR、LF、TAB（csv 注入防护）；req_gen/issue 双侧校验
+
+回归：13/13 PASS（注入拒绝 ×5、链条自洽 ×2、篡改/删行检测 ×2、
+legacy 兼容 ×1、重放拦截 ×2、逃生阀 ×1）；服务器生产台账实测 OK。
+
 ## 完整流程（对客户/对你各 5 步）
 
 **客户侧**

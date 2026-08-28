@@ -28,6 +28,10 @@ def main():
 
     if '\n' in args.customer or '\r' in args.customer:
         sys.exit('error: --name 不能包含换行符')
+    if len(args.customer) > 64:
+        sys.exit('error: --name 过长 (<=64 字符)')
+    if len(args.note) > 512:
+        sys.exit('error: --note 过长 (<=512 字符)')
 
     mid = vmenc.hostid()
     if not mid:

@@ -26,7 +26,25 @@ def load_req(path):
     mid_text = req.get('machine_id_hex')
     if not mid_text or mid_text in ('0x0', '0'):
         raise vmenc.VasmError('申请文件缺少有效的 machine_id')
+    for k, maxlen in (('customer', 64), ('note', 512)):
+        if len(str(req.get(k, ''))) > maxlen:
+            raise vmenc.VasmError('申请文件 %s 超长 (>%d)' % (k, maxlen))
     return req, vmenc.parse_machine_id_override(mid_text)
+
+
+def check_nonce_replay(req, log_path, allow_replay=False):
+    """D-D1: 重复 nonce 检测 — 历史台账已有同 nonce 的申请 -> 拒绝重放."""
+    if allow_replay:
+        return False
+    nonce = req.get('nonce', '?')
+    if not os.path.isfile(log_path):
+        return False
+    marker = 'req_nonce=' + nonce
+    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if marker in line:
+                return True
+    return False
 
 
 def main():
@@ -47,11 +65,20 @@ def main():
                     help='到期 unix 时间戳 (0=永久)')
     ap.add_argument('--log', dest='log', default=None,
                     help='签发日志 (默认 build/issue-log.csv)')
+    ap.add_argument('--allow-replay', dest='allow_replay', action='store_true',
+                    default=False,
+                    help='允许同 nonce 的申请再次签发 (默认拒绝, D-D1)')
     args = ap.parse_args()
+    if args.log is None:
+        args.log = 'build/issue-log.csv'
+    args.log = os.path.abspath(args.log)
 
     if not args.serial.isascii():
         sys.exit('error: --serial 必须为 ASCII')
     req, mid = load_req(args.req_path)
+    if check_nonce_replay(req, args.log, args.allow_replay):
+        sys.exit('error: 申请 nonce=%s 已在台账中出现 (拒绝重放, D-D1); '
+                 '确需重签请加 --allow-replay' % req.get('nonce'))
 
     print('issue_from_req: 双通道核对提醒 — 客户另行报来的 MACHINE_ID '
           '应为 %s, 一致再继续' % req['machine_id_hex'])
@@ -68,8 +95,6 @@ def main():
         a.note = '%s req_nonce=%s req_at=%s' % (
             req.get('note', ''), req.get('nonce', '?'),
             req.get('requested_at', '?'))
-        if a.log is None:
-            a.log = 'build/issue-log.csv'
         vmenc.cmd_issue(a)
     finally:
         os.unlink(tmp_json)

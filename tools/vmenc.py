@@ -597,15 +597,41 @@ def write_vm_c(out_c, out_h, plaintext, seed, key1, image_name='g_vm_image'):
     return code_len, seed, crc
 
 
+def _csv_safe(v, what, maxlen):
+    """D-D4: 台账/license 字段卫生 — 拒绝 CSV 危险字符与超长值."""
+    v = str(v)
+    if any(c in v for c in ',\r\n\t'):
+        raise VasmError('%s contains unsafe chars (,,CR,LF,TAB are forbidden): %r'
+                        % (what, v))
+    if len(v) > maxlen:
+        raise VasmError('%s too long (%d > %d)' % (what, len(v), maxlen))
+    return v
+
+
+def _ledger_prev_hash(log_path):
+    """D-D2: 台账哈希链 — 上一行 body (去 prev 标记) 的 SHA-256 hex."""
+    try:
+        with open(log_path, 'rb') as lf:
+            data = lf.read().decode('utf-8', 'replace')
+        last = [l for l in data.splitlines() if l.strip()][-1]
+        body = last.rsplit(',prev=', 1)[0] if ',prev=' in last else last
+        return hashlib.sha256(body.encode('utf-8')).hexdigest()
+    except Exception:
+        return ''
+
+
 def cmd_issue(args):
-    """签发 + 强制写签发日志 (OPS §2): 与 sign 相同签名逻辑, 追加 issue-log.csv."""
+    """签发 + 强制写签发日志 (OPS §2): 与 sign 相同签名逻辑, 追加 issue-log.csv.
+    2026-08-28 (第四轮 drill6 落地): CSV 注入卫生 (D-D4) + 台账哈希链 (D-D2)."""
     with open(args.key_path, 'r', encoding='utf-8') as f:
         kd = json.load(f)
     n = int(kd['n'], 16)
     d = int(kd['d'], 16)
     with open(args.json_path, 'r', encoding='utf-8') as f:
         jd = json.load(f)
-    serial = jd['serial']
+    serial = _csv_safe(jd['serial'], 'serial', 64)
+    customer = _csv_safe(args.customer, 'customer', 64)
+    note = _csv_safe(args.note, 'note', 512)
     mid = args.machine_id_override
     if mid is None:
         mid = jd.get('machine_id', None)
@@ -630,19 +656,21 @@ def cmd_issue(args):
     with open(args.license_out, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(out))
 
-    # 签发日志 (只增不改, gitignore)
+    # 签发日志 (只增不改, gitignore; D-D2 哈希链: prev=SHA256(上一行 body))
     import datetime
     sha = hashlib.sha256(open(args.license_out, 'rb').read()).hexdigest()
-    row = '%s,%s,0x%x,%d,%s,%s,%s\n' % (
-        datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
-        serial, mid, tier, args.customer, args.note, sha)
     log_path = args.log
     ensure_parent(log_path)
+    prev = _ledger_prev_hash(log_path)
+    row = '%s,%s,0x%x,%d,%s,%s,%s,prev=%s\n' % (
+        datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
+        serial, mid, tier, customer, note, sha, prev)
     with open(log_path, 'a', encoding='utf-8', newline='\n') as f:
         f.write(row)
     print('vmenc: issue serial=%s tier=%d expires=%d customer=%s -> %s'
-          % (serial, tier, expires, args.customer, args.license_out))
-    print('vmenc: issue log appended: %s' % log_path)
+          % (serial, tier, expires, customer, args.license_out))
+    print('vmenc: issue log appended (hash chain prev=%s...)'
+          % prev[:8])
 
 
 def cmd_assemble(args):

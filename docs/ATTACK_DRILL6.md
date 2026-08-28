@@ -136,5 +136,9 @@ A-1 离线签发已上线（服务器 Ubuntu + RSA-3072 + GUI 签发台）。前
 2. [x] 步骤 1-4 实施（S1-S5 服务器 + L1/L2 真机 + L3 本机复演 + L4 真机回拨
        + V1-V3 本机 + T1 本机时序 + D-D1..D-D4 评估与原型）
 3. [x] 步骤 5 归档（`archive/attack-drill6-20260828.json`）
-4. [ ] 建议落地项（D 期）：D-D1 重复 nonce 检测、D-D2 台账哈希链、
-       D-D4 字段长度上限；L4 时钟回拨在线锚点列入商业版路线
+4. [x] 建议落地项（D 期落地，2026-08-28）：**D-D1 重复 nonce 检测
+       （issue_from_req 拒重放 + --allow-replay 逃生阀）、D-D2 台账哈希链
+       （prev=SHA256(上一行) + verify_ledger.py，篡改/删除可检测，兼容 legacy
+       行）、D-D4 字段长度上限 + csv 危险字符拒绝**；回归 13/13 PASS，
+       服务器生产台账实测 VERIFY OK；L4 时钟回拨在线锚点列入商业版路线
+       （未做）
