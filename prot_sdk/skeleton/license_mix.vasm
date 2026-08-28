@@ -1,0 +1,43 @@
+; ============================================================================
+; license_mix.vasm — VM #2/3 (Phase 2a): GOLDEN 混合
+; 独立小 VM, 各自密钥/置换/槽位 (ROADMAP Phase 2a 多 VM 上下文)。
+;
+; 读宿主内存:
+;   +56 : u64  machine_id    机器标识
+;   +64 : u64  vm_h          VM#1 写入的 FNV-1a 结果 h
+; 写:
+;   +72 : u64  vm_total      total = xorshift(h ^ machine_id) + GOLDEN
+;
+; 算法 (与 tools/vmenc.py genserial 的 xorshift_mix 完全一致):
+;   x = h ^ machine_id
+;   x = x ^ (x<<13); x ^= x>>7; x ^= x<<17
+;   total = x + 0x9E3779B97F4A7C15
+; ============================================================================
+
+    ; x = h ^ machine_id
+    push32 64
+    load64              ; h
+    push32 56
+    load64              ; machine_id
+    xor                 ; x = h ^ machine_id
+    ; x3 = x ^ (x<<13) ^ (x>>7) ^ (x<<17)
+    dup                 ; x x
+    push64 13
+    shl
+    xor
+    dup
+    push64 7
+    shr
+    xor
+    dup
+    push64 17
+    shl
+    xor                 ; x3
+    ; total = x3 + GOLDEN
+    push64 0x9E3779B97F4A7C15
+    add
+    ; vm_total@72 = total
+    push32 72
+    swap
+    store64
+    halt

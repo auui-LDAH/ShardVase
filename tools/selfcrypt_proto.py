@@ -21,6 +21,7 @@ tools/selfcrypt_proto.py — N1 阶段 0 原型 (方案 B: 原位加密)
 """
 
 import argparse
+import os
 import struct
 import sys
 import zlib
@@ -122,6 +123,9 @@ def main(argv=None):
                         help='report plan without writing')
     parser.add_argument('--disable', action='store_true',
                         help='no-op (降级构建, 函数保持明文)')
+    parser.add_argument('--mask-out', dest='mask_out', default=None,
+                        help='掩码输出路径 (默认 build/selfcrypt_mask.txt, '
+                             'P0 骨架构建用)')
     args = parser.parse_args(argv)
 
     if args.disable:
@@ -188,7 +192,8 @@ def main(argv=None):
         print('selfcrypt_proto: patched %s (%d fns in-place, meta@0x%x hdr=%d)'
               % (args.exe, len(entries), blob_off, hdr))
         # 掩码提示 (D1b): 写 build/selfcrypt_mask.txt 供 hashpatch 读取
-        mask_path = 'build/selfcrypt_mask.txt'
+        mask_path = args.mask_out or 'build/selfcrypt_mask.txt'
+        os.makedirs(os.path.dirname(os.path.abspath(mask_path)), exist_ok=True)
         with open(mask_path, 'w', encoding='ascii') as f:
             for rva, size, sd, crc in entries:
                 f.write('0x%x,%d\n' % (rva, size))

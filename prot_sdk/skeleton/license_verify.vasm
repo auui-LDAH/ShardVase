@@ -1,0 +1,38 @@
+; ============================================================================
+; license_verify.vasm — VM #3/3 (Phase 2a + N5 会话级期望值): 比对期望值并写结果
+; 独立小 VM, 各自密钥/置换/槽位 (ROADMAP Phase 2a 多 VM 上下文)。
+;
+; 读:
+;   +64 : u64  vm_h      FNV-1a 结果 h (VM#1 写)
+;   +72 : u64  vm_total  total (VM#2 写)
+;   +112: u64  vm_expect1  期望值 h  (N5: 宿主填; 在线=服务端下发, 离线=构建期默认)
+;   +120: u64  vm_expect2  期望值 total (同上)
+; 写:
+;   +52 : u32  result    ok = (h==expect1) && (total==expect2)
+;
+; 任何在这里读到的 h/total 都被上面两个 VM 分别算出 —— 三个独立 VM 各自持有
+; 自己的密钥/置换/窗口, 静态分析单镜像得不到完整校验逻辑。
+;
+; N5: 期望值不再烧录立即数, 改为读 demo_mem 会话槽 —— 在线会话每次启动
+; 期望值由服务端下发 (每次不同), 破解者 patch "期望值比较" 只对当次会话有效。
+; ============================================================================
+
+    ; h == expect1
+    push32 64
+    load64              ; h
+    push32 112
+    load64              ; expect1
+    cmpeq               ; (h==E1)
+    ; total == expect2
+    push32 72
+    load64              ; total
+    push32 120
+    load64              ; expect2
+    cmpeq               ; (total==E2)
+    ; ok = 两个都成立
+    and                 ; ok
+    ; result@52 = ok: 栈 [ok] -> push 52, swap -> [52 ok] 下为 addr 上为 val
+    push32 52
+    swap
+    store32
+    halt

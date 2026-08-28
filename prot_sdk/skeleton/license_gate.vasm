@@ -1,0 +1,49 @@
+; ============================================================================
+; license_gate.vasm — VM #4/4 (A1 + N3 数据完整性): RSA 门控 + 冗余写回
+;
+; 读 (demo_mem, 相对 base 偏移):
+;   +88 : u32  license_ok   宿主 prot_license_verify 的结果 (0/1)
+;   +52 : u32  result       前面 3 个 VM 写好的校验结果 (0/1)
+; 写 (N3: 三份冗余 + 校验和, 单点内存 patch 无效):
+;   +52 : u32  result = result AND license_ok    (主副本)
+;   +100: u32  result2 = 同上 (副本2)
+;   +104: u32  result3 = 同上 (副本3)
+;   +108: u32  sum = (result ^ 0xA5A5A5A5)        (校验和)
+;
+; 目的: 关键判定位仍由 VM 执行; 数据冗余使"改单个内存字节"立即被
+; 宿主多数一致 + 校验和检查识破。
+; ============================================================================
+
+    ; v = result AND license_ok
+    push32 52
+    load32
+    push32 88
+    load32
+    and                     ; [v]
+
+    ; 主副本 @52: [v]
+    dup
+    push32 52
+    swap
+    store32                 ; [v]
+
+    ; 副本2 @100
+    dup
+    push32 100
+    swap
+    store32                 ; [v]
+
+    ; 副本3 @104
+    dup
+    push32 104
+    swap
+    store32                 ; [v]
+
+    ; 校验和 @108 = v ^ 0xA5A5A5A5
+    push32 0xA5A5A5A5
+    xor
+    push32 108
+    swap
+    store32
+
+    halt
