@@ -16,6 +16,21 @@
 
 #include "../prot_shell.h"
 
+/* A2 phase2 演示: 标注 @vmcalc 的纯计算函数将被自动翻译进 VM.
+ * 构建后本函数体运行在 VM 内 (原名保留给调用点, 原生实现改名 _native). */
+// @vmcalc
+uint64_t biz_seed(uint64_t a, uint64_t b)
+{
+    uint64_t x = a;
+    uint64_t i;
+    for (i = 0; i < 4; i++) {
+        x = x * 31;
+        x = x ^ b;
+    }
+    x += 7;
+    return x;
+}
+
 /* ---------- SHA-256 (Windows BCrypt, 与壳同依赖) ---------- */
 static int sha256_file(const char* path, unsigned char out[32])
 {
@@ -91,6 +106,8 @@ int prot_business_main(const prot_business_ctx* ctx)
     printf("   机器绑定: 0x%016llx     授权: Tier%d  expires=%u\n",
            (unsigned long long)ctx->machine_id,
            ctx->license_tier, ctx->license_expires);
+    printf("   业务VM演示种子: 0x%016llx (biz_seed @vmcalc)\n",
+           (unsigned long long)biz_seed(ctx->machine_id, 0x1234));
 
     if (ctx->license_tier < 2) {
         printf("\nTier 1 功能: 单文件哈希 (高级版支持 --scan 目录扫描)\n");

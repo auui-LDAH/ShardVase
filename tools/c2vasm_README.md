@@ -1,6 +1,7 @@
 # c2vasm — C 子集 → vasm 自动翻译器（A2 原型）
 
-> 状态：**原型完成（2026-08-28）** · golden 6/6 全 PASS · 计划 `docs/A2_PLAN.md`
+> 状态：**原型完成（2026-08-28）** · golden 6/6 全 PASS · **A2 二阶段接入
+> prot_sdk 完成（同日真机验收）** · 计划 `docs/A2_PLAN.md`
 
 业务函数体自动 VM 化的第一步：把 **C 子集单函数**翻译成 vasm（VM 汇编），
 经现有工具链（vmenc assemble）编造成加密 VM 镜像。从此不需要手写 vasm。
@@ -49,14 +50,28 @@ python tests/c2vasm_golden.py
 4. 循环需要宿主保证 mem 尺寸与步数上限（mini-vm 20M 步）；
 5. 无符号仅——有符号除法/右移不保证语义一致。
 
-## A2 二阶段（接入 prot_sdk，设计）
+## A2 二阶段（prot_sdk 集成，已完成）
 
-把本工具接入骨架工程：
-1. `business_*.c` 中标注 `// @vmcalc` 的纯函数 → 构建前自动翻译 +
-   生成对应 vasm 镜像 + 宿主函数替换为"VM 装载→执行→取回"桩；
-2. blob 打包纳入现有 pack（与授权镜像同链签名）；
-3. 桩与 VM 结果的"结果一致性"由 golden 机制全量保障；
-4. 签名/篡改语义完全复用现有 VOID 链（无需新防御面）。
+业务源中标注 `// @vmcalc` 的纯计算函数会被自动 VM 化：
+
+```c
+// @vmcalc
+uint64_t biz_seed(uint64_t a, uint64_t b) { ... }
+```
+
+构建时 `tools/vmcalc_build.py` 自动完成：
+1. 扫描标注 → c2vasm 翻译 → vmenc assemble（bin 名 `b_<fn>`）；
+2. 源中定义改名 `<fn>_native`（调用点不变 → 链接到桩）；
+3. 生成 `gen/vmcalc_stubs.c`（blob 装载器 + 同名 VM 桩）与
+   `gen/vmcalc_interface.h`（业务源自动注入 include）；
+4. 业务镜像并入同一 `vm.blob`（与授权镜像同链签名）；
+5. 壳在授权门通过后 `prot_vmcalc_load`，缺失业务镜像 → 拒绝进入业务。
+
+真机验收（hashcalc）：
+- `业务VM演示种子` 输出 = 参考值（`0x249b8c28655d869c`）逐位一致；
+- 负面：移除业务镜像的 blob → 拒绝进入业务（保护链完整性兜底）；
+- 排障记录：桩参数 memcpy 未按槽偏移（`frame+8*i` 修复）、源 `_native`
+  残留与 gen 清空的**不一致状态自动修复**（unrename+重建）。
 
 ## 目录
 

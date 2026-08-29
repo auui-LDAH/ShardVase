@@ -89,19 +89,37 @@ foreach ($v in @('hash', 'mix', 'verify', 'gate')) {
         --name "g_vm_${v}_image" --bin-out (Join-Path $genDir "vm_${v}_blob.bin") --bin-name $v
     if ($LASTEXITCODE -ne 0) { throw "build_skeleton FAILED: assemble $v" }
 }
+# ---- 3b. A2 phase2: @vmcalc 业务函数自动 VM 化 (扫描/翻译/改名/桩) ----
+$vmcalcDef = ''
+$vmcalcSrcs = @(Get-ChildItem -LiteralPath $Project -Filter '*.c' -File |
+               Where-Object { $_.Name -ne 'app_main.c' -and $_.Name -ne 'pub-blob.c' } |
+               ForEach-Object { $_.FullName })
+if ($vmcalcSrcs.Count -gt 0) {
+    & $py "$REPO\tools\vmcalc_build.py" --src $vmcalcSrcs --gen $genDir --json $vb --vmenc "$REPO\tools\vmenc.py"
+    if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: vmcalc_build' }
+    if (Test-Path -LiteralPath (Join-Path $genDir 'vmcalc_stubs.c')) {
+        $vmcalcDef = '-DPROT_HAS_VMCALC'
+        Write-Host 'build_skeleton: @vmcalc 业务函数已 VM 化'
+    }
+}
+
 # blob 签名: new 模式构建期自签 (smoke 可全过); pub 模式产出"待签发"blob,
 # 发布时由签发方 (服务器私钥) 补签: vmenc.py pack --sign <priv.json> ...
+# 业务 VM bin 附加进同一 blob (修改后重新 pack)
+$packBins = @((Join-Path $genDir 'vm_hash_blob.bin'), (Join-Path $genDir 'vm_mix_blob.bin'),
+              (Join-Path $genDir 'vm_verify_blob.bin'), (Join-Path $genDir 'vm_gate_blob.bin'))
+if (Test-Path -LiteralPath (Join-Path $genDir 'vmcalc_stubs.c')) {
+    $vmcalcBins = Get-ChildItem -LiteralPath $genDir -Filter 'vmcalc_*.bin' -File |
+                  ForEach-Object { $_.FullName }
+    $packBins += $vmcalcBins
+}
 if ($cfg.key_mode -eq 'new') {
     & $py "$REPO\tools\vmenc.py" pack --sign (Join-Path $genDir 'license_priv.json') `
-        --out (Join-Path $outDir 'vm.blob') `
-        (Join-Path $genDir 'vm_hash_blob.bin') (Join-Path $genDir 'vm_mix_blob.bin') `
-        (Join-Path $genDir 'vm_verify_blob.bin') (Join-Path $genDir 'vm_gate_blob.bin')
+        --out (Join-Path $outDir 'vm.blob') $packBins
 } else {
-    & $py "$REPO\tools\vmenc.py" pack --out (Join-Path $outDir 'vm.blob') `
-        (Join-Path $genDir 'vm_hash_blob.bin') (Join-Path $genDir 'vm_mix_blob.bin') `
-        (Join-Path $genDir 'vm_verify_blob.bin') (Join-Path $genDir 'vm_gate_blob.bin')
+    & $py "$REPO\tools\vmenc.py" pack --out (Join-Path $outDir 'vm.blob') $packBins
     Write-Host 'build_skeleton: vm.blob 未签名 (pub 模式) - 发布前由签发方补签:'
-    Write-Host "  vmenc.py pack --sign <server-priv.json> --out vm.blob $((Get-ChildItem $genDir -Filter 'vm_*_blob.bin' | ForEach-Object { $_.Name }) -join ' ')"
+    Write-Host "  vmenc.py pack --sign <server-priv.json> --out vm.blob $($packBins | ForEach-Object { (Split-Path $_ -Leaf) })"
 }
 if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: pack' }
 
@@ -117,7 +135,8 @@ $busSrcs = ((Get-ChildItem -LiteralPath $Project -Filter '*.c' -File |
             ForEach-Object { $_.FullName }) -join ' '
 $srcBase = "$REPO\src"
 # 显示名不参与编译宏 (空格会破坏 -D); 显示名改在工程 strings.txt 的 BANNER.
-$defines = "-DAPP_EXE_NAME=`"$appName`" $lite"
+$defines = "-DAPP_EXE_NAME=`"$appName`" $lite $vmcalcDef"
+$vmcalcObj = if ($vmcalcDef) { "`"$genDir\vmcalc_stubs.c`"" } else { '' }
 if ($cfg.key_mode -eq 'pub') {
     $signStep = ''  # 无本地私钥, 构建期自签 license 不可行 -> smoke 走无 license 路径
 } else {
@@ -129,7 +148,7 @@ $clCmd = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I `"$REPO\include`" /I `"$genD
     "`"$srcBase\vm.c`" `"$srcBase\crc32.c`" `"$srcBase\antidebug.c`" `"$srcBase\integrity.c`" `"$srcBase\strcrypt.c`" " +
     "`"$srcBase\hostid.c`" `"$srcBase\license.c`" `"$srcBase\syscall.c`" `"$srcBase\blob.c`" `"$srcBase\revoke.c`" " +
     "`"$srcBase\vmdetect.c`" `"$srcBase\dbiguard.c`" `"$srcBase\indirect.c`" `"$srcBase\selfcrypt.c`" " +
-    "`"$Project\app_main.c`" $busSrcs " +
+    "`"$Project\app_main.c`" $busSrcs $vmcalcObj " +
     "`"$genDir\strings.c`" `"$genDir\license_pubkey.c`" `"$genDir\indirect_table.c`" `"$genDir\expect_default.c`" " +
     "/link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
 cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath (Join-Path $outDir 'cl_log.txt') | Out-Host
