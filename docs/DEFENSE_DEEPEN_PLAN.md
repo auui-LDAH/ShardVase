@@ -98,6 +98,25 @@
 
 
 
+
+## 12. 实施记录 v6（2026-08-29 深夜 · S4/S5 完成）
+
+- **S5 落地**：反调试 +2 维（父进程调试器黑名单=关键项 / 墙钟-tick 漂移=咨询项）；
+  真机 selftest 0 误报（ppid_blacklist=0, clock_drift_sec=0）。
+- **S4 落地**：字符串明文收敛（HWID 格式 / revoke 提示 / 在线 URL 模板入
+  strcrypt 表）；exe 扫描验证 `0x%016` 与 URL 模板已消失；revoke 默认路径
+  常量保留（运营参数）。
+- **S1 最终态**：2 枚加密（blob_load + license_verify）+ pdata 边界防御 +
+  .protxec 分节；其余 3 枚记录为 VP 崩溃技术债（机制部分厘清：同页执行
+  禁权；integrity 段仍崩待专攻）。
+- **稳定性回归器** `mask_stability_test.ps1`：S2/S4/S5 各改动后均 3/3 PASS。
+
+## 13. 下一轮待办
+- S1 剩余 3 枚（VP 崩溃技术债专项：解密器/辅助完全独立页 + integrity 段
+  重新定位）
+- S3 控制流平坦化试点（最小示范：switch-dispatch 等价变换单函数）
+- 全量回归（attack_sdk_matrix 含 M11/M12 + Defender 复测）后统一提交基线
+
 ## 11. 实施记录 v5（2026-08-29 深夜 · S1 定稿与基建）
 
 **S1 定稿（诚实）**：落地 = blob_load + license_verify **两枚**（稳定基线，
