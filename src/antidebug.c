@@ -227,6 +227,80 @@ prot_status prot_antidebug_scan(prot_antidebug_report* out) {
         }
     }
 
+    /* S5 (2026-08-29): 父进程调试器黑名单 (关键项) */
+    out->ppid_blacklist = 0u;
+    {
+        static const wchar_t* const dbg_parents[] = {
+            L"x64dbg.exe", L"x32dbg.exe", L"ollydbg.exe", L"windbg.exe",
+            L"cdb.exe", L"ida.exe", L"ida64.exe", L"gdb.exe", L"x96dbg.exe",
+            NULL };
+        unsigned char pbi[48];
+        ULONG ppid = 0;
+        NTSTATUS st = (s_pNtQueryInformationProcess != NULL)
+                          ? s_pNtQueryInformationProcess(
+                                GetCurrentProcess(), 0 /*ProcessBasicInformation*/,
+                                pbi, sizeof(pbi), NULL)
+                          : 1;
+        /* PROCESS_BASIC_INFORMATION: [0]UniqueProcessId, [8]InheritedFromUniqueProcessId */
+        if (st >= 0) {
+            memcpy(&ppid, pbi + 8, sizeof(ppid));
+        }
+        if (st >= 0 && ppid != 0 && ppid != 0xFFFFFFFFu) {
+            HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                    ppid);
+            if (hp != NULL) {
+                wchar_t name[MAX_PATH];
+                DWORD nlen = MAX_PATH;
+                int k;
+                if (QueryFullProcessImageNameW(hp, 0, name, &nlen)) {
+                    for (k = 0; dbg_parents[k] != NULL; k++) {
+                        size_t plen = wcslen(dbg_parents[k]);
+                        if (nlen >= plen &&
+                            _wcsicmp(name + nlen - plen, dbg_parents[k]) == 0) {
+                            out->ppid_blacklist = 1u;
+                            break;
+                        }
+                    }
+                }
+                CloseHandle(hp);
+            }
+        }
+    }
+
+    /* S5: 墙钟 vs tick 源交叉漂移 (150ms Sleep 窗口, >250ms 偏差可疑, 咨询项) */
+    out->clock_drift_sec = 0u;
+    {
+        ULONGLONG t0t = GetTickCount64();
+        ULONGLONG t0w, t1w, t1t;
+        SYSTEMTIME st_sys;
+        FILETIME ft;
+        ULARGE_INTEGER ul;
+        GetSystemTime(&st_sys);
+        if (SystemTimeToFileTime(&st_sys, &ft)) {
+            ul.LowPart = ft.dwLowDateTime;
+            ul.HighPart = ft.dwHighDateTime;
+            t0w = (ul.QuadPart / 10000ull) - 11644473600000ull;
+        } else {
+            t0w = 0;
+        }
+        Sleep(150);
+        t1t = GetTickCount64();
+        GetSystemTime(&st_sys);
+        if (SystemTimeToFileTime(&st_sys, &ft)) {
+            ul.LowPart = ft.dwLowDateTime;
+            ul.HighPart = ft.dwHighDateTime;
+            t1w = (ul.QuadPart / 10000ull) - 11644473600000ull;
+        } else {
+            t1w = 0;
+        }
+        if (t0w != 0 && t1w >= t0w) {
+            ULONGLONG dt_tick = t1t - t0t;
+            ULONGLONG dt_wall = t1w - t0w;
+            if (dt_tick > dt_wall + 250ull || dt_wall > dt_tick + 250ull)
+                out->clock_drift_sec = 1u;
+        }
+    }
+
     return PROT_OK;
 }
 
@@ -235,11 +309,12 @@ uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
         return 0;
     }
     /* 关键项 = {being_debugged, debug_port, debug_flags, debug_object,
-     *           hardware_breakpoints, timing_suspicious}; 咨询项
-     *  (peb_nt_global_flag, kernel_debugger, debug_heap_flags, int3_honey) 不计入 */
+     *           hardware_breakpoints, timing_suspicious, ppid_blacklist};
+     * 咨询项 (peb_nt_global_flag, kernel_debugger, debug_heap_flags,
+     *  int3_honey, clock_drift_sec) 不计入 */
     return (rep->peb_being_debugged || rep->debug_port || rep->debug_flags ||
             rep->debug_object || rep->hardware_breakpoints ||
-            rep->timing_suspicious) ? 1u : 0u;
+            rep->timing_suspicious || rep->ppid_blacklist) ? 1u : 0u;
 }
 
 /* FAKE 策略伪结果标志 (契约 §6.2) */

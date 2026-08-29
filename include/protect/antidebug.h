@@ -22,6 +22,8 @@ typedef struct prot_antidebug_report {
     uint32_t kernel_debugger;      /* 内核调试器标志 (咨询项) */
     uint32_t debug_heap_flags;     /* PEB.ProcessHeap Flags/ForceFlags 调试堆泄漏 (咨询项) */
     uint32_t int3_honey;           /* int3 VEH 蜜罐: 处理器未接管 → 有外部断点拦截 (咨询项) */
+    uint32_t ppid_blacklist;       /* S5: 父进程为已知调试器名 (关键项) */
+    uint32_t clock_drift_sec;      /* S5: 墙钟与 tick 源漂移 >250ms (咨询项) */
 } prot_antidebug_report;
 
 /* 执行全部检测并填充报告; 永不失败 (返回 PROT_OK) */

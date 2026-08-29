@@ -287,6 +287,8 @@ static void print_selftest(const prot_antidebug_report* rep)
     printf("  kernel_debugger: %u\n", rep->kernel_debugger);
     printf("  debug_heap_flags: %u\n", rep->debug_heap_flags);
     printf("  int3_honey: %u\n", rep->int3_honey);
+    printf("  ppid_blacklist: %u\n", rep->ppid_blacklist);
+    printf("  clock_drift_sec: %u\n", rep->clock_drift_sec);
 }
 
 /* base64 瑙ｇ爜 (鏍囧噯 64 瀛楃瀛楁瘝琛?銆傝繑鍥炶В鐮佸悗瀛楄妭鏁? 闈炴硶杈撳叆杩斿洖 (size_t)-1銆?*/
