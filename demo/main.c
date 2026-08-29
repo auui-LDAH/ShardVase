@@ -629,6 +629,15 @@ int main(int argc, char** argv)
         }
         st = prot_vm_blob_load(bp, k_vm_names, 4u, g_vm_imgs,
                                &g_vm_blob_buf, &blob_size);
+        /* S2: 装载后内存重编码 (每运行密钥域不同, 双 dump 失效) */
+        if (st == PROT_OK) {
+            uint64_t ent = (uint64_t)GetTickCount64()
+                           ^ ((uint64_t)GetCurrentProcessId() << 32u)
+                           ^ (uint64_t)(uintptr_t)bp;
+            uint32_t vi;
+            for (vi = 0u; vi < 4u; vi++)
+                prot_vm_rekey(&g_vm_imgs[vi], (ent ^ (uint64_t)vi) | 1u);
+        }
         sc_ext_leave();
         if (st != PROT_OK) {
             printf("%s (code=%d)\n", prot_str_get(PROT_STR_MSG_BLOB), (int)st);

@@ -26,4 +26,7 @@ typedef struct prot_vm_image {
  */
 prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_size);
 
+/* S2: 运行时密钥多样性 - 装载后内存重编码密钥域 (仅内存, 文件/签名不变) */
+prot_status prot_vm_rekey(prot_vm_image* img, uint64_t new_key);
+
 #endif /* PROT_VM_H */
