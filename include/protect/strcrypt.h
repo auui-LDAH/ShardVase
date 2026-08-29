@@ -21,6 +21,9 @@ typedef enum prot_str_id {
     PROT_STR_MSG_REVOKED,   /* 授权已被吊销 (I1) */
     PROT_STR_LICENSE_FMT,   /* "license: %u (tier=%u expires=%u)" (N 加固) */
     PROT_STR_ONLINE_FMT,    /* "online check: %s" (N 加固) */
+    PROT_STR_MSG_HWID_FMT,  /* "0x%016llx" 机器标识格式 (S4 收敛) */
+    PROT_STR_MSG_REVOKE_CORRUPT, /* 吊销列表损坏提示 (S4 收敛) */
+    PROT_STR_URL_CHECK_FMT, /* 在线查询 URL 模板 (S4 收敛) */
     PROT_STR_COUNT
 } prot_str_id;
 

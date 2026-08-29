@@ -9,3 +9,6 @@ MSG_BLOB|VM 镜像装载失败 (vm.blob 缺失或已损坏)。
 MSG_REVOKED|该授权已被吊销，请与发行方联系。
 LICENSE_FMT|license: %u (tier=%u expires=%u)
 ONLINE_FMT|online check: %s
+MSG_HWID_FMT|0x%016llx
+MSG_REVOKE_CORRUPT|吊销列表损坏，已忽略。
+URL_CHECK_FMT|%s?serial=%s&mid=%llx&tier=%u&build=%s

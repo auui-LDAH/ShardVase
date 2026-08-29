@@ -658,8 +658,12 @@ int main(int argc, char** argv)
         /* N4: 鏈哄櫒鏍囪瘑缁忛棿鎺ヨ〃璋冪敤 (闈欐€佹棤鐩存帴 call) */
         uint64_t hwid = PROT_INDIRECT_CALL(PROT_INDIRECT_HOSTID,
                                            uint64_t (*)(void));
-        printf("%s0x%016llx\n", prot_str_get(PROT_STR_MSG_HWID),
-               (unsigned long long)hwid);
+        printf("%s", prot_str_get(PROT_STR_MSG_HWID));
+        {
+            const char* _hf = prot_str_get(PROT_STR_MSG_HWID_FMT);
+            printf(_hf, (unsigned long long)hwid);
+            printf("\n");
+        }
         mem.machine_id = hwid;
     }
 
@@ -736,7 +740,7 @@ int main(int argc, char** argv)
         if (rs == PROT_REVOKE_HIT) {
             online_revoked = 1;
         } else if (rs == PROT_REVOKE_CORRUPT) {
-            printf("鍚婇攢鍒楄〃鎹熷潖锛屽凡蹇界暐 (revoke.blob)\n");
+            printf("%s\n", prot_str_get(PROT_STR_MSG_REVOKE_CORRUPT));
         }
 
         /* M3.1: 鍦ㄧ嚎鏌ヨ (浠呮湰鍦?mock / 鐢熶骇 TLS 绔偣) */
@@ -748,7 +752,7 @@ int main(int argc, char** argv)
             BOOL ok = FALSE;
 
             _snprintf_s(url, sizeof(url), _TRUNCATE,
-                        "%s?serial=%s&mid=%llx&tier=%u&build=%s",
+                        prot_str_get(PROT_STR_URL_CHECK_FMT),
                         check_url, mem.serial,
                         (unsigned long long)mem.machine_id,
                         mem.license_tier, PROT_VERSION_STR);
