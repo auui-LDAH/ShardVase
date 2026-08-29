@@ -97,6 +97,25 @@
 
 
 
+
+## 11. 实施记录 v5（2026-08-29 深夜 · S1 定稿与基建）
+
+**S1 定稿（诚实）**：落地 = blob_load + license_verify **两枚**（稳定基线，
+回归器多次 3/3 PASS）。antidebug/integrity/revoke 三枚在 5 枚组合下仍触发
+"VirtualProtect 调用点崩溃"（integrity 段 0x3bxx 与 revoke 段 0x5120 等），
+机制部分厘清：**加密段与"解密/校验辅助代码同页"时，VP 切换页权限会禁执行
+自伤**——已通过 `.protxec` 独立节（解密器 + crc32）分页解决 revoke 段；
+integrity 段仍崩（待专攻：可能其段与 libc/堆相关执行同页或另有栈因素）。
+
+**新增基建（已提交前两版演进）**：
+- `pdata 边界防御`：selfcrypt_proto 对每个加密函数校验 rva+size 不越 .text
+  段尾（防写坏邻节 → 间歇 TAMPERED/崩的一类真凶）；
+- `.protxec` 独立可执行节：解密器（sc_xor_range/sc_do_range 等）与
+  crc32（prot_crc32 族）移入，避免与加密段同页。
+
+**S2 已落地（另见 v4）**；稳定性回归器（mask_stability_test.ps1）成为
+标准门槛。下一步（S3-S5）在 2 枚稳定基线上推进。
+
 ## 10. 实施记录 v4（2026-08-29 深夜，决定性）
 
 **"布局漂移/掩码残留"假象结案**：以"删旧 mask + 完整构建(全管线到 DONE) + UTF-8 判定"

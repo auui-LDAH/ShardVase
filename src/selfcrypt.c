@@ -57,6 +57,10 @@ static volatile uint8_t g_sc_d2b_enabled = 0u;
 /* 互斥: D2b 下多线程并发 enter/leave 保护 (SRWLock 无锁读优化) */
 static SRWLOCK g_sc_lock = SRWLOCK_INIT;
 
+/* 独立节 .protxec (2026-08-29): 解密器与加密目标分页,
+ * 避免 VirtualProtect 切换目标页权限时把自身执行页
+ * 关了 (0x5000 同页自伤崩溃的根源). */
+#pragma code_seg(".protxec")
 static void sc_xor_range(uint8_t* dst, uint32_t len, uint64_t key)
 {
     uint64_t k = key;

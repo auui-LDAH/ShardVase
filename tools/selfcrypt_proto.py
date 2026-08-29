@@ -166,6 +166,11 @@ def main(argv=None):
                 raise SelfcryptError('%s: no .pdata entry (rva=0x%x)' % (name, rva))
             end, _ = pdata[rva]
             size = end - rva
+            # 防御 (2026-08-29): pdata 大小不得跨越 .text 段尾 (跨界会写坏
+            # 邻节数据 -> 间歇性 TAMPERED/崩溃). 裁剪到段尾并校验下限.
+            text_end_rva = text['virtual_addr'] + text['size_raw']
+            if rva < text['virtual_addr'] or rva + size > text_end_rva:
+                size = text_end_rva - rva if rva < text_end_rva else 0
             if size <= 5 or size > 4096:
                 raise SelfcryptError('%s: bad size %d' % (name, size))
 
