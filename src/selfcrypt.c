@@ -20,6 +20,7 @@
 #include "protect/selfcrypt.h"
 
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 
 /* .protcrypt 专用节容器 (N1): 构建期 selfcrypt_proto.py 写入 meta
@@ -43,9 +44,10 @@ prot_status prot_selfcrypt_leave(uint32_t group) { (void)group; return PROT_OK; 
 
 #else
 
-/* meta entry 布局 (与 selfcrypt_proto.py 一致, 20B):
- *   rva u32 | len u32 | key0 u64 | crc32 u32 (明文 CRC, II-1) */
-#define SC_ENTRY_SIZE 20u
+/* meta entry 布局 (与 selfcrypt_proto.py 一致, 24B, S1 组字段):
+ *   rva u32 | len u32 | key0 u64 | crc32 u32 | group u32 (明文 CRC, II-1) */
+#define SC_ENTRY_SIZE 24u
+#define SC_ENTRY_GROUP_OFF 20u
 
 /* 每个函数的当前状态: 0=密文(加密态) 1=明文(解密态)。
  * 组状态 = 组内全部函数同态 (enter/leave 按组整体切换)。 */
@@ -65,6 +67,7 @@ static void sc_xor_range(uint8_t* dst, uint32_t len, uint64_t key)
     }
 }
 
+
 static prot_status sc_do_range(uint32_t idx, int decrypt)
 {
     const uint8_t* e = g_prot_selfcrypt_blob + 4u + idx * SC_ENTRY_SIZE;
@@ -78,37 +81,79 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
 
     if (hmod == NULL)
         return PROT_ERR_INTERNAL;
+    fprintf(stderr, "[SCDBG] idx=%u decrypt=%d\n", idx, decrypt);
+    (void)e;
+    
+
     memcpy(&rva, e, 4u);
     memcpy(&len, e + 4u, 4u);
     memcpy(&k, e + 8u, 8u);
     memcpy(&crc, e + 16u, 4u);
     dst = base + rva;
-
-    if (!VirtualProtect((LPVOID)dst, len, PAGE_READWRITE, &oldp))
+    fprintf(stderr, "[SCDBG]   rva=0x%x len=%u k=0x%llx crc=0x%x dst=%p\n",
+            rva, len, (unsigned long long)k, crc, (void*)dst);
+     /* rva 读出后 */
+    fprintf(stderr, "[SCDBG]   PRE-VP\n");
+    if (!VirtualProtect((LPVOID)dst, len, PAGE_READWRITE, &oldp)) {
+        fprintf(stderr, "[SCDBG]   VP-FAIL err=%lu\n", GetLastError());
         return PROT_ERR_INTERNAL;
+    }
+    fprintf(stderr, "[SCDBG]   VP-OK\n");
+     /* VP 后 */
     sc_xor_range(dst, len, k);
+    fprintf(stderr, "[SCDBG]   XOR-OK\n");
+     /* XOR 后 */
     if (decrypt) {
-        /* II-1: 解密态 CRC 校验 */
-        if (prot_crc32(dst, len) != crc) {
-            VirtualProtect((LPVOID)dst, len, oldp, &oldp);
+        /* II-1: 解密态 CRC 校验 (SCDBG 阶段: 内联逐字节, 标准 0xEDB88320) */
+        __try {
+            uint32_t got = 0xFFFFFFFFu;
+            uint32_t j;
+            for (j = 0u; j < len; j++) {
+                uint32_t b;
+                got ^= dst[j];
+                for (b = 0u; b < 8u; b++)
+                    got = (got >> 1) ^ (0xEDB88320u & (uint32_t)-(int)(got & 1u));
+            }
+            got ^= 0xFFFFFFFFu;
+            fprintf(stderr, "[SCDBG]   CRC got=0x%x want=0x%x\n", got, crc);
+            if (got != crc) {
+                VirtualProtect((LPVOID)dst, len, oldp, &oldp);
+                return PROT_ERR_INTEGRITY;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            fprintf(stderr, "[SCDBG]   CRC-EXCEPTION code=0x%x\n",
+                    (unsigned)GetExceptionCode());
             return PROT_ERR_INTEGRITY;
         }
     }
     FlushInstructionCache(GetCurrentProcess(), (LPCVOID)dst, len);
+    fprintf(stderr, "[SCDBG]   FLUSH-OK\n");
     VirtualProtect((LPVOID)dst, len, PAGE_EXECUTE_READ, &oldp);
+    fprintf(stderr, "[SCDBG]   RX-OK\n");
     return PROT_OK;
 }
 
-/* 组 -> 函数索引范围 (组 0 = VM 引擎全组) */
+/* 组 -> 函数索引范围 (组 0 = VM 引擎组, 组 1 = EXT 扩展组) */
 static void sc_group_range(uint32_t group, uint32_t* lo, uint32_t* hi)
 {
     uint32_t n;
     memcpy(&n, g_prot_selfcrypt_blob, 4u);
     if (n > PROT_SELFCRYPT_MAX_FN)
         n = PROT_SELFCRYPT_MAX_FN;
-    (void)group;
-    *lo = 0u;
-    *hi = n;
+    for (*lo = 0u; *lo < n; (*lo)++) {
+        uint32_t g;
+        memcpy(&g, g_prot_selfcrypt_blob + 4u + (*lo) * SC_ENTRY_SIZE
+               + SC_ENTRY_GROUP_OFF, 4u);
+        if (g == group)
+            break;
+    }
+    for (*hi = *lo; *hi < n; (*hi)++) {
+        uint32_t g;
+        memcpy(&g, g_prot_selfcrypt_blob + 4u + (*hi) * SC_ENTRY_SIZE
+               + SC_ENTRY_GROUP_OFF, 4u);
+        if (g != group)
+            break;
+    }
 }
 
 prot_status prot_selfcrypt_init(void)

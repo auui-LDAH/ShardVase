@@ -95,6 +95,19 @@ typedef struct demo_mem {
     ((sig)prot_indirect_resolve(fn_id))(__VA_ARGS__)
 
 /* N1 II-2 (D2b): VM 寮曟搸璋冪敤鍖呰９ 鈥斺€?enter 瑙ｅ瘑鍑芥暟缁?-> 璋冪敤 -> leave 閲嶅姞瀵嗐€? * D2a (榛樿) 涓?enter/leave 绌鸿浆, 琛屼负涓庝竴鏈熶竴鑷淬€? * 杩斿洖 prot_status: 璋冪敤缁撴灉; enter 澶辫触 (CRC) 涔熻繑鍥為敊璇€?*/
+/* S1 纵深 (2026-08-29): EXT 组调用包裹 —— blob 装载/验签/完整性/反调试/
+ * 吊销 5 类函数已加密, 宿主调用点 enter/leave 同组 (D2b 窗口语义;
+ * D2a 下 enter/leave 空转, 零开销)。 */
+static prot_status sc_ext_enter(void)
+{
+    return prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT);
+}
+
+static void sc_ext_leave(void)
+{
+    prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_EXT);
+}
+
 static prot_status vm_run_wrapped(const prot_vm_image* img, void* mem)
 {
     prot_status e = prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_VM);
@@ -524,12 +537,14 @@ if (prot_dbiguard_suspicious(&drep)) {
     }
 
     /* 搂9.1-5: 瀹屾暣鎬ц嚜妫€ */
-    if (prot_integrity_check_self() != PROT_OK) {
-        printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
+    if (sc_ext_enter() != PROT_OK
+        || prot_integrity_check_self() != PROT_OK) {
+printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
         exit(PROT_EXIT_TAMPERED);
     }
+    sc_ext_leave();
 
-    /* 搂9.1-6: 鐪嬮棬鐙?(姣?5 绉?卤40% 鎶栧姩澶嶆煡瀹屾暣鎬?+ A5 鍙嶈皟璇? */
+    /* §9.1-6: 看门狗 (每 5 秒 ±40% 抖动复查完整性 + A5 反调试) */
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
 
     /* 搂9.1-6b: 瑁呰浇 VM blob (DBI launcher, 鎶€鏈€?#3) 鈥斺€?闀滃儚瀵嗘枃涓嶉潤鎬?     * 宓屽叆 exe; 缂哄け/鎹熷潖 -> 鎷掔粷杩愯 (0xB10B)銆傞粯璁ょ浉瀵?cwd 鎵?vm.blob銆?     * BLOB_SIGN_PLAN: --blob-url 鏃跺厛浠庣綉缁滀笅杞藉埌涓存椂鏂囦欢 (楠岀鍏滃簳,
@@ -620,8 +635,13 @@ if (prot_dbiguard_suspicious(&drep)) {
             }
             /* !ok = 缃戠粶涓嶅彲杈?瓒呮椂 -> 闈欓粯鍥為€€鏈湴 (绂荤嚎浼樺厛, 涓嶉攣姝? */
         }
+        if (sc_ext_enter() != PROT_OK) {
+            printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL));
+            exit(1);
+        }
         st = prot_vm_blob_load(bp, k_vm_names, 4u, g_vm_imgs,
                                &g_vm_blob_buf, &blob_size);
+        sc_ext_leave();
         if (st != PROT_OK) {
             printf("%s (code=%d)\n", prot_str_get(PROT_STR_MSG_BLOB), (int)st);
             exit(PROT_EXIT_BLOB_MISSING);
@@ -675,6 +695,10 @@ if (prot_dbiguard_suspicious(&drep)) {
     mem.license_tier = PROT_LICENSE_TIER_FULL;
     mem.license_expires = 0u;
     if (license_path != NULL) {
+        if (sc_ext_enter() != PROT_OK) {
+            printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL));
+            exit(1);
+        }
         mem.license_ok = (uint32_t)PROT_INDIRECT_CALL(
             PROT_INDIRECT_LICENSE, int (*)(const char*, void*),
             license_path, &mem);
@@ -685,6 +709,7 @@ if (prot_dbiguard_suspicious(&drep)) {
                         prot_str_get(PROT_STR_LICENSE_FMT),
                         mem.license_ok, mem.license_tier, mem.license_expires);
             printf("%s\n", eye);
+        sc_ext_leave();
         }
     }
 
@@ -698,10 +723,16 @@ if (prot_dbiguard_suspicious(&drep)) {
     {
         const char* rp = (revoke_path != NULL) ? revoke_path : "revoke.blob";
         uint32_t rver = 0u;
-        prot_revoke_status rs = PROT_INDIRECT_CALL(
+        prot_revoke_status rs;
+        if (sc_ext_enter() != PROT_OK) {
+            printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL));
+            exit(1);
+        }
+        rs = PROT_INDIRECT_CALL(
             PROT_INDIRECT_REVOKE,
             prot_revoke_status (*)(const char*, const char*, uint32_t, uint32_t*),
             rp, mem.serial, mem.license_tier, &rver);
+        sc_ext_leave();
         int online_revoked = 0;
         if (rs == PROT_REVOKE_HIT) {
             online_revoked = 1;

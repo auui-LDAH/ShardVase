@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "protect/antidebug.h"
+#include "protect/selfcrypt.h"
 #include "protect/integrity.h"
 
 /* 烧录结构 (契约 §7.1; hashpatch.py 依赖其名字与布局) */
@@ -92,6 +93,18 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
             rng = wd_jitter_next(rng);
             Sleep((DWORD)(base_ms + rng % (span_ms + 1u)));
         }
+        if (prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT) != PROT_OK) {
+            /* 解密失败: 按 tamper 策略处理 */
+            switch (g_wd_policy) {
+                case PROT_POLICY_EXIT:
+                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                    break;
+                default:
+                    InterlockedIncrement(&g_wd_tamper);
+                    break;
+            }
+            continue;
+        }
         if (prot_integrity_check_self() != PROT_OK) {
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
@@ -106,6 +119,7 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
                     break;
             }
         }
+        prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_EXT);
         /* G2 补洞: 运行期 IAT 改写 (hook 导入表) 周期复查 ——
          * 文件级 CRC 不覆盖 loader 写入的 IAT, 这里快照比对 detect。 */
         if (prot_integrity_check_iat() != PROT_OK) {
@@ -233,7 +247,7 @@ static void build_reloc_mask(uint8_t* base, const IMAGE_NT_HEADERS* nt,
 /* N1 (D1b): 把 selfcrypt 加密段 (从 .protcry meta 读 rva/len) 在 mask 中
  * 置 0xFF —— 加密态(文件)与解密态(运行)该段不参与 .text CRC, 两侧一致。
  * 规则与 tools/selfcrypt_proto.py 的 MASK 输出一致。
- * meta entry 20B (II-1): rva u32 | len u32 | key0 u64 | crc u32 */
+ * meta entry 24B (S1 组字段): rva u32 | len u32 | key0 u64 | crc u32 | group u32 */
 static void build_selfcrypt_mask(uint8_t* mask, uint32_t rva, uint32_t len)
 {
     extern uint8_t g_prot_selfcrypt_blob[];
@@ -242,13 +256,13 @@ static void build_selfcrypt_mask(uint8_t* mask, uint32_t rva, uint32_t len)
     uint32_t i;
 
     memcpy(&n, blob, 4u);
-    if (n == 0u || n > 16u)
+        if (n == 0u || n > 16u)
         return;
     for (i = 0u; i < n; i++) {
         uint32_t s_rva, s_len;
-        memcpy(&s_rva, blob + 4u + i * 20u, 4u);
-        memcpy(&s_len, blob + 4u + i * 20u + 4u, 4u);
-        if (s_rva >= rva && s_rva + s_len <= rva + len)
+        memcpy(&s_rva, blob + 4u + i * 24u, 4u);
+        memcpy(&s_len, blob + 4u + i * 24u + 4u, 4u);
+                if (s_rva >= rva && s_rva + s_len <= rva + len)
             memset(mask + (s_rva - rva), 0xFF, s_len);
     }
 }
@@ -278,7 +292,7 @@ prot_status prot_integrity_check_self(void) {
     }
 
     dos = (const IMAGE_DOS_HEADER*)base;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
         return PROT_ERR_INTEGRITY;
     }
 

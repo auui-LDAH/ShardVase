@@ -39,9 +39,10 @@ extern const uint32_t g_prot_selfcrypt_blob_size;
  */
 prot_status prot_selfcrypt_init(void);
 
-/* 函数组: VM 引擎调用链 (prot_vm_run + vm_build_keymaps + vm_wb + vm_var)。
+/* 函数组: 0 = VM 引擎调用链, 1 = EXT 扩展组 (S1: 装载/验签/完整性/反调试/吊销)。
  * D2b 下 enter/leave 以组为单位, 保证相互调用时目标已解密。 */
-#define PROT_SELFCRYPT_GROUP_VM 0u
+#define PROT_SELFCRYPT_GROUP_VM   0u
+#define PROT_SELFCRYPT_GROUP_EXT  1u
 #define PROT_SELFCRYPT_MAX_FN   16u
 
 /*

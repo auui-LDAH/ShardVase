@@ -35,12 +35,17 @@ KS_ADD = 0x14057B7EF767814F
 # D2b 下用函数组 enter/leave)。
 # 顺序 = .pdata 覆盖顺序; 被内联的函数 (vm_kr_*/vm_ks_seek/vm_wd_fill 等)
 # 无独立 .pdata 条目, 跳过 (它们在 prot_vm_run 内部, 随其加密)。
-DEFAULT_TARGETS = (
-    'prot_vm_run',
-    'vm_build_keymaps',
-    'vm_wb',
-    'vm_var',
-)
+DEFAULT_TARGETS = {
+    'prot_vm_run': 0,
+    'vm_build_keymaps': 0,
+    'vm_wb': 0,
+    'vm_var': 0,
+}
+EXT_TARGETS = {
+    'prot_vm_blob_load': 1,
+    'prot_license_verify': 1,
+}
+
 BLOB_SIZE = 16384  # 二期 II-3: .protcry 容器扩容 (main.c 同步)
 
 
@@ -126,6 +131,8 @@ def main(argv=None):
     parser.add_argument('--mask-out', dest='mask_out', default=None,
                         help='掩码输出路径 (默认 build/selfcrypt_mask.txt, '
                              'P0 骨架构建用)')
+    parser.add_argument('--extra', action='append', default=None,
+                        help='额外加密函数名 (组 1, 可多次; S1 纵深扩展)')
     args = parser.parse_args(argv)
 
     if args.disable:
@@ -146,7 +153,12 @@ def main(argv=None):
         seed = args.seed if args.seed is not None else 0x4E31504245474D21
 
         entries = []
-        for name in DEFAULT_TARGETS:
+        targets = dict(DEFAULT_TARGETS)
+        targets.update(EXT_TARGETS)
+        if args.extra:
+            for en in args.extra:
+                targets.setdefault(en, 1)
+        for name, group in targets.items():
             if name not in funcs:
                 raise SelfcryptError('function %s not found in map' % name)
             rva = funcs[name]
@@ -168,24 +180,24 @@ def main(argv=None):
 
             # 原位写密文 (方案 B: 函数不搬移)
             data[toff:toff + size] = cipher
-            entries.append((rva, size, seed, zlib.crc32(body) & 0xFFFFFFFF))
-            print('selfcrypt_proto: %s rva=0x%x size=%d seed=0x%x crc=0x%08x (in-place)'
-                  % (name, rva, size, seed, entries[-1][3]))
+            entries.append((rva, size, seed, zlib.crc32(body) & 0xFFFFFFFF, group))
+            print('selfcrypt_proto: %s rva=0x%x size=%d seed=0x%x crc=0x%08x group=%d (in-place)'
+                  % (name, rva, size, seed, entries[-1][3], group))
 
         if args.dry_run:
             print('selfcrypt_proto: dry-run, no write')
             return 0
 
-        # meta 写入 .protcrypt blob: [count u32][entry*20]
-        # entry = { rva u32 | len u32 | key0 u64 | crc u32 } (20B, II-1 解密态 CRC)
-        hdr = 4 + len(entries) * 20
+        # meta 写入 .protcrypt blob: [count u32][entry*24]
+        # entry = { rva u32 | len u32 | key0 u64 | crc u32 | group u32 } (24B)
+        hdr = 4 + len(entries) * 24
         if hdr > BLOB_SIZE:
             raise SelfcryptError('meta overflow (%d > %d)' % (hdr, BLOB_SIZE))
         blob_off = prot['ptr_raw']
         data[blob_off:blob_off + 4] = struct.pack('<I', len(entries))
-        for i, (rva, size, sd, crc) in enumerate(entries):
-            e_off = blob_off + 4 + i * 20
-            data[e_off:e_off + 20] = struct.pack('<IIQI', rva, size, sd, crc)
+        for i, (rva, size, sd, crc, group) in enumerate(entries):
+            e_off = blob_off + 4 + i * 24
+            data[e_off:e_off + 24] = struct.pack('<IIQII', rva, size, sd, crc, group)
 
         with open(args.exe, 'wb') as f:
             f.write(bytes(data))
@@ -195,7 +207,7 @@ def main(argv=None):
         mask_path = args.mask_out or 'build/selfcrypt_mask.txt'
         os.makedirs(os.path.dirname(os.path.abspath(mask_path)), exist_ok=True)
         with open(mask_path, 'w', encoding='ascii') as f:
-            for rva, size, sd, crc in entries:
+            for rva, size, sd, crc, _g in entries:
                 f.write('0x%x,%d\n' % (rva, size))
         print('selfcrypt_proto: MASK written -> %s' % mask_path)
         return 0
