@@ -305,16 +305,35 @@ prot_status prot_antidebug_scan(prot_antidebug_report* out) {
 }
 
 uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
+    /* S3 试点 (2026-08-30): 受限控制流平坦化 —— 关键位聚合改为等价
+     * switch-dispatch 状态机 (语义不变, 静态分支不可直读). */
+    uint32_t mask[7];
+    uint32_t st = 0u;
+    uint32_t acc = 0u;
     if (rep == NULL) {
         return 0;
     }
-    /* 关键项 = {being_debugged, debug_port, debug_flags, debug_object,
-     *           hardware_breakpoints, timing_suspicious, ppid_blacklist};
-     * 咨询项 (peb_nt_global_flag, kernel_debugger, debug_heap_flags,
-     *  int3_honey, clock_drift_sec) 不计入 */
-    return (rep->peb_being_debugged || rep->debug_port || rep->debug_flags ||
-            rep->debug_object || rep->hardware_breakpoints ||
-            rep->timing_suspicious || rep->ppid_blacklist) ? 1u : 0u;
+    mask[0] = rep->peb_being_debugged;
+    mask[1] = rep->debug_port;
+    mask[2] = rep->debug_flags;
+    mask[3] = rep->debug_object;
+    mask[4] = rep->hardware_breakpoints;
+    mask[5] = rep->timing_suspicious;
+    mask[6] = rep->ppid_blacklist;
+    for (;;) {
+        switch (st) {
+        case 0: acc |= mask[0]; st = 1; continue;
+        case 1: acc |= mask[1]; st = 2; continue;
+        case 2: acc |= mask[2]; st = 3; continue;
+        case 3: acc |= mask[3]; st = 4; continue;
+        case 4: acc |= mask[4]; st = 5; continue;
+        case 5: acc |= mask[5]; st = 6; continue;
+        case 6: acc |= mask[6]; st = 7; continue;
+        default: break;
+        }
+        break;
+    }
+    return acc ? 1u : 0u;
 }
 
 /* FAKE 策略伪结果标志 (契约 §6.2) */
