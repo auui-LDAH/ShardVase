@@ -344,23 +344,33 @@ uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
 
 /* FAKE 策略伪结果标志 (契约 §6.2) */
 static volatile uint32_t g_fake;
-
 prot_status prot_antidebug_apply_policy(prot_policy pol) {
+    /* S3 扩展 (2026-08-30): 策略分发 switch-dispatch 化 (等价语义) */
     prot_antidebug_report rep;
+    uint32_t st;
 
     prot_antidebug_scan(&rep);
-    if (prot_antidebug_detected(&rep) != 0) {
-        switch (pol) {
-            case PROT_POLICY_EXIT:
-                TerminateProcess(GetCurrentProcess(), PROT_EXIT_DEBUG_DETECTED);
-                break;
-            case PROT_POLICY_FAKE:
-                g_fake = 1u;
-                break;
-            case PROT_POLICY_CONTINUE:
-            default:
-                break; /* 无操作 */
+    if (prot_antidebug_detected(&rep) == 0u) {
+        return PROT_OK;
+    }
+    st = (uint32_t)pol;
+    for (;;) {
+        switch (st) {
+        case PROT_POLICY_EXIT:
+            TerminateProcess(GetCurrentProcess(), PROT_EXIT_DEBUG_DETECTED);
+            st = 0xFFFFFFFFu;
+            continue;
+        case PROT_POLICY_FAKE:
+            g_fake = 1u;
+            st = 0xFFFFFFFFu;
+            continue;
+        case 0xFFFFFFFFu:
+            break;
+        default:
+            st = 0xFFFFFFFFu; /* CONTINUE/其他: 无操作 */
+            continue;
         }
+        break;
     }
     return PROT_OK;
 }
