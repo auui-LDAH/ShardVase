@@ -99,6 +99,22 @@
 
 
 
+
+## 12.5 实施记录 v7（2026-08-30 · S1 4/5 落地 + S3 扩展）
+
+**S1 突破（4/5 落地）**：
+- antidebug/integrity 加密最终落地：辅助函数（antidebug 的 ad_*/vh_int3、
+  integrity 的 build_reloc/iat_snapshot 等）全移 `.protxec` 独立页；
+- **根因最终闭环**：`prot_revoke_check` 与 `main` 同页（0x5000）——
+  VP 切 RW 禁执行 main 自伤，**不可解**（revoke 排除，间接表+签名兜底）；
+- **页冲突安全网**：selfcrypt_proto 检测加密段与 main 同页 → 警告跳过
+  （防未来把 main 同页函数加回加密集合）；
+- 最终 S1 = blob_load/license_verify/integrity_check_self/antidebug_scan
+  四枚加密，稳定性门槛 3/3 PASS。
+
+**S3 扩展**：平坦化推广到 `prot_antidebug_apply_policy`（策略分发
+switch-dispatch 状态机），门槛 3/3 PASS。
+
 ## 12. 实施记录 v6（2026-08-29 深夜 · S4/S5 完成）
 
 - **S5 落地**：反调试 +2 维（父进程调试器黑名单=关键项 / 墙钟-tick 漂移=咨询项）；
