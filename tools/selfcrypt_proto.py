@@ -44,6 +44,8 @@ DEFAULT_TARGETS = {
 EXT_TARGETS = {
     'prot_vm_blob_load': 1,
     'prot_license_verify': 1,
+    'prot_integrity_check_self': 1,
+    'prot_antidebug_scan': 1,
 }
 
 BLOB_SIZE = 16384  # 二期 II-3: .protcry 容器扩容 (main.c 同步)
@@ -173,6 +175,14 @@ def main(argv=None):
                 size = text_end_rva - rva if rva < text_end_rva else 0
             if size <= 5 or size > 4096:
                 raise SelfcryptError('%s: bad size %d' % (name, size))
+
+            # 页冲突安全网 (2026-08-30): 加密段所在页若与执行流函数 (main)
+            # 同页, VP 切 RW 会禁执行 main -> 自伤崩. 警告并跳过该段.
+            if 'main' in funcs:
+                if (rva >> 12) == (funcs['main'] >> 12):
+                    print('selfcrypt_proto: WARN %s shares page 0x%x with main '
+                          '(VP self-poison risk) - skipping' % (name, rva >> 12))
+                    continue
 
             toff = text['ptr_raw'] + (rva - text['virtual_addr'])
             body = bytes(data[toff:toff + size])

@@ -15,6 +15,10 @@
 #include "protect/antidebug.h"
 #include "protect/syscall.h" /* A6: direct syscall 直调 */
 
+/* S1 专项 (2026-08-30): 辅助函数移入 .protxec 独立页 (与加密段分页,
+ * 消除"页内未加密邻居被 VP 禁执行"自伤). scan 自身在下方恢复 .text. */
+#pragma code_seg(".protxec")
+
 /* Phase 3b: 多轮计时采样配置. 5 轮 × 20ms, 任一轮 < 5ms 判可疑. */
 #define PROT_AD_TIMING_ROUNDS 5u
 #define PROT_AD_TIMING_SLEEP_MS 20u
@@ -103,6 +107,8 @@ typedef struct prot_sys_kdbg_info {
     BOOLEAN DebuggerNotPresent;
 } prot_sys_kdbg_info;
 
+/* scan 及以下回 .text (scan 为加密目标, 需留在 .text) */
+#pragma code_seg()
 prot_status prot_antidebug_scan(prot_antidebug_report* out) {
     uintptr_t peb;
     LARGE_INTEGER freq;

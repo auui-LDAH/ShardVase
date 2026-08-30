@@ -27,6 +27,13 @@
  * [count u32][entry*20] (rva/len/key/crc)。
  * 定义在本实现文件: 链接 selfcrypt.c 的模块 (demo/example) 共用,
  * 避免"容器在 main.c 导致 example 链接缺符号"。 */
+/* S1 专项 (2026-08-30): .protpad 填充节 — 把 .protxec 推后一页,
+ * 使其与 .text 尾部加密段 (revoke) 分页, 消除
+ * 页粒度 VP 禁执行自伤。 */
+#pragma section(".protpad", read)
+__declspec(allocate(".protpad"))
+const char g_prot_pad[4096] = {0};
+
 #pragma section(".protcrypt", read, write)
 __declspec(allocate(".protcrypt"))
 uint8_t g_prot_selfcrypt_blob[16384];
