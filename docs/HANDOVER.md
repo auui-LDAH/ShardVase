@@ -78,6 +78,41 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
 - 篡改 `.text`/`.rdata`/`.pdata` → 0xBAD；调试附加 → 0xDB；看门狗 5s（±40% 抖动）
   周期复查完整性 + 反调试。
 
+## 2.5 当前验收状态（2026-08-30 增量）
+
+### 构建与回归
+- `build.ps1` 一键 DONE；`tools\release_check.ps1` **11/11 PASS**（含可复现、
+  e2e T1-T28、attacks A1-A12、vm_unit/vmc/example/protchain）。
+- **标准稳定性回归器 `tools\mask_stability_test.ps1`**（真机）：删旧 mask +
+  完整管线构建 + UTF-8 判定，3 连建门槛；S1-S5 每次改动后均 3/3 PASS。
+
+### 本轮能力增量（S1-S5/S2/A2/签发）
+- **S1 selfcrypt 扩容**：meta 24B 组化 + EXT 组包裹；**落地 2 枚**
+  （blob_load + license_verify 加密）；pdata 边界防御（防写坏邻节）；
+  `.protxec` 独立可执行节（解密器/crc32/完整性辅助分页）。
+  antidebug/integrity/revoke 三枚 = 页粒度 VP 禁执行自伤技术债（下轮
+  PAGE_ALIGN 专项）。
+- **S2 运行时密钥多样性**：`prot_vm_rekey` 装载后内存差分流重编码——
+  每次运行密钥域不同（实证 A/B 两次不同），blob 文件/签名不变。
+- **S3 平坦化试点**：`prot_antidebug_detected` switch-dispatch 状态机
+  （语义等价，7 关键项含 ppid）。
+- **S4 字符串收敛**：HWID 格式 / revoke 提示 / 在线 URL 模板入 strcrypt
+  表（exe 扫描已无这些明文）。
+- **S5 反调试 +2 维**：父进程调试器黑名单（关键项）+ 墙钟-tick 漂移
+  （咨询项）；真机 selftest 0 误报。
+- **A2**：`// @vmcalc` 业务函数自动 VM 化（c2vasm 翻译器 + 桩 + blob 同链）
+  已落地（golden 6/6 + flow test 11/11 + 真机 hashcalc 验收）。
+- **签发体系**：Ubuntu Server（issuer-host）离线签发 + GUI 签发台（本机
+  桌面快捷方式）+ 台账哈希链/重放拦截/字段卫生（D-D1/D-D2/D-D4）。
+- **ShardVase 公开面**：GitHub 仓库（auui-LDAH/ShardVase-*）+ 演示包
+  v1.0（hashcalc + 评估授权）+ 文档（能力/边界/攻防记录）。
+- **攻防矩阵**：drill6（签发链路）、sdk1（骨架产物 14 项）、sdk2
+  （vmcalc 面 M11/M12）、sdk3（回归全绿含 M4 换机）。
+
+### 待办（详见各计划文档）
+- S1 三枚 PAGE_ALIGN 专项；S3 扩展；AV/兼容矩阵（VM 暂停中，用户手动接管）；
+  VirusTotal 手动上传；文章发布；HANDOVER 随版本持续更新。
+
 ## 3. 迁移到其他电脑 — 交接清单
 
 ### 3.1 需要带走 / 确认的东西（**必须**）
