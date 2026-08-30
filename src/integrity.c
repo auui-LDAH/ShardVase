@@ -334,6 +334,7 @@ prot_status prot_integrity_check_self(void) {
     return PROT_OK;
 }
 
+#pragma code_seg(".protxec")  /* 辅助函数与加密段分页 (S1 技术债, 2026-08-30) */
 /* --- 运行期 IAT 完整性 (G2 补洞, ATTACK_DRILL2) ---
  * loader 启动时写入 IAT 导入地址 (合法); 攻击者运行期改写 IAT (hook 导入
  * 表) 不在文件级 CRC 覆盖内。这里快照 IAT 初始值, 周期比对 detect 改写。

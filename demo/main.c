@@ -16,6 +16,7 @@
 #include <winhttp.h>
 
 #include "protect/antidebug.h"
+
 #include "protect/blob.h"
 #include "protect/dbiguard.h"
 #include "protect/hostid.h"
