@@ -184,3 +184,7 @@ size_t prot_auth_build_message(const char* serial, uint64_t mid,
    文档化**：后续在 NDK 环境引入 -flto/优化混淆即增强；自加密段不依赖
    编译器即可用。
 6. [ ] T1：Android 攻防测试矩阵（需 NDK 构建产物/真机）。
+   - [x] T1-0（2026-08-30）：**攻击侧工具就绪**——`tools/attacker/android_jniptrace/`
+     ELF64 符号解析器（.symtab/.dynsym，宿主编译 6/6 符号命中）+ JNI/ptrace 补丁
+     模块（`patcher_jni.c` 同进程/`ptrace_patcher_cli.c` 附加双模式）。
+     详见 `docs/ATTACK_DRILL7.md`。真机验证待 NDK/root 环境。

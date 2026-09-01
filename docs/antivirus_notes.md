@@ -30,3 +30,40 @@
 ## 测试记录表模板
 | 环境 | 杀软(版本) | 样本 | 签名 | 静态 | 落地 | 执行 | 长驻 | 报毒名 |
 |------|------------|------|------|------|------|------|------|--------|
+## 实测记录（2026-08-30，宿主机直测）
+
+> 背景：VirtualBox VM 因宿主 VBS/HVCI 占用 VT-x 无法使用（headless 黑屏），改用宿主直测。
+> 宿主环境：VBS=2（开启）+ HVCI/内存完整性=开启 + 强制代码完整性=2 + 火绒 6.0。
+
+### 环境 1：HVCI 基线（Defender 引擎损坏 0.0.0.0，无行为拦截）
+
+| 样本 | 结果 | 备注 |
+|------|------|------|
+| demo.exe（Dev）| ✅ 正常运行 | selfcrypt 4 段解密全通过（VP/XOR/CRC/FLUSH/RX-OK）；license: 1；看门狗 12s+ 存活 |
+
+### 环境 2：火绒 6.0（宿主实时防护）
+
+| 样本 | 结果 | 备注 |
+|------|------|------|
+| demo.exe（Dev）| ❌ **行为拦截** | 验签通过（"校验通过，欢迎使用！"已打印）后 **1 秒内被杀**（退出码空=外部强杀）|
+| tool_demo.exe | ⚠️ 0.5s 退出无输出 | 参数待确认（序列号匹配问题），未定论 |
+
+### 结论
+1. **HVCI 兼容性 ✅**：自修改代码（selfcrypt）在内存完整性环境下工作正常（代码签名/内存修改模式合规）；
+2. **火绒行为拦截 ⚠️**：Dev 构建的自解密+看门狗模式触发火绒行为防护（验签后杀进程）；
+   - **下一步**：测 Release 加固构建（无 SCDBG、更收敛的自修改模式）是否仍触发；
+3. Defender 引擎损坏（AMEngineVersion=0.0.0.0）待修复（DISM /Online /Cleanup-Image /RestoreHealth）。
+
+### 环境 3：火绒 6.0 + Release 加固构建（最终结论，2026-08-30 19:5x）
+
+> 修正此前误判：Dev/Release 构建的"1 秒被杀"实为 Start-Process -RedirectStandardInput 的 stdin EOF 假象
+> （正确方式：ProcessStartInfo + 保持 stdin 管道）。
+
+| 样本 | 结果 | 备注 |
+|------|------|------|
+| demo.exe（Release 修复后）| ✅ **火绒未拦截** | 完整跑通：反调试通过 → hook 咨询项 → 虚拟机咨询项 → 校验通过 → 欢迎语；看门狗存活 30s+ |
+
+### 附：Release 构建 bug 修复（2026-08-30）
+- **问题**：Release 构建反调试误报（0xDB 自杀，351ms）——prot_antidebug_apply_policy 在 selfcrypt 解密窗口外
+  调用被加密的 prot_antidebug_scan → 密文执行误报；
+- **修复**：main.c 将 apply_policy 调用包入 sc_ext_enter/leave（CHANGELOG 已记录）。

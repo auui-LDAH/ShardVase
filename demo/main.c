@@ -523,7 +523,12 @@ int main(int argc, char** argv)
         printf("%s\n", prot_str_get(PROT_STR_MSG_DBG));
         fflush(stdout);
     }
-    prot_antidebug_apply_policy(PROT_POLICY_EXIT); /* 妫€娴嬪埌 -> TerminateProcess(0xDB) */
+    if (sc_ext_enter() == PROT_OK) {
+        prot_antidebug_apply_policy(PROT_POLICY_EXIT);
+        sc_ext_leave();
+    } else {
+        prot_antidebug_apply_policy(PROT_POLICY_EXIT);
+    }
     if (prot_antidebug_detected(&rep)) {
         exit(PROT_EXIT_DEBUG_DETECTED); /* 鍏滃簳: 鑻ョ瓥鐣ユ湭缁堟杩涚▼鍒欐樉寮忛€€鍑?*/
     }

@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Release 构建反调试误报 (0xDB 自杀): prot_antidebug_apply_policy 在 selfcrypt 解密窗口外调用被加密的 prot_antidebug_scan -> 密文执行误报。修复: main.c 将 apply_policy 调用包入 sc_ext_enter/leave。
+
 ## [1.0.0] - 2026-08-15
 
 ### Added

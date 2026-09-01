@@ -10,6 +10,7 @@
 
 #include <windows.h>
 #include <intrin.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "protect/antidebug.h"
