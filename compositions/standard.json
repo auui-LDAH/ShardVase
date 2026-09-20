@@ -1,5 +1,5 @@
 {
-  "_comment": "参考拼装图: 推荐默认组合。覆盖授权链 + 环境检测 + 完整性 + 自加密。对应 demo 当前的实际构成。",
+  "_comment": "参考拼装图: 推荐默认组合。对应 demo 当前的实际构成。注意: 宿主改造完成前, compose.py 会把宿主下限(substrate)自动补入, 实际模块数见 --list。",
   "name": "standard",
   "description": "推荐默认: 授权链 + 反调试 + 完整性 + VM 自加密",
   "modules": [
@@ -17,6 +17,7 @@
   "expected_tradeoffs": [
     "反调试计时检测固定消耗 250ms",
     ".text 布局敏感: 新增编译单元需重建 CRC/mask (管线已自动)",
-    "selfcrypt 与 integrity 共存依赖掩码豁免 (modcheck 会提示)"
+    "selfcrypt 与 integrity 共存依赖掩码豁免 (modcheck 会提示)",
+    "宿主下限会自动补入 dbiguard/vmdetect/indirect/revoke (改造前)"
   ]
 }

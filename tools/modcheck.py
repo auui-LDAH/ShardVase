@@ -42,6 +42,14 @@ COMPOSITIONS = os.path.join(REPO, 'compositions')
 VALID_CAPS = {'detect', 'prevent', 'conceal', 'verify', 'respond'}
 VALID_PHASES = ['init', 'scan', 'decide', 'enforce', 'watch']
 
+# 宿主下限: main.c / indirect_table.c 硬引用、无法从组合中移除的模块。
+# **链接器实测** (2026-09-20): 只编译授权链后 MSVC 报 12 个未解析符号,
+# 全部来自 antidebug/integrity/dbiguard/vmdetect/indirect。
+# 须与 tools/compose.py 的 SUBSTRATE 保持一致 (modcheck 会校验两者同步)。
+HOST_SUBSTRATE = ['antidebug', 'blob', 'dbiguard', 'hostid', 'indirect',
+                  'integrity', 'license', 'revoke', 'strcrypt', 'vm',
+                  'vmdetect']
+
 # 头文件中的对外函数声明 (与 modcheck 无关的实现细节已排除)
 FN_DECL = re.compile(
     r'^\s*(?:prot_status|void|uint(?:8|16|32|64)_t|int|size_t|'
@@ -176,6 +184,24 @@ def check_registry(reg):
                     '%s: 既未登记为模块也非原语 (新增模块请补 modules.json)'
                     % rel)
 
+    # --- HOST_SUBSTRATE 与 compose.py 的 SUBSTRATE 必须一致 ---
+    # 两处都描述"宿主无法移除的模块", 漂移会导致组合解析与校验结论矛盾。
+    try:
+        compose_path = os.path.join(REPO, 'tools', 'compose.py')
+        if os.path.isfile(compose_path):
+            m = re.search(r'^SUBSTRATE\s*=\s*\[(.*?)\]',
+                          read(compose_path), re.M | re.S)
+            if m:
+                compose_sub = set(re.findall(r"'([^']+)'", m.group(1)))
+                if compose_sub != set(HOST_SUBSTRATE):
+                    errors.append(
+                        'HOST_SUBSTRATE 与 compose.py SUBSTRATE 不一致: '
+                        'modcheck=%s compose=%s'
+                        % (sorted(set(HOST_SUBSTRATE) - compose_sub) or 'ok',
+                           sorted(compose_sub - set(HOST_SUBSTRATE)) or 'ok'))
+    except Exception as e:                                    # noqa: BLE001
+        warnings.append('无法校验 SUBSTRATE 同步: %r' % e)
+
     return errors, warnings
 
 
@@ -222,7 +248,18 @@ def check_composition(reg, names):
         warnings.append('需要可写目录: %s (安装目录 ACL 只读时失效)'
                         % ', '.join(sorted(wr)))
 
-    # --- 5. 阶段顺序 ---
+    # --- 5. 宿主下限: 未显式声明但被宿主强依赖的模块 ---
+    # 依据 compose.py 的 SUBSTRATE (链接器实测)。差异必须如实报出,
+    # 否则拼装图会"看起来更小"而实际等价 (对使用者是误导)。
+    substrate = set(HOST_SUBSTRATE)
+    implicit = sorted(substrate - selected)
+    if implicit:
+        warnings.append(
+            '宿主下限未显式声明, 将自动补入: %s '
+            '(main.c/indirect_table.c 硬引用; 见 BLUEPRINT §5 阶段 2)'
+            % ', '.join(implicit))
+
+    # --- 6. 阶段顺序 ---
     seen = set()
     for ph in VALID_PHASES:
         for n in sorted(selected):

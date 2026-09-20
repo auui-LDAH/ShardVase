@@ -1,12 +1,14 @@
 {
-  "_comment": "参考拼装图: 最小可用组合。仅授权链, 无环境检测。适用于对性能极敏感或已有外部保护的工具。",
+  "_comment": "参考拼装图: 最小可用组合。仅授权链, 无环境检测。适用于对性能极敏感或已有外部保护的工具。注: blob 与 vm 由宿主下限(substrate)自动补入 —— main.c 无条件调用 prot_vm_blob_load 与 VM 引擎。",
   "name": "minimal",
   "description": "最小可用: 授权链 + 机器绑定 + 字符串加密",
   "modules": ["license", "hostid", "strcrypt"],
+  "auto_added_by_host": ["blob", "vm"],
   "use_case": "已有外部保护措施; 或对启动开销极敏感的场景",
   "expected_tradeoffs": [
     "无环境检测: 调试器/DBI 下不设防",
     "无完整性校验: 字节级 patch 不被发现",
-    "无代码混淆: 静态分析成本低"
+    "无代码混淆: 静态分析成本低",
+    "宿主下限自动补入 blob/vm (VM 授权校验链无法剥离)"
   ]
 }
