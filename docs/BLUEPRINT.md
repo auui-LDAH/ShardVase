@@ -189,14 +189,47 @@
 
 **主题**：组合驱动构建 —— 让"可组合"从声明变成事实
 
-| 任务 | 说明 |
-|------|------|
-| `build.ps1 -Composition <name>` | 按拼装图只编译所选模块 |
-| 各拼装图独立测试 | minimal/standard/hardened 各自跑 e2e |
-| 组合产物清单 | manifest 记录本次组合，可追溯 |
-| 冲突组合的处理策略 | full 组合（含已知冲突）如何构建并说明 |
+#### 进度
 
-**验收标准**：
+| 子项 | 状态 | 提交 |
+|------|------|------|
+| 构建层：`tools/compose.py` 组合解析（模块集/源文件/宏/头文件） | ✅ | `5eff7ae` |
+| 宿主下限实测（链接器为权威） | ✅ | `5eff7ae` |
+| 宿主层 批1：`vmdetect` + `dbiguard` 条件编译 | ✅ | `f4ccf64` |
+| 宿主层 批2：`antidebug` / `integrity` / `indirect` / `revoke` | ⬜ **下次继续** | — |
+| `build.ps1 -Composition` 集成 | ⬜ | — |
+
+#### ✅ 已验证的成果（批1 实证）
+
+宿主条件编译**机制确实生效**（非"看起来对"）：
+
+```
+全部模块  15 源文件 / 13 模块  -> 链接成功, 228352 字节
+屏蔽 2 个 13 源文件 / 11 模块  -> 链接成功, 224768 字节
+                                 省 3584 字节 (1.6%)
+两者均通过 /W4 /WX（零告警）
+```
+
+结构校验：3 组 `#ifdef`/`#endif` 全部配对，花括号 131/131、圆括号 475/475 平衡。
+回归：e2e 27 PASS / 0 FAIL，attacks 12/12，protchain 6/6，行为不变。
+
+#### ⬜ 下次继续的起点：批2
+
+**为什么批2 比批1 难** —— 不是机械加 `#ifdef`，有三类真实语义问题：
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 1 | **`rep` 变量跨函数共享** | `prot_antidebug_report rep` 在 `main()` 声明（L449），但 `print_selftest()` 也接收它；排除 `antidebug` 时该变量与函数都需处理，否则 `/WX` 报 unused |
+| 2 | **`selftest` 可能变 unused** | 3 处 `if (selftest)` 分属不同模块段（L504/513/537）；全部排除后 `selftest` 变量无引用 → `/WX` 报错 |
+| 3 | **`selfcrypt` 目标函数与组合耦合** ⚠️ | `selfcrypt_proto.py` 的 `EXT_TARGETS` **硬编码** `prot_integrity_check_self` 与 `prot_antidebug_scan`。若组合排除了 `integrity`/`antidebug`，这两个符号在 `.map` 中不存在 → 构建失败 |
+
+**问题 3 是最关键的**：它意味着 **`selfcrypt` 的可组合性受限于它加密谁**。
+`tools/selfcrypt_proto.py` 需要按组合过滤目标列表（只加密本次参与构建的模块函数）。
+这是批2 的核心工作，也是"组合"与"自加密"两个机制的**真实耦合点** ——
+与 `MODULAR_ARCH` P2（布局/资源是硬约束）是同一类问题。
+
+#### 原定验收标准
+
 1. `-Composition minimal` 能构建出更小的产物（缺模块不链接）
 2. `-Composition standard` 产出与当前 demo 等价
 3. 每个拼装图有独立测试脚本且全绿

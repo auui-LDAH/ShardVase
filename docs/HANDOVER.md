@@ -172,6 +172,46 @@ vmc / c2vasm golden / vm_unit / syscall_probe / example   全 PASS
 GitHub 真实 push 后 CI 实跑替换 `ci_sim`／Defender 引擎修复（DISM）／
 W2 长驻留实跑／T3 真机（需**交互式桌面**，SSH 与计划任务均被 session 0 拒绝）。
 
+## 2.7 模块化框架进度（2026-09-20 起）
+
+> 总纲见 **`docs/BLUEPRINT.md`**（目标/路线图/验收）
+> 架构细节见 **`docs/MODULAR_ARCH.md`**
+> 本节只记"做到哪了、下次从哪继续"。
+
+### 已完成阶段
+
+| 阶段 | 内容 | 提交 |
+|------|------|------|
+| 0 | SCDBG 调试日志改为 opt-in（Release 不再泄漏 RVA/密钥/CRC） | `f0aa393` |
+| 1 | 模块注册表 `modules.json` + 校验器 `tools/modcheck.py` + 四档 `compositions/`，接入门禁 | `da6680e` |
+| 2-构建层 | `tools/compose.py`（拼装图→源文件/宏/头文件）+ 宿主下限链接器实测 | `5eff7ae` |
+| 2-宿主批1 | `vmdetect`/`dbiguard` 条件编译（实证：13→11 模块，产物省 3584B） | `f4ccf64` |
+
+### 门禁基线
+
+`release_check` 现为 **12 项**（新增「模块契约 (modcheck)」），全绿。
+
+### ⬜ 下次继续：阶段 2 宿主批2
+
+**起点文件**：`demo/main.c`（批1 已插入 3 处 `#ifdef`，模式可复用）
+
+**待处理模块**：`antidebug` / `integrity` / `indirect` / `revoke`
+
+**三类已知难点**（详见 `BLUEPRINT.md` §5 阶段 2）：
+
+1. `rep` 变量跨函数共享（`main()` 声明 → `print_selftest()` 使用）
+2. `selftest` 在全部相关段排除后会变 unused → `/WX` 报错
+3. ⚠️ **`selfcrypt_proto.py` 的 `EXT_TARGETS` 硬编码** `prot_integrity_check_self`
+   与 `prot_antidebug_scan`；组合排除这两个模块会导致 `.map` 中找不到符号 →
+   构建失败。**这是"组合"与"自加密"的真实耦合点**，批2 的核心工作。
+
+**纪律提醒**（本期血泪）：
+- 改 `.ps1` 后必须复查 UTF-8 BOM（`EF BB BF`）—— 编辑工具会静默剥离，
+  导致 PS 5.1 按 GBK 解析、中文损坏 + 语法假错
+- 验证组合开关必须**重新生成 `prot_modconfig.h`**，叠加命令行 `-D` 无效
+  （头文件已定义的宏，命令行只能增加不能删除）
+- 改 `.text` 相关代码后跑 3 连建稳定性门槛（布局敏感是已知雷区）
+
 ## 3. 迁移到其他电脑 — 交接清单
 
 ### 3.1 需要带走 / 确认的东西（**必须**）
