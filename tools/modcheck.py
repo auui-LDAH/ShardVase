@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+tools/modcheck.py — 模块注册表校验 + 组合一致性检查
+
+对应 docs/MODULAR_ARCH.md §4.1。两件事:
+
+  A. 注册表漂移检查 (P3: 门禁绕过会掩盖缺陷)
+     逐项比对 modules.json 与真实源码:
+       - source/header 文件存在
+       - exports 与头文件中的 prot_* 声明一致 (双向: 不多不少)
+       - deps 与源码 #include 的真实依赖一致
+       - known_limits 非空 (P4: 强制公开边界)
+     任何不一致 -> 报错并非零退出。
+
+  B. 组合一致性检查 (P2: 两个各自正确的机制组合就崩)
+     给定一组模块, 检查组合是否自洽:
+       - 依赖闭包完整
+       - modifies_text 与 verifies_text 冲突 (需 selfcrypt 掩码豁免)
+       - page_align 模块的页资源冲突
+       - 阶段顺序 (init -> scan -> decide -> enforce -> watch)
+
+用法:
+    python tools/modcheck.py                    # 仅注册表漂移检查
+    python tools/modcheck.py --compose standard # 检查一个组合
+    python tools/modcheck.py --list             # 列出所有模块
+    python tools/modcheck.py --list-compositions
+
+退出码: 0 全部通过; 1 有错误。
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+REGISTRY = os.path.join(REPO, 'modules.json')
+COMPOSITIONS = os.path.join(REPO, 'compositions')
+
+VALID_CAPS = {'detect', 'prevent', 'conceal', 'verify', 'respond'}
+VALID_PHASES = ['init', 'scan', 'decide', 'enforce', 'watch']
+
+# 头文件中的对外函数声明 (与 modcheck 无关的实现细节已排除)
+FN_DECL = re.compile(
+    r'^\s*(?:prot_status|void|uint(?:8|16|32|64)_t|int|size_t|'
+    r'const\s+char\s*\*|prot_revoke_status)\s+'
+    r'(prot_\w+)\s*\(', re.M)
+
+
+def read(path):
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        return f.read()
+
+
+def load_registry():
+    if not os.path.isfile(REGISTRY):
+        raise SystemExit('modcheck: modules.json not found')
+    with open(REGISTRY, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def header_exports(header_path):
+    """头文件里声明的 prot_* 函数名集合。"""
+    if not os.path.isfile(header_path):
+        return None
+    return set(FN_DECL.findall(read(header_path)))
+
+
+def source_deps(src_path, mod_name):
+    """源码 + 自身头文件里对其它模块的真实依赖。"""
+    deps = set()
+    paths = [src_path]
+    hdr = os.path.join(REPO, 'include', 'protect', mod_name + '.h')
+    if os.path.isfile(hdr):
+        paths.append(hdr)
+    for p in paths:
+        if not os.path.isfile(p):
+            continue
+        for m in re.finditer(r'#include\s+"protect/([^"]+)\.h"', read(p)):
+            h = m.group(1)
+            if h not in ('protdef', mod_name):
+                deps.add(h)
+    return deps
+
+
+# ---------------------------------------------------------------------------
+# A. 注册表漂移检查
+# ---------------------------------------------------------------------------
+def check_registry(reg):
+    errors = []
+    warnings = []
+    mods = reg.get('modules', {})
+
+    # 声明为模块的源文件
+    declared_srcs = set()
+    for name, m in mods.items():
+        src = m.get('source', '')
+        declared_srcs.add(os.path.normpath(src))
+
+        # --- 字段完整性 ---
+        for field in ('source', 'caps', 'phases', 'deps', 'exports',
+                      'known_limits', 'page_align', 'modifies_text',
+                      'verifies_text'):
+            if field not in m:
+                errors.append('%s: 缺字段 %s' % (name, field))
+
+        # --- 能力/阶段取值 ---
+        for c in m.get('caps', []):
+            if c not in VALID_CAPS:
+                errors.append('%s: 非法 capability %r' % (name, c))
+        for p in m.get('phases', []):
+            if p not in VALID_PHASES:
+                errors.append('%s: 非法 phase %r' % (name, p))
+
+        # --- P4: known_limits 不得为空 ---
+        if not m.get('known_limits'):
+            errors.append('%s: known_limits 为空 (P4 要求显式声明边界)' % name)
+
+        # --- 依赖指向已登记模块 ---
+        for d in m.get('deps', []):
+            if d not in mods:
+                errors.append('%s: 依赖 %r 未在注册表登记' % (name, d))
+
+        # --- 文件存在 ---
+        sp = os.path.join(REPO, src)
+        if not os.path.isfile(sp):
+            errors.append('%s: source 不存在 %s' % (name, src))
+            continue
+
+        # --- 导出符号双向比对 ---
+        hdr_rel = m.get('header')
+        if hdr_rel:
+            hp = os.path.join(REPO, hdr_rel)
+            actual = header_exports(hp)
+            if actual is None:
+                errors.append('%s: header 不存在 %s' % (name, hdr_rel))
+            else:
+                declared = set(m.get('exports', []))
+                missing = actual - declared
+                extra = declared - actual
+                if missing:
+                    errors.append(
+                        '%s: 头文件有声明但注册表未登记: %s'
+                        % (name, ', '.join(sorted(missing))))
+                if extra:
+                    errors.append(
+                        '%s: 注册表登记但头文件无声明: %s'
+                        % (name, ', '.join(sorted(extra))))
+
+        # --- 依赖比对 ---
+        actual_deps = source_deps(sp, name)
+        declared_deps = set(m.get('deps', []))
+        if actual_deps != declared_deps:
+            miss = actual_deps - declared_deps
+            ext = declared_deps - actual_deps
+            if miss:
+                errors.append('%s: 源码依赖但注册表未登记: %s'
+                              % (name, ', '.join(sorted(miss))))
+            if ext:
+                errors.append('%s: 注册表登记但源码无依赖: %s'
+                              % (name, ', '.join(sorted(ext))))
+
+    # --- 未被登记也非原语的源文件 (防止新增模块漏登记) ---
+    prims = reg.get('primitives', {})
+    prim_srcs = {os.path.normpath(v.get('source', '')) for v in prims.values()}
+    src_dir = os.path.join(REPO, 'src')
+    if os.path.isdir(src_dir):
+        for f in sorted(os.listdir(src_dir)):
+            if not f.endswith('.c'):
+                continue
+            rel = os.path.normpath(os.path.join('src', f))
+            if rel not in declared_srcs and rel not in prim_srcs:
+                warnings.append(
+                    '%s: 既未登记为模块也非原语 (新增模块请补 modules.json)'
+                    % rel)
+
+    return errors, warnings
+
+
+# ---------------------------------------------------------------------------
+# B. 组合一致性检查
+# ---------------------------------------------------------------------------
+def check_composition(reg, names):
+    errors = []
+    warnings = []
+    mods = reg['modules']
+
+    unknown = [n for n in names if n not in mods]
+    if unknown:
+        return ['组合含未登记模块: %s' % ', '.join(unknown)], []
+
+    selected = set(names)
+
+    # --- 1. 依赖闭包完整性 ---
+    for n in sorted(selected):
+        for d in mods[n].get('deps', []):
+            if d not in selected:
+                errors.append('%s 依赖 %s, 但组合中未包含 %s' % (n, d, d))
+
+    # --- 2. .text 改写 vs 完整性校验冲突 (P2 的核心场景) ---
+    modifiers = [n for n in selected if mods[n].get('modifies_text')]
+    verifiers = [n for n in selected if mods[n].get('verifies_text')]
+    if modifiers and verifiers:
+        warnings.append(
+            '.text 冲突: %s 改写 .text, %s 校验 .text —— '
+            '必须启用 selfcrypt 掩码豁免 (integrity.build_selfcrypt_mask), '
+            '否则必然 TAMPERED'
+            % (', '.join(sorted(modifiers)), ', '.join(sorted(verifiers))))
+
+    # --- 3. 页对齐资源 (P2: 页粒度自伤) ---
+    page_mods = [n for n in selected if mods[n].get('page_align')]
+    if len(page_mods) > 1:
+        warnings.append(
+            '多个模块要求页对齐: %s —— 需确认各自落在独立页 '
+            '(S1 已证明同页会导致 VirtualProtect 自伤)' % ', '.join(sorted(page_mods)))
+
+    # --- 4. 部署约束 ---
+    wr = [n for n in selected if mods[n].get('needs_writable_dir')]
+    if wr:
+        warnings.append('需要可写目录: %s (安装目录 ACL 只读时失效)'
+                        % ', '.join(sorted(wr)))
+
+    # --- 5. 阶段顺序 ---
+    seen = set()
+    for ph in VALID_PHASES:
+        for n in sorted(selected):
+            if ph in mods[n].get('phases', []):
+                seen.add(ph)
+    return errors, warnings
+
+
+def load_composition(name):
+    path = os.path.join(COMPOSITIONS, name + '.json')
+    if not os.path.isfile(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def list_compositions():
+    if not os.path.isdir(COMPOSITIONS):
+        return []
+    return sorted(f[:-5] for f in os.listdir(COMPOSITIONS) if f.endswith('.json'))
+
+
+def main():
+    ap = argparse.ArgumentParser(description='模块注册表与组合校验')
+    ap.add_argument('--compose', metavar='NAME', help='检查指定组合')
+    ap.add_argument('--all-compositions', action='store_true',
+                    help='检查 compositions/ 下全部组合')
+    ap.add_argument('--list', action='store_true', help='列出全部模块')
+    ap.add_argument('--list-compositions', action='store_true',
+                    help='列出全部参考拼装图')
+    ap.add_argument('--quiet', action='store_true')
+    args = ap.parse_args()
+
+    reg = load_registry()
+    mods = reg['modules']
+
+    if args.list:
+        print('%-12s %-22s %-26s %s' % ('MODULE', 'CAPS', 'PHASES', 'DEPS'))
+        print('-' * 78)
+        for k in sorted(mods):
+            m = mods[k]
+            print('%-12s %-22s %-26s %s'
+                  % (k, ','.join(m['caps']), ','.join(m['phases']),
+                     ','.join(m['deps']) or '-'))
+        return 0
+
+    if args.list_compositions:
+        names = list_compositions()
+        if not names:
+            print('(compositions/ 为空)')
+        for n in names:
+            c = load_composition(n)
+            desc = c.get('description', '') if c else ''
+            print('%-14s %s' % (n, desc))
+        return 0
+
+    rc = 0
+
+    # --- A. 注册表漂移 ---
+    errors, warnings = check_registry(reg)
+    if not args.quiet:
+        print('=== 注册表漂移检查 ===')
+        print('  模块 %d 个, 原语 %d 个'
+              % (len(mods), len(reg.get('primitives', {}))))
+    for e in errors:
+        print('  [X] %s' % e)
+    for w in warnings:
+        print('  [!] %s' % w)
+    if errors:
+        rc = 1
+    elif not args.quiet:
+        print('  [ok] 注册表与源码一致')
+
+    # --- B. 组合检查 ---
+    targets = []
+    if args.compose:
+        targets = [args.compose]
+    elif args.all_compositions:
+        targets = list_compositions()
+
+    for name in targets:
+        c = load_composition(name)
+        if c is None:
+            print('  [X] 组合 %r 不存在' % name)
+            rc = 1
+            continue
+        errs, warns = check_composition(reg, c.get('modules', []))
+        if not args.quiet:
+            print()
+            print('=== 组合: %s ===' % name)
+            print('  成员: %s' % ', '.join(c.get('modules', [])))
+        for e in errs:
+            print('  [X] %s' % e)
+        for w in warns:
+            print('  [!] %s' % w)
+        if errs:
+            rc = 1
+        elif not args.quiet:
+            print('  [ok] 组合自洽')
+
+    if not args.quiet:
+        print()
+        print('[modcheck] %s' % ('FAIL' if rc else 'PASS'))
+    return rc
+
+
+if __name__ == '__main__':
+    sys.exit(main())

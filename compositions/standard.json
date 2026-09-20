@@ -1,0 +1,22 @@
+{
+  "_comment": "参考拼装图: 推荐默认组合。覆盖授权链 + 环境检测 + 完整性 + 自加密。对应 demo 当前的实际构成。",
+  "name": "standard",
+  "description": "推荐默认: 授权链 + 反调试 + 完整性 + VM 自加密",
+  "modules": [
+    "license",
+    "hostid",
+    "strcrypt",
+    "antidebug",
+    "syscall",
+    "integrity",
+    "selfcrypt",
+    "vm",
+    "blob"
+  ],
+  "use_case": "绝大多数商业软件; 对应 build.ps1 默认构建的 demo 形态",
+  "expected_tradeoffs": [
+    "反调试计时检测固定消耗 250ms",
+    ".text 布局敏感: 新增编译单元需重建 CRC/mask (管线已自动)",
+    "selfcrypt 与 integrity 共存依赖掩码豁免 (modcheck 会提示)"
+  ]
+}

@@ -1,0 +1,272 @@
+{
+  "_comment": "ShardVase 模块注册表 (Module Registry) — 模块化框架的单一事实来源。设计依据 docs/MODULAR_ARCH.md §3。校验: tools/modcheck.py 逐项比对真实源码, 不一致即报错 (防注册表漂移)。字段: caps=能力位; phases=参与阶段; deps=依赖模块; exports=对外函数; page_align=需独占页; modifies_text=改写.text; verifies_text=校验.text; known_limits=已知边界(不得为空)。",
+  "_format_version": 1,
+
+  "modules": {
+    "antidebug": {
+      "source": "src/antidebug.c",
+      "header": "include/protect/antidebug.h",
+      "caps": ["detect", "prevent"],
+      "phases": ["scan", "decide", "enforce", "watch"],
+      "deps": ["syscall"],
+      "exports": [
+        "prot_antidebug_scan",
+        "prot_antidebug_detected",
+        "prot_antidebug_apply_policy",
+        "prot_antidebug_fake_active",
+        "prot_antidebug_hide_thread"
+      ],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "函数头 patch 可使判定失效 (DRILL7 步骤 4, 3 字节 31 C0 C3)",
+        "S3 平坦化只提高静态阅读成本, 不阻止函数头替换",
+        "计时检测固定消耗 250ms (5x20ms + 150ms)"
+      ],
+      "evidence": "docs/ATTACK_DRILL7.md"
+    },
+
+    "dbiguard": {
+      "source": "src/dbiguard.c",
+      "header": "include/protect/dbiguard.h",
+      "caps": ["detect"],
+      "phases": ["scan", "decide"],
+      "deps": [],
+      "exports": ["prot_dbiguard_scan", "prot_dbiguard_suspicious"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "咨询项: 只报告不阻断 (误杀成本高)",
+        "frida 匹配用 strstr('gadget'), 可能误报通用模块名"
+      ],
+      "evidence": "docs/ATTACK_DRILL2.md"
+    },
+
+    "vmdetect": {
+      "source": "src/vmdetect.c",
+      "header": "include/protect/vmdetect.h",
+      "caps": ["detect"],
+      "phases": ["scan", "decide"],
+      "deps": [],
+      "exports": ["prot_vmdetect_scan", "prot_vmdetect_suspicious"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "咨询项: 只报告不阻断 (合法用户可能跑在 VM 里)",
+        "I/O 端口探测因真机异常分发死循环已移除 (ADVANCED 3.1)"
+      ],
+      "evidence": "docs/ADVANCED.md"
+    },
+
+    "integrity": {
+      "source": "src/integrity.c",
+      "header": "include/protect/integrity.h",
+      "caps": ["verify", "respond"],
+      "phases": ["init", "scan", "enforce", "watch"],
+      "deps": ["antidebug", "selfcrypt"],
+      "exports": [
+        "prot_integrity_check_self",
+        "prot_integrity_check_iat",
+        "prot_integrity_start_watchdog",
+        "prot_integrity_stop_watchdog",
+        "prot_integrity_set_watchdog_callback"
+      ],
+      "page_align": true,
+      "modifies_text": false,
+      "verifies_text": true,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "mask 缓冲固定 256KB 栈上; .text 超过即报 TAMPERED (当前 134KB)",
+        "布局敏感: 任何新增编译单元都可能使 .text CRC 失配 (技术债 2)",
+        "对仅内存改写无效 (无拉黑逻辑)"
+      ],
+      "evidence": "docs/DEFENSE_DEEPEN_PLAN.md"
+    },
+
+    "selfcrypt": {
+      "source": "src/selfcrypt.c",
+      "header": "include/protect/selfcrypt.h",
+      "caps": ["conceal"],
+      "phases": ["init", "scan", "enforce"],
+      "deps": [],
+      "exports": [
+        "prot_selfcrypt_init",
+        "prot_selfcrypt_enter",
+        "prot_selfcrypt_leave"
+      ],
+      "page_align": true,
+      "modifies_text": true,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "与 main 同页的函数无法参与加密 (VP 页粒度禁执行自伤) -> revoke 永久排除",
+        "加密种子默认恒定 (selfcrypt_proto.py 默认值), build.ps1 未传 --seed",
+        "解密期日志需 -ScDebug 显式开启 (默认关闭, 以免泄漏 RVA/密钥/CRC)"
+      ],
+      "evidence": "docs/DEFENSE_DEEPEN_PLAN.md"
+    },
+
+    "vm": {
+      "source": "src/vm.c",
+      "header": "include/protect/vm.h",
+      "caps": ["conceal", "verify"],
+      "phases": ["init", "scan", "watch"],
+      "deps": [],
+      "exports": ["prot_vm_run", "prot_vm_rekey"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "密钥流是 LCG (k*MUL+ADD), 已知 1 字节明文即可线性外推",
+        "回跳需 O(ip) 重绕密钥流; 大量回跳呈近平方级开销",
+        "vm_rekey 实现位于独立编译单元 src/vm_rekey.c"
+      ],
+      "evidence": "docs/THREATMODEL.md"
+    },
+
+    "blob": {
+      "source": "src/blob.c",
+      "header": "include/protect/blob.h",
+      "caps": ["verify"],
+      "phases": ["init"],
+      "deps": ["license", "vm"],
+      "exports": ["prot_vm_blob_load"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "v0 (未签名) blob 被强制拒绝 (D1a); 需 v1 签名格式",
+        "RELEASE 构建无 COFF 符号/MAP, 攻击者定位需 PDB (对攻击者同样是边界)"
+      ],
+      "evidence": "docs/BLOB_SIGN_PLAN.md"
+    },
+
+    "license": {
+      "source": "src/license.c",
+      "header": "include/protect/license.h",
+      "caps": ["verify"],
+      "phases": ["init", "scan"],
+      "deps": [],
+      "exports": ["prot_license_build_message", "prot_license_verify"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "私钥离线 -> 伪造成本高; 但公钥可被替换 (需安装目录可写 + ACL 失效)",
+        "EXPIRES 依赖本地时钟, 可回拨绕过 (DRILL6 L4 BREACHED)"
+      ],
+      "evidence": "docs/ATTACK_DRILL6.md"
+    },
+
+    "revoke": {
+      "source": "src/revoke.c",
+      "header": "include/protect/revoke.h",
+      "caps": ["verify"],
+      "phases": ["init", "scan"],
+      "deps": ["license"],
+      "exports": ["prot_revoke_check"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "因与 main 同页, 无法参与 selfcrypt 加密 (永久排除)",
+        "撤销非实时: 依赖黑名单分发, 无在线查询则滞后",
+        "v0 黑名单视为损坏 (不阻断)"
+      ],
+      "evidence": "docs/HANDOVER.md"
+    },
+
+    "hostid": {
+      "source": "src/hostid.c",
+      "header": "include/protect/hostid.h",
+      "caps": ["verify"],
+      "phases": ["scan"],
+      "deps": [],
+      "exports": ["prot_hostid_get"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "FNV-1a 是哈希非签名; 内存中 machine_id 可被改写冒充单机",
+        "多因子中任一硬件变化即换机 (D5 硬件因子)"
+      ],
+      "evidence": "docs/THREATMODEL.md"
+    },
+
+    "strcrypt": {
+      "source": "src/strcrypt.c",
+      "header": "include/protect/strcrypt.h",
+      "caps": ["conceal"],
+      "phases": ["init", "scan"],
+      "deps": [],
+      "exports": ["prot_str_get", "prot_str_decrypt"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "运行期一次性解密到 s_bufs; 常驻明文可被 dump",
+        "字符串表须与 prot_str_id 枚举项数严格一致 (strgen.py 强制)"
+      ],
+      "evidence": "docs/CONTRACT.md"
+    },
+
+    "syscall": {
+      "source": "src/syscall.c",
+      "header": "include/protect/syscall.h",
+      "caps": ["conceal"],
+      "phases": ["init", "scan"],
+      "deps": [],
+      "exports": ["prot_sys_available"],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "仅在攻击者已 hook ntdll 时有增量; 内核级 hook 无效",
+        "SSN 从 ntdll stub 提取, 失败回退 API 路径"
+      ],
+      "evidence": "docs/PRODUCTION.md"
+    },
+
+    "indirect": {
+      "source": "src/indirect.c",
+      "header": "include/protect/indirect.h",
+      "caps": ["conceal"],
+      "phases": ["init"],
+      "deps": [],
+      "exports": [],
+      "page_align": false,
+      "modifies_text": false,
+      "verifies_text": false,
+      "needs_writable_dir": false,
+      "known_limits": [
+        "只覆盖 4 个登记函数; 未登记者仍为直接 call",
+        "函数指针互转属实现定义行为 (MSVC 允许)"
+      ],
+      "evidence": "docs/HANDOVER.md"
+    }
+  },
+
+  "primitives": {
+    "crc32": {
+      "source": "src/crc32.c",
+      "reason": "公共设施: 被 protdef.h 声明, 供多模块调用; 无独立契约"
+    },
+    "vm_rekey": {
+      "source": "src/vm_rekey.c",
+      "reason": "归入 vm 模块 (S2 运行时密钥多样性, 独立编译单元仅为页隔离)"
+    }
+  }
+}

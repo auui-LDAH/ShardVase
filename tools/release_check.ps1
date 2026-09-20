@@ -71,6 +71,9 @@ if (-not $SkipTest) {
         & $py examples\tool_demo\test_example.py; $LASTEXITCODE -eq 0
     }
     Check 'protchain P1-P6' { & $py tests\protchain_check.py; $LASTEXITCODE -eq 0 }
+    # 模块化框架 (docs/MODULAR_ARCH.md): 注册表须与源码一致 + 参考组合自洽。
+    # 放在门禁内而非可选脚本 —— P3 教训: 可绕过的门禁会掩盖缺陷。
+    Check '模块契约 (modcheck)' { & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0 }
 }
 
 # 签名: 可复现 (repro) 要求 SkipSign 重建, 与 Authenticode 互斥 (签名改 SHA,

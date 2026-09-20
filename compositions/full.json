@@ -1,0 +1,27 @@
+{
+  "_comment": "参考拼装图: 全模块。**故意包含已知冲突**, 用于演示 modcheck 的组合校验能力, 不作为推荐配置。",
+  "name": "full",
+  "description": "全模块 (含已知冲突, 用于演示组合校验)",
+  "modules": [
+    "license",
+    "hostid",
+    "strcrypt",
+    "antidebug",
+    "syscall",
+    "dbiguard",
+    "vmdetect",
+    "integrity",
+    "selfcrypt",
+    "vm",
+    "blob",
+    "indirect",
+    "revoke"
+  ],
+  "use_case": "反例/演示: 展示 modcheck 如何报出 .text 冲突与页对齐约束",
+  "expected_tradeoffs": [
+    "selfcrypt 改写 .text vs integrity 校验 .text -> 必须掩码豁免",
+    "selfcrypt 与 integrity 均要求页对齐 -> 需确认各自独立页",
+    "revoke 因与 main 同页无法参与 selfcrypt (DRILL 记录的技术债)"
+  ],
+  "warning": "非推荐配置: 仅用于验证组合校验器"
+}

@@ -1,0 +1,26 @@
+{
+  "_comment": "参考拼装图: 强化组合。在 standard 之上加入 DBI/VM 检测与函数级间接化。检测面更大, 误报风险与开销相应上升。",
+  "name": "hardened",
+  "description": "强化: standard + DBI 检测 + VM 检测 + 函数级间接化",
+  "modules": [
+    "license",
+    "hostid",
+    "strcrypt",
+    "antidebug",
+    "syscall",
+    "dbiguard",
+    "vmdetect",
+    "integrity",
+    "selfcrypt",
+    "vm",
+    "blob",
+    "indirect"
+  ],
+  "use_case": "面对真实破解团队的高价值软件; 可接受更高误报率与开销",
+  "expected_tradeoffs": [
+    "dbiguard/vmdetect 为咨询项: 需宿主自行决定是否升级为策略",
+    "dbiguard 的 frida 匹配可能对通用模块名误报",
+    "vmdetect 在合法 VM 环境会命中 (需宿主评估)",
+    "比 standard 多约 5 个检测维度的开销"
+  ]
+}
