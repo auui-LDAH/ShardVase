@@ -369,16 +369,35 @@ Invoke-Unit 'syscall_probe.exe' $probeCl 'syscall_probe.exe (A6 direct syscall)'
 #      -SkipSmoke: 绑定"他机" machine_id 构建时 (运行机 != 构建机) 冒烟
 #      必然失败, 属预期 (机器绑定), 跳过之 (真机验证场景)。
 #      WDAC 拦截时重试 (延迟重跑), 最多 3 轮。
+#
+#      实现注意 (2026-09-20): 这里**必须**用 cmd 管道, 不能用 PowerShell 管道。
+#      两个已实证的坑:
+#        1) $ErrorActionPreference='Stop' 下, 原生命令的 stderr 重定向
+#           (2>&1 与 2>$null 均然) 会被包装成终止性 RemoteException ->
+#           直接跳进 catch, exit code 永不参与判定。
+#        2) PowerShell 管道向原生进程 stdin 写入时会带编码前缀 (BOM),
+#           使 demo 读到的序列号多 3 字节 -> 校验失败 exit 1。
+#      demo.exe 恒定向 stderr 输出 [SCDBG] 自解密日志, 故上述 1) 必然触发。
+#      改用 cmd /c 后: stdin 为干净字节, stderr 不被 PS 包装, exit code 可靠。
 $smokeSerial = (Get-Content -LiteralPath demo\vm_build.json -Raw | ConvertFrom-Json).serial
 $smokeOk = $true
 if (-not $SkipSmoke) {
     $smokeOk = $false
+    $smokeOut = @()
     for ($try = 1; $try -le 3 -and -not $smokeOk; $try++) {
         try {
-            $smokeOut = "$smokeSerial" | & .\build\demo.exe --license-file build\license.txt --vm-blob build\vm.blob 2>&1
-            if ($LASTEXITCODE -eq 0) { $smokeOk = $true }
+            # > 文件 收集 stdout; 2>nul 丢弃 SCDBG 噪声; < 输入序列号
+            $smokeLog = Join-Path $env:TEMP 'prot_smoke_out.txt'
+            $smokeIn = Join-Path $env:TEMP 'prot_smoke_in.txt'
+            [System.IO.File]::WriteAllText($smokeIn, $smokeSerial)
+            cmd /c ".\build\demo.exe --license-file build\license.txt --vm-blob build\vm.blob < `"$smokeIn`" > `"$smokeLog`" 2>nul"
+            $rc = $LASTEXITCODE
+            if (Test-Path -LiteralPath $smokeLog) {
+                $smokeOut = @(Get-Content -LiteralPath $smokeLog -ErrorAction SilentlyContinue)
+            }
+            if ($rc -eq 0) { $smokeOk = $true }
             else {
-                Write-Host "build: smoke try $try exit=$LASTEXITCODE (WDAC 信誉瞬态? retry in 10s)"
+                Write-Host "build: smoke try $try exit=$rc (WDAC 信誉瞬态? retry in 10s)"
                 Start-Sleep -Seconds 10
             }
         } catch {

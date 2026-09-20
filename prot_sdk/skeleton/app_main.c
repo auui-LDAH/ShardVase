@@ -737,7 +737,7 @@ printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
         if (rs == PROT_REVOKE_HIT) {
             online_revoked = 1;
         } else if (rs == PROT_REVOKE_CORRUPT) {
-            printf("鍚婇攢鍒楄〃鎹熷潖锛屽凡蹇界暐 (revoke.blob)\n");
+            printf("吊销列表损坏，已忽略 (revoke.blob)\n");
         }
 
         /* M3.1: 鍦ㄧ嚎鏌ヨ (浠呮湰鍦?mock / 鐢熶骇 TLS 绔偣) */
