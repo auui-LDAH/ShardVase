@@ -30,6 +30,29 @@
 #include "protect/vm.h"
 #include "protect/vmdetect.h"
 
+/* 组合配置 (阶段 2): 由 tools/compose.py 依据 compositions/<name>.json 生成。
+ * 定义 PROT_MOD_<NAME>=1 表示该模块参与本次构建。
+ * 未定义的模块: 其调用段被 #ifdef 排除, 且源文件不参与编译/链接
+ * (不用空桩 —— 桩会被链进产物且本身是可被 patch 的攻击面)。 */
+#include "prot_modconfig.h"
+
+/* 未提供组合配置时 (直接手工 cl 编译) 退化为"全模块", 保持旧行为。 */
+#ifndef PROT_COMPOSITION_NAME
+#define PROT_MOD_ANTIDEBUG   1
+#define PROT_MOD_BLOB        1
+#define PROT_MOD_DBIGUARD    1
+#define PROT_MOD_HOSTID      1
+#define PROT_MOD_INDIRECT    1
+#define PROT_MOD_INTEGRITY   1
+#define PROT_MOD_LICENSE     1
+#define PROT_MOD_REVOKE      1
+#define PROT_MOD_SELFCRYPT   1
+#define PROT_MOD_STRCRYPT    1
+#define PROT_MOD_SYSCALL     1
+#define PROT_MOD_VM          1
+#define PROT_MOD_VMDETECT    1
+#endif
+
 /* S1 (2026-08-29): 深级密码已落地, 调试插桩清理 */
 
 /* DBI launcher (鎶€鏈€?#3): VM 闀滃儚鐢?build\vm.blob 瑁呰浇, 涓嶅啀闈欐€佸祵鍏ャ€? * 椤哄簭涓?build.ps1 3c 鐨?pack 鍏ュ弬涓€鑷? 鍚嶇О椤讳笌 assemble --bin-name 鐩稿悓銆?*/
@@ -135,12 +158,14 @@ static prot_status wd_n3_recheck(void)
     if (r1 != r && r2 != r && r3 != r)
         return PROT_ERR_INTEGRITY;
     /* W2b: dbiguard 鍛ㄦ湡澶嶆煡 (N2 浠庡惎鍔ㄤ竴娆″崌绾т负鍛ㄦ湡) */
+#ifdef PROT_MOD_DBIGUARD
     {
         prot_dbiguard_report drep;
         prot_dbiguard_scan(&drep);
         if (prot_dbiguard_suspicious(&drep))
             return PROT_ERR_INTEGRITY; /* hook 妫€娴嬪埌 -> 鎸?policy (EXIT) */
     }
+#endif /* PROT_MOD_DBIGUARD */
     return PROT_OK;
 }
 
@@ -481,6 +506,7 @@ int main(int argc, char** argv)
     }
 
     /* 搂9.1-4b (N2): 鍙?DBI/鍙?hook 妫€娴?鈥斺€?鍜ㄨ椤? 鍙姤鍛婁笉瑙﹀彂绛栫暐 */
+#ifdef PROT_MOD_DBIGUARD
     {
         prot_dbiguard_report drep;
         prot_dbiguard_scan(&drep);
@@ -501,8 +527,10 @@ int main(int argc, char** argv)
             }
         }
     }
+#endif /* PROT_MOD_DBIGUARD */
 
     /* 搂9.1-4c (M1): 铏氭嫙鏈?娌欑妫€娴?鈥斺€?鍜ㄨ椤? 鍙姤鍛婁笉瑙﹀彂绛栫暐 */
+#ifdef PROT_MOD_VMDETECT
     {
         prot_vmdetect_report vmrep;
         prot_vmdetect_scan(&vmrep);
@@ -515,6 +543,7 @@ int main(int argc, char** argv)
             printf("疑似虚拟机环境 (咨询项, 不影响运行)\n");
         }
     }
+#endif /* PROT_MOD_VMDETECT */
 
     /*
      * 娉ㄦ剰: src/antidebug.c 鐨?EXIT 绛栫暐瀹炵幇鏄?TerminateProcess(0xDB),
