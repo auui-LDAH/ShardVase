@@ -301,20 +301,14 @@ def main():
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.join(REPO, 'tests'))
-        from protchain_check import pe_sections, scan_e8_calls
+        from protchain_check import pe_sections, scan_e8_calls, selfcrypt_meta
         exe_data = open(EXE, 'rb').read()
         secs = pe_sections(exe_data)
         text = next(s for s in secs if s['name'] == '.text')
         t = exe_data[text['ptr_raw']:text['ptr_raw'] + text['size_raw']]
         targets = scan_e8_calls(t)
         # 从 .protcry meta 读受保护函数 rva
-        prot = next(s for s in secs if s['name'] in ('.protcrypt', '.protcry'))
-        blob = exe_data[prot['ptr_raw']:prot['ptr_raw'] + 256]
-        n = struct.unpack_from('<I', blob, 0)[0]
-        fns = []
-        for i in range(n):
-            rva, _ln = struct.unpack_from('<II', blob, 4 + i * 20)
-            fns.append(rva)
+        fns = [rva for rva, _ln, _grp in selfcrypt_meta(exe_data, secs)]
         hits = [rva for rva in fns if rva in targets]
         ok = (not hits)
         results.append(('A10 static-trace', 'PASS' if ok else 'FAIL',
@@ -330,15 +324,12 @@ def main():
         import sys as _sys2
         _sys2.path.insert(0, os.path.join(REPO, 'tests'))
         from protchain_check import pe_sections as _ps
+        from protchain_check import selfcrypt_meta as _sc_meta2
         exe_data = open(EXE, 'rb').read()
         secs = _ps(exe_data)
-        prot = next(s for s in secs if s['name'] in ('.protcrypt', '.protcry'))
         text = next(s for s in secs if s['name'] == '.text')
-        blob = exe_data[prot['ptr_raw']:prot['ptr_raw'] + 256]
-        n = struct.unpack_from('<I', blob, 0)[0]
         plain = []
-        for i in range(n):
-            rva, ln = struct.unpack_from('<II', blob, 4 + i * 20)
+        for rva, ln, _grp in _sc_meta2(exe_data, secs):
             toff = text['ptr_raw'] + (rva - text['virtual_addr'])
             head = exe_data[toff:toff + 8]
             if head.startswith((b'\x40\x55', b'\x40\x56', b'\x40\x57',

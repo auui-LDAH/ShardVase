@@ -1,4 +1,4 @@
-/* bitmix.c 鈥?golden 鏍蜂緥 3: 浣嶇Щ/寮傛垨娣峰悎 (鍙€嗛洩宕╁紡) */
+/* bitmix.c — golden 样例 3: 位移/异或混合 (雪崩式) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * demo/main.c 鈥?鍙嶉€嗗悜淇濇姢濂椾欢婕旂ず鍏ュ彛 (Lane D)
  *
  * 瀵瑰簲濂戠害 docs/CONTRACT.md 搂9銆傛祦绋?
@@ -474,8 +474,8 @@ int main(int argc, char** argv)
     }
     prot_antidebug_scan(&rep);
     sc_ext_leave();
-    printf("鍙嶈皟璇曟壂鎻? %s\n",
-           prot_antidebug_detected(&rep) ? "鍙戠幇鍙枒" : "閫氳繃");
+    printf("反调试扫描: %s\n",
+           prot_antidebug_detected(&rep) ? "发现可疑" : "通过");
     if (selftest) {
         print_selftest(&rep);
     }
@@ -491,7 +491,7 @@ int main(int argc, char** argv)
             printf("  dbi_thread_count: %u\n", drep.thread_count);
         }
         if (prot_dbiguard_suspicious(&drep)) {
-            printf("鐤戜技鍔ㄦ€佹彃妗?hook 鐜 (鍜ㄨ椤? 涓嶅奖鍝嶈繍琛?\n");
+            printf("疑似动态插桩/hook 环境 (咨询项, 不影响运行)\n");
             /* N2 绛栫暐 (ATTACK_DRILL2 E2-2): --dbiguard-policy EXIT
              * 鏃?hook 妫€娴嬪埌 -> 缁堟 (0xDB), 闃叉敞鍏?hook 琚拷鐣?*/
             if (dbiguard_exit_policy) {
@@ -512,7 +512,7 @@ int main(int argc, char** argv)
             printf("  vm_processes: %u\n", vmrep.vm_processes);
         }
         if (prot_vmdetect_suspicious(&vmrep)) {
-            printf("鐤戜技铏氭嫙鏈虹幆澧?(鍜ㄨ椤? 涓嶅奖鍝嶈繍琛?\n");
+            printf("疑似虚拟机环境 (咨询项, 不影响运行)\n");
         }
     }
 

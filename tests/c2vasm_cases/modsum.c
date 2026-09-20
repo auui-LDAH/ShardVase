@@ -1,4 +1,4 @@
-/* modsum.c 鈥?golden 鏍蜂緥 6: 闄ゆ硶/鍙栨ā/澶嶅悎璧嬪€?鑷 */
+/* modsum.c — golden 样例 6: 除法/取模/复合 (自增循环) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

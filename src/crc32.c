@@ -1,9 +1,11 @@
-﻿#pragma code_seg(".protxec")
+#pragma code_seg(".protxec")
 /*
- * crc32.c 鈥?鏍囧噯鏌ヨ〃 CRC32 (Lane A)
+ * crc32.c — 标准查表 CRC32 (Lane A)
  *
- * 澶氶」寮?0xEDB88320 (鍙嶅皠寮?, init 0xFFFFFFFF, 缁撴灉鍙栧弽,
- * 涓?Python zlib.crc32 瀹屽叏涓€鑷淬€傛祴璇曞悜閲?"123456789" -> 0xCBF43926銆? * 琛ㄤ负 const, 鏃犺繍琛屾椂鍒濆鍖? 鍙畨鍏ㄥ苟鍙戣皟鐢ㄣ€? */
+ * 多项式 0xEDB88320 (反射式), init 0xFFFFFFFF, 结果取反,
+ * 与 Python zlib.crc32 完全一致。测试向量 "123456789" -> 0xCBF43926。
+ * 表为 const, 无运行时初始化, 可安全并发调用。
+ */
 #include "protect/protdef.h"
 
 /* 鍙嶅皠寮?CRC32 鏌ユ壘琛?(poly 0xEDB88320) */

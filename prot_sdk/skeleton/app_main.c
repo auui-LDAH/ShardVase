@@ -1,4 +1,4 @@
-﻿/*
+/*
  * app_main.c 鈥?淇濇姢澹冲叆鍙?(prot_sdk/skeleton, 鐢?demo/main.c 鍓ョ涓氬姟鑰屾潵)
  *
  * 淇濈暀: 鍙嶈皟璇?鍙?DBI/铏氭嫙鏈烘娴?瀹屾暣鎬?watchdog/鑷В瀵嗗紩鎿?VM)/blob 瑁呰浇/
@@ -478,8 +478,8 @@ int main(int argc, char** argv)
 
     /* 搂9.1-4: 鍙嶈皟璇曟壂鎻?-> 鎽樿 -> (--selftest 閫愰」) -> EXIT 绛栫暐 */
     prot_antidebug_scan(&rep);
-    printf("鍙嶈皟璇曟壂鎻? %s\n",
-           prot_antidebug_detected(&rep) ? "鍙戠幇鍙枒" : "閫氳繃");
+    printf("反调试扫描: %s\n",
+           prot_antidebug_detected(&rep) ? "发现可疑" : "通过");
     if (selftest) {
         print_selftest(&rep);
     }
@@ -496,7 +496,7 @@ int main(int argc, char** argv)
         }
 if (prot_dbiguard_suspicious(&drep)) {
 #ifndef PROT_LITE_GUI
-            printf("鐤戜技鍔ㄦ€佹彃妗?hook 鐜 (鍜ㄨ椤? 涓嶅奖鍝嶈繍琛?\n");
+            printf("疑似动态插桩/hook 环境 (咨询项, 不影响运行)\n");
 #endif
             /* N2 绛栫暐 (ATTACK_DRILL2 E2-2): --dbiguard-policy EXIT
              * 鏃?hook 妫€娴嬪埌 -> 缁堟 (0xDB), 闃叉敞鍏?hook 琚拷鐣?*/
@@ -519,7 +519,7 @@ if (prot_dbiguard_suspicious(&drep)) {
         }
         if (prot_vmdetect_suspicious(&vmrep)) {
 #ifndef PROT_LITE_GUI
-            printf("鐤戜技铏氭嫙鏈虹幆澧?(鍜ㄨ椤? 涓嶅奖鍝嶈繍琛?\n");
+            printf("疑似虚拟机环境 (咨询项, 不影响运行)\n");
 #endif
         }
     }

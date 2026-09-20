@@ -33,6 +33,36 @@ BLOB = os.path.join(REPO, 'build', 'vm.blob')
 
 IMAGE_BASE = 0x140000000
 
+# selfcrypt meta 条目步长 (S1 2026-08-29 起为 24B: rva/len/key0/crc/group).
+# 与 src/selfcrypt.c 的 SC_ENTRY_SIZE 必须一致 —— 20B 是 S1 之前的旧格式,
+# 用错步长会静默错位 (P1/P2 误报, P5/A10/S3/S4 假绿)。见 docs/迁移核验-2026-09-20.md §3.1。
+SC_ENTRY_SIZE = 24
+SC_ENTRY_GROUP_OFF = 20
+
+
+def selfcrypt_meta(data, secs, entries_only=False):
+    """从 .protcry 读 selfcrypt meta 条目 -> [(rva, len, group), ...].
+
+    唯一的 meta 解析入口: 所有测试 (protchain / attacks / attack_drill)
+    都经此读取, 避免步长散落成魔数后再次漂移。
+    """
+    prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+    if prot is None:
+        return []
+    blob = data[prot['ptr_raw']:prot['ptr_raw'] + 256]
+    n = struct.unpack_from('<I', blob, 0)[0]
+    if n == 0 or n > 16:
+        return []
+    out = []
+    for i in range(n):
+        off = 4 + i * SC_ENTRY_SIZE
+        if off + SC_ENTRY_SIZE > len(blob):
+            break
+        rva, ln = struct.unpack_from('<II', blob, off)
+        grp = struct.unpack_from('<I', blob, off + SC_ENTRY_GROUP_OFF)[0]
+        out.append((rva, ln, grp))
+    return out
+
 
 def pe_sections(data):
     if len(data) < 0x40:
@@ -77,8 +107,7 @@ def p1_selfcrypt_ciphertext(data, secs):
     n = struct.unpack_from('<I', blob, 0)[0]
     if n == 0 or n > 16:
         return False, 'bad selfcrypt count %d' % n
-    for i in range(n):
-        rva, ln = struct.unpack_from('<II', blob, 4 + i * 20)
+    for i, (rva, ln, _grp) in enumerate(selfcrypt_meta(data, secs)):
         toff = text['ptr_raw'] + (rva - text['virtual_addr'])
         body = data[toff:toff + ln]
         if len(body) < ln:
@@ -89,7 +118,7 @@ def p1_selfcrypt_ciphertext(data, secs):
             if head.startswith(pat):
                 return False, 'fn %d rva=0x%x has plaintext prologue %s' % (
                     i, rva, pat.hex())
-    return True, '4 fns ciphertext (no x64 prologue)'
+    return True, '%d fns ciphertext (no x64 prologue)' % n
 
 
 def p2_mask_consistent(data, secs):
@@ -103,10 +132,7 @@ def p2_mask_consistent(data, secs):
         return False, 'no .protcry/.text section'
     blob = data[prot['ptr_raw']:prot['ptr_raw'] + 256]
     n = struct.unpack_from('<I', blob, 0)[0]
-    meta = []
-    for i in range(n):
-        rva, ln = struct.unpack_from('<II', blob, 4 + i * 20)
-        meta.append((rva, ln))
+    meta = [(rva, ln) for rva, ln, _grp in selfcrypt_meta(data, secs)]
     masks = []
     for ln in open(mask_path, 'r', encoding='ascii'):
         rva_s, ln_s = ln.strip().split(',')
@@ -187,12 +213,9 @@ def p5_indirect_no_direct_call(data, secs):
     targets = scan_e8_calls(t)
     # 从 .protcry meta 读加密函数 rva (与 P1 同源)
     prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
-    blob = data[prot['ptr_raw']:prot['ptr_raw'] + 256]
-    n = struct.unpack_from('<I', blob, 0)[0]
-    fns = []
-    for i in range(n):
-        rva, ln = struct.unpack_from('<II', blob, 4 + i * 20)
-        fns.append(rva)
+    if prot is None:
+        return False, 'no .protcry'
+    fns = [rva for rva, _ln, _grp in selfcrypt_meta(data, secs)]
     hits = [rva for rva in fns if rva in targets]
     if hits:
         return False, 'direct calls to %s' % [hex(h) for h in hits]

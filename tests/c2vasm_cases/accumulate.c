@@ -1,4 +1,4 @@
-/* accumulate.c 鈥?golden 鏍蜂緥 2: 0..n-1 姹傚拰(鎴柇涔樻硶闃叉孩鍑哄樊寮? */
+/* accumulate.c — golden 样例 2: 0..n-1 求和 (循环累积) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

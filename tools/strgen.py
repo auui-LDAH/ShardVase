@@ -38,6 +38,11 @@ FALLBACK_ORDER = [
     'MSG_HWID',
     'MSG_BLOB',
     'MSG_REVOKED',
+    'LICENSE_FMT',
+    'ONLINE_FMT',
+    'MSG_HWID_FMT',
+    'MSG_REVOKE_CORRUPT',
+    'URL_CHECK_FMT',
 ]
 
 
