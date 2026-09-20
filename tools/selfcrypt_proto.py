@@ -135,6 +135,10 @@ def main(argv=None):
                              'P0 骨架构建用)')
     parser.add_argument('--extra', action='append', default=None,
                         help='额外加密函数名 (组 1, 可多次; S1 纵深扩展)')
+    parser.add_argument('--require-all', action='store_true',
+                        help='目标函数缺失即报错 (默认: 缺失则跳过并告警). '
+                             '组合构建 (阶段 2) 下部分模块不参与编译, 其函数自然'
+                             '不在 .map 中, 属预期 —— 默认跳过; 需要严格校验时用本开关')
     args = parser.parse_args(argv)
 
     if args.disable:
@@ -160,11 +164,21 @@ def main(argv=None):
         if args.extra:
             for en in args.extra:
                 targets.setdefault(en, 1)
+        # 阶段 2 (组合构建): 未参与编译的模块, 其函数不在 .map 中 —— 属预期,
+        # 跳过而非报错。--require-all 可恢复旧行为 (严格校验全部目标存在)。
+        # 依据: BLUEPRINT §5 阶段 2 的"selfcrypt 与组合的真实耦合点"。
+        skipped_targets = []
+        dry_count = 0   # dry-run 下命中的目标数 (entries 在 dry-run 不填充)
         for name, group in targets.items():
             if name not in funcs:
-                raise SelfcryptError('function %s not found in map' % name)
+                if args.require_all:
+                    raise SelfcryptError('function %s not found in map' % name)
+                skipped_targets.append(name)
+                continue
             rva = funcs[name]
             if rva not in pdata:
+                # .pdata 缺失通常是内联/ICF 导致, 与组合无关 -> 始终报错
+                # (保持 P0 严格性: 静默漏加密是不可接受的)
                 raise SelfcryptError('%s: no .pdata entry (rva=0x%x)' % (name, rva))
             end, _ = pdata[rva]
             size = end - rva
@@ -191,6 +205,7 @@ def main(argv=None):
             if args.dry_run:
                 print('selfcrypt_proto: [dry] %s rva=0x%x size=%d seed=0x%x'
                       % (name, rva, size, seed))
+                dry_count += 1
                 continue
 
             # 原位写密文 (方案 B: 函数不搬移)
@@ -198,6 +213,18 @@ def main(argv=None):
             entries.append((rva, size, seed, zlib.crc32(body) & 0xFFFFFFFF, group))
             print('selfcrypt_proto: %s rva=0x%x size=%d seed=0x%x crc=0x%08x group=%d (in-place)'
                   % (name, rva, size, seed, entries[-1][3], group))
+
+        # 跳过报告: 组合构建下未参与编译的模块, 其函数不在 .map 中。
+        # **必须显式报告** —— 静默漏加密会让"加密了几个函数"变得不可审计。
+        # 注意: 必须在 --dry-run 提前返回**之前**报告, 否则 dry-run 下看不到。
+        if skipped_targets:
+            print('selfcrypt_proto: skipped %d target(s) not present in map '
+                  '(组合构建预期; 用 --require-all 可改为报错): %s'
+                  % (len(skipped_targets), ', '.join(sorted(skipped_targets))))
+        # dry-run 下 entries 恒为空 (不入写路径), 用 dry_count 判定实际命中数
+        if not entries and dry_count == 0:
+            raise SelfcryptError(
+                'no target encrypted — 全部目标都不在 .map 中 (组合或构建异常?)')
 
         if args.dry_run:
             print('selfcrypt_proto: dry-run, no write')
