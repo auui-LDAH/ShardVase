@@ -1,6 +1,7 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
 > 生成日期：2026-08-21（v7：阶段 II 收尾 + 已知环境限制）· 基线提交：`9326122` 之后
+> **最新增量：2026-09-20 迁移后状态见 §2.6（基线提交 `b8e8a38`）**
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/BUSINESS.md`（总纲）/ `docs/RELEASE.md` / `docs/OPS.md` /
 > `docs/COMPAT.md` / `docs/PHASE2.md` / `docs/PHASE3.md` / `docs/ADVANCED.md` /
@@ -112,6 +113,64 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
 ### 待办（详见各计划文档）
 - S1 三枚 PAGE_ALIGN 专项；S3 扩展；AV/兼容矩阵（VM 暂停中，用户手动接管）；
   VirusTotal 手动上传；文章发布；HANDOVER 随版本持续更新。
+
+## 2.6 迁移后状态（2026-09-20 增量）
+
+> 完整报告见 **`docs/迁移核验-2026-09-20.md`**（含核验方法、纠错留档、放弃方案评估）。
+> 本节只摘录下一位开发者**接手即需知道**的内容。
+
+### 环境（新机）
+
+| 项 | 值 |
+|----|----|
+| 主机 | `DEV-MACHINE` / 用户 `devuser` / Win11 26200 x64 |
+| 仓库路径 | `D:\specifically for development and work\Reverse Engineering`（含空格） |
+| 工具链 | `D:\environment\VS2022BuildTools`（MSVC 14.44）+ `D:\environment\PYTHON`（3.13.13）——**均不在 PATH**，`build.ps1` 自动探测可命中 |
+| 生产私钥 | ✅ 已随迁移带入 `build\keys\license_priv.json`（RSA-3072）——沿用同一把密钥 |
+| machine_id | `12981648366597980211`（`demo\vm_build.json` 一致） |
+
+### 已修复（提交 `b8d34e2` / `1105054`）
+
+| # | 缺陷 | 要点 |
+|---|------|------|
+| 1 | **selfcrypt meta 步长 20B → 24B** | S1(`efded61`) 改了格式但解析侧未同步，**3 文件 8 处**：`protchain_check.py`(P1/P2 FAIL)、`attacks.py`、`attack_drill.py`（后者 5 处为**静默假绿**——错位 rva 恰不命中目标 → 报 PASS）。修法：建单一入口 `protchain_check.selfcrypt_meta()`，其余复用 |
+| 2 | **SDK 骨架缺 3 项字符串** | `prot_sdk/skeleton/strings.txt` 11→14 项；`strgen.py:108` 严格 `raise` → 向导生成的新工程**构建即失败**。同步修 `strgen.FALLBACK_ORDER`（9→14） |
+| 3 | **`build.ps1` 冒烟自检必然失败** | 两个独立成因：(a) `EAP=Stop` 下 stderr 重定向(`2>&1`/`2>$null` 均然)被包装成终止性异常；(b) PS 管道向原生 stdin 写 BOM。改用 `cmd /c`。**此前未暴露因所有门禁都带 `-SkipSmoke`** |
+| 4 | **编码损坏（有损，不可逆）** | `efded61` 引入：UTF-8 字节被 CP936 有损解码（产生 U+E21B 等私用区）。已修**全部字符串字面量**（全库 62 个 `.c/.h` 扫描 = 0）+ BOM + 首行注释；**224 行纯注释乱码保留**（零功能影响） |
+
+### 接手须知（踩坑纪律）
+
+1. **不要试图「重建」乱码文件的注释**。已证伪：用干净祖先做骨架对齐重建后
+   **能编译**，但 `e2e T1` 失败（`exit=1` 而 `license_ok=1`）——乱码吞换行，
+   还原时丢 `*/` 终止符，注释边界与 `demo_mem` 相关宏行序被改变。
+   **ASCII 骨架一致 ≠ 语义等价。**
+2. **检测工具的准确性本身要验证**。初版乱码扫描用正则剥注释，无法处理
+   「字符串内出现 `/*`」，漏检了 `app_main.c:740`；换带字符串状态机的剥离器才扫净。
+   同理：仅查 `U+FFFD` **不足以**判定双重编码（产出的是合法字符，含 PUA）。
+3. **`.ps1` 必须保留 UTF-8 BOM**（PS 5.1 无 BOM 时按 GBK 解析，破坏中文字符串，
+   见 `35c0605`）。**编辑工具会静默去掉 BOM**——改完 `.ps1` 后务必复查首 3 字节
+   `EF BB BF`。
+4. **`build.ps1` 冒烟测试现在裸跑可用**（无需 `-SkipSmoke`）。跨机绑定构建
+   （运行机 ≠ 构建机）仍应显式带 `-SkipSmoke`。
+5. `release_check` 的「11/11」= 10 个 `Check` + `codesign.pfx` 存在时签名块 `pass++`。
+
+### 验收基线（迁移后实测，五提交后）
+
+```
+build.ps1（裸跑，无 -SkipSmoke）  DONE (exit 0)
+release_check.ps1                 11/11 PASS
+e2e                               27 PASS / 0 FAIL / 1 SKIP (T3 需交互式桌面)
+attacks                           A1-A12 全 PASS
+protchain                         6/6 PASS
+vmc / c2vasm golden / vm_unit / syscall_probe / example   全 PASS
+全库乱码字符串字面量               0
+```
+
+### 迁移后待办（承接 §4.3，未变）
+
+`release_check` 全量实跑（现已可裸跑）／Android NDK 实编 + T1 攻防矩阵／
+GitHub 真实 push 后 CI 实跑替换 `ci_sim`／Defender 引擎修复（DISM）／
+W2 长驻留实跑／T3 真机（需**交互式桌面**，SSH 与计划任务均被 session 0 拒绝）。
 
 ## 3. 迁移到其他电脑 — 交接清单
 
