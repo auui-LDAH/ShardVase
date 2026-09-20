@@ -260,36 +260,53 @@ framework/
 
 ## 5. 分阶段实施（每阶段保持全绿）
 
-> 纪律：每阶段结束必须 `build.ps1` 裸跑 DONE + `release_check` 11/11。
+> 纪律：每阶段结束必须 `build.ps1` 裸跑 DONE + `release_check` 全绿。
 > 这是 P3 的直接应用——不许有任何模块走"跳过验证"的路径。
 
-### 阶段 0：前置清理（**必须先做**）
+**进度**：阶段 0 ✅ · 阶段 1 ✅ · 阶段 2 进行中 · 阶段 3 待做
 
-| 项 | 理由 |
+### 阶段 0：前置清理 ✅ 完成（提交 `f0aa393`）
+
+| 项 | 结果 |
 |----|------|
-| 关闭 `SCDBG`（加编译开关） | Release 产物泄漏每个加密函数的 RVA/密钥/CRC —— 框架的"可公开"前提 |
-| 补 `ATTACK_DRILL8`（验证关闭后仍可攻防） | 证明改动未削弱能力 |
+| 关闭 `SCDBG`（改为 opt-in 开关） | ✅ `SC_DBG()` 宏，默认展开为空 |
+| 验证产物无泄漏 | ✅ 三个产物扫描 CLEAN；运行期 stderr 0 行 |
+| 验证开关双向有效 | ✅ `-ScDebug` 恢复 64 行日志 |
+| 验证未削弱加密 | ✅ selfcrypt 8 条目仍在，明文序言函数数 = 0 |
 
-### 阶段 1：模块契约落地（不改变行为）
+### 阶段 1：模块契约落地 ✅ 完成（提交 `da6680e`）
 
-- 新增 `include/protect/module.h`
-- 为每个现有模块加 `prot_module_desc` 描述符
-- 新增 `tools/modcheck.py`（仅校验，不阻断）
-- **验收**：`modcheck` 能列出全部 13 个模块及其 caps/依赖/边界；
-  `build.ps1` + `release_check` 仍全绿（**行为零变化**）
+| 产出 | 说明 |
+|------|------|
+| `modules.json` | 13 个模块的完整契约（caps/phases/deps/exports/known_limits/evidence） |
+| `tools/modcheck.py` | 注册表漂移检查 + 组合一致性检查（stdlib-only） |
+| `compositions/` | 四档参考拼装图 minimal/standard/hardened/full |
+| 门禁接入 | `release_check` 第 11 项「模块契约 (modcheck)」 |
 
-### 阶段 2：组合校验 + 参考拼装图
+**关键验证：检查器**非空转****（负向测试，5 类漂移全部检出）：
 
-- `modcheck` 接入构建，冲突即失败
-- 建立 `compositions/` 四个参考图
-- **验收**：故意构造一个冲突组合（selfcrypt + integrity 未豁免）→
-  `modcheck` 报错；四个参考图全部可构建 + 通过 e2e
+```
+删除真实导出              -> DETECTED
+登记不存在的导出          -> DETECTED
+删除真实依赖              -> DETECTED
+清空 known_limits         -> DETECTED
+依赖指向未登记模块        -> DETECTED
+缺依赖组合 (3 场景)       -> DETECTED (阻断)
+```
 
-### 阶段 3：攻防对称重组
+**组合校验的真实价值**：`standard` 组合正确报出
+「selfcrypt 改写 .text vs integrity 校验 .text」冲突——
+这正是 S1 中 `revoke` 被永久排除的同类问题（P2 的具象化）。
 
-- 建立 `drills/` 结构化记录
-- 把已有 7 轮演练 + 3 组矩阵**回填**为 drill 记录
-- **验收**：对抗矩阵可自动生成；每条记录的 evidence 可追溯到原始文档
+### 阶段 2：组合校验强化（进行中）
+
+已具备：冲突检测、依赖闭包、四档拼装图。
+待补：`modcheck` 与 `build.ps1` 的集成（当前仅门禁期检查）、
+拼装图驱动实际构建。
+
+### 阶段 3：攻防对称重组（待做）
+
+建 `drills/` 结构化记录 + 回填 7 轮演练数据。
 
 ### 阶段 4（可选）：成本模型
 
