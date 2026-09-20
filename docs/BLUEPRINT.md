@@ -196,8 +196,22 @@
 | 构建层：`tools/compose.py` 组合解析（模块集/源文件/宏/头文件） | ✅ | `5eff7ae` |
 | 宿主下限实测（链接器为权威） | ✅ | `5eff7ae` |
 | 宿主层 批1：`vmdetect` + `dbiguard` 条件编译 | ✅ | `f4ccf64` |
+| **前置：`selfcrypt_proto.py` 组合兼容**（目标缺失改为跳过+报告） | ✅ | `f48ffbd` |
 | 宿主层 批2：`antidebug` / `integrity` / `indirect` / `revoke` | ⬜ **下次继续** | — |
 | `build.ps1 -Composition` 集成 | ⬜ | — |
+
+#### ✅ 已解开：selfcrypt 与组合的耦合点
+
+`tools/selfcrypt_proto.py` 原先**硬编码**加密目标且缺失即 `raise`，
+导致组合排除 `integrity`/`antidebug` 时构建必然失败。现已改为：
+
+- 目标不在 `.map` 中 → **跳过 + 显式报告**（组合构建属预期）
+- `--require-all` → 恢复严格模式
+- `.pdata` 缺失 / 全部目标缺失 → **仍然报错**（静默漏加密不可接受）
+
+> 修改过程中自行发现并修正 2 个 bug：报告位置在 `--dry-run` 返回之后（导致
+> dry-run 看不到）；dry-run 下 `entries` 恒空导致基线误报。**由负向测试暴露** ——
+> 只跑正向路径会漏过。
 
 #### ✅ 已验证的成果（批1 实证）
 
@@ -221,12 +235,9 @@
 |---|------|------|
 | 1 | **`rep` 变量跨函数共享** | `prot_antidebug_report rep` 在 `main()` 声明（L449），但 `print_selftest()` 也接收它；排除 `antidebug` 时该变量与函数都需处理，否则 `/WX` 报 unused |
 | 2 | **`selftest` 可能变 unused** | 3 处 `if (selftest)` 分属不同模块段（L504/513/537）；全部排除后 `selftest` 变量无引用 → `/WX` 报错 |
-| 3 | **`selfcrypt` 目标函数与组合耦合** ⚠️ | `selfcrypt_proto.py` 的 `EXT_TARGETS` **硬编码** `prot_integrity_check_self` 与 `prot_antidebug_scan`。若组合排除了 `integrity`/`antidebug`，这两个符号在 `.map` 中不存在 → 构建失败 |
+| 3 | ~~`selfcrypt` 目标函数与组合耦合~~ | ✅ **已解开**（`f48ffbd`）：目标缺失改为跳过 + 报告 |
 
-**问题 3 是最关键的**：它意味着 **`selfcrypt` 的可组合性受限于它加密谁**。
-`tools/selfcrypt_proto.py` 需要按组合过滤目标列表（只加密本次参与构建的模块函数）。
-这是批2 的核心工作，也是"组合"与"自加密"两个机制的**真实耦合点** ——
-与 `MODULAR_ARCH` P2（布局/资源是硬约束）是同一类问题。
+剩余工作集中在**宿主语义**（问题 1、2），不再有工具链阻塞。
 
 #### 原定验收标准
 
