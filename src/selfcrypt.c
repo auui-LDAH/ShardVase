@@ -61,6 +61,25 @@ prot_status prot_selfcrypt_leave(uint32_t group) { (void)group; return PROT_OK; 
 static volatile uint8_t g_sc_state[PROT_SELFCRYPT_MAX_FN];
 static volatile uint8_t g_sc_d2b_enabled = 0u;
 
+/* 解密期诊断日志开关 (2026-09-20 收尾).
+ *
+ * 背景: 这些 fprintf 原本**无条件编译**进产物, 泄漏每个加密函数的
+ * RVA / 长度 / 密钥流种子 k / 明文 CRC 期望值 / 解密后地址 ——
+ * 等于免费给出"定位 + 验证"两个最关键的破解环节。
+ * PROT_RELEASE_CONCEAL 只收敛了 prot_status 码, 未覆盖此处。
+ *
+ * 策略: **显式 opt-in**。默认关闭 (含 Dev 与 Release);
+ * 仅当定义 PROT_SELFCRYPT_DEBUG 时编译进日志。
+ * 排障用法: build.ps1 -ScDebug   (或手工 /DPROT_SELFCRYPT_DEBUG)
+ *
+ * 注意: 关闭后 Release/Dev 产物的 .text 与 .rdata 布局均会变化,
+ * 需重新生成 selfcrypt mask 与三段 CRC (构建管线已自动处理)。 */
+#ifdef PROT_SELFCRYPT_DEBUG
+#define SC_DBG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define SC_DBG(...) ((void)0)
+#endif
+
 /* 互斥: D2b 下多线程并发 enter/leave 保护 (SRWLock 无锁读优化) */
 static SRWLOCK g_sc_lock = SRWLOCK_INIT;
 
@@ -92,30 +111,25 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
 
     if (hmod == NULL)
         return PROT_ERR_INTERNAL;
-    fprintf(stderr, "[SCDBG] idx=%u decrypt=%d\n", idx, decrypt);
-    (void)e;
-    
+    SC_DBG("[SCDBG] idx=%u decrypt=%d\n", idx, decrypt);
 
     memcpy(&rva, e, 4u);
     memcpy(&len, e + 4u, 4u);
     memcpy(&k, e + 8u, 8u);
     memcpy(&crc, e + 16u, 4u);
     dst = base + rva;
-    fprintf(stderr, "[SCDBG]   rva=0x%x len=%u k=0x%llx crc=0x%x dst=%p\n",
-            rva, len, (unsigned long long)k, crc, (void*)dst);
-     /* rva 读出后 */
-    fprintf(stderr, "[SCDBG]   PRE-VP\n");
+    SC_DBG("[SCDBG]   rva=0x%x len=%u k=0x%llx crc=0x%x dst=%p\n",
+           rva, len, (unsigned long long)k, crc, (void*)dst);
+    SC_DBG("[SCDBG]   PRE-VP\n");
     if (!VirtualProtect((LPVOID)dst, len, PAGE_READWRITE, &oldp)) {
-        fprintf(stderr, "[SCDBG]   VP-FAIL err=%lu\n", GetLastError());
+        SC_DBG("[SCDBG]   VP-FAIL err=%lu\n", GetLastError());
         return PROT_ERR_INTERNAL;
     }
-    fprintf(stderr, "[SCDBG]   VP-OK\n");
-     /* VP 后 */
+    SC_DBG("[SCDBG]   VP-OK\n");
     sc_xor_range(dst, len, k);
-    fprintf(stderr, "[SCDBG]   XOR-OK\n");
-     /* XOR 后 */
+    SC_DBG("[SCDBG]   XOR-OK\n");
     if (decrypt) {
-        /* II-1: 解密态 CRC 校验 (SCDBG 阶段: 内联逐字节, 标准 0xEDB88320) */
+        /* II-1: 解密态 CRC 校验 (内联逐字节, 标准 0xEDB88320) */
         __try {
             uint32_t got = 0xFFFFFFFFu;
             uint32_t j;
@@ -126,21 +140,21 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
                     got = (got >> 1) ^ (0xEDB88320u & (uint32_t)-(int)(got & 1u));
             }
             got ^= 0xFFFFFFFFu;
-            fprintf(stderr, "[SCDBG]   CRC got=0x%x want=0x%x\n", got, crc);
+            SC_DBG("[SCDBG]   CRC got=0x%x want=0x%x\n", got, crc);
             if (got != crc) {
                 VirtualProtect((LPVOID)dst, len, oldp, &oldp);
                 return PROT_ERR_INTEGRITY;
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            fprintf(stderr, "[SCDBG]   CRC-EXCEPTION code=0x%x\n",
-                    (unsigned)GetExceptionCode());
+            SC_DBG("[SCDBG]   CRC-EXCEPTION code=0x%x\n",
+                   (unsigned)GetExceptionCode());
             return PROT_ERR_INTEGRITY;
         }
     }
     FlushInstructionCache(GetCurrentProcess(), (LPCVOID)dst, len);
-    fprintf(stderr, "[SCDBG]   FLUSH-OK\n");
+    SC_DBG("[SCDBG]   FLUSH-OK\n");
     VirtualProtect((LPVOID)dst, len, PAGE_EXECUTE_READ, &oldp);
-    fprintf(stderr, "[SCDBG]   RX-OK\n");
+    SC_DBG("[SCDBG]   RX-OK\n");
     return PROT_OK;
 }
 

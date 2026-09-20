@@ -28,6 +28,7 @@ param(
     [switch]$Drill,
     [switch]$NoD2b,
     [string]$ExtraSelfCrypt = '',  # S1 排障: 追加加密函数名 (逗号分隔)
+    [switch]$ScDebug,              # selfcrypt 解密期诊断日志 (默认关闭)
     [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
@@ -49,6 +50,7 @@ if ($Help) {
   -D2b              N1 调用级解密 (D2b) — Release 默认开启 (WIN_ENHANCE W1)
   -NoD2b            显式关闭 D2b (回退 D2a; 杀软敏感/调试环境用)
   -Drill            演练钩子 (PROT_DRILL_HOOK, 测试构建)
+  -ScDebug          selfcrypt 解密期诊断日志 (默认关闭; 会泄漏 RVA/密钥/CRC)
   -Help             打印本帮助
 
 输出: build\demo.exe / build\vm_unit.exe / build\syscall_probe.exe /
@@ -75,6 +77,10 @@ $scDef = if ($D2b -or (-not $NoD2b -and $isRelease)) { ' /DPROT_SELFCRYPT_D2B' }
 if ($Drill) { $scDef += ' /DPROT_DRILL_HOOK' }
 # W4 (WIN_ENHANCE): Release 收敛内部错误输出 (隐藏 prot_status 码)
 if ($isRelease) { $scDef += ' /DPROT_RELEASE_CONCEAL' }
+# 2026-09-20: selfcrypt 解密期诊断日志 (RVA/密钥/明文CRC) 改为**显式 opt-in**。
+# 默认不定义 -> 宏展开为空, 字符串不进入产物 (Dev/Release 皆然)。
+# 排障时显式 -ScDebug 打开; 注意打开会改变布局, 需重建 mask/CRC (管线已自动)。
+if ($ScDebug) { $scDef += ' /DPROT_SELFCRYPT_DEBUG' }
 
 # 确定性种子表 (I3): 镜像名 -> {key0, key1}; 顶层 "strgen" = 字符串密钥种子;
 # "indirect" = N4 间接表种子 (标量)
