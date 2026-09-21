@@ -189,12 +189,14 @@ def check_registry(reg):
                               % (name, ', '.join(sorted(ext))))
 
     # --- 未被登记也非原语的源文件 (防止新增模块漏登记) ---
+    # 例外: 以 '_' 开头的文件是**模板/草稿** (如 src/_template.c), 不参与构建,
+    # 不应被要求登记。约定: 模板用 '_' 前缀, 落地时改名去掉前缀。
     prims = reg.get('primitives', {})
     prim_srcs = {os.path.normpath(v.get('source', '')) for v in prims.values()}
     src_dir = os.path.join(REPO, 'src')
     if os.path.isdir(src_dir):
         for f in sorted(os.listdir(src_dir)):
-            if not f.endswith('.c'):
+            if not f.endswith('.c') or f.startswith('_'):
                 continue
             rel = os.path.normpath(os.path.join('src', f))
             if rel not in declared_srcs and rel not in prim_srcs:
