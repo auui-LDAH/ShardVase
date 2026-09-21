@@ -15,6 +15,29 @@
 
 #include "../prot_shell.h"
 
+/* 组合配置 (阶段 2/4): 由 tools/compose.py 依据 compositions/<name>.json 生成,
+ * 定义 PROT_MOD_<NAME>=1 表示该模块参与本次构建。
+ * 未定义的模块: 其调用段被 #ifdef 排除, 且源文件不参与编译/链接。
+ *
+ * 未提供组合配置时 (手工 cl 编译 / 旧流程) 退化为"全模块", 保持旧行为。 */
+#include "prot_modconfig.h"
+#ifndef PROT_COMPOSITION_NAME
+#define PROT_MOD_ANTIDEBUG   1
+#define PROT_MOD_BLOB        1
+#define PROT_MOD_DBIGUARD    1
+#define PROT_MOD_HOSTID      1
+#define PROT_MOD_INDIRECT    1
+#define PROT_MOD_INTEGRITY   1
+#define PROT_MOD_LICENSE     1
+#define PROT_MOD_REVOKE      1
+#define PROT_MOD_SELFCRYPT   1
+#define PROT_MOD_STRCRYPT    1
+#define PROT_MOD_SYSCALL     1
+#define PROT_MOD_VM          1
+#define PROT_MOD_VMDETECT    1
+#endif
+
+
 /* 浜у搧鏄剧ず鍚?/ exe 鍚? 鍚戝浠?-DAPP_EXE_NAME=xxx 瑕嗙洊 (鏃犲紩鍙? 榛樿鍗犱綅).
  * APP_EXE_NAME_STR 缁忓瓧绗︿覆鍖栧畯灞曞紑涓哄瓧闈㈤噺, 瑙勯伩 cmd 浼犻€掑紩鍙烽棶棰? */
 #ifndef APP_DISPLAY_NAME
@@ -148,12 +171,14 @@ static prot_status wd_n3_recheck(void)
     if (r1 != r && r2 != r && r3 != r)
         return PROT_ERR_INTEGRITY;
     /* W2b: dbiguard 鍛ㄦ湡澶嶆煡 (N2 浠庡惎鍔ㄤ竴娆″崌绾т负鍛ㄦ湡) */
+#ifdef PROT_MOD_DBIGUARD
     {
         prot_dbiguard_report drep;
         prot_dbiguard_scan(&drep);
         if (prot_dbiguard_suspicious(&drep))
             return PROT_ERR_INTEGRITY; /* hook 妫€娴嬪埌 -> 鎸?policy (EXIT) */
     }
+#endif /* PROT_MOD_DBIGUARD */   /* dbiguard 回调段 */
     return PROT_OK;
 }
 
@@ -289,6 +314,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
 }
 
 /* --selftest: 閫愰」鎵撳嵃妫€娴嬬粨鏋?(濂戠害 搂9.1-4) */
+#ifdef PROT_MOD_ANTIDEBUG
 static void print_selftest(const prot_antidebug_report* rep)
 {
     printf("  peb_being_debugged: %u\n", rep->peb_being_debugged);
@@ -302,6 +328,7 @@ static void print_selftest(const prot_antidebug_report* rep)
     printf("  debug_heap_flags: %u\n", rep->debug_heap_flags);
     printf("  int3_honey: %u\n", rep->int3_honey);
 }
+#endif /* PROT_MOD_ANTIDEBUG */   /* print_selftest 函数 */
 
 /* base64 瑙ｇ爜 (鏍囧噯 64 瀛楃瀛楁瘝琛?銆傝繑鍥炶В鐮佸悗瀛楄妭鏁? 闈炴硶杈撳叆杩斿洖 (size_t)-1銆?*/
 static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
@@ -432,7 +459,9 @@ int load_and_verify_license(const char* path, demo_mem* mem)
 
 int main(int argc, char** argv)
 {
+#ifdef PROT_MOD_ANTIDEBUG
     prot_antidebug_report rep;
+#endif /* PROT_MOD_ANTIDEBUG */   /* rep 声明 */
     demo_mem mem;
     int selftest;
     uint32_t wait_ms;
@@ -476,6 +505,7 @@ int main(int argc, char** argv)
         Sleep(wait_ms);
     }
 
+#ifdef PROT_MOD_ANTIDEBUG
     /* 搂9.1-4: 鍙嶈皟璇曟壂鎻?-> 鎽樿 -> (--selftest 閫愰」) -> EXIT 绛栫暐 */
     prot_antidebug_scan(&rep);
     printf("反调试扫描: %s\n",
@@ -485,6 +515,8 @@ int main(int argc, char** argv)
     }
 
     /* 搂9.1-4b (N2): 鍙?DBI/鍙?hook 妫€娴?鈥斺€?鍜ㄨ椤? 鍙姤鍛婁笉瑙﹀彂绛栫暐 */
+#endif /* PROT_MOD_ANTIDEBUG */   /* 反调试 scan 段 */
+#ifdef PROT_MOD_DBIGUARD
     {
         prot_dbiguard_report drep;
         prot_dbiguard_scan(&drep);
@@ -507,8 +539,10 @@ if (prot_dbiguard_suspicious(&drep)) {
             }
         }
     }
+#endif /* PROT_MOD_DBIGUARD */   /* dbiguard 主流程段 */
 
     /* 搂9.1-4c (M1): 铏氭嫙鏈?娌欑妫€娴?鈥斺€?鍜ㄨ椤? 鍙姤鍛婁笉瑙﹀彂绛栫暐 */
+#ifdef PROT_MOD_VMDETECT
     {
         prot_vmdetect_report vmrep;
         prot_vmdetect_scan(&vmrep);
@@ -523,7 +557,9 @@ if (prot_dbiguard_suspicious(&drep)) {
 #endif
         }
     }
+#endif /* PROT_MOD_VMDETECT */   /* vmdetect 段 */
 
+#ifdef PROT_MOD_ANTIDEBUG
     /*
      * 娉ㄦ剰: src/antidebug.c 鐨?EXIT 绛栫暐瀹炵幇鏄?TerminateProcess(0xDB),
      * 璇ヨ皟鐢ㄤ笉鍐插埛 stdout (stdout 閲嶅畾鍚戝埌绠￠亾鏃朵负鍏ㄧ紦鍐? 鏁版嵁浼氫涪澶?銆?     * 鍥犳鍏堟妸 MSG_DBG 鎵撳嵃骞跺啿鍒? 鍐嶈Е鍙戠瓥鐣? 淇濊瘉 搂9.1 瑕佹眰鐨勬彁绀哄彲瑙併€?     */
@@ -535,7 +571,9 @@ if (prot_dbiguard_suspicious(&drep)) {
     if (prot_antidebug_detected(&rep)) {
         exit(PROT_EXIT_DEBUG_DETECTED); /* 鍏滃簳: 鑻ョ瓥鐣ユ湭缁堟杩涚▼鍒欐樉寮忛€€鍑?*/
     }
+#endif /* PROT_MOD_ANTIDEBUG */   /* 反调试策略段 */
 
+#ifdef PROT_MOD_INTEGRITY
     /* 搂9.1-5: 瀹屾暣鎬ц嚜妫€ */
     if (sc_ext_enter() != PROT_OK
         || prot_integrity_check_self() != PROT_OK) {
@@ -543,9 +581,12 @@ printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
         exit(PROT_EXIT_TAMPERED);
     }
     sc_ext_leave();
+#endif /* PROT_MOD_INTEGRITY */   /* 完整性自检段 */
 
+#ifdef PROT_MOD_INTEGRITY
     /* §9.1-6: 看门狗 (每 5 秒 ±40% 抖动复查完整性 + A5 反调试) */
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
+#endif /* PROT_MOD_INTEGRITY */   /* 看门狗启动 */
 
     /* 搂9.1-6b: 瑁呰浇 VM blob (DBI launcher, 鎶€鏈€?#3) 鈥斺€?闀滃儚瀵嗘枃涓嶉潤鎬?     * 宓屽叆 exe; 缂哄け/鎹熷潖 -> 鎷掔粷杩愯 (0xB10B)銆傞粯璁ょ浉瀵?cwd 鎵?vm.blob銆?     * BLOB_SIGN_PLAN: --blob-url 鏃跺厛浠庣綉缁滀笅杞藉埌涓存椂鏂囦欢 (楠岀鍏滃簳,
      * 涓棿浜烘浛鎹篃杩囦笉浜?RSA 绛惧悕); 涓嬭浇澶辫触/涓嶅彲杈?-> 鍥為€€鏈湴璺緞銆?*/
@@ -907,19 +948,23 @@ printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
     }
 
     /* 搂9.1-10b: FAKE 绛栫暐浼粨鏋滅炕杞?(鍏ㄩ儴鍓湰, 淇濇寔涓€鑷存€т絾缁撴灉鍙嶈浆) */
+#ifdef PROT_MOD_ANTIDEBUG
     if (prot_antidebug_fake_active()) {
         mem.result ^= 1u;
         mem.result2 ^= 1u;
         mem.result3 ^= 1u;
         mem.result_sum ^= 1u; /* W2: 缈昏浆鍚屾鏍￠獙鍜? 淇濇寔涓€鑷?*/
     }
+#endif /* PROT_MOD_ANTIDEBUG */   /* fake_active 段 */
 
     /* W2 (WIN_ENHANCE): 娉ㄥ唽鐪嬮棬鐙楀懆鏈熷洖璋?(N3 鍐椾綑 + dbiguard 澶嶆煡).
      * demo_mem 鍦?exit 鍓嶄竴鐩存湁鏁? FAKE 缈昏浆鍚庣疆灏辩华, 涓€鑷村垯澶嶆煡鐢熸晥.
      * 椹荤暀鍦烘櫙 (loop/long-run) 涓?watchdog 姣忚疆澶嶆煡鍏抽敭瀛楁. */
     g_demo_mem_ptr = &mem;
     g_demo_mem_ready = 1;
+#ifdef PROT_MOD_INTEGRITY
     prot_integrity_set_watchdog_callback(wd_n3_recheck);
+#endif /* PROT_MOD_INTEGRITY */   /* 看门狗回调注册 */
 
     /* 搂9.1-11: 鎺堟潈闂ㄥ垽瀹?-> 閫氳繃鍒欒繘鍏ヤ笟鍔?(prot_business_main) */
     if (mem.result != 0) {

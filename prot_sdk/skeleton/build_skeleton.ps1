@@ -6,7 +6,8 @@
 # 依赖: 仓库 tools/ src/ include/ 与本骨架工程 (复制自 prot_sdk/skeleton)。
 param(
     [string]$Project = $null,
-    [string]$Out = $null
+    [string]$Out = $null,
+    [string]$Composition = ''      # 阶段4: 拼装图名 (compositions/<name>.json)
 )
 $ErrorActionPreference = 'Stop'
 # python 探测: 环境变量优先, 其次常见安装路径, 最后 PATH (避开 WindowsApps 占位)
@@ -143,11 +144,27 @@ if ($cfg.key_mode -eq 'pub') {
     $signStep = '& $py "$REPO\tools\vmenc.py" sign --key ' + (Join-Path $genDir 'license_priv.json') +
                 " --json $vb --out " + (Join-Path $outDir 'license.txt')
 }
+
+# ---- 5a. 组合 (阶段4): 由 tools/compose.py 决定参与编译的 src/*.c + 生成
+#          prot_modconfig.h (app_main.c 据此条件编译)。
+#          默认 full = 全模块 (等价于改造前硬编码行为)。
+#          源文件顺序由 compose.py 的 SOURCE_ORDER 固定 —— 顺序影响 .text
+#          布局, 不可重排 (见该常量注释)。
+$compName = if ($Composition) { $Composition } else { 'full' }
+$compSrcList = Join-Path $genDir 'composition_srcs.txt'
+& $py "$REPO\tools\compose.py" $compName `
+      --header-out (Join-Path $genDir 'prot_modconfig.h') `
+      --sources-out $compSrcList
+if ($LASTEXITCODE -ne 0) { throw "build_skeleton FAILED: compose.py ($compName)" }
+$compSrcs = @(Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() } |
+              ForEach-Object { Join-Path $REPO ($_.Trim() -replace '/', '\') })
+if ($compSrcs.Count -eq 0) { throw "build_skeleton FAILED: composition '$compName' 无源文件" }
+$compSrcJoined = ($compSrcs | ForEach-Object { "`"$_`"" }) -join ' '
+Write-Host ("build_skeleton: composition '{0}' — {1} 源文件" -f $compName, $compSrcs.Count)
+
 <# 实际执行 (单独 cmd /c 以获得 vcvars 环境) #>
 $clCmd = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I `"$REPO\include`" /I `"$genDir`" $defines /Fe:`"$outDir\$appName.exe`" " +
-    "`"$srcBase\vm.c`" `"$srcBase\crc32.c`" `"$srcBase\antidebug.c`" `"$srcBase\integrity.c`" `"$srcBase\strcrypt.c`" " +
-    "`"$srcBase\hostid.c`" `"$srcBase\license.c`" `"$srcBase\syscall.c`" `"$srcBase\blob.c`" `"$srcBase\revoke.c`" " +
-    "`"$srcBase\vmdetect.c`" `"$srcBase\dbiguard.c`" `"$srcBase\indirect.c`" `"$srcBase\selfcrypt.c`" " +
+    "$compSrcJoined " +
     "`"$Project\app_main.c`" $busSrcs $vmcalcObj " +
     "`"$genDir\strings.c`" `"$genDir\license_pubkey.c`" `"$genDir\indirect_table.c`" `"$genDir\expect_default.c`" " +
     "/link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
@@ -155,14 +172,26 @@ cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath (Join-Path 
 if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: cl (log: cl_log.txt)' }
 
 # ---- 6. selfcrypt + hashpatch (与 demo 同链; 掩码经 --mask-out 落 outDir) ----
-& $py "$REPO\tools\selfcrypt_proto.py" "$outDir\$appName.exe" "$outDir\$appName.map" "--mask-out" "$outDir\selfcrypt_mask.txt"
+#      阶段4 (组合): 组合排除 integrity/antidebug 时, 其加密目标不在 .map 中
+#      -> selfcrypt_proto 跳过并报告; 仅 full 组合用 --require-all 保持严格。
+$scArgs = @()
+if ($compName -eq 'full') { $scArgs += '--require-all' }
+& $py "$REPO\tools\selfcrypt_proto.py" "$outDir\$appName.exe" "$outDir\$appName.map" "--mask-out" "$outDir\selfcrypt_mask.txt" @scArgs
 if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: selfcrypt_proto' }
 $maskArgs = @()
 if (Test-Path -LiteralPath "$outDir\selfcrypt_mask.txt") {
     foreach ($ln in (Get-Content -LiteralPath "$outDir\selfcrypt_mask.txt")) { $maskArgs += '--mask', $ln.Trim() }
 }
-& $py "$REPO\tools\hashpatch.py" "$outDir\$appName.exe" @maskArgs
-if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: hashpatch' }
+#      阶段4 (组合): .protcrc 段由 src/integrity.c 定义 —— 组合不含 integrity
+#      时该段不存在, hashpatch 无目标可写。此时跳过并报告 (该组合本就不含
+#      完整性校验, 没有 CRC 需要烧录)。属预期而非缺陷。
+$hasIntegrity = $compSrcs -match 'integrity\.c$'
+if ($hasIntegrity) {
+    & $py "$REPO\tools\hashpatch.py" "$outDir\$appName.exe" @maskArgs
+    if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: hashpatch' }
+} else {
+    Write-Host 'build_skeleton: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段)'
+}
 
 # ---- 6.5 数字签名 (WDAC 环境下新 exe 需签名放行; pfx 与 demo 共用) ----
 $pfx = Join-Path $REPO 'build\keys\codesign.pfx'

@@ -23,8 +23,13 @@ VASMS = ['license_hash.vasm', 'license_mix.vasm', 'license_verify.vasm',
 
 def generate_project(project_dir, app_name=None, display_name=None,
                      serial='DEMO-2026-ABCDEFGH', key_mode='new',
-                     pub_blob_path=None, lite=False, business_name=None):
-    """生成骨架工程 (纯逻辑, GUI 与测试共用). 返回工程路径."""
+                     pub_blob_path=None, lite=False, business_name=None,
+                     composition='full'):
+    """生成骨架工程 (纯逻辑, GUI 与测试共用). 返回工程路径.
+
+    composition: 拼装图名 (参见 compositions/)。默认 'full' 全模块,
+                 与改造前行为一致。可选 standard / hardened / minimal。
+    """
     project_dir = os.path.abspath(project_dir)
     os.makedirs(project_dir, exist_ok=True)
     app_name = app_name or 'protected_app'
@@ -52,6 +57,7 @@ def generate_project(project_dir, app_name=None, display_name=None,
         'key_mode': key_mode,          # new | pub
         'key_pub_blob': os.path.abspath(pub_blob_path) if pub_blob_path else '',
         'lite': lite,
+        'composition': composition or 'full',   # 阶段4: 拼装图 (默认 full)
         'out_dir': os.path.join(project_dir, 'build'),
         'repo_path': REPO_ROOT,
         'generated_at': __import__('datetime').datetime.now(
@@ -72,15 +78,30 @@ def generate_project(project_dir, app_name=None, display_name=None,
 
 
 def build_project(project_dir, powershell='powershell.exe',
-                  out=None, log_cb=None):
-    """调 build_skeleton.ps1 (纯逻辑). 返回 (rc, 输出文本)."""
+                  out=None, log_cb=None, composition=None):
+    """调 build_skeleton.ps1 (纯逻辑). 返回 (rc, 输出文本).
+
+    composition: 拼装图名 (full/standard/hardened/minimal); None = 读工程配置,
+                 配置也没有则默认 full (等价旧行为)。
+    """
     script = os.path.join(project_dir, 'build_skeleton.ps1')
     if not os.path.isfile(script):
         raise RuntimeError('build_skeleton.ps1 missing (run wizard first)')
+    # 未显式指定时, 读工程配置里记录的 composition
+    if composition is None:
+        cfgp = os.path.join(project_dir, 'build-skeleton.json')
+        if os.path.isfile(cfgp):
+            try:
+                with open(cfgp, encoding='utf-8') as f:
+                    composition = json.load(f).get('composition') or None
+            except (OSError, ValueError):
+                composition = None
     cmd = [powershell, '-NoProfile', '-ExecutionPolicy', 'Bypass',
            '-File', script, '-Project', project_dir]
     if out:
         cmd += ['-Out', out]
+    if composition:
+        cmd += ['-Composition', composition]
     r = subprocess.run(cmd, capture_output=True, text=True,
                        encoding='utf-8', errors='replace')
     text = r.stdout + '\n' + r.stderr
@@ -93,7 +114,7 @@ class ProtWizard:
     def __init__(self, root):
         self.root = root
         root.title('保护接入向导 (prot_sdk P0)')
-        root.geometry('760x620')
+        root.geometry('820x680')
         self._build()
         self.log('就绪: 骨架来源 %s' % SKELETON)
 
@@ -140,12 +161,32 @@ class ProtWizard:
         # 步骤 3: 选项
         f3 = ttk.LabelFrame(main, text='3. 选项')
         f3.grid(row=2, column=0, sticky='ew', pady=4)
+
+        # 3a. 拼装图 (阶段4): 决定参与编译的防御模块集合
         r5 = ttk.Frame(f3); r5.pack(fill='x', padx=8, pady=4)
+        ttk.Label(r5, text='拼装图:').pack(side='left')
+        self.comp_var = tk.StringVar(value='standard')
+        comps = [
+            ('minimal', '最小 (授权链, 无环境检测)'),
+            ('standard', '推荐 (授权+反调试+完整性)'),
+            ('hardened', '强化 (+DBI/VM 检测+间接化)'),
+            ('full', '全部模块 (含已知冲突)'),
+        ]
+        for val, label in comps:
+            ttk.Radiobutton(r5, text=label, variable=self.comp_var,
+                            value=val).pack(side='left', padx=6)
+
+        r5b = ttk.Frame(f3); r5b.pack(fill='x', padx=8, pady=2)
+        ttk.Label(r5b, foreground='#666',
+                  text='说明: 拼装图决定编译哪些防御模块; 未选模块既不编译也不链接。'
+                       '运行 tools\\modcheck.py 可查看组合自洽性。').pack(side='left')
+
+        r6 = ttk.Frame(f3); r6.pack(fill='x', padx=8, pady=4)
         self.lite_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(r5, text='Lite 模式 (内部工具: 隐藏咨询提示, 其余保护不变)',
+        ttk.Checkbutton(r6, text='Lite 模式 (内部工具: 隐藏咨询提示, 其余保护不变)',
                         variable=self.lite_var).pack(side='left')
-        ttk.Button(r5, text='生成工程', command=self.do_gen).pack(side='right')
-        ttk.Button(r5, text='构建 + smoke', command=self.do_build).pack(
+        ttk.Button(r6, text='生成工程', command=self.do_gen).pack(side='right')
+        ttk.Button(r6, text='构建 + smoke', command=self.do_build).pack(
             side='right', padx=6)
 
         # 日志
@@ -175,14 +216,16 @@ class ProtWizard:
             messagebox.showwarning('提示', '请先选择工程目录')
             return
         try:
+            comp = self.comp_var.get() if hasattr(self, 'comp_var') else 'full'
             generate_project(
                 d, app_name=self.app_var.get().strip() or None,
                 display_name=self.disp_var.get().strip() or None,
                 serial=self.serial_var.get().strip() or 'DEMO-2026-ABCDEFGH',
                 key_mode=self.key_mode.get(),
                 pub_blob_path=self.pub_var.get().strip() or None,
-                lite=self.lite_var.get())
-            self.log('工程已生成: %s' % d)
+                lite=self.lite_var.get(),
+                composition=comp)
+            self.log('工程已生成: %s (拼装图: %s)' % (d, comp))
             self.log('在业务文件 (business_*.c) 中写你的逻辑, 然后 [构建 + smoke]')
         except Exception as e:
             self.log('生成失败: %s' % e)
