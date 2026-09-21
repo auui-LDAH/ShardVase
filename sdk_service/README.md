@@ -46,7 +46,7 @@ sdk_service/
 |---|---|---|---|
 | 1 申请 | 真机（客户机） | `req_gen.py --name ...` → `.req` | MACHINE_ID=`0x5e6bfd7560985c95` |
 | 2 传输 | 模拟邮件 | scp 下载 `.req` 到签发机 + 取回签发私钥 | ✓ |
-| 3 签发 | 服务器 issuer-host | `issue_from_req.py --serial DEMO-2026-ABCDEFGH` | license.txt 绑定该机 |
+| 3 签发 | 签发机 | `issue_from_req.py --serial DEMO-2026-ABCDEFGH` | license.txt 绑定该机 |
 | 4 回传 | 模拟邮件 | scp 上传 license.txt 到客户机 | ✓ |
 | 5 验证 | 真机 | `demo.exe --license-file ... --vm-blob ...`，stdin 喂序列号 | **`校验通过，欢迎使用！(tier=1)`** |
 
@@ -61,8 +61,8 @@ sdk_service/
 
 | 环节 | 状态 |
 |---|---|
-| Ubuntu Server（issuer-host, 100.x.x.x, IPv6/Tailscale）| 已部署 `~/protsdk`（工具+私钥 `prot-priv.json` chmod 600）|
-| 服务器清理 | volga 残留/docker/ddns-go/waf-guard 全部移除，磁盘 67G→8G |
+| Ubuntu Server（签发机：主机名/内网地址已脱敏）| 已部署 `~/protsdk`（工具+私钥 `prot-priv.json` chmod 600）|
+| 服务器清理 | 历史项目残留/docker/ddns-go/waf-guard 全部移除，磁盘 67G→8G |
 | 正式密钥 | 服务器生成 RSA-3072（升级），公钥导出 `pub-blob.c`（Windows）/`pub-der.c`（DER）；私钥备份在本机 + 建议 U 盘 |
 | 正式 demo 构建 | 真机（客户机形态）用服务器公钥构建 `demo.exe`，smoke PASS |
 | 真实签发 | 服务器 `issue_from_req` 签发 SN=`DEMO-2026-ABCDEFGH` bound 真机 |

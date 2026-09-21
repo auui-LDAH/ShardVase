@@ -1,0 +1,54 @@
+name: 接入咨询 / 商业授权
+description: 咨询把 ShardVase 接入你的项目，或询问商业授权
+title: "[consult] "
+labels: ["consult"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 关于商业授权
+
+        ShardVase 采用 **AGPL-3.0 + 商业授权** 双许可：
+        - 开源使用遵守 AGPL-3.0 即可，**无需**商业授权
+        - 需要**闭源商用**时才需要商业授权（详见
+          [LICENSE.md](../blob/main/LICENSE.md)）
+
+        提交本 Issue 前，建议先读
+        [TUTORIAL.md](../blob/main/prot_sdk/TUTORIAL.md) ——
+        自助接入约 17 秒（自动化部分）。
+
+  - type: dropdown
+    id: intent
+    attributes:
+      label: 你的需求
+      options:
+        - 接入咨询（技术上怎么用）
+        - 商业授权（闭源商用）
+        - 定制开发
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: stack
+    attributes:
+      label: 你的技术栈
+      placeholder: "例如 C/C++ MSVC x64，或 Qt，或 C#"
+    validations:
+      required: false
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你的软件是什么类型？主要想防什么？
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: read
+    attributes:
+      label: 确认
+      options:
+        - label: 我已读过诚实边界清单，理解本项目是用户态保护、不承诺"永不破解"
+          required: true

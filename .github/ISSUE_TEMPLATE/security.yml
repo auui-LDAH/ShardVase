@@ -1,0 +1,89 @@
+name: 安全 / 保护绕过报告
+description: 报告保护绕过手法、本项目漏洞，或敏感信息泄露
+title: "[security] "
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 请先确认报告类型
+
+        - **保护绕过**（你破了保护机制）→ 公开 Issue 即可，我们主张机制公开、接受挑战
+        - **本项目漏洞**（工具链缺陷）→ 公开 Issue；细节敏感可先说"需要私密渠道"
+        - **敏感信息泄露**（私钥/地址/客户信息）→ **请勿在公开 Issue 粘贴内容**，
+          改用仓库 Security → Report a vulnerability
+
+        请先读 [SECURITY.md](../blob/main/SECURITY.md) 与
+        [诚实边界](../blob/main/publish/06-诚实边界.md) ——
+        若属已知边界，我们仍欢迎更强的影响面分析。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 报告类型
+      options:
+        - 保护绕过（A 类）
+        - 本项目漏洞（B 类）
+        - 敏感信息泄露（C 类，请勿粘贴内容）
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 一句话说明
+      description: 你做到了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: prereq
+    attributes:
+      label: 前置条件
+      description: |
+        这一点对本项目**极其重要** —— 我们的记录格式要求写明前置条件。
+        例如"攻击者已能改写目标进程内存"、"安装目录可写"、"具备内核驱动加载能力"。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 尽量具体；能给出最小复现最好
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+      placeholder: "例如 v1.0 或 commit abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响面
+      description: 能做到什么（例如"可绕过授权"、"可读取明文逻辑"）
+    validations:
+      required: true
+
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: 你认为的缓解方向（可选）
+      description: 有想法很好；没有也可以留空
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 确认
+      options:
+        - label: 我确认这是在**自己的软件或授权测试环境**上验证的，未攻击他人系统
+          required: true
+        - label: 我已读过诚实边界清单，确认这不是其中已公开的项（若是，我提供了新的影响面）
+          required: true

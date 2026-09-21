@@ -1,0 +1,73 @@
+name: Bug 报告
+description: 报告构建失败、测试失败或行为异常
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 提交前请先自查
+
+        1. 读了 [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) 的"已知的坑"吗？
+           （`.ps1` 丢 BOM、源文件顺序、只改一个宿主 —— 这三类最常见）
+        2. 跑过 `powershell -File tools\release_check.ps1` 吗？14 项里哪项失败？
+        3. 若是构建失败，`prot_sdk/skeleton/build_skeleton.ps1` 会给出**可操作提示**，
+           请一并粘贴。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - 构建（build.ps1 / build_skeleton.ps1）
+        - 测试（e2e / attacks / vm_unit / vmc）
+        - 门禁（release_check / modcheck / doccheck）
+        - 接入 SDK（向导 / 骨架 / 教程）
+        - 保护机制本身（VM / 反调试 / 完整性 / 授权）
+        - 文档错误
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 发生了什么？期望是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 请给最小复现；能贴命令最好
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+      placeholder: "例如 v1.0 或 commit abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: |
+        运行 `python tools/osinfo.py --json` 可获得结构化环境信息。
+        至少请提供：Windows 版本、VS2022 版本、Python 版本。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: 相关输出 / 日志
+      render: text
+    validations:
+      required: false

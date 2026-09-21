@@ -4,8 +4,8 @@
 
 ## 状态：已完成
 
-- [x] 服务器：**issuer-host**（Ubuntu 26.04 LTS，1 核 2G，Tailscale `100.x.x.x`，SSH 别名 `issuer-host`）
-- [x] 清理：volga 残留/docker/ddns-go/waf-guard/旧证书全部移除（磁盘 67G→8G，内存可用 1.3Gi）
+- [x] 服务器：**签发机**（Ubuntu 26.04 LTS，1 核 2G，经 Tailscale 私有网络访问；主机名与内网地址已脱敏）
+- [x] 清理：历史项目残留/docker/ddns-go/waf-guard/旧证书全部移除（磁盘 67G→8G，内存可用 1.3Gi）
 - [x] 部署：`~/protsdk/`（`tools/vmenc.py` + `sdk_service/`），Python 3.14 + `python3-cryptography` 46.0.5
 - [x] 正式私钥：`~/protsdk/sdk_service/keys/prot-priv.json`（chmod 600），**RSA-3072**（2026-08-27 升级），公钥导出 `pub-blob.c`（Windows）/`pub-der.c`（DER）
 - [x] 首次实战签发：真机 `.req` → 服务器签发 → 双侧 `verify_license.py` VALID → 真机 `demo.exe` 验收**校验通过**

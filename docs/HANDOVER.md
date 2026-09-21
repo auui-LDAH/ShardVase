@@ -103,7 +103,7 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
   （咨询项）；真机 selftest 0 误报。
 - **A2**：`// @vmcalc` 业务函数自动 VM 化（c2vasm 翻译器 + 桩 + blob 同链）
   已落地（golden 6/6 + flow test 11/11 + 真机 hashcalc 验收）。
-- **签发体系**：Ubuntu Server（issuer-host）离线签发 + GUI 签发台（本机
+- **签发体系**：Ubuntu Server（离线签发机，主机名已脱敏）离线签发 + GUI 签发台（本机
   桌面快捷方式）+ 台账哈希链/重放拦截/字段卫生（D-D1/D-D2/D-D4）。
 - **ShardVase 公开面**：GitHub 仓库（auui-LDAH/ShardVase-*）+ 演示包
   v1.0（hashcalc + 评估授权）+ 文档（能力/边界/攻防记录）。
@@ -317,7 +317,7 @@ python tests\attacks.py
 | verify 增强 | **verify.ps1 已同步 protchain 保护链断言（2026-08-22）**：本地门禁=CI 门禁；附带修复 example 适配 BLOB_SIGN（容器移 selfcrypt.c + pack/revoke --sign）—— 见 docs/VERIFY_PLAN.md | 完成 |
 
 ### 4.4 阶段 II 实测记录（2026-08-21；2026-08-24 真机复验全能力）
-- 真机（test-host，100.x.x.x，Win11 家庭版 24H2 26200，2026-08-24 复验）：
+- 真机（独立测试机，主机名/内网地址已脱敏，Win11 家庭版 24H2 26200，2026-08-24 复验）：
   **verify -Minimal 全绿**（build/e2e/vm_unit/syscall_probe/attacks/vmc/example/protchain）；
   e2e T1-T28 除 T3 全 PASS（T10 tamper-pdata 真机 PASS，本机 WDAC SKIP 补齐）；
   attacks **A1-A12 全 PASS**（含本机 WDAC 无法跑的 A8/A9/A12——伪造 blob/revoke 拒绝、N5 边界）；
