@@ -76,6 +76,11 @@ if (-not $SkipTest) {
     Check '模块契约 (modcheck)' { & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0 }
     # 阶段 3 (攻防对称): 演练记录须符合 schema 且 target_module 有效。
     Check '攻防记录 (drills lint)' { & $py tools\drills.py lint; $LASTEXITCODE -eq 0 }
+    # 阶段 5 (M5): 对外材料数字不得与内部能力漂移
+    #   (门禁项数 / 轮次口径 / 模糊表述 / 死链)。2026-09-20 核对时发现
+    #   "0 破防点"、"release_check 11/11"、"8+ 轮 vs 6 轮" 三类漂移,
+    #   本检查防止其复发。
+    Check '对外材料 (doccheck)' { & $py tools\doccheck.py; $LASTEXITCODE -eq 0 }
 }
 
 # 签名: 可复现 (repro) 要求 SkipSign 重建, 与 Authenticode 互斥 (签名改 SHA,
