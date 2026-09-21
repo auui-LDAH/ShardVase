@@ -29,28 +29,28 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 REGISTRY = os.path.join(REPO, 'modules.json')
 COMPOSITIONS = os.path.join(REPO, 'compositions')
 
-# 宿主 (demo/main.c) 无条件依赖的基础模块。
+# 宿主 (demo/main.c) 无条件依赖的基础模块 —— **实测更新 (2026-09-20 批2 后)**。
 #
-# **实测确定** (2026-09-20, 非推测): 用链接器作为权威 —— 只编译授权链后
-# MSVC 报 12 个无法解析的外部符号, 全部来自以下 5 个"可选"模块:
-#     antidebug  4 个 (scan/detected/apply_policy/fake_active)
-#     integrity  3 个 (check_self/start_watchdog/set_watchdog_callback)
-#     dbiguard   2 个 (scan/suspicious)
-#     vmdetect   2 个 (scan/suspicious)
-#     indirect   1 个 (prot_indirect_resolve)
-# 加上授权链自身的 blob/hostid/license/strcrypt/vm/revoke,
-# 宿主下限 = 10 个模块。
+# 方法: 逐个尝试排除每个模块 (连带反向依赖闭包), 由**链接器**判定可排除性。
+# 批2 完成 antidebug/integrity 条件编译后的实测结果:
 #
-# 结论: 当前 main.c 是"全模块硬编码"宿主。要让 minimal 组合真正更小,
-# **必须先做宿主条件编译** (BLUEPRINT §5 阶段 2 路线 A)。
-# 在宿主改造完成前, 任何组合都会被解析为这 10 个模块。
-SUBSTRATE = ['antidebug', 'blob', 'dbiguard', 'hostid', 'indirect',
-             'integrity', 'license', 'revoke', 'strcrypt', 'vm',
-             'vmdetect']
+#   可排除 (5): antidebug, dbiguard, integrity, syscall, vmdetect
+#   不可排除 (8) —— 及其真实缺失符号:
+#     blob       prot_vm_blob_load            (宿主直接调用)
+#     hostid     prot_hostid_get              (间接表 + 宿主)
+#     license    prot_license_verify / _build_message
+#     revoke     prot_revoke_check            (间接表硬引用)
+#     selfcrypt  prot_selfcrypt_blob / init / enter / leave
+#     strcrypt   prot_str_get / prot_str_decrypt
+#     vm         prot_vm_run                  (间接表 + 核心链)
+#     indirect   prot_indirect_resolve        (宿主 PROT_INDIRECT_CALL)
+#
+# 批1 (仅 vmdetect/dbiguard 可排除) 时此表为 11 项; 批2 后收敛为 8 项。
+SUBSTRATE = ['blob', 'hostid', 'indirect', 'license', 'revoke',
+             'selfcrypt', 'strcrypt', 'vm']
 
-# 宿主改造完成后应缩减为 (授权链 + VM, 由 indirect 表强制):
-SUBSTRATE_AFTER_HOST_REFACTOR = ['blob', 'hostid', 'license', 'revoke',
-                                 'strcrypt', 'vm']
+# 可排除的模块 (供文档与测试引用)
+EXCLUDABLE = ['antidebug', 'dbiguard', 'integrity', 'syscall', 'vmdetect']
 
 
 def load_registry():
