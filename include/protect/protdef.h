@@ -38,7 +38,7 @@ typedef enum prot_policy {
 /* 进程退出码约定 (demo / e2e 依赖) */
 #define PROT_EXIT_DEBUG_DETECTED 0xDB    /* 219: 调试环境 */
 #define PROT_EXIT_TAMPERED       0xBAD   /* 2989: 被篡改 */
-#define PROT_EXIT_BLOB_MISSING   0xB10B  /* 45643: VM blob 缺失/损坏 (DBI launcher) */
+#define PROT_EXIT_BLOB_MISSING   0xB10B  /* 45323: VM blob 缺失/损坏 (DBI launcher) */
 #define PROT_EXIT_REVOKED        0xB1E4  /* 45540: 授权已被吊销 (I1 黑名单) */
 
 /* CRC32: 标准多项式, 与 Python zlib.crc32 一致 */
