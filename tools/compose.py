@@ -80,6 +80,51 @@ def closure(mods, reg):
     return out
 
 
+# 编译顺序 (P2 布局敏感): **必须与改造前的 build.ps1 硬编码顺序一致**。
+#
+# 实测教训 (2026-09-20, -Composition 集成时发现): 若改用字母序编译,
+# 链接顺序变化 -> .text 布局变化 -> 加密段与 main 的**页关系**变化 ->
+# selfcrypt 的页冲突安全网跳过 vm_var -> 加密函数由 8 个降为 6 个。
+# 即: 源文件顺序是**语义相关**的, 不是无关紧要的排列。
+#
+# 本列表的顺序 = 2026-09-20 之前 build.ps1 第 271 行的硬编码顺序。
+# 新增模块须**追加到末尾**, 不得重排 (重排会改变布局并触发上述回归)。
+SOURCE_ORDER = [
+    'vm', 'vm_rekey', 'crc32', 'antidebug', 'integrity', 'strcrypt',
+    'hostid', 'license', 'syscall', 'blob', 'revoke', 'vmdetect',
+    'dbiguard', 'indirect', 'selfcrypt',
+]
+
+
+def ordered_sources(names, reg):
+    """按 SOURCE_ORDER 排序源文件 (保持既有 .text 布局)。
+
+    未在 SOURCE_ORDER 中的名字追加到末尾 (新增模块的默认落位)。
+    可同时接受模块名与原语名 (crc32 / vm_rekey) —— 两者都在注册表中。
+    """
+    def src_of(name):
+        if name in reg['modules']:
+            return reg['modules'][name]['source'].replace('\\', '/')
+        if name in reg.get('primitives', {}):
+            return reg['primitives'][name]['source'].replace('\\', '/')
+        return None
+
+    srcs = []
+    seen = set()
+    for name in SOURCE_ORDER:
+        if name in names:
+            s = src_of(name)
+            if s:
+                srcs.append(s)
+                seen.add(name)
+    # 新增 (不在 SOURCE_ORDER 中) 追加末尾, 按名排序保证确定性
+    for name in sorted(set(names) - seen):
+        s = src_of(name)
+        if s:
+            srcs.append(s)
+    return srcs
+
+
 def resolve(comp, reg):
     """拼装图 -> (最终模块集, 源文件列表, 自动补入的模块, 错误列表)"""
     errors = []
@@ -100,18 +145,18 @@ def resolve(comp, reg):
     # 自动补入 = 闭包 + 下限 中所有未显式声明的部分
     auto_added = sorted(full - set(declared))
 
-    srcs = []
-    for m in sorted(full):
-        srcs.append(reg['modules'][m]['source'].replace('\\', '/'))
-
-    # 原语 (公共设施) 始终编译; 按需排除
+    # 源文件按 SOURCE_ORDER 排序 (保持既有 .text 布局; 见该常量注释)
+    # 注意: 原语 (crc32/vm_rekey) 也在 SOURCE_ORDER 中, 故一并按序处理。
     excl = set(comp.get('exclude_primitives', []))
-    for pname, p in reg.get('primitives', {}).items():
-        if pname in excl:
-            continue
-        srcs.append(p['source'].replace('\\', '/'))
+    with_prims = set(full)
+    for pname in reg.get('primitives', {}):
+        if pname not in excl:
+            with_prims.add(pname)
 
-    return full, sorted(srcs), auto_added, errors
+    srcs = ordered_sources(with_prims, reg)
+    # 注意: **不可**再 sorted() —— 顺序是语义相关的 (决定 .text 布局,
+    # 进而决定加密段与 main 的页关系)。见 SOURCE_ORDER 注释。
+    return full, srcs, auto_added, errors
 
 
 def gen_header(mods, comp_name, reg):

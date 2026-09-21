@@ -29,6 +29,7 @@ param(
     [switch]$NoD2b,
     [string]$ExtraSelfCrypt = '',  # S1 排障: 追加加密函数名 (逗号分隔)
     [switch]$ScDebug,              # selfcrypt 解密期诊断日志 (默认关闭)
+    [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
     [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
@@ -51,6 +52,8 @@ if ($Help) {
   -NoD2b            显式关闭 D2b (回退 D2a; 杀软敏感/调试环境用)
   -Drill            演练钩子 (PROT_DRILL_HOOK, 测试构建)
   -ScDebug          selfcrypt 解密期诊断日志 (默认关闭; 会泄漏 RVA/密钥/CRC)
+  -Composition <名> 按拼装图构建 (compositions/<名>.json); 默认 full 全模块
+                    可选: full / standard / hardened / minimal
   -Help             打印本帮助
 
 输出: build\demo.exe / build\vm_unit.exe / build\syscall_probe.exe /
@@ -266,9 +269,25 @@ if ($isRelease) {
 # 5. 编译 + 链接 (vcvars64 环境; cl 失败即中止)
 #    Release 加固 (RELEASE §2/§3): 链接 /DEBUG:NONE 无调试目录, /OPT:REF,ICF 瘦身,
 #    版本资源, /Brepro 可复现 (PE 时间戳/校验和确定性, 同种子两次构建字节一致)
+#
+#    阶段 2 (组合驱动): -Composition <名> 时由 tools/compose.py 决定
+#      (a) 生成 demo\gen\prot_modconfig.h (宿主条件编译依据)
+#      (b) 输出本次参与编译的 src/*.c 清单
+#    未指定时 default = "full" (等价于改造前的全模块硬编码构建)。
 $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
 $resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe src\vm.c src\vm_rekey.c src\crc32.c src\antidebug.c src\integrity.c src\strcrypt.c src\hostid.c src\license.c src\syscall.c src\blob.c src\revoke.c src\vmdetect.c src\dbiguard.c src\indirect.c src\selfcrypt.c demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+
+$compName = if ($Composition) { $Composition } else { 'full' }
+$compSrcList = 'build\_composition_srcs.txt'
+& $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList
+if ($LASTEXITCODE -ne 0) { throw "build FAILED: compose.py ($compName)" }
+$compSrcs = @(Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() } |
+              ForEach-Object { $_.Trim() -replace '/', '\' })
+if ($compSrcs.Count -eq 0) { throw "build FAILED: composition '$compName' 无源文件" }
+$compSrcJoined = ($compSrcs -join ' ')
+Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs.Count)
+
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -282,12 +301,17 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 # 6. N1 (阶段 0 原型): 引擎函数原位加密 (方案 B) —— 必须在 hashpatch 之前
 #     (加密改 .text, hashpatch 对加密段掩码后烧录, 两侧一致)。
 #     掩码 rva/len 由 selfcrypt_proto.py 写入 build/selfcrypt_mask.txt
+#
+#     阶段 2: 组合排除了 integrity/antidebug 等模块时, 其加密目标函数不在
+#     .map 中 —— selfcrypt_proto.py 会跳过并报告 (f48ffbd)。
+#     仅当组合为 full (全模块) 时用 --require-all 保持严格校验。
 $scExtraArgs = @()
 if ($ExtraSelfCrypt) {
     foreach ($n in ($ExtraSelfCrypt -split ',')) {
         $scExtraArgs += '--extra', $n.Trim()
     }
 }
+if ($compName -eq 'full') { $scExtraArgs += '--require-all' }
 & $py tools\selfcrypt_proto.py build\demo.exe build\demo.map @scExtraArgs
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: selfcrypt_proto.py' }
 $maskArgs = @()
@@ -298,8 +322,19 @@ if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
 }
 
 # 6. 烧录 .text CRC32 到二进制 (integrity 自检依赖; 带 selfcrypt 掩码)
-& $py tools\hashpatch.py build\demo.exe @maskArgs
-if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
+#
+#     阶段 2 (组合): .protcrc 段与三段 CRC 烧录表由 **src/integrity.c** 定义。
+#     组合排除 integrity 时该段不存在 -> hashpatch 无目标可写 (实测
+#     "no .protcrc section found")。此时**跳过烧录**并明确报告 ——
+#     因为该组合本就不含完整性校验, 没有 CRC 需要烧录。
+#     这是 integrity 与 hashpatch 的**构建级耦合**, 属预期而非缺陷。
+$hasIntegrity = $compSrcs -match 'integrity\.c$'
+if ($hasIntegrity) {
+    & $py tools\hashpatch.py build\demo.exe @maskArgs
+    if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
+} else {
+    Write-Host 'build: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段可烧录)'
+}
 
 # 6.2 Release: 数字签名 (RELEASE §2.4, 自签证书) —— 必须在 hashpatch 之后
 # 注: 托管环境若启用 WDAC (代码完整性策略), 新构建的未签名 exe 可能被
@@ -456,6 +491,12 @@ $manifest = [ordered]@{
     tool       = 'build.ps1'
     timestamp  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     config     = $Config
+    composition = $compName          # 阶段2: 本次构建所用拼装图
+    comp_modules = (@(
+        Select-String -LiteralPath 'demo\gen\prot_modconfig.h' `
+            -Pattern '^#define PROT_MOD_(\w+)' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value }
+    ) | Sort-Object)
     version    = $manifestVersion
     toolchain  = $toolchain
     os         = ((& $py tools\osinfo.py --json) | ConvertFrom-Json)
