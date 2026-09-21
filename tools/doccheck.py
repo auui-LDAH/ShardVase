@@ -71,6 +71,84 @@ def _is_quoted_or_negated(text, start, end):
 #   流程测试 11/11   = vmcalc flow test
 EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 
+# --- 部署布局 (用于相对链接解析) ---
+#
+# 关键: docs/marketing/X.md 部署到**公开仓库根目录** X.md,
+# 而 ISSUE_TEMPLATE_*.yml 部署到 .github/ISSUE_TEMPLATE/*.yml。
+# 因此同一相对路径在"本地"与"GitHub"两处解析结果不同 ——
+# 曾产生真实死链 (boundaries.md 的 ../../.github/... 在仓库根会越界)。
+#
+# 处理原则: 跨越"文档所在目录"的链接一律用**绝对 URL**,
+# 使其在本地渲染、GitHub、自建博客三处都有效。
+DEPLOY_MAP = {
+    'docs/marketing/README.md':        ('ShardVase-docs', 'README.md'),
+    'docs/marketing/boundaries.md':    ('ShardVase-docs', 'boundaries.md'),
+    'docs/marketing/attack-record.md': ('ShardVase-docs', 'attack-record.md'),
+    'docs/marketing/landing.html':     ('ShardVase-website', 'index.html'),
+}
+
+# 各公开仓库的实际文件清单 (与 gh api tree 核对过)
+PUBLIC_FILES = {
+    'ShardVase-docs': {
+        'README.md', 'attack-record.md', 'boundaries.md', 'landing.html',
+        '.github/ISSUE_TEMPLATE/consult.yml',
+        '.github/ISSUE_TEMPLATE/eval.yml',
+        '.github/ISSUE_TEMPLATE/security.yml',
+    },
+}
+
+
+def check_deployed_links():
+    """按 GitHub 渲染规则校验 marketing 文档的相对链接。
+
+    返回 (errors, checked)。
+    """
+    from urllib.parse import urljoin
+    errors = []
+    checked = 0
+    for local, (repo, pubpath) in DEPLOY_MAP.items():
+        p = os.path.join(REPO, local)
+        if not os.path.isfile(p):
+            continue
+        text = open(p, encoding='utf-8').read()
+        base = 'https://github.com/OWNER/%s/blob/main/%s' % (repo, pubpath)
+        for m in re.finditer(r'\[([^\]]{1,24})\]\(([^)\s]+)\)', text):
+            href = m.group(2)
+            if href.startswith(('http://', 'https://')):
+                continue
+            checked += 1
+            path = href.partition('#')[0]
+            resolved = urljoin(base, path) if path else base
+            marker = '/OWNER/%s/' % repo
+            if marker not in resolved:
+                ln = text[:m.start()].count('\n') + 1
+                errors.append(
+                    '%s:%d 相对链接越出仓库根: %s '
+                    '(该文件部署到 %s 根目录 -> 请改用绝对 URL)'
+                    % (local, ln, href, repo))
+                continue
+            rel = resolved.split(marker)[-1]
+            # 关键: 仓库内的**文件**链接必须落在 blob/main/ 之下。
+            # 只用 urljoin 不够 —— 对 `../../x` 它会折叠掉 blob/main/
+            # 但仍保留仓库名, 结果形如 `ShardVase-docs/x` (看着像仓库内,
+            # 实际是 GitHub 上的目录路径, 渲染为 404)。
+            # 这是本检查器初版的漏洞 (负向测试发现)。
+            if 'issues' in rel:
+                continue
+            if not rel.startswith('blob/main/'):
+                ln = text[:m.start()].count('\n') + 1
+                errors.append(
+                    '%s:%d 相对链接越出文档目录 (部署后 404): %s '
+                    '-> %s (请改用绝对 URL)'
+                    % (local, ln, href, rel))
+                continue
+            f = rel[len('blob/main/'):]
+            if f and f not in PUBLIC_FILES.get(repo, set()):
+                ln = text[:m.start()].count('\n') + 1
+                errors.append('%s:%d 部署后目标不存在: %s -> %s'
+                              % (local, ln, href, f))
+    return errors, checked
+
 
 def actual_gate_count():
     """release_check.ps1 的实际门禁项数 (Check 调用数 + 签名提示项)。"""
@@ -86,6 +164,45 @@ def actual_rounds():
     """docs/ATTACK_DRILL*.md 的实际轮次数量。"""
     docs = glob.glob(os.path.join(REPO, 'docs', 'ATTACK_DRILL*.md'))
     return len(docs)
+
+
+def check_publish_links():
+    """校验 publish/ 内部互链 (该目录发布到自建博客, 文件并排)。
+
+    约定: publish/X.md 之间应写**同目录相对路径** (如 `07-攻防记录.md`),
+    而非 `../../publish/X.md` —— 后者在博客渲染时会越界 404。
+    (实测发现: 06-诚实边界.md 曾用错误形式, 其余文件均正确。)
+    """
+    errors = []
+    checked = 0
+    pub = os.path.join(REPO, 'publish')
+    if not os.path.isdir(pub):
+        return errors, checked
+    for name in sorted(os.listdir(pub)):
+        if not name.endswith('.md'):
+            continue
+        p = os.path.join(pub, name)
+        text = open(p, encoding='utf-8').read()
+        for m in re.finditer(r'\[([^\]]{1,24})\]\(([^)\s]+)\)', text):
+            href = m.group(2)
+            if href.startswith(('http://', 'https://', '#')):
+                continue
+            checked += 1
+            ln = text[:m.start()].count('\n') + 1
+            target = href.partition('#')[0]
+            if not target:
+                continue
+            resolved = os.path.normpath(os.path.join(pub, target))
+            rel = os.path.relpath(resolved, pub)
+            if rel.startswith('..'):
+                errors.append(
+                    'publish/%s:%d 链接越出 publish/ : %s '
+                    '(该目录发布为并排文件 -> 请用同目录路径)'
+                    % (name, ln, href))
+            elif not os.path.exists(resolved):
+                errors.append('publish/%s:%d 目标不存在: %s'
+                              % (name, ln, href))
+    return errors, checked
 
 
 def main(argv=None):
@@ -155,6 +272,17 @@ def main(argv=None):
                 ln = t[:m.start()].count('\n') + 1
                 errors.append('%s:%d 引用路径不存在: %s'
                               % (rel, ln, m.group(1)))
+
+    # --- 5. 部署后的相对链接 (按 GitHub 渲染规则) ---
+    # 这类死链只在部署后才暴露 —— 本地渲染正常, 上线后越界。
+    derr, dchecked = check_deployed_links()
+    checked += dchecked
+    errors.extend(derr)
+
+    # --- 6. publish/ 内部互链 (发布到自建博客, 文件并排) ---
+    perr, pchecked = check_publish_links()
+    checked += pchecked
+    errors.extend(perr)
 
     for e in errors:
         print('  [X] %s' % e)

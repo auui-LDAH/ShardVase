@@ -43,5 +43,5 @@
 > 工具层问题内。这是我们敢公开它们的原因。
 
 ## 4. 报告与响应
-发现我们边界外的破防手法 → 请开 Issue（[漏洞报告](../../.github/ISSUE_TEMPLATE/security.yml)），
-我们会验证、记录、并在能力页与边界页更新——**不删帖、不装看不见**。
+发现我们边界外的破防手法 → 请开 Issue（[漏洞报告](https://github.com/auui-LDAH/ShardVase-docs/issues/new/choose)，
+选 **Security / 保护绕过** 模板），我们会验证、记录、并在能力页与边界页更新——**不删帖、不装看不见**。
