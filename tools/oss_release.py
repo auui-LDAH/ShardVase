@@ -173,15 +173,48 @@ def cmd_rewrite():
     print('历史重写 —— 不可逆操作')
     print('=' * 64)
 
-    # 前置: 备份
+    # 前置: 备份（两种形式, 且都**验证可恢复**）
     print()
-    print('--- 0. 备份 ---')
-    bundle = os.path.join(os.environ.get('TEMP', '/tmp'), 'oss-prerewrite.bundle')
+    print('--- 0. 备份（bundle + 目录副本, 均验证）---')
+    tmp = os.environ.get('TEMP', '/tmp')
+    bundle = os.path.join(tmp, 'oss-prerewrite.bundle')
     rc, _, err = sh('git', 'bundle', 'create', bundle, '--all')
     if rc != 0:
         print('  [X] bundle 备份失败: %s' % err[:100])
         return 1
-    print('  ✓ %s (%.2f MB)' % (bundle, os.path.getsize(bundle) / 1024 / 1024))
+    print('  ✓ bundle: %s (%.2f MB)'
+          % (bundle, os.path.getsize(bundle) / 1024 / 1024))
+
+    # 验证 bundle 可克隆（不验证的备份等于没有）
+    verify = os.path.join(tmp, '_oss_backup_verify')
+    shutil.rmtree(verify, ignore_errors=True)
+    rc, out, _ = sh('git', 'clone', '-q', bundle, verify)
+    n_cur = sh('git', 'rev-list', '--count', 'HEAD')[1].strip()
+    if rc != 0 or not os.path.isdir(os.path.join(verify, '.git')):
+        print('  [X] bundle 验证失败 —— 中止（备份不可用不能继续）')
+        return 1
+    n_bak = sh('git', '-C', verify, 'rev-list', '--count', 'HEAD')[1].strip()
+    print('  ✓ bundle 可克隆: %s 提交 (当前 %s)' % (n_bak, n_cur))
+    if n_bak != n_cur:
+        print('  [X] 备份提交数与当前不符 —— 中止')
+        return 1
+    shutil.rmtree(verify, ignore_errors=True)
+
+    # 目录副本（用 git clone, 而非 shutil.copytree）
+    #  教训: copytree 对 .git 可能复制到半写状态, 且 rmtree 在 Windows 上
+    #  常因文件锁失败 -> 曾导致备份目录"部分删除"、.git 损坏。
+    #  git clone 会校验对象完整性, 是更可靠的备份方式。
+    dirbak = os.path.join(os.path.dirname(REPO),
+                          os.path.basename(REPO) + '-backup-prehistory')
+    if os.path.isdir(dirbak):
+        print('  目录副本已存在, 跳过（如需刷新请手工删除后重跑）')
+    else:
+        rc, _, err = sh('git', 'clone', '-q', bundle, dirbak)
+        if rc == 0:
+            cnt = sh('git', '-C', dirbak, 'rev-list', '--count', 'HEAD')[1].strip()
+            print('  ✓ 目录副本: %s (%s 提交)' % (dirbak, cnt))
+        else:
+            print('  [!] 目录副本创建失败（bundle 仍可用）: %s' % err[:80])
 
     # 规则文件
     repl = os.path.join(os.environ.get('TEMP', '/tmp'), 'oss-replacements.txt')
