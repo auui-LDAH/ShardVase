@@ -156,23 +156,113 @@ def classify_file(data):
     return SEMANTIC_ATTACK
 
 
-def norm_entry(drill_id, date, key, text):
-    """一条原始记录 -> schema 形状。"""
+def load_doc_tables():
+    """从 docs/ATTACK_DRILL*.md 的矩阵表格提取权威 attack/method 字段。
+
+    为什么这样做 (阶段3 剩余项): 归档 JSON 只存 id/result/detail, 不含
+    攻击手法描述 —— 111/125 条记录的 attack/method 为 None。
+
+    但演练**文档**里有结构化表格 (ID | 攻击 | 工具/手法 | 预期 | ...),
+    这就是权威来源。从文档提取是**证据驱动填充**, 不是猜:
+    字段值直接来自演练记录原文。
+
+    返回 {record_id: {'attack_desc':..., 'method_desc':..., 'evidence':...}}
+    """
+    out = {}
+    for f in sorted(glob.glob(os.path.join(REPO, 'docs', 'ATTACK_DRILL*.md'))):
+        base = os.path.basename(f)
+        try:
+            lines = open(f, encoding='utf-8').read().split('\n')
+        except OSError:
+            continue
+        cols = None
+        for i, l in enumerate(lines):
+            if not l.strip().startswith('|'):
+                cols = None
+                continue
+            cells = [c.strip() for c in l.strip().strip('|').split('|')]
+            if any(c in ('ID', '**ID**') for c in cells):
+                cols = cells
+                continue
+            if cols and all(re.fullmatch(r':?-{2,}:?', c) for c in cells if c):
+                continue                          # 分隔行
+            if cols and len(cells) >= 3:
+                # 两种表格形态 (实测):
+                #  A) ID 独立成列:  | ID | 攻击 | 工具/手法 | 预期 |
+                #  B) ID 内嵌首格:  | **R1-4 VM 模拟器还原** | <攻击> | <工具> | 预期 |
+                #     (ATTACK_DRILL4/5 用此形态, 首格 = "**<ID> <描述>**")
+                rid = re.sub(r'\*+', '', cells[0]).strip()
+                inline_desc = None
+                if not re.match(r'^[A-Za-z]{1,3}\d+[a-z]?$', rid):
+                    # 形态 B: 从首格提取 "<ID> <描述>"
+                    mb = re.match(r'^([A-Za-z]{1,3}\d+[a-z]?(?:-\d+)?)\s+(.+)$', rid)
+                    if not mb:
+                        continue
+                    rid, inline_desc = mb.group(1), mb.group(2).strip()
+                    # 形态 B 的列语义右移一位: 攻击/工具 用了表头里的名字
+                    cols_b = ['ID', '攻击', '工具/手法', '预期'][:len(cells)]
+                    row = dict(zip(cols_b, cells))
+                    # 首格自身即"攻击"描述 (含 ID + 手法名)
+                    row['攻击'] = inline_desc
+                else:
+                    row = dict(zip(cols, cells))
+
+                def pick(*names):
+                    for n in names:
+                        v = row.get(n)
+                        if v and v not in ('-', '—'):
+                            return re.sub(r'\*+', '', v).strip()
+                    return None
+
+                out.setdefault(rid, {
+                    'attack_desc': pick('攻击', '攻击手法') or inline_desc,
+                    'method_desc': pick('工具/手法', '工具'),
+                    'expect_desc': pick('预期', '预期防御', '验收'),
+                    'evidence': '%s:%d' % (base, i + 1),
+                })
+    return out
+
+
+def norm_entry(drill_id, date, key, text, doc_tables=None):
+    """一条原始记录 -> schema 形状。
+
+    doc_tables: load_doc_tables() 的结果。命中时用文档原文填充
+    attack/method (证据驱动); 未命中则保持 None (**不猜**)。
+    """
     result, detail = split_result(text)
     blob = '%s %s' % (key, detail)
     mod = guess_module(blob)
+
+    dt = (doc_tables or {}).get(key) or {}
+    # 后缀轮次 id (如 P4-2 / E1-2 / D3-2) 在文档里记为基 id (P4/E1/D3) ——
+    # "-N" 表示"第 N 轮对该项做的深化"。剥离后缀再查一次可显著提升填充率,
+    # 且语义正确 (同一攻击项的深化演练)。
+    if not dt:
+        base = re.sub(r'-\d+$', '', key)
+        if base != key:
+            dt = (doc_tables or {}).get(base) or {}
+    method = dt.get('method_desc')
+    attack_desc = dt.get('attack_desc')
+    # method 优先用文档的"工具/手法"; 若同一 id 在多个轮的文档里出现,
+    # 取第一个 (load_doc_tables 已 setdefault 保序)。
+    evidence = dt.get('evidence')
+
     return {
         'id': '%s.%s' % (drill_id, key),
-        'attack': None,                 # 需人工细化, 不猜
+        # attack 保持 None: 那是 taxonomy 类别 (11 类枚举), 需人工归类。
+        # 文档里的"攻击"列是自然语言描述, 语义上属 method 而非类别 ——
+        # 把它塞进 attack 会让 taxonomy 校验失真。
+        'attack': None,
+        'attack_desc': attack_desc,      # 文档原文 (自然语言, 供人读)
         'target_module': mod,
-        'method': None,                 # 需人工细化
+        'method': method or attack_desc,  # 文档原文; 无则 None (不猜)
         'prerequisite': None,
         'result': result,
         'result_detail': (detail or '')[:400],
         'severity': guess_severity(result, detail),
         'countermeasure': None,
         'known_limit': 'known boundary' in (detail or '').lower(),
-        'evidence': None,               # 由调用方填 (来源文件)
+        'evidence': evidence,
         'date': date,
     }
 
@@ -184,6 +274,7 @@ def extract_all():
     两类**分开返回** —— 混算会把"回归通过"误当成"防御挡住攻击"。
     """
     attacks, regressions = [], []
+    doc_tables = load_doc_tables()
     files = sorted(glob.glob(os.path.join(ARCHIVE, 'attack-drill*.json')))
     for f in files:
         try:
@@ -216,12 +307,14 @@ def extract_all():
                     # "exit=2989 (integrity)" 这类线索 -> 113/122 误判 unmapped。
                     combined = '%s %s' % (item.get('result', ''),
                                           item.get('detail', ''))
-                    rec = norm_entry(drill_id, date, rid, combined)
+                    rec = norm_entry(drill_id, date, rid, combined, doc_tables)
                     if item.get('detail'):
                         rec['result_detail'] = item['detail'][:400]
                     if item.get('severity'):
                         rec['severity'] = item['severity']
-                    rec['evidence'] = name
+                    # evidence: 文档表格来源优先 (更可追溯); 否则归档文件名
+                    if not rec.get('evidence'):
+                        rec['evidence'] = name
                     if rec['result']:
                         attacks.append(rec)
             elif isinstance(v, dict):
