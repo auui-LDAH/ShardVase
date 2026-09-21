@@ -1,0 +1,35 @@
+{
+  "_comment": "syscall 模块的演练记录 (阶段3 补齐)。syscall 是**辅助模块**: 它本身不阻断任何攻击, 只让其他模块的检测绕过 ntdll hook。因此它的记录与检测器模块形态不同 —— 如实记录而不是编造一条 BLOCKED。",
+  "drills": [
+    {
+      "id": "drill9.1",
+      "attack": "toolchain_abuse",
+      "target_module": "syscall",
+      "method": "在 ntdll 导出 stub 上打 inline hook (jmp 到攻击者函数), 使 NtQueryInformationProcess 返回伪造的\"无调试器\"结果",
+      "prerequisite": "攻击者已能改写目标进程的 ntdll 代码页 (注入 + 页权限改写); 属 DRILL2 的 IAT-hook 同类手法",
+      "result": "PARTIAL",
+      "result_detail": "syscall 直调路径绕过 ntdll stub -> hook 对直调无效; 但 GetProcAddress 回退路径仍可被 hook。实测见 tests/syscall_probe.c (每次构建执行): available=1 且直调结果 == API 路径结果。注意: 这**不等于**\"攻击被挡住\" —— syscall 只提高了一条路径的成本, 反调试的其余 11 个维度仍独立生效。",
+      "severity": "medium",
+      "countermeasure": "运行时从 ntdll 原始 stub 提取 SSN (扫 0F 05 前最近的 B8 imm32, 不硬编码), 生成 12B 直调 stub; 失败回退 API 路径",
+      "known_limit": false,
+      "evidence": "docs/PRODUCTION.md A6 节 + tests/syscall_probe.c",
+      "date": "2026-08-14",
+      "source_kind": "functional_test"
+    },
+    {
+      "id": "drill9.2",
+      "attack": "toolchain_abuse",
+      "target_module": "syscall",
+      "method": "在内核层 hook (驱动级拦截 syscall), 而非用户态 ntdll hook",
+      "prerequisite": "攻击者具备内核驱动加载能力",
+      "result": "BREACHED",
+      "result_detail": "syscall 直调在**内核级**攻击面前完全无效 —— 直调只规避用户态 ntdll hook, 无法规避内核拦截。这是诚实边界, 不是缺陷: 项目定位于用户态保护 (见 publish/06-诚实边界.md B5)。",
+      "severity": "known-boundary",
+      "countermeasure": null,
+      "known_limit": true,
+      "evidence": "docs/PRODUCTION.md A6 节 (\"仅在攻击者已 hook ntdll 场景有增量\")",
+      "date": "2026-08-14",
+      "source_kind": "functional_test"
+    }
+  ]
+}

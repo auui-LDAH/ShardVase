@@ -329,24 +329,20 @@ def check_drill_coverage(reg):
             continue
         for r in d.get('attacks', d.get('drills', [])):
             tm = r.get('target_module')
-            if tm and tm != 'unmapped':
-                covered.setdefault(tm, 0)
-                covered[tm] += 1
+            if not tm or tm == 'unmapped':
+                continue
+            # 基线/跳过记录**不计入**覆盖: 它们验证"无误报", 不是
+            # "挡住了攻击"。计入会虚高覆盖率 (见 BASELINE_CASES 注释)。
+            if r.get('result') == 'SKIP' or r.get('source_kind') == 'baseline':
+                continue
+            covered.setdefault(tm, 0)
+            covered[tm] += 1
 
     uncovered = sorted(set(reg['modules']) - set(covered))
     for m in uncovered:
         warnings.append(
             '模块 %r 无 drill 记录 — 其强度属**未经验证**的声明 '
             '(阶段3 准入: 新增模块应提交至少一条演练记录)' % m)
-    # 诚实说明数据来源边界: 本检查只读 drills/*.json (由 tools/drills.py
-    # extract 从 archive/attack-drill*.json 生成)。tests/attacks.py 的
-    # A1-A12 属**功能攻击测试**, 尚未纳入本统计 —— 因此"无 drill 记录"
-    # 不等于"从未被测", 只表示"未纳入结构化攻防记录"。
-    # 待办: 把 attacks.py 结果也归一化进 drills (见 BLUEPRINT 阶段3)。
-    if uncovered:
-        warnings.append(
-            '(注: 本检查仅统计 drills/*.json; tests/attacks.py 的 A1-A12 '
-            '为功能攻击测试, 尚未纳入 — 故"无记录"≠"未被测")')
     return errors, warnings, covered
 
 
