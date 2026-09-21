@@ -11,20 +11,26 @@
 **工作区清理无法清除历史。** 我在工作区删除了这些字符串，但它们仍存在于
 早期提交的 blob 中 —— 一旦推送，**任何人 `git log -S` 就能取回**。
 
-实测（`git log -S`）确认 5 个提交含泄露：
+实测（`git log -S`）确认 5 个提交含泄露。**本文件不重复写出明文**
+（那等于把要清除的东西写进文档，反向泄露）—— 清单见
+`tools/oss_release.py` 的 `LEAKS` 常量（该文件同样在重写后需确认）：
 
-| 字符串 | 性质 | 所在提交 |
-|--------|------|----------|
-| `issuer-host` | 签发机主机名 | `b9b83ef` `e9fa597` `fa2a5f6` |
-| `test-host` | 测试机主机名 | `220c120` |
-| `DEV-MACHINE` | 开发机 Windows 机器名 | `fa2a5f6` |
-| `devuser` / `devuser` / `devuser~1` | 用户名（3 种写法） | `220c120` `e2d4ad0` |
-| `100.x.x.x` / `100.x.x.x` | Tailscale 内网 IP | `b9b83ef` `220c120` |
+| 类别 | 数量 | 性质 |
+|------|------|------|
+| 主机名 | 2 | 签发机 / 测试机（Tailscale MagicDNS） |
+| Windows 机器名 | 1 | 开发机（`DESKTOP-` 前缀） |
+| 用户名 | 3 种写法 | 含 Windows 8.3 短名形式 |
+| Tailscale 内网 IP | 2 | 100.64.0.0/10 CGNAT 段 |
 
 **另有提交身份泄露**（`--replace-text` 不处理）：
 
 ```
-author/committer: jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com>    ← 个人 QQ 邮箱
+author/committer: <个人 QQ 邮箱>    ← 详见下方"身份"节
+```
+
+> ⚠️ **本文件自身的处理**：它记录了"要清除什么"，因此**也被列入需重写
+> 的内容**。上表已用类别描述替代明文。重写后本文件可保留（作为决策记录），
+> 但需确认 `--check` 通过。
 ```
 
 对照：现有三个公开仓库用的是
@@ -52,25 +58,32 @@ noreply）—— 说明**一贯做法是隐藏真实邮箱**，本仓库是个�
 git filter-repo --replace-text replacements.txt --mailmap .mailmap --force
 ```
 
-`replacements.txt`：
+`replacements.txt`（**明文清单不写入本文件** —— 那等于反向泄露。
+执行时由 `tools/oss_release.py --rewrite` 自动生成到临时目录）：
 
 ```
-issuer-host==>issuer-host
-test-host==>test-host
-DEV-MACHINE==>DEV-MACHINE
-devuser==>devuser
-devuser~1==>devuser
-devuser==>devuser
-100.x.x.x==>100.x.x.x
-100.x.x.x==>100.x.x.x
+<主机名1>==>issuer-host
+<主机名2>==>test-host
+<机器名>==>DEV-MACHINE
+<用户名1>==>devuser
+<用户名2>==>devuser
+<用户名3>==>devuser
+<内网IP1>==>100.x.x.x
+<内网IP2>==>100.x.x.x
 ```
+
+完整清单见 `tools/oss_release.py` 的 `LEAKS` 常量（该文件入库，重写后
+这些字符串在新历史中已不存在，故不再构成泄露）。
 
 `.mailmap`（统一身份到与既有公开仓库一致）：
 
 ```
-jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> <jurecoasertkrockt777@users.noreply.github.com>
-jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> jurecoasertkrockt777
+jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> <个人邮箱>
+jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> <GitHub 用户名>
 ```
+
+> 明文同理由 `tools/oss_release.py --rewrite` 写入 `.mailmap` 文件，
+> 不落在本文件里。
 
 ### 工具
 
