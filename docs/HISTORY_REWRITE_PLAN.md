@@ -95,22 +95,37 @@ jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> jurecoasert
 
 ---
 
-## 4. 副作用：docs 中 23 处 SHA 引用会失效
+## 4. 副作用：docs 中的 SHA 引用会失效
 
 文档里用 `` `f0aa393` `` 这类形式引用提交。重写后 SHA 变化 → 引用变成死链。
 
-实测（用 `filter-repo` 生成的 `commit-map` 评估）：
+**已用真实 commit-map 实测**（`tools/update_sha_refs.py`）：
 
-- 被引用的真实 SHA：**26 个**
-- **天然保留**（内容未变，SHA 不变）：**3 个**
-- **需要更新**：**23 个**
+| 方案 | commit-map | 需更新 |
+|------|-----------|--------|
+| 仅 `--replace-text` | 156 条，108 变化 / **48 不变** | 部分保留 |
+| **`+ --mailmap`（推荐）** | 156 条，**156 变化 / 0 不变** | **全部需更新** |
 
-`filter-repo` 会生成 `.git/filter-repo/commit-map`（old→new 映射），
-可据此批量更新文档引用。
+> **修正**：本文初稿写"3 个天然保留、23 个需更新" —— 那是**只做内容替换**
+> 时的结果。加上 `--mailmap`（为隐藏个人邮箱，推荐做法）后，
+> **每一个提交的身份都被改写 → 所有 SHA 都变**。
 
-受影响文件：`docs/BLUEPRINT.md`、`docs/HANDOVER.md`、
-`docs/迁移核验-2026-09-20.md`、`docs/MODULAR_ARCH.md`、
-`docs/N1_PHASE2_PLAN.md`。
+实际待更新量（`tools/update_sha_refs.py` 在真实 commit-map 上测得）：
+**65 处引用，涉及 6 个文件**。
+
+受影响文件：
+
+```
+docs/BLUEPRINT.md            30 处
+docs/HANDOVER.md             12 处
+docs/迁移核验-2026-09-20.md   10 处
+docs/MODULAR_ARCH.md          2 处
+docs/N1_PHASE2_PLAN.md        1 处
+（其余为同文件内重复引用）
+```
+
+**自动化**：`tools/update_sha_refs.py --map <commit-map> [--apply]`
+读 `filter-repo` 生成的 old→new 映射并批量替换（默认 dry-run）。
 
 ---
 
@@ -119,7 +134,7 @@ jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> jurecoasert
 - [x] 全量备份（目录副本 + `git bundle`，含完整历史）
 - [x] 克隆上验证方案（泄露清零 + 可构建 + 门禁通过）
 - [ ] **人工确认后**对真实仓库执行
-- [ ] 用 commit-map 更新 23 处 SHA 引用
+- [ ] 用 tools/update_sha_refs.py --map <commit-map> --apply 更新 65 处 SHA 引用
 - [ ] 重跑完整门禁（须 14/14）
 - [ ] 再跑一次广义泄露扫描（确认工作区 + 历史双清零）
 - [ ] 推到公开仓库
