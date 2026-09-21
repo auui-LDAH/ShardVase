@@ -3,7 +3,7 @@
  "attacks": [
   {
    "id": "drillreal20260825final.S1",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "搜明文特征串（\"校验通过\"/\"license:\"/serial）",
    "target_module": "selfcrypt",
    "method": "字节扫描 demo.exe",
@@ -18,7 +18,7 @@
   },
   {
    "id": "drillreal20260825final.S2",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "搜常量（expect1/2、machine_id、序列号）",
    "target_module": "strcrypt",
    "method": "字节扫描",
@@ -33,7 +33,7 @@
   },
   {
    "id": "drillreal20260825final.S3",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "反汇编找关键函数直接 call（vm_run/license）",
    "target_module": "indirect",
    "method": "E8 扫描（复用 protchain）",
@@ -48,7 +48,7 @@
   },
   {
    "id": "drillreal20260825final.S4",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "找引擎函数序言特征码（40 55 等）",
    "target_module": "selfcrypt",
    "method": "特征扫描",
@@ -63,7 +63,7 @@
   },
   {
    "id": "drillreal20260825final.F1",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 license（无私钥自签）",
    "target_module": "unmapped",
    "method": "自构 RSA 签名",
@@ -78,7 +78,7 @@
   },
   {
    "id": "drillreal20260825final.F2",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 blob v0",
    "target_module": "unmapped",
    "method": "自算 CRC 打包",
@@ -93,7 +93,7 @@
   },
   {
    "id": "drillreal20260825final.F3",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 blob v1 换镜像",
    "target_module": "unmapped",
    "method": "剥离签名重签（无 key 只能坏签）",
@@ -108,7 +108,7 @@
   },
   {
    "id": "drillreal20260825final.F4",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 revoke v0",
    "target_module": "unmapped",
    "method": "自算 CRC",
@@ -123,7 +123,7 @@
   },
   {
    "id": "drillreal20260825final.F5",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "回滚旧构建 blob",
    "target_module": "unmapped",
    "method": "旧版 v1 blob",
@@ -138,7 +138,7 @@
   },
   {
    "id": "drillreal20260825final.P1",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 result 判定指令",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -153,7 +153,7 @@
   },
   {
    "id": "drillreal20260825final.P2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 license 校验调用点",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -168,7 +168,7 @@
   },
   {
    "id": "drillreal20260825final.P3",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 hostid 读取",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -183,7 +183,7 @@
   },
   {
    "id": "drillreal20260825final.P4",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 result 三副本（单点）",
    "target_module": "hostid",
    "method": "ctypes WriteProcessMemory",
@@ -198,7 +198,7 @@
   },
   {
    "id": "drillreal20260825final.P5",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 machine_id",
    "target_module": "license",
    "method": "ctypes 写进程内存",
@@ -213,7 +213,7 @@
   },
   {
    "id": "drillreal20260825final.D1",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "静态 dump 引擎函数",
    "target_module": "selfcrypt",
    "method": "文件读 .text",
@@ -228,7 +228,7 @@
   },
   {
    "id": "drillreal20260825final.D2",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2a 运行期 dump 引擎",
    "target_module": "selfcrypt",
    "method": "ctypes ReadProcessMemory",
@@ -243,7 +243,7 @@
   },
   {
    "id": "drillreal20260825final.D3",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2b 构建非调用时刻 dump",
    "target_module": "selfcrypt",
    "method": "同上（-D2b 构建）",
@@ -258,7 +258,7 @@
   },
   {
    "id": "drillreal20260825final.E1",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "模拟清 PEB 标志（外部写进程 PEB）",
    "target_module": "antidebug",
    "method": "ctypes 写 PEB",
@@ -273,7 +273,7 @@
   },
   {
    "id": "drillreal20260825final.E2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "Inline hook 咨询项验证",
    "target_module": "dbiguard",
    "method": "dbiguard selftest",
@@ -288,7 +288,7 @@
   },
   {
    "id": "drillreal20260825final.E3",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "虚拟机环境咨询项",
    "target_module": "vm",
    "method": "vmdetect selftest",
@@ -303,7 +303,7 @@
   },
   {
    "id": "drillreal20260825final.E4",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "多轮运行时序指纹",
    "target_module": "unmapped",
    "method": "10 次运行计时",
@@ -348,7 +348,7 @@
   },
   {
    "id": "drillreal20260825.S1",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "搜明文特征串（\"校验通过\"/\"license:\"/serial）",
    "target_module": "selfcrypt",
    "method": "字节扫描 demo.exe",
@@ -363,7 +363,7 @@
   },
   {
    "id": "drillreal20260825.S2",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "搜常量（expect1/2、machine_id、序列号）",
    "target_module": "strcrypt",
    "method": "字节扫描",
@@ -378,7 +378,7 @@
   },
   {
    "id": "drillreal20260825.S3",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "反汇编找关键函数直接 call（vm_run/license）",
    "target_module": "indirect",
    "method": "E8 扫描（复用 protchain）",
@@ -393,7 +393,7 @@
   },
   {
    "id": "drillreal20260825.S4",
-   "attack": null,
+   "attack": "symbol_resolution",
    "attack_desc": "找引擎函数序言特征码（40 55 等）",
    "target_module": "selfcrypt",
    "method": "特征扫描",
@@ -408,7 +408,7 @@
   },
   {
    "id": "drillreal20260825.F1",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 license（无私钥自签）",
    "target_module": "unmapped",
    "method": "自构 RSA 签名",
@@ -423,7 +423,7 @@
   },
   {
    "id": "drillreal20260825.F2",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 blob v0",
    "target_module": "unmapped",
    "method": "自算 CRC 打包",
@@ -438,7 +438,7 @@
   },
   {
    "id": "drillreal20260825.F3",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 blob v1 换镜像",
    "target_module": "unmapped",
    "method": "剥离签名重签（无 key 只能坏签）",
@@ -453,7 +453,7 @@
   },
   {
    "id": "drillreal20260825.F4",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "伪造 revoke v0",
    "target_module": "unmapped",
    "method": "自算 CRC",
@@ -468,7 +468,7 @@
   },
   {
    "id": "drillreal20260825.F5",
-   "attack": null,
+   "attack": "license_forge",
    "attack_desc": "回滚旧构建 blob",
    "target_module": "unmapped",
    "method": "旧版 v1 blob",
@@ -483,7 +483,7 @@
   },
   {
    "id": "drillreal20260825.P1",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 result 判定指令",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -498,7 +498,7 @@
   },
   {
    "id": "drillreal20260825.P2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 license 校验调用点",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -513,7 +513,7 @@
   },
   {
    "id": "drillreal20260825.P3",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": ".text 补丁 hostid 读取",
    "target_module": "integrity",
    "method": "字节 patch 副本",
@@ -528,7 +528,7 @@
   },
   {
    "id": "drillreal20260825.P4",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 result 三副本（单点）",
    "target_module": "unmapped",
    "method": "ctypes WriteProcessMemory",
@@ -543,7 +543,7 @@
   },
   {
    "id": "drillreal20260825.P5",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 machine_id",
    "target_module": "license",
    "method": "ctypes 写进程内存",
@@ -558,7 +558,7 @@
   },
   {
    "id": "drillreal20260825.D1",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "静态 dump 引擎函数",
    "target_module": "selfcrypt",
    "method": "文件读 .text",
@@ -573,7 +573,7 @@
   },
   {
    "id": "drillreal20260825.D2",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2a 运行期 dump 引擎",
    "target_module": "unmapped",
    "method": "ctypes ReadProcessMemory",
@@ -588,7 +588,7 @@
   },
   {
    "id": "drillreal20260825.D3",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2b 构建非调用时刻 dump",
    "target_module": "unmapped",
    "method": "同上（-D2b 构建）",
@@ -603,7 +603,7 @@
   },
   {
    "id": "drillreal20260825.E1",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "模拟清 PEB 标志（外部写进程 PEB）",
    "target_module": "antidebug",
    "method": "ctypes 写 PEB",
@@ -618,7 +618,7 @@
   },
   {
    "id": "drillreal20260825.E2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "Inline hook 咨询项验证",
    "target_module": "dbiguard",
    "method": "dbiguard selftest",
@@ -633,7 +633,7 @@
   },
   {
    "id": "drillreal20260825.E3",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "虚拟机环境咨询项",
    "target_module": "vm",
    "method": "vmdetect selftest",
@@ -648,7 +648,7 @@
   },
   {
    "id": "drillreal20260825.E4",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "多轮运行时序指纹",
    "target_module": "unmapped",
    "method": "10 次运行计时",
@@ -693,7 +693,7 @@
   },
   {
    "id": "drill220260825final.P4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 result 三副本（单点）",
    "target_module": "unmapped",
    "method": "ctypes WriteProcessMemory",
@@ -708,7 +708,7 @@
   },
   {
    "id": "drill220260825final.P5-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 machine_id",
    "target_module": "unmapped",
    "method": "ctypes 写进程内存",
@@ -723,7 +723,7 @@
   },
   {
    "id": "drill220260825final.E1-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "模拟清 PEB 标志（外部写进程 PEB）",
    "target_module": "antidebug",
    "method": "ctypes 写 PEB",
@@ -738,7 +738,7 @@
   },
   {
    "id": "drill220260825final.D3-2",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2b 构建非调用时刻 dump",
    "target_module": "selfcrypt",
    "method": "同上（-D2b 构建）",
@@ -753,7 +753,7 @@
   },
   {
    "id": "drill220260825final.E4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "多轮运行时序指纹",
    "target_module": "unmapped",
    "method": "10 次运行计时",
@@ -858,7 +858,7 @@
   },
   {
    "id": "drill220260825final.E2-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "Inline hook 咨询项验证",
    "target_module": "dbiguard",
    "method": "dbiguard selftest",
@@ -873,7 +873,7 @@
   },
   {
    "id": "drill220260825final.E3-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "虚拟机环境咨询项",
    "target_module": "vmdetect",
    "method": "vmdetect selftest",
@@ -888,7 +888,7 @@
   },
   {
    "id": "drill220260825v3.P4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 result 三副本（单点）",
    "target_module": "unmapped",
    "method": "ctypes WriteProcessMemory",
@@ -903,7 +903,7 @@
   },
   {
    "id": "drill220260825v3.P5-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 machine_id",
    "target_module": "unmapped",
    "method": "ctypes 写进程内存",
@@ -918,7 +918,7 @@
   },
   {
    "id": "drill220260825v3.E1-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "模拟清 PEB 标志（外部写进程 PEB）",
    "target_module": "antidebug",
    "method": "ctypes 写 PEB",
@@ -933,7 +933,7 @@
   },
   {
    "id": "drill220260825v3.D3-2",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2b 构建非调用时刻 dump",
    "target_module": "selfcrypt",
    "method": "同上（-D2b 构建）",
@@ -948,7 +948,7 @@
   },
   {
    "id": "drill220260825v3.E4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "多轮运行时序指纹",
    "target_module": "unmapped",
    "method": "10 次运行计时",
@@ -1053,7 +1053,7 @@
   },
   {
    "id": "drill220260825v3.E2-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "Inline hook 咨询项验证",
    "target_module": "dbiguard",
    "method": "dbiguard selftest",
@@ -1068,7 +1068,7 @@
   },
   {
    "id": "drill220260825v3.E3-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "虚拟机环境咨询项",
    "target_module": "vmdetect",
    "method": "vmdetect selftest",
@@ -1083,7 +1083,7 @@
   },
   {
    "id": "drill2real20260825.P4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 result 三副本（单点）",
    "target_module": "unmapped",
    "method": "ctypes WriteProcessMemory",
@@ -1098,7 +1098,7 @@
   },
   {
    "id": "drill2real20260825.P5-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "运行期写 machine_id",
    "target_module": "unmapped",
    "method": "ctypes 写进程内存",
@@ -1113,7 +1113,7 @@
   },
   {
    "id": "drill2real20260825.E1-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "模拟清 PEB 标志（外部写进程 PEB）",
    "target_module": "antidebug",
    "method": "ctypes 写 PEB",
@@ -1128,7 +1128,7 @@
   },
   {
    "id": "drill2real20260825.D3-2",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "D2b 构建非调用时刻 dump",
    "target_module": "selfcrypt",
    "method": "同上（-D2b 构建）",
@@ -1143,7 +1143,7 @@
   },
   {
    "id": "drill2real20260825.E4-2",
-   "attack": null,
+   "attack": "patch_data",
    "attack_desc": "多轮运行时序指纹",
    "target_module": "unmapped",
    "method": "10 次运行计时",
@@ -1293,7 +1293,7 @@
   },
   {
    "id": "drill420260825.R1-4",
-   "attack": null,
+   "attack": "vm_reverse",
    "attack_desc": "VM 模拟器还原",
    "target_module": "unmapped",
    "method": "`tools/vm_reduce.py`（新，复用 vmenc 的 assembler 反操作）",
@@ -1308,7 +1308,7 @@
   },
   {
    "id": "drill420260825.R3-4",
-   "attack": null,
+   "attack": "vm_reverse",
    "attack_desc": "跨镜像级联",
    "target_module": "unmapped",
    "method": "模拟器 + 数据流",
@@ -1323,7 +1323,7 @@
   },
   {
    "id": "drill420260825.F1-4",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "Procdump 风格全转储",
    "target_module": "selfcrypt",
    "method": "`procdump_like.py`（新）",
@@ -1338,7 +1338,7 @@
   },
   {
    "id": "drill420260825.F2-4",
-   "attack": null,
+   "attack": "memory_dump",
    "attack_desc": "离线分析",
    "target_module": "unmapped",
    "method": "python 解析",
@@ -1353,7 +1353,7 @@
   },
   {
    "id": "drill420260825.H1-4",
-   "attack": null,
+   "attack": "watchdog_evasion",
    "attack_desc": "仅挂 watchdog 线程",
    "target_module": "unmapped",
    "method": "`NtQuerySystemInformation/线程枚举`",
@@ -1368,7 +1368,7 @@
   },
   {
    "id": "drill420260825.H2-4",
-   "attack": null,
+   "attack": "watchdog_evasion",
    "attack_desc": "watchdog 线程识别",
    "target_module": "integrity",
    "method": "线程枚举",
@@ -1383,7 +1383,7 @@
   },
   {
    "id": "drill420260825.H3-4",
-   "attack": null,
+   "attack": "watchdog_evasion",
    "attack_desc": "ScyllaHide 全套",
    "target_module": "antidebug",
    "method": "ctypes 写返回码",
@@ -1398,7 +1398,7 @@
   },
   {
    "id": "drill420260825.H4-4",
-   "attack": null,
+   "attack": "watchdog_evasion",
    "attack_desc": "硬件断点清理",
    "target_module": "unmapped",
    "method": "写 DR 寄存器（需内核，标记 SKIP/真实失败）",
@@ -1413,7 +1413,7 @@
   },
   {
    "id": "drill420260825.O1-4",
-   "attack": null,
+   "attack": "collection_channel",
    "attack_desc": "重放攻击",
    "target_module": "unmapped",
    "method": "中间人代理",
@@ -1428,7 +1428,7 @@
   },
   {
    "id": "drill420260825.O2-4",
-   "attack": null,
+   "attack": "collection_channel",
    "attack_desc": "降级攻击",
    "target_module": "unmapped",
    "method": "网络阻断模拟",

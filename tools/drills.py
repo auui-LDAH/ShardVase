@@ -223,7 +223,93 @@ def load_doc_tables():
     return out
 
 
-def norm_entry(drill_id, date, key, text, doc_tables=None):
+def load_doc_categories():
+    """从 docs/ATTACK_DRILL*.md 的**小节标题**推断每条记录的 attack 类别。
+
+    依据: 文档把记录按前缀分节, 节标题直接写明类别, 例如
+      ### R 还原类（VM 保护天敌）      -> vm_reverse
+      ### P — 补丁攻击类（改关键判定）  -> patch_data
+      ### L 授权文件（license.txt）     -> license_forge
+
+    关键: 前缀**跨文档含义不同** (实测: drill1 的 F=伪造, drill4 的 F=取证),
+    故映射必须 (文档, 前缀) 二元组, 不能只用前缀。
+
+    无法确定的一律不填 (None) —— 不猜。
+    """
+    # (文档正则, 前缀) -> taxonomy 类别
+    # 每条依据: 该文档对应小节的标题原文 (见实现下方注释)
+    RULES = [
+        # --- ATTACK_DRILL.md (第一轮) ---
+        (r'ATTACK_DRILL\.md$', 'D', 'memory_dump'),        # dump/还原类（抓引擎）
+        (r'ATTACK_DRILL\.md$', 'E', 'patch_data'),         # 环境对抗类（绕过检测）
+        (r'ATTACK_DRILL\.md$', 'F', 'license_forge'),      # 伪造攻击类（造合法凭证）
+        (r'ATTACK_DRILL\.md$', 'P', 'patch_data'),         # 补丁攻击类（改关键判定）
+        (r'ATTACK_DRILL\.md$', 'S', 'symbol_resolution'),  # 静态分析类（找目标）
+        # --- ATTACK_DRILL2/3 (深化 + 组合链) ---
+        (r'ATTACK_DRILL[23]\.md$', 'D', 'memory_dump'),
+        (r'ATTACK_DRILL[23]\.md$', 'P', 'patch_data'),
+        (r'ATTACK_DRILL[23]\.md$', 'E', 'patch_data'),
+        (r'ATTACK_DRILL3\.md$', 'C', 'injection'),         # 组合攻击链 (注入→hook→patch)
+        (r'ATTACK_DRILL3\.md$', 'R', 'toolchain_abuse'),   # G2 可绕过性 (IAT/hook 链)
+        # --- ATTACK_DRILL4 (还原/取证/隐蔽/在线) ---
+        (r'ATTACK_DRILL4\.md$', 'R', 'vm_reverse'),        # R 还原类（VM 保护天敌）
+        (r'ATTACK_DRILL4\.md$', 'F', 'memory_dump'),       # F 取证类（完整转储）
+        (r'ATTACK_DRILL4\.md$', 'H', 'watchdog_evasion'),  # H 隐蔽类（绕过检测）
+        (r'ATTACK_DRILL4\.md$', 'O', 'collection_channel'),  # O 在线类（补充）
+        # --- ATTACK_DRILL5 (DLL 劫持 + VEH) ---
+        (r'ATTACK_DRILL5\.md$', 'D', 'toolchain_abuse'),   # DLL 劫持
+        (r'ATTACK_DRILL5\.md$', 'V', 'toolchain_abuse'),   # VEH
+        # --- ATTACK_DRILL6 (签发链路) ---
+        (r'ATTACK_DRILL6\.md$', 'S', 'license_forge'),     # S 签发端
+        (r'ATTACK_DRILL6\.md$', 'L', 'license_forge'),     # L 授权文件
+        (r'ATTACK_DRILL6\.md$', 'V', 'toolchain_abuse'),   # V 验证/工具链
+        (r'ATTACK_DRILL6\.md$', 'T', 'clock_manipulation'),  # T 时序类
+        (r'ATTACK_DRILL6\.md$', 'D', 'toolchain_abuse'),   # D 防御候选方向
+        # --- ATTACK_DRILL7 (符号表解析) ---
+        (r'ATTACK_DRILL7\.md$', 'S', 'symbol_resolution'),
+    ]
+
+    out = {}          # rid -> (category, evidence)
+    for f in sorted(glob.glob(os.path.join(REPO, 'docs', 'ATTACK_DRILL*.md'))):
+        base = os.path.basename(f)
+        try:
+            lines = open(f, encoding='utf-8').read().split('\n')
+        except OSError:
+            continue
+        cur_cat = None
+        cur_pre = None
+        for i, l in enumerate(lines, 1):
+            # 小节标题: ### R 还原类（...） / ### P — 补丁攻击类（...）
+            mh = re.match(r'^###\s+([A-Z]{1,2})\b', l)
+            if mh:
+                pre = mh.group(1)
+                cur_cat = None
+                for pat, p, cat in RULES:
+                    if p == pre and re.search(pat, base):
+                        cur_cat = cat
+                        break
+                cur_pre = pre
+                continue
+            # 新的一级/二级标题 -> 离开当前小节
+            if re.match(r'^#{1,2}\s', l):
+                cur_cat = None
+                continue
+            if not cur_cat:
+                continue
+            # 表格数据行的 id
+            if l.strip().startswith('|'):
+                cells = [c.strip() for c in l.strip().strip('|').split('|')]
+                if not cells:
+                    continue
+                rid = re.sub(r'\*+', '', cells[0]).strip()
+                mm = re.match(r'^([A-Za-z]{1,3}\d+[a-z]?(?:-\d+)?)', rid)
+                if mm:
+                    out.setdefault(mm.group(1),
+                                   (cur_cat, '%s:%d' % (base, i)))
+    return out
+
+
+def norm_entry(drill_id, date, key, text, doc_tables=None, doc_cats=None):
     """一条原始记录 -> schema 形状。
 
     doc_tables: load_doc_tables() 的结果。命中时用文档原文填充
@@ -247,12 +333,21 @@ def norm_entry(drill_id, date, key, text, doc_tables=None):
     # 取第一个 (load_doc_tables 已 setdefault 保序)。
     evidence = dt.get('evidence')
 
+    # attack 类别: 来自文档**小节标题**的类别归属 (证据驱动)。
+    cat = (doc_cats or {}).get(key)
+    if not cat:
+        base = re.sub(r'-\d+$', '', key)
+        if base != key:
+            cat = (doc_cats or {}).get(base)
+    attack = cat[0] if cat else None
+    if cat and not evidence:
+        evidence = cat[1]
+
     return {
         'id': '%s.%s' % (drill_id, key),
-        # attack 保持 None: 那是 taxonomy 类别 (11 类枚举), 需人工归类。
-        # 文档里的"攻击"列是自然语言描述, 语义上属 method 而非类别 ——
-        # 把它塞进 attack 会让 taxonomy 校验失真。
-        'attack': None,
+        # attack = 11 类 taxonomy 枚举, 由文档小节标题推断 (非猜测)。
+        # 推断不出则 None —— 宁可留空也不误分类。
+        'attack': attack,
         'attack_desc': attack_desc,      # 文档原文 (自然语言, 供人读)
         'target_module': mod,
         'method': method or attack_desc,  # 文档原文; 无则 None (不猜)
@@ -275,6 +370,7 @@ def extract_all():
     """
     attacks, regressions = [], []
     doc_tables = load_doc_tables()
+    doc_cats = load_doc_categories()
     files = sorted(glob.glob(os.path.join(ARCHIVE, 'attack-drill*.json')))
     for f in files:
         try:
@@ -307,7 +403,8 @@ def extract_all():
                     # "exit=2989 (integrity)" 这类线索 -> 113/122 误判 unmapped。
                     combined = '%s %s' % (item.get('result', ''),
                                           item.get('detail', ''))
-                    rec = norm_entry(drill_id, date, rid, combined, doc_tables)
+                    rec = norm_entry(drill_id, date, rid, combined, doc_tables,
+                                     doc_cats)
                     if item.get('detail'):
                         rec['result_detail'] = item['detail'][:400]
                     if item.get('severity'):
