@@ -146,8 +146,18 @@ def cmd_check():
     # 公开仓库同步：对外动作
     rc, out, _ = sh('git', 'remote', '-v')
     if not out.strip():
-        pending.append(('三个公开仓库的同步推送（对外动作）',
-                        '待确认后推送 ShardVase-docs + ShardVase-demo'))
+        # 统计待同步文件数（用同步工具的 dry-run 判定）
+        sync_tool = os.path.join(REPO, 'tools', 'sync_public.py')
+        n_pending = '?'
+        if os.path.isfile(sync_tool):
+            p = subprocess.run([sys.executable, '-X', 'utf8', sync_tool],
+                               capture_output=True)
+            txt = (p.stdout + p.stderr).decode('utf-8', 'replace')
+            m = re.search(r'需同步 \((\d+)\)', txt)
+            n_pending = m.group(1) if m else '?'
+        pending.append((
+            '公开仓库同步推送（对外动作）—— 待同步 %s 个文件' % n_pending,
+            'python tools/sync_public.py --apply'))
 
     if pending:
         for i, (what, how) in enumerate(pending, 1):
