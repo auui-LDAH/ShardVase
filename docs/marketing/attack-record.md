@@ -16,7 +16,9 @@
 | 第五轮 | 签发链路（请求/授权文件/台账/时序）| 15 项：8 BLOCKED / 6 PARTIAL / 3 边界 |
 | 矩阵-1 | 骨架产物全项复验 | 14 项全 PASS（与基线一致）|
 
-**累计：0 破防点（除已公开边界外）**——见 [boundaries](boundaries.md)。
+**累计：BLOCKED 54 / PARTIAL 58 / 显式破防 5 / SKIP 5**。
+
+5 项破防全部公开（附前置条件与缓解路径）——见 [boundaries](boundaries.md)。
 
 ## 关键结论（对外可说的部分）
 
