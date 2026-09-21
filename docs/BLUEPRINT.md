@@ -199,8 +199,34 @@
 | **前置：`selfcrypt_proto.py` 组合兼容**（目标缺失改为跳过+报告） | ✅ | `f48ffbd` |
 | 宿主层 批2：`antidebug` + `integrity` 条件编译 | ✅ | `cc55bf9` |
 | **SUBSTRATE 实测收敛 11 → 8 模块** | ✅ | `1d69100` |
-| `build.ps1 -Composition` 集成（当前用 `compose.py` 手工驱动） | ⬜ | — |
+| **`build.ps1 -Composition` 集成** | ✅ | `aef6f88` |
 | 批3（若需要）：`revoke` 需先让 `indirect.py` 组合感知 | ⬜ | — |
+
+#### ✅ `build.ps1 -Composition` 已集成
+
+```powershell
+powershell -File build.ps1 -Config Release -Composition minimal
+```
+
+内部调 `compose.py` 生成 `prot_modconfig.h` + 源文件清单；未指定时默认 `full`
+（等价于改造前行为）。`manifest.json` 新增 `composition` / `comp_modules`
+字段，本次构建构成可追溯。
+
+**集成时发现并修复一个真实回归（布局敏感）**：
+
+改用字母序源文件清单后，`full` 的加密函数由 **8 个降为 6 个**（`vm_var`
+被页冲突安全网跳过）。根因：**源文件链接顺序是语义相关的** —— 顺序变化
+→ `.text` 布局变化 → 加密段与 `main` 的页关系变化。
+
+- 修复：`compose.py` 新增 `SOURCE_ORDER` 固化原顺序；并**去掉 `resolve()`
+  末尾的 `sorted()`**（那行会把顺序重新打乱，是"修复后仍不生效"的原因）
+- 修复后 `full` 恢复 8 函数 / `hdr=196`，与改造前完全一致
+- **新增模块须追加到 `SOURCE_ORDER` 末尾，不得重排**
+
+**另一处真实耦合：`integrity` 与 `hashpatch`**。排除 `integrity` 后
+`hashpatch` 报 `no .protcrc section found` —— 因为 `.protcrc` 段与三段 CRC
+烧录表由 `src/integrity.c` 定义。处理：组合不含 `integrity` 时**跳过烧录并
+明确报告**（该组合本就不含完整性校验，没有 CRC 需要烧录）。属预期而非缺陷。
 
 #### ✅ 阶段 2 目标达成
 
@@ -352,8 +378,30 @@ standard  -> 13 模块 15 源文件
 | 回填全部归档：**111 条攻击记录** + 55 条回归断言 | ✅ | `f797b35` |
 | `docs/ATTACK_MATRIX.md`（模块 × 结果 矩阵） | ✅ | `f797b35` |
 | 门禁接入（第 12 项「攻防记录」） | ✅ | `f797b35` |
+| **`modcheck` 演练覆盖准入**（P4 落地） | ✅ | 本次 |
 | 逐条人工细化 `attack` / `method` 字段 | ⬜ | — |
-| `modcheck` 增加"模块须有 drill 记录"准入 | ⬜ | — |
+| 把 `tests/attacks.py` 的 A1-A12 归一化进 drills | ⬜ | — |
+
+#### ✅ 演练覆盖准入（阶段 3 收尾）
+
+`modcheck` 新增第 C 项检查：每个防御模块须有 ≥1 条 drill 记录。
+
+**首次运行即发现真实缺口**：
+
+```
+有 drill 记录的模块: 11 / 13
+[!] 模块 'revoke'  无 drill 记录 — 其强度属**未经验证**的声明
+[!] 模块 'syscall' 无 drill 记录 — 其强度属**未经验证**的声明
+```
+
+> **诚实边界**：本检查只统计 `drills/*.json`（由 `drills.py extract` 从
+> `archive/attack-drill*.json` 生成）。`tests/attacks.py` 的 A1-A12 是
+> **功能攻击测试**，尚未纳入统计 —— 所以"无记录"**不等于**"从未被测"
+> （`A9 revoke-forge` 确实存在）。此注记已写入工具输出，避免误读。
+> 待办：把 `attacks.py` 结果也归一化进 drills。
+
+设计选择：未覆盖产生 **warning 而非 error** —— 新模块在补齐演练前不应
+阻塞构建，但必须在每次门禁运行时**可见**（不静默）。
 
 **生成的矩阵**（111 条，SDK 回归断言已排除）：
 

@@ -30,6 +30,7 @@ tools/modcheck.py — 模块注册表校验 + 组合一致性检查
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -299,6 +300,54 @@ def list_compositions():
     return sorted(f[:-5] for f in os.listdir(COMPOSITIONS) if f.endswith('.json'))
 
 
+def check_drill_coverage(reg):
+    """阶段 3 准入 (P4): 每个防御模块须有 ≥1 条 drill 记录。
+
+    理由: 项目的核心资产是"每项能力都有实证"。若某模块从未被攻击过,
+    它的强度就是未经验证的声明 —— 应显式标注为 "未验证" 而非默默通过。
+
+    返回 (errors, warnings, coverage_dict)。
+    未覆盖的模块产生 **warning** 而非 error: 新模块在补齐演练前不应
+    阻塞构建, 但必须在每次门禁运行时被提醒 (可见, 不静默)。
+    """
+    errors = []
+    warnings = []
+    reg_dir = os.path.join(REPO, 'drills')
+    covered = {}
+    if not os.path.isdir(reg_dir):
+        warnings.append('drills/ 不存在 — 跳过演练覆盖检查')
+        return errors, warnings, covered
+
+    files = [f for f in glob.glob(os.path.join(reg_dir, '*.json'))
+             if not os.path.basename(f).startswith('_')]
+    for f in files:
+        try:
+            d = json.load(open(f, encoding='utf-8'))
+        except ValueError:
+            continue
+        for r in d.get('attacks', d.get('drills', [])):
+            tm = r.get('target_module')
+            if tm and tm != 'unmapped':
+                covered.setdefault(tm, 0)
+                covered[tm] += 1
+
+    uncovered = sorted(set(reg['modules']) - set(covered))
+    for m in uncovered:
+        warnings.append(
+            '模块 %r 无 drill 记录 — 其强度属**未经验证**的声明 '
+            '(阶段3 准入: 新增模块应提交至少一条演练记录)' % m)
+    # 诚实说明数据来源边界: 本检查只读 drills/*.json (由 tools/drills.py
+    # extract 从 archive/attack-drill*.json 生成)。tests/attacks.py 的
+    # A1-A12 属**功能攻击测试**, 尚未纳入本统计 —— 因此"无 drill 记录"
+    # 不等于"从未被测", 只表示"未纳入结构化攻防记录"。
+    # 待办: 把 attacks.py 结果也归一化进 drills (见 BLUEPRINT 阶段3)。
+    if uncovered:
+        warnings.append(
+            '(注: 本检查仅统计 drills/*.json; tests/attacks.py 的 A1-A12 '
+            '为功能攻击测试, 尚未纳入 — 故"无记录"≠"未被测")')
+    return errors, warnings, covered
+
+
 def main():
     ap = argparse.ArgumentParser(description='模块注册表与组合校验')
     ap.add_argument('--compose', metavar='NAME', help='检查指定组合')
@@ -376,6 +425,22 @@ def main():
             rc = 1
         elif not args.quiet:
             print('  [ok] 组合自洽')
+
+    # --- C. 演练覆盖 (阶段 3 准入, P4) ---
+    derr, dwarn, covered = check_drill_coverage(reg)
+    if not args.quiet:
+        print()
+        print('=== 演练覆盖检查 (阶段3 准入) ===')
+        print('  有 drill 记录的模块: %d / %d'
+              % (len(covered), len(mods)))
+    for e in derr:
+        print('  [X] %s' % e)
+    for w in dwarn:
+        print('  [!] %s' % w)
+    if derr:
+        rc = 1
+    elif not args.quiet and not dwarn:
+        print('  [ok] 全部模块均有演练记录')
 
     if not args.quiet:
         print()
