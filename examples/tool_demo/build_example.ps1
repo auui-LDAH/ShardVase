@@ -1,4 +1,4 @@
-# build_example.ps1 — 接入示例构建 (examples/tool_demo)
+﻿# build_example.ps1 — 接入示例构建 (examples/tool_demo)
 #
 # 展示"你的工具"如何接入保护套件:
 #   1. genserial: 为该工具生成序列号/机器标识/期望值 (demo\vm_build.json 复用,
@@ -88,7 +88,11 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 # 4. 编译 + 链接 (工具源码 + 保护库)
 cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c src\selfcrypt.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
-Get-ChildItem -LiteralPath . -Filter *.obj -File | Remove-Item -Force
+# 清理 cl 留在 cwd 的 .obj。注意 "nul.obj": 'nul' 是 Windows 保留设备名,
+# Get-ChildItem 会列出它但 Remove-Item 无法删除 (报 PathNotFound 刷屏)。
+# 用 -ErrorAction SilentlyContinue 容忍; 不影响判定。
+Get-ChildItem -LiteralPath . -Filter *.obj -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 5. 烧录完整性 CRC
 & $py tools\hashpatch.py build\tool_demo.exe
