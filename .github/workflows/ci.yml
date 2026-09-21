@@ -59,9 +59,12 @@ jobs:
       - name: Public-material drift (doccheck)
         run: python tools\doccheck.py
 
-      - name: Full release gate (14 items)
-        run: powershell -ExecutionPolicy Bypass -File tools\release_check.ps1
-        continue-on-error: true   # 门禁含"git 工作区干净", CI 构建后可能有生成物
+      # 完整门禁（**阻塞式**）。CI 里跳过"工作区干净"检查 ——
+      # 上游步骤已产生构建产物，该项在 CI 中恒失败；但其余 13 项必须全绿。
+      # 注意: **不要**用 continue-on-error —— 那会让门禁变成"可绕过的门禁",
+      # 正是本项目 P3 教训所反对的（曾因此让 smoke 缺陷藏了一个月）。
+      - name: Full release gate
+        run: powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 -SkipDirtyCheck
 
       - name: Python syntax check (all tools)
         run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"

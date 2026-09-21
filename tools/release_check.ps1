@@ -8,9 +8,15 @@
 #   5. manifest.json 版本正确
 #
 # 用法:
-#   powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 [-SkipTest]
+#   powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 [-SkipTest] [-SkipDirtyCheck]
+#
+# -SkipDirtyCheck: 跳过"git 工作区干净"检查。
+#   仅用于 CI —— CI 的构建步骤会在工作区产生产物（build/ 等虽被 ignore,
+#   但 demo/gen/ 等生成物可能被 git 探测到），导致该检查在 CI 中恒失败。
+#   本地发版**不要**用它: 工作区干净是发版纪律的一部分。
 param(
     [switch]$SkipTest,
+    [switch]$SkipDirtyCheck,
     [string]$Python = ''
 )
 
@@ -43,6 +49,10 @@ function Check([string]$name, [scriptblock]$cond) {
 Write-Host '=== Release Gate ===' -ForegroundColor Yellow
 
 Check 'git 工作区干净' {
+    if ($SkipDirtyCheck) {
+        Write-Host '      (已按 -SkipDirtyCheck 跳过)' -ForegroundColor DarkGray
+        return $true
+    }
     $dirty = git status --porcelain 2>$null
     [string]::IsNullOrEmpty(($dirty -join ''))
 }
