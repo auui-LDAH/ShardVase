@@ -284,7 +284,7 @@ python tests\attacks.py
    + 守护循环保 3 个 demo 实例（被杀自动拉起，实测 RESILIENT）。服务用
    LocalSystem 运行，`run_guard.cmd` 需用 python 绝对路径（用户 AppData）；
    停止/启动：`nssm stop/start prot_resguard`（nssm 在
-   `C:\Users\devuser\nssm\nssm-2.24\win64\`）。
+   `C:\Users\<用户>\nssm\nssm-2.24\win64\`）。
 1. **SSH `echo | demo` 不可靠**：SSH 会话中 `echo xxx | exe` 的 stdin 传递异常，
    会导致 demo 读到不干净的 serial → 误判 license: 0。**验证必须用
    Python subprocess**（e2e.py 的方式），否则会误报"验签失败"。
