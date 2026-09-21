@@ -123,9 +123,47 @@ def cmd_check():
     else:
         print('  ✓ extract 输入全部入库')
 
+    # --- 6. 需人工决策的事项（脚本无法代决）---
+    print()
+    print('--- 6. 待人工决策 ---')
+    pending = []
+
+    # 历史重写：不可逆操作
+    if hist:
+        pending.append(('历史重写（不可逆）',
+                        'python tools/oss_release.py --rewrite '
+                        '-> 再 --update-sha'))
+
+    # 定价文档：商业决策
+    pricing = os.path.join(REPO, 'docs', 'commercial', 'PRICING.md')
+    if os.path.exists(pricing):
+        body = open(pricing, encoding='utf-8').read()
+        if re.search(r'[¥￥]\s?[\d,]{3,}', body):
+            pending.append((
+                'docs/commercial/PRICING.md 含真实报价 —— 完全开源会一并公开',
+                '三选一: 公开 / 移出仓库 / 保留并标注草案'))
+
+    # 公开仓库同步：对外动作
+    rc, out, _ = sh('git', 'remote', '-v')
+    if not out.strip():
+        pending.append(('三个公开仓库的同步推送（对外动作）',
+                        '待确认后推送 ShardVase-docs + ShardVase-demo'))
+
+    if pending:
+        for i, (what, how) in enumerate(pending, 1):
+            print('  %d. %s' % (i, what))
+            print('     -> %s' % how)
+    else:
+        print('  (无)')
+
     print()
     print('=' * 64)
-    print('核查结论: %s' % ('✓ 已就绪' if ok else '! 有未完成项'))
+    if ok and not pending:
+        print('核查结论: ✓ 已就绪，可执行开源')
+    elif ok:
+        print('核查结论: 自动项已就绪；另有 %d 项待人工决策' % len(pending))
+    else:
+        print('核查结论: ! 有未完成项（见上）')
     return 0 if ok else 1
 
 
