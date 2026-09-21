@@ -123,7 +123,7 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
 
 | 项 | 值 |
 |----|----|
-| 主机 | `DEV-MACHINE` / 用户 `devuser` / Win11 26200 x64 |
+| 主机 | `<开发机>` / 用户 `<用户名>` / Win11 26200 x64 |
 | 仓库路径 | `D:\specifically for development and work\Reverse Engineering`（含空格） |
 | 工具链 | `D:\environment\VS2022BuildTools`（MSVC 14.44）+ `D:\environment\PYTHON`（3.13.13）——**均不在 PATH**，`build.ps1` 自动探测可命中 |
 | 生产私钥 | ✅ 已随迁移带入 `build\keys\license_priv.json`（RSA-3072）——沿用同一把密钥 |

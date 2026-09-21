@@ -30,7 +30,15 @@ int main(int argc, char** argv)
 {
     int rounds = 0;
     int fake_debug = (argc > 1 && strcmp(argv[1], "--fake-debug") == 0);
-    FILE* log = fopen("C:\\Users\\devuser~1\\AppData\\Local\\Temp\\opencode\\target_log.txt", "a");
+    /* 日志路径取运行期 temp 目录（原先硬编码了开发机的用户目录 ——
+     * 既泄露个人信息, 又在别的机器上跑不通）。 */
+    char log_path[MAX_PATH];
+    FILE* log = NULL;
+    if (GetTempPathA(MAX_PATH, log_path) != 0) {
+        strncat(log_path, "target_log.txt",
+                MAX_PATH - strlen(log_path) - 1);
+        log = fopen(log_path, "a");
+    }
     if (log) {
         fprintf(log, "[target] starting pid=%lu is_debugger_attached=%d fake_debug=%d\n",
                 (unsigned long)GetCurrentProcessId(), is_debugger_attached, fake_debug);
