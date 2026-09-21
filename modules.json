@@ -228,7 +228,11 @@
       "caps": ["conceal"],
       "phases": ["init", "scan"],
       "deps": [],
-      "exports": ["prot_sys_available"],
+      "exports": [
+        "prot_sys_available",
+        "prot_sys_nt_query_information_process",
+        "prot_sys_nt_query_system_information"
+      ],
       "page_align": false,
       "modifies_text": false,
       "verifies_text": false,
@@ -246,14 +250,19 @@
       "caps": ["conceal"],
       "phases": ["init"],
       "deps": [],
-      "exports": [],
+      "exports": [
+        "prot_indirect_perm",
+        "prot_indirect_resolve",
+        "prot_indirect_table"
+      ],
       "page_align": false,
       "modifies_text": false,
       "verifies_text": false,
       "needs_writable_dir": false,
       "known_limits": [
         "只覆盖 4 个登记函数; 未登记者仍为直接 call",
-        "函数指针互转属实现定义行为 (MSVC 允许)"
+        "函数指针互转属实现定义行为 (MSVC 允许)",
+        "生成表 (indirect_table.c) 硬编码 hostid/revoke/vm_run/license, 与组合耦合"
       ],
       "evidence": "docs/HANDOVER.md"
     }

@@ -50,11 +50,23 @@ HOST_SUBSTRATE = ['antidebug', 'blob', 'dbiguard', 'hostid', 'indirect',
                   'integrity', 'license', 'revoke', 'strcrypt', 'vm',
                   'vmdetect']
 
-# 头文件中的对外函数声明 (与 modcheck 无关的实现细节已排除)
+# 头文件中的对外函数声明。
+#
+# 正则演进 (2026-09-20): 初版只匹配固定几个返回类型, **漏掉了**
+#   const prot_indirect_fnp* prot_indirect_table(void);
+#   prot_indirect_fnp        prot_indirect_resolve(...);
+# 导致 indirect 模块的 exports 被静默登记为空而无人发现 ——
+# 正是本工具存在的意义所在 (注册表漂移检测) 却自身有盲区。
+# 现改为通用形式: 行首类型表达式 + prot_ 前缀函数名 + '('。
+# 用 [A-Za-z_][\w\s\*]*? 容忍多词返回类型 (unsigned long 等) 与指针星号。
 FN_DECL = re.compile(
-    r'^\s*(?:prot_status|void|uint(?:8|16|32|64)_t|int|size_t|'
-    r'const\s+char\s*\*|prot_revoke_status)\s+'
-    r'(prot_\w+)\s*\(', re.M)
+    r'^\s*'
+    r'(?![ \t]*typedef\b)'                       # 排除 typedef (如函数指针别名)
+    r'(?:[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*)'     # 返回类型 (含多词)
+    r'\s*\*?\s*'                                 # 可选指针
+    r'(prot_\w+)\s*\('                           # 函数名
+    r'[^;]*\)\s*;',                              # 参数表到分号
+    re.M)
 
 
 def read(path):
