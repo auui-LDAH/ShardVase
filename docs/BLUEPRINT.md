@@ -306,21 +306,46 @@ standard  -> 13 模块 15 源文件
 > **诚实的进度表述**：阶段 2 目前完成了**构建层**（组合解析 + 源文件清单 +
 > 头文件生成），**宿主层未动**。在宿主改造前，"可组合"仍是声明而非事实。
 
-### 阶段 3 ⬜ 待做
+### 阶段 3 🟡 进行中（工具层完成）
 
-**主题**：攻防对称
+**主题**：攻防对称 —— 让"实证为准绳"从口号变成可校验的结构化数据
 
-| 任务 | 说明 |
-|------|------|
-| `drills/` 结构化 schema | attack / target_module / method / result / evidence / countermeasure |
-| 回填 7 轮演练 | 从 `docs/ATTACK_DRILL*.md` + `archive/*.json` 提取 |
-| 自动生成对抗矩阵 | 从 drills 生成 markdown/HTML |
-| modcheck 扩展 | 每个防御模块须有 ≥1 条 drill 记录（准入纪律） |
+| 子项 | 状态 | 提交 |
+|------|------|------|
+| `drills/_schema.json`（schema + 攻击分类法 + 未覆盖攻击面） | ✅ | `f797b35` |
+| `tools/drills.py`（extract / lint / matrix，stdlib-only） | ✅ | `f797b35` |
+| 回填全部归档：**111 条攻击记录** + 55 条回归断言 | ✅ | `f797b35` |
+| `docs/ATTACK_MATRIX.md`（模块 × 结果 矩阵） | ✅ | `f797b35` |
+| 门禁接入（第 12 项「攻防记录」） | ✅ | `f797b35` |
+| 逐条人工细化 `attack` / `method` 字段 | ⬜ | — |
+| `modcheck` 增加"模块须有 drill 记录"准入 | ⬜ | — |
 
-**验收标准**：
-1. 所有已有结论都有结构化记录，且 evidence 可追溯
-2. 能一键生成"模块 × 攻击"矩阵
-3. 新增防御模块若无 drill 记录，modcheck 报错
+**生成的矩阵**（111 条，SDK 回归断言已排除）：
+
+| 模块 | BLOCKED | PARTIAL | BREACHED | SKIP |
+|------|---------|---------|----------|------|
+| `integrity` | 10 | 5 | 0 | 0 |
+| `selfcrypt` | 9 | 4 | 0 | 0 |
+| `license` | 5 | 3 | 2 | 1 |
+| `antidebug` | 1 | 5 | 0 | 1 |
+| `dbiguard` | 1 | 5 | 1 | 0 |
+| `blob` / `indirect` / `strcrypt` | 全 BLOCKED | — | — | — |
+| *(未映射)* | 19 | 20 | 2 | 3 |
+
+**提取过程发现并修正的 4 个真问题**（若不修，矩阵会撒谎）：
+
+1. **两类记录被混算** —— SDK 归档用 `PASS/CHECK` 是回归断言，不是攻击结论；
+   混入会把"回归通过"算成"防御挡住攻击"
+2. **捕获型条目被当结论** —— `*_out` 是执行输出快照，非结论
+3. **模块推断拿不到线索** —— list 型记录只传 `result` 丢了 `detail` 中的
+   `exit=2989 (integrity)` 等信号 → 113/122 误判；修正后降至 44
+4. **过匹配比 unmapped 更糟** —— `V3_ledger_csv_injection` 命中 `forge`
+   （"forged ledger rows" = 伪造台账行）与 `inject`（CSV **injection**，
+   非代码注入）→ 误判 `license`。已加工具层优先判定
+
+**真实发现**（写入 schema 的 `uncovered_attack_surfaces`）：
+台账可改写 / CSV 注入 / 安装目录可写属**工具层与部署层**，
+不被任何运行时防御模块覆盖 —— 这是框架的能力边界，如实记录而非强行归类。
 
 ### 阶段 4 ⬜ 待做
 
