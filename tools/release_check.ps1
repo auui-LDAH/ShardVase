@@ -74,6 +74,8 @@ if (-not $SkipTest) {
     # 模块化框架 (docs/MODULAR_ARCH.md): 注册表须与源码一致 + 参考组合自洽。
     # 放在门禁内而非可选脚本 —— P3 教训: 可绕过的门禁会掩盖缺陷。
     Check '模块契约 (modcheck)' { & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0 }
+    # 阶段 3 (攻防对称): 演练记录须符合 schema 且 target_module 有效。
+    Check '攻防记录 (drills lint)' { & $py tools\drills.py lint; $LASTEXITCODE -eq 0 }
 }
 
 # 签名: 可复现 (repro) 要求 SkipSign 重建, 与 Authenticode 互斥 (签名改 SHA,

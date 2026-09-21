@@ -1,0 +1,62 @@
+{
+  "_comment": "攻击演练记录 (drill) 结构化 schema — 阶段 3 攻防对称。本文件只定义 schema 与分类法, 不含数据。实际记录见 drills/drill<N>.json。依据 docs/BLUEPRINT.md §5 阶段 3。",
+  "_schema_version": 1,
+
+  "field_spec": {
+    "id": "唯一标识 (drill<轮次>.<序号>, 如 drill7.4)",
+    "attack": "攻击类别 (见 attack_taxonomy)",
+    "target_module": "受影响/对抗的防御模块名 (须存在于 modules.json)",
+    "method": "具体手法 (可执行描述)",
+    "prerequisite": "前置条件 (如需可写目录); 无则 null",
+    "result": "BLOCKED | PARTIAL | BREACHED | SKIP",
+    "result_detail": "原始记录说明文字",
+    "severity": "critical | high | medium | low | known-boundary",
+    "countermeasure": "已生效缓解 (机制描述); 无则 null",
+    "known_limit": "true = 已公开为诚实边界 (publish/06-诚实边界.md)",
+    "evidence": "原始文档/JSON 出处, 必须可追溯",
+    "date": "演练日期 YYYY-MM-DD"
+  },
+
+  "required_fields": [
+    "id", "attack", "target_module", "method", "result",
+    "result_detail", "severity", "known_limit", "evidence", "date"
+  ],
+
+  "result_semantics": {
+    "BLOCKED": "防御生效, 攻击未达成目标",
+    "PARTIAL": "攻击部分成功但未达目标 (需额外条件/仅限本次会话)",
+    "BREACHED": "攻击达成目标 (必须给出 prerequisite 与 countermeasure 评估)",
+    "SKIP": "环境不满足, 未得出结论 (不得计入统计)"
+  },
+
+  "attack_taxonomy": {
+    "patch_function_head": "改写判定函数头部指令",
+    "patch_data": "改写数据 (判定布尔/result/期望值)",
+    "memory_dump": "进程内存转储取明文",
+    "symbol_resolution": "符号表/PDB/MAP 定位",
+    "injection": "注入 (IAT hook / DLL 劫持 / 线程注入)",
+    "vm_reverse": "VM 语义还原 / 模拟器",
+    "license_forge": "授权伪造 (签名/字段/异机)",
+    "clock_manipulation": "时钟回拨 / 时间锚点攻击",
+    "watchdog_evasion": "看门狗规避 (挂起/暂停/杀线程)",
+    "toolchain_abuse": "工具链滥用 (台账/签发/CSV 注入)",
+    "collection_channel": "采集渠道攻击 (req 重放/洪泛/篡改)"
+  },
+
+  "severity_semantics": {
+    "critical": "完全破防且无缓解",
+    "high": "破防但有前置条件或部分缓解",
+    "medium": "攻击受限 (仅本次会话/需组合条件)",
+    "low": "攻击被有效限制, 影响很小",
+    "known-boundary": "已知边界, 已公开且列有缓解路径"
+  },
+
+  "_target_module_note": "target_module 取值必须是 modules.json 中的模块名, **或** 'unmapped'。'unmapped' 有两种合法含义: (a) 提取器线索不足, 待人工细化; (b) 该攻击不属于任何防御模块的职责范围 (如台账 CSV 注入 / 台账可删 —— 那是签发流程的运维卫生问题, 不是运行时防护模块)。(b) 类是**真实发现**, 说明存在未被任何模块覆盖的攻击面, 应记录而非强行归类。",
+
+  "uncovered_attack_surfaces": {
+    "_comment": "已知不被任何防御模块覆盖的攻击面 (真实发现, 见 drills/extracted.json 的 unmapped BREACHED)。它们暴露了框架的能力边界。",
+    "ledger_integrity": "签发台账 (issue-log.csv) 可改写/删除且无校验 —— 候选缓解 D-D2 哈希链 (drill6.S5_ledger_wipe)",
+    "ledger_csv_injection": "台账字段 (customer/note) 含逗号+CRLF 可伪造行 —— 候选缓解 D-D4 字段卫生 (drill6.V3_ledger_csv_injection)",
+    "install_dir_writable": "安装目录可写 -> 可替换公钥/DLL 劫持 —— 缓解靠部署 ACL (drill6.L3_pubkey_swap / drill5.D5)"
+  }
+}
