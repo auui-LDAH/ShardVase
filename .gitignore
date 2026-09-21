@@ -29,7 +29,10 @@ verify-report.json
 verify-report-*.json
 
 # 历史快照归档（含早期 git 仓库复本，不入库避免混淆）
-archive/
+# 注: 只排除该子目录, 不排除整个 archive/ ——
+#     archive/ 根目录的攻防演练归档是 tools/drills.py extract 的输入,
+#     排除会导致克隆者无法运行 extract（开源阻塞）。
+archive/历史快照-早期版本/
 
 # SDK 服务 (A-1 离线签发): 私钥/申请/签发产物均不入库
 sdk_service/keys/
