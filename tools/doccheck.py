@@ -205,6 +205,80 @@ def check_publish_links():
     return errors, checked
 
 
+def check_issue_links():
+    """校验 Issue 链接的"语义 <-> 模板"匹配。
+
+    背景 (2026-09-21 实测): Issue 模板只存在于 **ShardVase-docs** 仓库。
+    两个真实错误被此检查发现:
+      1. 演示包 README 指向 ShardVase-demo/issues/new —— 该仓库无模板,
+         用户点进去只有空白 Issue
+      2. 「接入咨询」链接误用 eval.yml 模板 (应为 consult.yml)
+
+    检查三条:
+      · 目标仓库必须有 Issue 模板
+      · template= 参数必须存在于该仓库
+      · 标签语义与模板类型一致 (评估->eval / 咨询->consult / 安全->security)
+    """
+    import glob as _glob
+    errors = []
+    checked = 0
+
+    # 有 Issue 模板的仓库 (与 gh api tree 核对过)
+    templated = {'ShardVase-docs': {'eval.yml', 'consult.yml', 'security.yml'}}
+
+    EXPECT = [
+        (('评估申请', '申请评估', '评估授权', '申请授权'), 'eval.yml'),
+        (('接入咨询', '咨询'), 'consult.yml'),
+        (('漏洞报告', '报告漏洞', 'security', '安全'), 'security.yml'),
+    ]
+
+    files = set()
+    for pat in ('*/*.md', '*/*.html', 'docs/**/*.md', 'prot_sdk/**/*.md'):
+        for f in _glob.glob(os.path.join(REPO, pat), recursive=True):
+            if os.path.isfile(f):
+                files.add(f)
+
+    pat_md = re.compile(r'\[([^\]]{1,30})\]\((https://github[^)\s]*issues/new[^)\s]*)\)')
+    pat_html = re.compile(r'<a[^>]*href="(https://github[^"]*issues/new[^"]*)"[^>]*>([^<]{1,30})</a>')
+
+    for f in sorted(files):
+        rel = os.path.relpath(f, REPO)
+        if '\\build\\' in f or '/build/' in f.replace('\\', '/'):
+            pass          # build/ 未入库, 但仍检查（打包用）
+        try:
+            text = open(f, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        found = [(m.group(1), m.group(2)) for m in pat_md.finditer(text)]
+        found += [(m.group(2), m.group(1)) for m in pat_html.finditer(text)]
+        for label, url in found:
+            checked += 1
+            m = re.match(r'https://github\.com/auui-LDAH/([\w-]+)/issues/new', url)
+            if not m:
+                continue
+            repo = m.group(1)
+            ln = text[:text.find(url)].count('\n') + 1
+            if repo not in templated:
+                errors.append('%s:%d Issue 链接指向无模板的仓库 %s: %s'
+                              % (rel, ln, repo, url[:60]))
+                continue
+            tm = re.search(r'template=([\w.]+)', url)
+            tmpl = tm.group(1) if tm else None
+            if tmpl and tmpl not in templated[repo]:
+                errors.append('%s:%d 仓库 %s 无模板 %s'
+                              % (rel, ln, repo, tmpl))
+                continue
+            exp = None
+            for keys, tpl in EXPECT:
+                if any(k in label for k in keys):
+                    exp = tpl
+                    break
+            if exp and tmpl != exp:
+                errors.append('%s:%d「%s」链接用了 %s, 应为 %s'
+                              % (rel, ln, label.strip(), tmpl or '(无)', exp))
+    return errors, checked
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='doccheck.py',
                                  description='对外材料数字漂移检查')
@@ -283,6 +357,11 @@ def main(argv=None):
     perr, pchecked = check_publish_links()
     checked += pchecked
     errors.extend(perr)
+
+    # --- 7. Issue 链接语义 <-> 模板匹配 ---
+    ierr, ichecked = check_issue_links()
+    checked += ichecked
+    errors.extend(ierr)
 
     for e in errors:
         print('  [X] %s' % e)
