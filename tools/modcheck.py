@@ -43,12 +43,17 @@ VALID_CAPS = {'detect', 'prevent', 'conceal', 'verify', 'respond'}
 VALID_PHASES = ['init', 'scan', 'decide', 'enforce', 'watch']
 
 # 宿主下限: main.c / indirect_table.c 硬引用、无法从组合中移除的模块。
-# **链接器实测** (2026-09-20): 只编译授权链后 MSVC 报 12 个未解析符号,
-# 全部来自 antidebug/integrity/dbiguard/vmdetect/indirect。
-# 须与 tools/compose.py 的 SUBSTRATE 保持一致 (modcheck 会校验两者同步)。
-HOST_SUBSTRATE = ['antidebug', 'blob', 'dbiguard', 'hostid', 'indirect',
-                  'integrity', 'license', 'revoke', 'strcrypt', 'vm',
-                  'vmdetect']
+#
+# **实测更新 (2026-09-20 批2 后)**: 逐个尝试排除并观察链接器结果。
+#   可排除 (5): antidebug, dbiguard, integrity, syscall, vmdetect
+#   不可排除 (8): blob/hostid/indirect/license/revoke/selfcrypt/strcrypt/vm
+# 批1 时为 11 项; 批2 完成 antidebug/integrity 条件编译后收敛为 8 项。
+# 须与 tools/compose.py 的 SUBSTRATE 保持一致 (下方有同步校验)。
+HOST_SUBSTRATE = ['blob', 'hostid', 'indirect', 'license', 'revoke',
+                  'selfcrypt', 'strcrypt', 'vm']
+
+# 已实现条件编译、可被组合排除的模块 (供文档与测试引用)
+HOST_EXCLUDABLE = ['antidebug', 'dbiguard', 'integrity', 'syscall', 'vmdetect']
 
 # 头文件中的对外函数声明。
 #

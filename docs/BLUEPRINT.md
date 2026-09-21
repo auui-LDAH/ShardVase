@@ -197,8 +197,43 @@
 | 宿主下限实测（链接器为权威） | ✅ | `5eff7ae` |
 | 宿主层 批1：`vmdetect` + `dbiguard` 条件编译 | ✅ | `f4ccf64` |
 | **前置：`selfcrypt_proto.py` 组合兼容**（目标缺失改为跳过+报告） | ✅ | `f48ffbd` |
-| 宿主层 批2：`antidebug` / `integrity` / `indirect` / `revoke` | ⬜ **下次继续** | — |
-| `build.ps1 -Composition` 集成 | ⬜ | — |
+| 宿主层 批2：`antidebug` + `integrity` 条件编译 | ✅ | `cc55bf9` |
+| **SUBSTRATE 实测收敛 11 → 8 模块** | ✅ | `1d69100` |
+| `build.ps1 -Composition` 集成（当前用 `compose.py` 手工驱动） | ⬜ | — |
+| 批3（若需要）：`revoke` 需先让 `indirect.py` 组合感知 | ⬜ | — |
+
+#### ✅ 阶段 2 目标达成
+
+**端到端验证（三档组合真实构建 + 运行）**：
+
+| 组合 | 源文件 | 产物 | 相对 full |
+|------|--------|------|-----------|
+| `full` | 15 | 228352 | — |
+| `standard` | 13 | 224768 | −3584 (1.6%) |
+| `minimal` | **10** | **214016** | **−14336 (6.3%)** |
+
+`minimal` 产物**运行验证**（不只是能链接）：
+
+```
+exit = 0，输出「校验通过，欢迎使用！」
+含反调试输出 : False   (期望 False)
+含 VM 检测   : False   (期望 False)
+含 DBI 检测  : False   (期望 False)
+```
+
+→ **三项保护层输出全部消失**，证明条件编译真实裁剪了代码，而非仅体积变化。
+
+**实测的子集边界**（链接器为权威）：
+
+- **可排除（5）**：`antidebug` / `dbiguard` / `integrity` / `syscall` / `vmdetect`
+- **不可排除（8）**：`blob` / `hostid` / `indirect` / `license` / `revoke` /
+  `selfcrypt` / `strcrypt` / `vm`
+  - 原因：宿主直接调用（`prot_vm_blob_load` / `prot_str_get` / `prot_hostid_get`）
+    或 `indirect_table.c` 硬登记（`prot_vm_run` / `prot_revoke_check`）
+
+> **进程验证**：链接器独立确认了注册表的依赖声明 —— 单独排除 `antidebug`
+> 时 `integrity.obj` 报缺失 `prot_antidebug_scan/detected`，与
+> `modules.json` 早已记录的 `integrity.deps = [antidebug, selfcrypt]` 完全一致。
 
 #### ✅ 已解开：selfcrypt 与组合的耦合点
 
