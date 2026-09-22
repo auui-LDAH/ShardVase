@@ -39,3 +39,8 @@ sdk_service/keys/
 sdk_service/reqs/
 sdk_service/licenses/
 sdk_service/issue-log*.csv
+
+# 商业化文档: 定价等敏感内容仅存本地, 不随开源发布
+#   保留位置: ..\Reverse Engineering-private-docs\
+docs/commercial/PRICING.md
+docs/COMMERCIAL_PLAN.md

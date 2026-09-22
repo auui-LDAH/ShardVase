@@ -1,7 +1,7 @@
 # 商业化文档包（A3 交付）
 
 > 状态：**初稿完成（2026-08-28），全部待法律审定**。
-> 管理计划：`docs/COMMERCIAL_PLAN.md`
+> 管理计划：`docs/COMMERCIAL_DEFERRED.md`（原 `COMMERCIAL_PLAN.md` 已移出仓库）
 
 ## 文件索引
 | 文件 | 内容 | 状态 |
@@ -9,7 +9,7 @@
 | [LICENSE_AGREEMENT.md](LICENSE_AGREEMENT.md) | 许可协议（授权范围/限制/IP/保证/终止/管辖）| 初稿 |
 | [SALE_TERMS.md](SALE_TERMS.md) | 销售条款（订单/退款/升级/转售 OEM）| 初稿 |
 | [SUPPORT_SLA.md](SUPPORT_SLA.md) | 支持 SLA（范围/时限/版本策略/反破解声明）| 初稿 |
-| [PRICING.md](PRICING.md) | 定价套餐草案（独立/团队/企业/OEM）| 草案 |
+| ~~PRICING.md~~ | 定价套餐草案 —— **已移出仓库**（仅存本地）| 移出 |
 | [PRIVACY.md](PRIVACY.md) | 隐私与数据（零遥测卖点/签发台账/合规提示）| 初稿 |
 
 ## 关键立场（贯穿全部文档）

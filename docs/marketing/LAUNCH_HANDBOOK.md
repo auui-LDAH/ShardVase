@@ -49,6 +49,6 @@ README/landing 链接换成实际地址。
 
 ## 八、服务交付流程（咨询 → 成交）
 1. Issue/邮件确认需求与栈；
-2. 报价（docs/commercial/PRICING.md 草案）；
+2. 报价（定价文档**仅存本地**，不随开源发布）；
 3. 实施费 → prot_sdk 接入 → 签发部署；
 4. 按 SLA 提供支持。

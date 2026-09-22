@@ -274,14 +274,18 @@ def cmd_check():
                         'python tools/oss_release.py --rewrite '
                         '-> 再 --update-sha'))
 
-    # 定价文档：商业决策
+    # 定价文档：**已按 D2 决策移出仓库**（2026-09-21）
+    # 保留此检查以防回归: 若定价文档重新出现在版本库中, 应再次提请决策。
     pricing = os.path.join(REPO, 'docs', 'commercial', 'PRICING.md')
-    if os.path.exists(pricing):
-        body = open(pricing, encoding='utf-8').read()
-        if re.search(r'[¥￥]\s?[\d,]{3,}', body):
-            pending.append((
-                'docs/commercial/PRICING.md 含真实报价 —— 完全开源会一并公开',
-                '三选一: 公开 / 移出仓库 / 保留并标注草案'))
+    plan = os.path.join(REPO, 'docs', 'COMMERCIAL_PLAN.md')
+    for pf, nm in ((pricing, 'docs/commercial/PRICING.md'),
+                   (plan, 'docs/COMMERCIAL_PLAN.md')):
+        if os.path.exists(pf):
+            body = open(pf, encoding='utf-8').read()
+            if re.search(r'[¥￥]\s?[\d,]{3,}', body):
+                pending.append((
+                    '%s 含真实报价但仍在仓库中（应已移出）' % nm,
+                    '执行 D2: git rm + gitignore; 备份到仓库外'))
 
     # 公开仓库同步：对外动作
     rc, out, _ = sh('git', 'remote', '-v')

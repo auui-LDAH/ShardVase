@@ -27,7 +27,7 @@
 |---|------|------|--------|
 | **①** | git 历史重写 | 隐私 | **不可逆** |
 | **③** | 同步 5 文件到两个公开仓库 | 对外可见 | 可改回（但已被看到）|
-| **②** | `docs/commercial/PRICING.md` 去留 | 商业决策 | 可逆 |
+| **②** | `docs/commercial/PRICING.md` 去留 | 商业决策 | **已完成（D2 移出）** |
 | **④** | 70 个源文件补 SPDX 许可证头 | 合规 | 可逆 |
 
 ### 1.3 关键勘查结论（影响执行顺序）
@@ -75,7 +75,7 @@
 | # | 验收标准 |
 |---|----------|
 | ① | `oss_release.py --check` 显示**工作区与历史泄露均为 0**；提交数不变；构建 + 门禁全绿；`git log -S` 对 8 类字符串**全部 0 命中** |
-| ② | 三选一执行完毕，且 `PRICING.md` 的处置在 `COMMERCIAL_DEFERRED.md` 有记录 |
+| ② | ✅ 已执行 D2（移出仓库）：`PRICING.md` 与 `COMMERCIAL_PLAN.md` 已 git rm + gitignore，备份在 `..\Reverse Engineering-private-docs\` |
 | ③ | `sync_public.py` 显示**全部相同（0 需同步）**；三仓库在线内容与本地一致 |
 | ④ | 70 文件均含 SPDX 标识；**产物字节与加密函数数与插入前一致**；门禁全绿 |
 
