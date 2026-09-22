@@ -20,6 +20,10 @@
 
 #include "protect/protdef.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct prot_dbiguard_report {
     uint32_t inline_hooks;  /* 敏感 API 入口被改写 (jmp 到非 ntdll 区) */
     uint32_t frida_agent;   /* 检测到 frida/gum 模块 */
@@ -33,4 +37,8 @@ prot_status prot_dbiguard_scan(prot_dbiguard_report* out);
 /* 任一检测项非 0 -> 返回 1 */
 uint32_t prot_dbiguard_suspicious(const prot_dbiguard_report* rep);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_DBIGUARD_H */

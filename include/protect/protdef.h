@@ -16,6 +16,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PROT_KS_MUL 0x5851F42D4C957F2Du  /* 密钥流乘子 */
 #define PROT_KS_ADD 0x14057B7EF767814Fu  /* 密钥流加子 */
 
@@ -56,4 +60,8 @@ uint32_t prot_crc32_init(void);
 uint32_t prot_crc32_step(uint32_t crc, uint8_t byte);
 uint32_t prot_crc32_done(uint32_t crc);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_PROTDEF_H */

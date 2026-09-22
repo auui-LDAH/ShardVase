@@ -27,6 +27,10 @@
 #include "protect/protdef.h"
 
 /* windows.h 不提供 NTSTATUS (winternl.h 可选); 与 src/antidebug.c 同守卫 */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef NTSTATUS
 typedef LONG NTSTATUS;
 #endif
@@ -50,4 +54,8 @@ NTSTATUS prot_sys_nt_query_system_information(ULONG SystemInformationClass,
  * 供 --selftest / 诊断输出。 */
 uint32_t prot_sys_available(void);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_SYSCALL_H */

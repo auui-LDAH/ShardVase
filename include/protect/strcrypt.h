@@ -15,6 +15,10 @@
 
 #include "protect/protdef.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum prot_str_id {
     PROT_STR_BANNER = 0,
     PROT_STR_PROMPT_SERIAL,
@@ -43,4 +47,8 @@ const char* prot_str_get(prot_str_id id);
  */
 void prot_str_decrypt(const uint8_t* enc, uint32_t len, uint64_t key, char* out);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_STRCRYPT_H */

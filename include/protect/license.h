@@ -22,6 +22,10 @@
 #include <stdint.h>
 
 /* 产品标识, 参与签名载荷 —— 与 tools/vmenc.py LICENSE_PRODUCT 必须一致 */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PROT_LICENSE_PRODUCT "PROT-DEMO-2026"
 
 /* 分级授权 (Phase 4): tier 参与签名载荷, 与 vmenc.py LICENSE_TIER_* 一致 */
@@ -53,4 +57,8 @@ size_t prot_license_build_message(const char* serial, size_t serial_len,
 int prot_license_verify(const uint8_t* msg, size_t msg_len,
                         const uint8_t* sig, size_t sig_len);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_LICENSE_H */

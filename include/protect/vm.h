@@ -16,6 +16,10 @@
 #include "protect/protdef.h"
 
 /* 加密的 VM 程序镜像 (由 tools/vmenc.py 生成) */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct prot_vm_image {
     const uint8_t* code;   /* 加密字节码 */
     uint32_t code_len;     /* 明文长度 */
@@ -35,4 +39,8 @@ prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_siz
 /* S2: 运行时密钥多样性 - 装载后内存重编码密钥域 (仅内存, 文件/签名不变) */
 prot_status prot_vm_rekey(prot_vm_image* img, uint64_t new_key);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_VM_H */

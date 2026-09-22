@@ -23,6 +23,10 @@
 #include "protect/protdef.h"
 
 /* 规范顺序函数 ID (与 tools/indirect.py _fn_order_from_header 一致, 勿改) */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum prot_indirect_fn {
     PROT_INDIRECT_VM_RUN,      /* prot_vm_run: VM 解释执行核心 */
     PROT_INDIRECT_LICENSE,     /* load_and_verify_license: RSA 验签 (demo) */
@@ -45,4 +49,8 @@ const uint8_t* prot_indirect_perm(void);
  */
 prot_indirect_fnp prot_indirect_resolve(prot_indirect_fn fn_id);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_INDIRECT_H */

@@ -16,6 +16,14 @@
 #include "protect/protdef.h"
 
 /* 机器标识: 卷序列号 + 计算机名 多因子 FNV-1a 折叠 (64 位) */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 uint64_t prot_hostid_get(void);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_HOSTID_H */

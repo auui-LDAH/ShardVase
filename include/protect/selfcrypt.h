@@ -36,6 +36,10 @@
  *   [count u32 LE][entry * count]
  *   entry = { rva u32 | len u32 | key0 u64 | crc32 u32 } (20B, II-1 解密态 CRC)
  * 运行期 prot_selfcrypt_init 从 blob 头读 meta 并原位解密。 */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern uint8_t g_prot_selfcrypt_blob[];
 extern const uint32_t g_prot_selfcrypt_blob_size;
 
@@ -62,4 +66,8 @@ prot_status prot_selfcrypt_init(void);
 prot_status prot_selfcrypt_enter(uint32_t group);
 prot_status prot_selfcrypt_leave(uint32_t group);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_SELFCRYPT_H */

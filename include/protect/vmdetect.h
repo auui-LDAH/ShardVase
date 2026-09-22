@@ -22,6 +22,10 @@
 
 #include "protect/protdef.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct prot_vmdetect_report {
     uint32_t cpu_hypervisor; /* CPUID hypervisor present bit */
     uint32_t hv_vendor;      /* 0=none, 1=Microsoft(Hyper-V), 2=KVM,
@@ -35,4 +39,8 @@ prot_status prot_vmdetect_scan(prot_vmdetect_report* out);
 /* 任一检测项非 0 (即"疑似 VM") -> 返回 1 */
 uint32_t prot_vmdetect_suspicious(const prot_vmdetect_report* rep);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_VMDETECT_H */

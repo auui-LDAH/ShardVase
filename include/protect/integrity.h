@@ -21,6 +21,10 @@
 #include "protect/protdef.h"
 
 /* 对自身 .text 段做 CRC32 并与构建期烧录值比对; 一致返回 PROT_OK */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 prot_status prot_integrity_check_self(void);
 
 /*
@@ -42,4 +46,8 @@ prot_status prot_integrity_stop_watchdog(void);
 typedef prot_status (*prot_wd_callback)(void);
 void prot_integrity_set_watchdog_callback(prot_wd_callback cb);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_INTEGRITY_H */

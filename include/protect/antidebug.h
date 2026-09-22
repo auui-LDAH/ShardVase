@@ -17,6 +17,10 @@
 
 #include "protect/protdef.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct prot_antidebug_report {
     uint32_t peb_being_debugged;   /* PEB.BeingDebugged */
     uint32_t peb_nt_global_flag;   /* PEB.NtGlobalFlag 调试堆标志 (咨询项) */
@@ -52,4 +56,8 @@ uint32_t prot_antidebug_fake_active(void);
 /* ThreadHideFromDebugger; 若处于调试中可能导致进程被杀, 由调用方决定是否调用 */
 prot_status prot_antidebug_hide_thread(void);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_ANTIDEBUG_H */

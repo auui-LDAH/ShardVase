@@ -37,9 +37,17 @@
  *       PROT_ERR_BLOB_CORRUPT (magic/CRC/长度) /
  *       PROT_ERR_BLOB_NAME (缺所需镜像)。
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 prot_status prot_vm_blob_load(const char* path,
                               const char* const* names, uint32_t name_count,
                               prot_vm_image* out,
                               void** out_buf, size_t* out_buf_size);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_BLOB_H */

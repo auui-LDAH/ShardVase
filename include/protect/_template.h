@@ -25,6 +25,10 @@
  * 命名约定: 字段名即检测项名, 与文档/CONTRACT 保持一致。
  * 关键项与咨询项请在注释中**明确标注** —— 这决定 decide 阶段是否计入。
  * ------------------------------------------------------------------------- */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct prot_template_report {
     uint32_t example_check;     /* 关键项: 示例检测 */
     uint32_t example_advisory;  /* 咨询项: 只报告不参与判定 */
@@ -39,4 +43,8 @@ uint32_t prot_template_suspicious(const prot_template_report* rep);
 /* 按策略响应 (咨询项模块请删除本函数) */
 prot_status prot_template_apply_policy(prot_policy pol);
 
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 #endif /* PROT_TEMPLATE_H */
