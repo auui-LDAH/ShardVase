@@ -19,19 +19,85 @@ import glob
 import os
 import re
 import shutil
+import tempfile
 import subprocess
 import sys
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 os.chdir(REPO)
 
-# 需清除的标识（内容层面）
-LEAKS = ['issuer-host', 'test-host', 'DEV-MACHINE', 'devuser', 'devuser',
-         'devuser', '100.x.x.x', '100.x.x.x']
+# 需清除的标识（内容层面）—— **不存放在本仓库内**。
+#
+# 设计教训（2026-09-21，自指陷阱的两次出现）:
+#   1. 初版把个人邮箱硬编码为常量 -> 工具本身成为泄露源，
+#      而 filter-repo 的 mailmap 只改元数据，清不掉文件内容。
+#   2. 改为"常量 LEAKS 列表"后，**替换规则把工具自己的常量也替换了** ——
+#      `--replace-text` 作用于所有 blob，包括定义规则的那个文件，
+#      结果 LEAKS 变成了替换后的新值（['issuer-host', ...]），工具失效。
+#
+# 根本矛盾: 要清除的字符串**不能出现在被清除的仓库里**。
+# 故改为从**仓库外**的配置文件读取（默认 %TEMP%/oss-leaks.txt）。
+#
+# 这样同时满足: 仓库不含敏感串 + 工具可正常工作 + 对未来新增泄露可复用。
+LEAKS_FILE = os.environ.get(
+    'OSS_LEAKS_FILE',
+    os.path.join(os.environ.get('TEMP', tempfile.gettempdir()),
+                 'oss-leaks.txt'))
 
-# 身份目标（与既有公开仓库一致）—— 这是**公开**信息，可硬编码
+# 替换值的**推断规则**（不含任何原始标识 —— 那是自指陷阱）
+#
+# 关键: 本文件不得出现任何"待清除的原始标识"。
+# 已踩坑两次:
+#   1. 硬编码个人邮箱 -> 工具成为泄露源
+#   2. 硬编码 LEAKS 常量 -> 规则把工具自己的常量替换成新值, 工具失效
+#   3. (本次) REPLACE_MAP_DEFAULT 的 **dict 键**就是原始标识 -> 又成了泄露
+# 故: 原标识只从仓库外的 oss-leaks.txt 读；本文件只保留**推断新值**的规则。
+REPLACE_RULES = [
+    # (匹配方式, 新值)
+    ('ip', '100.x.x.x'),            # 形如 100.x.x.x 的 CGNAT 内网地址
+    ('winmachine', 'DEV-MACHINE'),  # DESKTOP-* / LAPTOP-* / 全大写短名
+    ('host', 'host'),               # 其它主机名 -> 通用占位（下方细化）
+    ('user', 'devuser'),            # 其它短标识（用户名等）
+]
+
+
+# 身份目标（与既有公开仓库一致）—— **公开**信息，可硬编码
 NEWNAME = 'jurecoasertkrockt777'
 NEWMAIL = 'jurecoasertkrockt777@users.noreply.github.com'
+
+
+def load_leaks():
+    """从仓库外的文件读取待清除标识。
+
+    文件格式: 每行一个标识（# 开头为注释）。
+    返回列表；文件不存在则返回空列表（工具仍可用，只是无规则可生成）。
+    """
+    if not os.path.isfile(LEAKS_FILE):
+        return []
+    out = []
+    for line in open(LEAKS_FILE, encoding='utf-8'):
+        s = line.strip()
+        if s and not s.startswith('#'):
+            out.append(s)
+    return out
+
+
+def leak_replacement(leak):
+    """按**特征**推断替换值（不依赖任何硬编码的原始标识）。
+
+    这样本文件可以安全地随仓库公开 —— 它只知道"什么形态该替换成什么"，
+    不知道"具体要清除哪些串"（那些在仓库外的 oss-leaks.txt 里）。
+    """
+    if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', leak):
+        return '100.x.x.x'                       # IP 地址
+    if re.match(r'^(DESKTOP|LAPTOP|WIN)-', leak, re.I):
+        return 'DEV-MACHINE'                     # Windows 默认机器名格式
+    if re.match(r'^[A-Z][A-Z0-9]{5,}$', leak) and not leak.islower():
+        return 'DEV-MACHINE'                     # 全大写短名（如 8.3 形式）
+    if re.match(r'^[a-z][a-z0-9_-]{2,}$', leak) and '-' not in leak:
+        # 全小写单词：可能是主机名或用户名 —— 统一用中性占位
+        return 'devuser'
+    return 'redacted'
 
 # 旧身份**不硬编码**，改为运行期从 git 历史探测。
 #
@@ -107,9 +173,23 @@ def cmd_check():
     ok = True
 
     print()
-    print('--- 1. 工作区泄露 ---')
+    print('--- 1. 工作区泄露（含身份字符串的内容层扫描）---')
     rc, out, _ = sh('git', 'ls-files')
     files = [f for f in out.split('\n') if f.strip()]
+    # 扫描目标 = 泄露清单 + 旧身份的**完整串与本地部分**
+    #
+    # 教训(A4 后实测): 原先只扫 load_leaks()，而文档里出现的是邮箱的
+    # **本地部分**（邮箱 @ 前的数字串），完整邮箱规则匹配不到 -> 残留逃逸。
+    targets = list(load_leaks())
+    old_emails, old_names = discover_old_identities()
+    for e in old_emails:
+        targets.append(e)
+        loc = e.split('@')[0]
+        if len(loc) >= 5:
+            targets.append(loc)
+    targets += old_names
+    targets = sorted(set(t for t in targets if t))
+
     hits = 0
     for f in files:
         if not os.path.exists(f) or os.path.getsize(f) > 3_000_000:
@@ -118,17 +198,18 @@ def cmd_check():
             body = open(f, encoding='utf-8', errors='replace').read()
         except OSError:
             continue
-        for n in LEAKS:
+        for n in targets:
             if n in body:
                 hits += 1
                 print('  [X] %s 含 %s' % (f, n))
-    print('  工作区命中: %d %s' % (hits, '✓' if hits == 0 else ''))
+    print('  扫描目标 %d 个, 工作区命中: %d %s'
+          % (len(targets), hits, '✓' if hits == 0 else ''))
     ok = ok and hits == 0
 
     print()
     print('--- 2. git 历史泄露 ---')
     hist = 0
-    for n in LEAKS:
+    for n in load_leaks():
         rc, out, _ = sh('git', 'log', '--all', '--oneline', '-S', n)
         c = len([l for l in out.split('\n') if l.strip()])
         if c:
@@ -299,18 +380,23 @@ def cmd_rewrite():
 
     repl = os.path.join(os.environ.get('TEMP', '/tmp'), 'oss-replacements.txt')
     n_rules = 0
+    leaks = load_leaks()
+    if not leaks:
+        print('  [!] 未读到泄露清单（%s）—— 仅替换身份字符串' % LEAKS_FILE)
     with open(repl, 'w', encoding='utf-8', newline='\n') as f:
-        for n in LEAKS:
-            val = '100.x.x.x' if n.startswith('100.') else (
-                'issuer-host' if n == 'issuer-host' else
-                'test-host' if n == 'test-host' else
-                'DEV-MACHINE' if n.startswith('DESKTOP') else 'devuser')
-            f.write('%s==>%s\n' % (n, val))
+        for n in leaks:
+            f.write('%s==>%s\n' % (n, leak_replacement(n)))
             n_rules += 1
         # 身份字符串（内容层面）—— 同样必须清除
         for e in old_emails:
             f.write('%s==>%s\n' % (e, NEWMAIL))
             n_rules += 1
+            # 同时替换邮箱的**本地部分**（@ 前的数字串），
+            # 否则文档里只写数字时仍会残留（A4 后实测发现 1 处）。
+            local = e.split('@')[0]
+            if len(local) >= 5 and local not in leaks:
+                f.write('%s==>devuser\n' % local)
+                n_rules += 1
         for nm in old_names:
             f.write('%s==>%s\n' % (nm, NEWNAME))
             n_rules += 1
