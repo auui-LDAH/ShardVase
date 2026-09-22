@@ -24,7 +24,9 @@
 
 /* S1 专项 (2026-08-30): 辅助函数移入 .protxec 独立页 (与加密段分页,
  * 消除"页内未加密邻居被 VP 禁执行"自伤). scan 自身在下方恢复 .text. */
-#pragma code_seg(".protxec")
+/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+#include "protect/prot_sections.h"
+#pragma code_seg(PROT_SEC_XEC)
 
 /* Phase 3b: 多轮计时采样配置. 5 轮 × 20ms, 任一轮 < 5ms 判可疑. */
 #define PROT_AD_TIMING_ROUNDS 5u

@@ -27,12 +27,59 @@ CLI:
     python tools/hashpatch.py build\\demo.exe
 """
 
+import json
 import struct
 import sys
 import zlib
 
 # 与 src/integrity.c g_prot_baked_crc 顺序一致
 MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP')
+
+
+def load_section_names(path):
+    """从 gen_sections.py 生成的 JSON 读取随机节名。
+
+    返回 dict: 逻辑名 -> 实际节名。未提供 path 或读取失败时返回 {}，
+    调用方回退到旧默认名（向后兼容）。
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, encoding='ascii') as f:
+            data = json.load(f)
+        secs = data.get('sections', {})
+        if not isinstance(secs, dict):
+            return {}
+        return secs
+    except (OSError, ValueError):
+        return {}
+
+def load_magics(path):
+    """从 gen_sections.py 的 JSON 读取随机 magic（阶段3: 去自解释标记）。
+
+    返回 (magic_text, magic_rdata, magic_pdata) 的 bytes 元组；
+    未提供或读取失败时返回 None -> 调用方回退硬编码 MAGICS（向后兼容）。
+
+    实测依据: src/integrity.c **不检查 magic**（只用 g_prot_baked_crc[]
+    的符号顺序），故 magic 随机化对 C 侧零影响。
+    """
+    if not path:
+        return None
+    try:
+        with open(path, encoding='ascii') as f:
+            data = json.load(f)
+        mg = data.get('magics', {})
+        out = []
+        for k in ('text', 'rdata', 'pdata'):
+            v = mg.get(k)
+            if not isinstance(v, str) or len(v) != 16:
+                return None
+            out.append(bytes.fromhex(v))
+        return tuple(out)
+    except (OSError, ValueError):
+        return None
+
+
 TARGET_NAMES = ('.text', '.rdata', '.pdata')
 ENTRY_SIZE = 16
 
@@ -167,11 +214,20 @@ def main(argv=None):
               file=sys.stderr)
         return 2
     exe_path = argv[0]
+    sections_json = None
     i = 1
     while i < len(argv):
         if argv[i] == '--mask':
             rva, mlen = argv[i + 1].split(',')
             add_exclude_mask(int(rva, 0), int(mlen, 0))
+            i += 2
+        elif argv[i] == '--sections-json':
+            # 阶段1(第二支柱): 节名每构建随机，需从 gen_sections.py 的 JSON
+            # 读实际名。未提供时回退旧名 .protcrc（向后兼容）。
+            if i + 1 >= len(argv):
+                print('hashpatch: --sections-json needs a path', file=sys.stderr)
+                return 2
+            sections_json = argv[i + 1]
             i += 2
         else:
             print('hashpatch: unknown arg: %s' % argv[i], file=sys.stderr)
@@ -182,16 +238,26 @@ def main(argv=None):
             data = f.read()
 
         secs = pe_sections(data)
-        prot = next((s for s in secs if s['name'] == '.protcrc'), None)
+        # 阶段1(第二支柱): 节名每构建随机, 由 gen_sections.py 生成。
+        # 未提供 --sections-json 时回退旧名 .protcrc (向后兼容)。
+        section_names = load_section_names(sections_json)
+        # 阶段3: magic 随机化（替代硬编码 PROTCRCP/D/P）。
+        # 实测: integrity.c 不检查 magic（只用 g_prot_baked_crc[] 的符号顺序），
+        # 故 magic 随机化对 C 侧零影响。
+        magics_override = load_magics(sections_json)
+        active_magics = magics_override if magics_override else MAGICS
+        crc_sec = section_names.get('protcrc')
+        cand = [crc_sec] if crc_sec else ['.protcrc']
+        prot = next((s for s in secs if s['name'] in cand), None)
         if prot is None:
             raise HashpatchError(
                 'no .protcrc section found in %s (integrity baked table missing)'
                 % exe_path)
-        if prot['size_raw'] < ENTRY_SIZE * len(MAGICS):
+        if prot['size_raw'] < ENTRY_SIZE * len(active_magics):
             raise HashpatchError('.protcrc section too small (%d bytes)' %
                                  prot['size_raw'])
 
-        for i, magic in enumerate(MAGICS):
+        for i, magic in enumerate(active_magics):
             off = prot['ptr_raw'] + i * ENTRY_SIZE
             if off + ENTRY_SIZE > len(data):
                 raise HashpatchError('marker %d out of file range' % i)

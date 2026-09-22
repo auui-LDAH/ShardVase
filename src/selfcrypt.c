@@ -36,12 +36,14 @@
 /* S1 专项 (2026-08-30): .protpad 填充节 — 把 .protxec 推后一页,
  * 使其与 .text 尾部加密段 (revoke) 分页, 消除
  * 页粒度 VP 禁执行自伤。 */
-#pragma section(".protpad", read)
-__declspec(allocate(".protpad"))
+/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+#include "protect/prot_sections.h"
+#pragma section(PROT_SEC_PAD, read)
+__declspec(allocate(PROT_SEC_PAD))
 const char g_prot_pad[4096] = {0};
 
-#pragma section(".protcrypt", read, write)
-__declspec(allocate(".protcrypt"))
+#pragma section(PROT_SEC_CRY, read, write)
+__declspec(allocate(PROT_SEC_CRY))
 uint8_t g_prot_selfcrypt_blob[16384];
 
 const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
@@ -92,7 +94,7 @@ static SRWLOCK g_sc_lock = SRWLOCK_INIT;
 /* 独立节 .protxec (2026-08-29): 解密器与加密目标分页,
  * 避免 VirtualProtect 切换目标页权限时把自身执行页
  * 关了 (0x5000 同页自伤崩溃的根源). */
-#pragma code_seg(".protxec")
+#pragma code_seg(PROT_SEC_XEC)
 static void sc_xor_range(uint8_t* dst, uint32_t len, uint64_t key)
 {
     uint64_t k = key;

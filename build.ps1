@@ -32,6 +32,10 @@ param(
     [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
     [switch]$Help
 )
+# 阶段1: 节名/magic 的随机种子。留空 = 每次构建随机（**发布必须随机**，
+# 否则攻击者只需破一次；固定种子仅用于可复现验证）。
+$sectionsSeed = ''
+
 $ErrorActionPreference = 'Stop'
 
 # I4: --help / 参数校验
@@ -248,12 +252,27 @@ if ($RecordSeeds -and $strgenSeedArgs.Count -eq 0) {
 & $py tools\strgen.py demo\strings.txt demo\gen\strings.c $strgenSeedArgs
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: strgen.py' }
 
+# ---- 阶段1(第二支柱): 生成随机节名与 magic ----
+# 目的: 消除产物中的自解释名字（.protcrc / PROTCRCP 等）——
+#       攻击者看到节名即知"这里是完整性校验"，故每构建随机。
+# 实测: PE 节名上限 8 字节（源码写 .protcrypt(10) 会被截断为 .protcry），
+#       故生成器产 "." + 7 字符 = 8，正好合规。
+# 注意: 必须在**编译之前**执行（src/*.c 会 #include "prot_sections.h"）。
+# 注意: 本脚本**没有** $REPO 变量 —— 它假定从仓库根运行，全部用相对路径
+# （与 strgen.py / indirect.py / compose.py 的调用写法一致）。
+$sectionsJson = 'demo\gen\prot_sections.json'
+$secArgs = @()
+if ($sectionsSeed) { $secArgs = @('--seed', $sectionsSeed) }
+& $py tools\gen_sections.py --out-dir demo\gen @secArgs
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: gen_sections.py' }
+
 # 4c. N4 函数级间接化: 生成槽位随机化函数指针表
 #     (I3: -SeedsFile 注入确定性种子; -RecordSeeds 先定种子再构建)
 if ($RecordSeeds -and $null -eq $indirectSeed) {
     $indirectSeed = @('--seed', ('0x' + (-join (1..16 | ForEach-Object { '{0:x1}' -f (Get-Random -Max 16) }))))
 }
 if ($indirectSeed) {
+
     & $py tools\indirect.py --out demo\gen\indirect_table.c $indirectSeed
 } else {
     & $py tools\indirect.py --out demo\gen\indirect_table.c
@@ -287,7 +306,10 @@ if ($compSrcs.Count -eq 0) { throw "build FAILED: composition '$compName' 无源
 $compSrcJoined = ($compSrcs -join ' ')
 Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs.Count)
 
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+# 阶段1(第二支柱): -DPROT_USE_GENERATED_SECTIONS 让 include/protect/
+# prot_sections.h 采用 demo\gen 下的**随机节名**（覆盖其默认值）。
+# 不定义该宏的独立构建（skeleton/examples/tests）沿用默认节名，不受影响。
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -312,7 +334,7 @@ if ($ExtraSelfCrypt) {
     }
 }
 if ($compName -eq 'full') { $scExtraArgs += '--require-all' }
-& $py tools\selfcrypt_proto.py build\demo.exe build\demo.map @scExtraArgs
+& $py tools\selfcrypt_proto.py build\demo.exe build\demo.map @scExtraArgs --sections-json "$sectionsJson"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: selfcrypt_proto.py' }
 $maskArgs = @()
 if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
@@ -330,7 +352,7 @@ if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
 #     这是 integrity 与 hashpatch 的**构建级耦合**, 属预期而非缺陷。
 $hasIntegrity = $compSrcs -match 'integrity\.c$'
 if ($hasIntegrity) {
-    & $py tools\hashpatch.py build\demo.exe @maskArgs
+    & $py tools\hashpatch.py build\demo.exe @maskArgs --sections-json "$sectionsJson"
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
 } else {
     Write-Host 'build: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段可烧录)'

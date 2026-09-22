@@ -24,6 +24,7 @@ tools/selfcrypt_proto.py — N1 阶段 0 原型 (方案 B: 原位加密)
 """
 
 import argparse
+import json
 import os
 import struct
 import sys
@@ -122,6 +123,23 @@ def parse_pdata(data, secs):
     return out
 
 
+def load_section_names(path):
+    """从 gen_sections.py 生成的 JSON 读取随机节名（阶段1 第二支柱）。
+
+    未提供 path 或读取失败时返回 {} -> 调用方回退旧默认名（向后兼容），
+    使旧的构建流程仍然可用。
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, encoding='ascii') as f:
+            data = json.load(f)
+        secs = data.get('sections', {})
+        return secs if isinstance(secs, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='selfcrypt_proto.py',
                                      description='N1 prototype: in-place encrypt engine fns')
@@ -136,6 +154,11 @@ def main(argv=None):
     parser.add_argument('--mask-out', dest='mask_out', default=None,
                         help='掩码输出路径 (默认 build/selfcrypt_mask.txt, '
                              'P0 骨架构建用)')
+    # 阶段1(第二支柱): 节名每构建随机，故需从 gen_sections.py 的 JSON 读实际名。
+    # 未提供时回退旧默认名（.protcry/.protcrypt），保证旧流程仍可用。
+    parser.add_argument('--sections-json', dest='sections_json', default=None,
+                        help='gen_sections.py 生成的节名映射 JSON'
+                             '（阶段1: 节名每构建随机）')
     parser.add_argument('--extra', action='append', default=None,
                         help='额外加密函数名 (组 1, 可多次; S1 纵深扩展)')
     parser.add_argument('--require-all', action='store_true',
@@ -153,7 +176,13 @@ def main(argv=None):
             data = bytearray(f.read())
         secs = pe_sections(data)
         text = next((s for s in secs if s['name'] == '.text'), None)
-        prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+        # 阶段1(第二支柱): 节名每构建随机。未提供 --sections-json 时回退旧名
+        # （旧名含 .protcrypt: 源码写 10 字符，PE 截断为 8 字符 .protcry）。
+        section_names = load_section_names(
+            getattr(args, 'sections_json', None))
+        cry_sec = section_names.get('protcry')
+        cand2 = [cry_sec] if cry_sec else ['.protcrypt', '.protcry']
+        prot = next((s for s in secs if s['name'] in cand2), None)
         if text is None or prot is None:
             raise SelfcryptError('.text or .protcrypt section missing')
 

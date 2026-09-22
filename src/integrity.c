@@ -35,12 +35,19 @@ typedef struct prot_baked_crc {
 
 /* A3: 专用只读段 .protcrc —— 烧录表自身不被任何段 CRC 覆盖 (避免自引用)。
  * 下标顺序必须与 tools/hashpatch.py 的 MAGICS 完全一致。 */
-#pragma section(".protcrc", read)
-__declspec(allocate(".protcrc"))
+/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+#include "protect/prot_sections.h"
+#pragma section(PROT_SEC_CRC, read)
+__declspec(allocate(PROT_SEC_CRC))
 const prot_baked_crc g_prot_baked_crc[3] = {
-    { { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'P' }, 0, 0 }, /* 0: .text  */
-    { { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'D' }, 0, 0 }, /* 1: .rdata */
-    { { 'P', 'R', 'O', 'T', 'C', 'R', 'D', 'P' }, 0, 0 }, /* 2: .pdata */
+    /* 阶段3(第二支柱): magic 每构建随机，消除 'PROTCRCP' 这类自解释标记。
+     * 值来自 include/protect/prot_sections.h（默认）+ 生成头（随机覆盖）；
+     * 写入侧 tools/hashpatch.py 从同一 JSON 读同样的值，两侧保持一致。
+     * 注意: magic 仅作**写入侧定位标记**，运行期校验用的是本数组的符号
+     *       顺序（下标 0/1/2 = .text/.rdata/.pdata），故随机化是安全的。 */
+    { PROT_MAGIC_TEXT_BYTES,  0, 0 }, /* 0: .text  */
+    { PROT_MAGIC_RDATA_BYTES, 0, 0 }, /* 1: .rdata */
+    { PROT_MAGIC_PDATA_BYTES, 0, 0 }, /* 2: .pdata */
 };
 /*
  * 读取烧录 CRC。必须用 volatile 指针: 否则 /O2 会把 const 全局的
@@ -340,7 +347,7 @@ prot_status prot_integrity_check_self(void) {
     return PROT_OK;
 }
 
-#pragma code_seg(".protxec")  /* 辅助函数与加密段分页 (S1 技术债, 2026-08-30) */
+#pragma code_seg(PROT_SEC_XEC)  /* 辅助函数与加密段分页 (S1 技术债, 2026-08-30) */
 /* --- 运行期 IAT 完整性 (G2 补洞, ATTACK_DRILL2) ---
  * loader 启动时写入 IAT 导入地址 (合法); 攻击者运行期改写 IAT (hook 导入
  * 表) 不在文件级 CRC 覆盖内。这里快照 IAT 初始值, 周期比对 detect 改写。

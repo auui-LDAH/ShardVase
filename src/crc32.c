@@ -1,4 +1,6 @@
-#pragma code_seg(".protxec")
+/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+#include "protect/prot_sections.h"
+#pragma code_seg(PROT_SEC_XEC)
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
