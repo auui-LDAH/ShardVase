@@ -110,7 +110,7 @@ jurecoasertkrockt777 <jurecoasertkrockt777@users.noreply.github.com> <GitHub 用
 
 ## 4. 副作用：docs 中的 SHA 引用会失效
 
-文档里用 `` `f0aa393` `` 这类形式引用提交。重写后 SHA 变化 → 引用变成死链。
+文档里用 `` `ab873f4` `` 这类形式引用提交。重写后 SHA 变化 → 引用变成死链。
 
 **已用真实 commit-map 实测**（`tools/update_sha_refs.py`）：
 

@@ -9,7 +9,7 @@
 
 ## 1. 背景与目标
 
-一期（2026-08-22，`8a5c11d`）已落地：
+一期（2026-08-22，`bf38a92`）已落地：
 - `prot_vm_run` 构建期 .text 原位 XOR 加密，运行期 `prot_selfcrypt_init` 一次性解密（D2a）；
 - .text CRC 对加密段掩码（D1b），加密态/解密态零误报；
 - 静态 dump 引擎函数为密文；e2e/attacks/vm_unit/vmc 零回归；Release 可复现。

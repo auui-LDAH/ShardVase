@@ -126,7 +126,7 @@
 | `tools/oss_release.py` | **硬编码了个人邮箱常量** —— 清理工具自己成了泄露源（`--mailmap` 只改元数据，不清文件内容）|
 | `docs/HISTORY_REWRITE_PLAN.md` 旧提交 | 含**脱敏前**的明文（后来改了文档，但旧提交仍在历史中）|
 
-**已修复**（`8007d5e`）：
+**已修复**（`4ef53bb`）：
 
 1. 旧身份改为**运行期探测**（`discover_old_identities()`），工具不含个人数据
 2. 身份字符串**同时进 content 替换规则**（原先只写 mailmap）

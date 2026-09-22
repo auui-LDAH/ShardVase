@@ -1,7 +1,7 @@
 # 项目汇报与迁移交接 (HANDOVER)
 
-> 生成日期：2026-08-21（v7：阶段 II 收尾 + 已知环境限制）· 基线提交：`9326122` 之后
-> **最新增量：2026-09-20 迁移后状态见 §2.6（基线提交 `b8e8a38`）**
+> 生成日期：2026-08-21（v7：阶段 II 收尾 + 已知环境限制）· 基线提交：`44621db` 之后
+> **最新增量：2026-09-20 迁移后状态见 §2.6（基线提交 `add234a`）**
 > 本文档对当前开发状态的唯一快照性说明。与本项目相关的正式规范/历史/路线图
 > 见 `docs/BUSINESS.md`（总纲）/ `docs/RELEASE.md` / `docs/OPS.md` /
 > `docs/COMPAT.md` / `docs/PHASE2.md` / `docs/PHASE3.md` / `docs/ADVANCED.md` /
@@ -129,14 +129,14 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
 | 生产私钥 | ✅ 已随迁移带入 `build\keys\license_priv.json`（RSA-3072）——沿用同一把密钥 |
 | machine_id | `12981648366597980211`（`demo\vm_build.json` 一致） |
 
-### 已修复（提交 `b8d34e2` / `1105054`）
+### 已修复（提交 `24335c4` / `dc4d15b`）
 
 | # | 缺陷 | 要点 |
 |---|------|------|
-| 1 | **selfcrypt meta 步长 20B → 24B** | S1(`efded61`) 改了格式但解析侧未同步，**3 文件 8 处**：`protchain_check.py`(P1/P2 FAIL)、`attacks.py`、`attack_drill.py`（后者 5 处为**静默假绿**——错位 rva 恰不命中目标 → 报 PASS）。修法：建单一入口 `protchain_check.selfcrypt_meta()`，其余复用 |
+| 1 | **selfcrypt meta 步长 20B → 24B** | S1(`855b9a9`) 改了格式但解析侧未同步，**3 文件 8 处**：`protchain_check.py`(P1/P2 FAIL)、`attacks.py`、`attack_drill.py`（后者 5 处为**静默假绿**——错位 rva 恰不命中目标 → 报 PASS）。修法：建单一入口 `protchain_check.selfcrypt_meta()`，其余复用 |
 | 2 | **SDK 骨架缺 3 项字符串** | `prot_sdk/skeleton/strings.txt` 11→14 项；`strgen.py:108` 严格 `raise` → 向导生成的新工程**构建即失败**。同步修 `strgen.FALLBACK_ORDER`（9→14） |
 | 3 | **`build.ps1` 冒烟自检必然失败** | 两个独立成因：(a) `EAP=Stop` 下 stderr 重定向(`2>&1`/`2>$null` 均然)被包装成终止性异常；(b) PS 管道向原生 stdin 写 BOM。改用 `cmd /c`。**此前未暴露因所有门禁都带 `-SkipSmoke`** |
-| 4 | **编码损坏（有损，不可逆）** | `efded61` 引入：UTF-8 字节被 CP936 有损解码（产生 U+E21B 等私用区）。已修**全部字符串字面量**（全库 62 个 `.c/.h` 扫描 = 0）+ BOM + 首行注释；**224 行纯注释乱码保留**（零功能影响） |
+| 4 | **编码损坏（有损，不可逆）** | `855b9a9` 引入：UTF-8 字节被 CP936 有损解码（产生 U+E21B 等私用区）。已修**全部字符串字面量**（全库 62 个 `.c/.h` 扫描 = 0）+ BOM + 首行注释；**224 行纯注释乱码保留**（零功能影响） |
 
 ### 接手须知（踩坑纪律）
 
@@ -148,7 +148,7 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
    「字符串内出现 `/*`」，漏检了 `app_main.c:740`；换带字符串状态机的剥离器才扫净。
    同理：仅查 `U+FFFD` **不足以**判定双重编码（产出的是合法字符，含 PUA）。
 3. **`.ps1` 必须保留 UTF-8 BOM**（PS 5.1 无 BOM 时按 GBK 解析，破坏中文字符串，
-   见 `35c0605`）。**编辑工具会静默去掉 BOM**——改完 `.ps1` 后务必复查首 3 字节
+   见 `72b75eb`）。**编辑工具会静默去掉 BOM**——改完 `.ps1` 后务必复查首 3 字节
    `EF BB BF`。
 4. **`build.ps1` 冒烟测试现在裸跑可用**（无需 `-SkipSmoke`）。跨机绑定构建
    （运行机 ≠ 构建机）仍应显式带 `-SkipSmoke`。
@@ -182,10 +182,10 @@ W2 长驻留实跑／T3 真机（需**交互式桌面**，SSH 与计划任务均
 
 | 阶段 | 内容 | 提交 |
 |------|------|------|
-| 0 | SCDBG 调试日志改为 opt-in（Release 不再泄漏 RVA/密钥/CRC） | `f0aa393` |
-| 1 | 模块注册表 `modules.json` + 校验器 `tools/modcheck.py` + 四档 `compositions/`，接入门禁 | `da6680e` |
-| 2-构建层 | `tools/compose.py`（拼装图→源文件/宏/头文件）+ 宿主下限链接器实测 | `5eff7ae` |
-| 2-宿主批1 | `vmdetect`/`dbiguard` 条件编译（实证：13→11 模块，产物省 3584B） | `f4ccf64` |
+| 0 | SCDBG 调试日志改为 opt-in（Release 不再泄漏 RVA/密钥/CRC） | `ab873f4` |
+| 1 | 模块注册表 `modules.json` + 校验器 `tools/modcheck.py` + 四档 `compositions/`，接入门禁 | `5a1c4bc` |
+| 2-构建层 | `tools/compose.py`（拼装图→源文件/宏/头文件）+ 宿主下限链接器实测 | `a5c6e54` |
+| 2-宿主批1 | `vmdetect`/`dbiguard` 条件编译（实证：13→11 模块，产物省 3584B） | `72f0de6` |
 
 ### 门禁基线
 
@@ -329,7 +329,7 @@ python tests\attacks.py
 - 真机（oiahcoiah，Win11 24H2 26200，2026-08-21）：e2e T1-T24 除 T3 全 PASS；attacks A1-A7；vm_unit；syscall_probe；
   24h 驻留通过（3 进程存活 >24h 零误杀）；**无 WDAC**；篡改检测（T4/T9/T10）真实运行。
 - 攻击模拟（个人破解者视角）：字符串搜索（中文消息全加密）、静态结构（断源生效）、
-  授权伪造/篡改/试用期绕过——**全部拒绝**；发现的静态串暴露已加固（`d7c50bc`）。
+  授权伪造/篡改/试用期绕过——**全部拒绝**；发现的静态串暴露已加固（`38d8a21`）。
 - **SSH/计划任务下 T3 不可行**：`DebugActiveProcess` 在 session 0 被拒（0x5），
   普通用户与 SYSTEM 均如此——Windows 安全模型，非权限问题。
 
