@@ -372,6 +372,20 @@ static size_t b64_decode(const char* in, uint8_t* out, size_t cap)
  *   EXPIRES=<unix> / SIGNATURE=<base64 384B>
  * 楠岀閫氳繃 -> 杩斿洖 1 骞跺啓鍑?tier/expires; 鏂囦欢缂哄け/瀛楁閿?绛惧悕鏃犳晥/鏈哄櫒
  * 涓嶅尮閰?宸茶繃鏈?-> 杩斿洖 0銆俆IER 缂虹渷 1, EXPIRES 缂虹渷 0 (姘镐箙)銆? * 闈?static: N4 闂存帴琛?(demo/gen/indirect_table.c) 寮曠敤銆?*/
+/* 序列号来源默认实现 (GUI 支持, 2026-09-21)
+ *
+ * 业务层可定义同名函数以接管序列号获取 (GUI 程序弹对话框)。壳用 MSVC 的
+ * /alternatemane 弱符号机制解析: 业务层未定义 -> 链接到本默认实现 ->
+ * 返回非 0 -> 调用方回退 stdin, **行为与改动前完全一致**。
+ * 该机制已实测: 未定义时 rc=-1, 已定义时用业务实现。
+ */
+int prot_shell_serial_provider_default(char* buf, unsigned cap)
+{
+    (void)buf;
+    (void)cap;
+    return -1; /* 非 0 = 未取得 -> 回退 stdin */
+}
+
 int load_and_verify_license(const char* path, demo_mem* mem)
 {
     FILE* f;
@@ -708,7 +722,15 @@ printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
     /* 搂9.1-8: 鎻愮ず骞惰鍏ュ簭鍒楀彿 (鍘绘帀鎹㈣, 闀垮害涓婇檺 47) */
     printf("%s", prot_str_get(PROT_STR_PROMPT_SERIAL));
     fflush(stdout);
-    if (fgets(mem.serial, sizeof(mem.serial), stdin) == NULL) {
+    /* 序列号来源: 优先业务层 provider (GUI 弹对话框), 否则回退 stdin。
+     * 未定义 provider 时走 /alternatename 的默认实现 -> 回退 stdin,
+     * 行为与本改动之前完全一致 (既有工程零影响)。 */
+    if (prot_shell_serial_provider(mem.serial,
+                                   (unsigned)sizeof(mem.serial)) == 0
+        && mem.serial[0] != '\0') {
+        n = strlen(mem.serial);
+        mem.serial_len = (uint32_t)n;
+    } else if (fgets(mem.serial, sizeof(mem.serial), stdin) == NULL) {
         mem.serial_len = 0;
     } else {
         n = strlen(mem.serial);

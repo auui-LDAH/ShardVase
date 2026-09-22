@@ -184,8 +184,20 @@ if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: strgen' }
 if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: indirect' }
 
 # ---- 5. 编译 + 链接 (工程内除 app_main.c 外的全部业务 .c 自动纳入) ----
+# 业务源文件: 工程内除 app_main.c / pub-blob.c 外的全部 .c。
+#
+# **但必须排除「未选中的业务模板」** (实测教训 2026-09-21):
+#   骨架同时提供 business_stub.c 与 business_stub_gui.c —— 若两个都
+#   编进去, 会 LNK2005 (prot_business_main 重复定义), 且控制台链接
+#   没有 user32 -> 20 个 LNK2019。故按 -Gui 选择**恰好一个**模板:
+#     非 GUI -> 排除 business_stub_gui.c
+#     GUI    -> 排除 business_stub.c
+#   用户自己的业务文件 (其它 *.c) 不受影响, 照常纳入。
+$excludeStub = if ($Gui) { 'business_stub.c' } else { 'business_stub_gui.c' }
 $busSrcs = ((Get-ChildItem -LiteralPath $Project -Filter '*.c' -File |
-             Where-Object { $_.Name -ne 'app_main.c' -and $_.Name -ne 'pub-blob.c' }) |
+             Where-Object { $_.Name -ne 'app_main.c' -and
+                            $_.Name -ne 'pub-blob.c' -and
+                            $_.Name -ne $excludeStub }) |
             ForEach-Object { $_.FullName }) -join ' '
 $srcBase = "$REPO\src"
 # 显示名不参与编译宏 (空格会破坏 -D); 显示名改在工程 strings.txt 的 BANNER.
@@ -220,11 +232,21 @@ Write-Host ("build_skeleton: composition '{0}' — {1} 源文件" -f $compName, 
 # 以支持业务层的窗口/消息 API; comctl32 供常见控件 (可选, 保留以免用户再次改脚本)。
 $subsys = if ($Gui) { '/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup user32.lib comctl32.lib' }
           else { '/SUBSYSTEM:CONSOLE' }
+#
+# $weak —— GUI 支持的关键 (已实测验证)。壳调用
+#   prot_shell_serial_provider() 获取序列号:
+#     · 业务层**未定义** (控制台工程) -> 链接到壳内的
+#       prot_shell_serial_provider_default -> 返回非 0 -> 回退
+#       stdin, **行为与改动前完全一致**
+#     · 业务层**已定义** (GUI 骨架 business_stub_gui.c) -> 用业务
+#       实现 (弹窗收集序列号)
+#   选择弱符号而非编译期开关, 正是为了让既有工程**零影响**。
+$weak = '/alternatename:prot_shell_serial_provider=prot_shell_serial_provider_default'
 $clCmd = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I `"$REPO\include`" /I `"$genDir`" $defines /Fe:`"$outDir\$appName.exe`" " +
     "$compSrcJoined " +
     "`"$Project\app_main.c`" $busSrcs $vmcalcObj " +
     "`"$genDir\strings.c`" `"$genDir\license_pubkey.c`" `"$genDir\indirect_table.c`" `"$genDir\expect_default.c`" " +
-    "/link $subsys bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
+    "/link $subsys $weak bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
 cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath (Join-Path $outDir 'cl_log.txt') | Out-Host
 if ($LASTEXITCODE -ne 0) {
     $clLog = Join-Path $outDir 'cl_log.txt'
@@ -291,6 +313,15 @@ $inFile = Join-Path $outDir 'smoke_stdin.txt'
 Set-Content -LiteralPath $inFile -Value $serialName -Encoding ascii
 $sOut = Join-Path $outDir 'smoke_out.log'
 Remove-Item -LiteralPath $sOut -ErrorAction SilentlyContinue
+# smoke 期间用 PROT_SERIAL 显式提供序列号 (GUI 骨架的 provider 第 1 优先级)。
+#
+# 为什么需要 (实测 2026-09-21): GUI 程序在**无控制台**时会弹窗收集序列号
+#   —— 这对双击运行是正确行为, 但 smoke 用 Start-Process 启动时恰好也
+#   没有控制台窗口 -> 弹窗阻塞 -> smoke 超时 -> 构建被误判失败。
+# 用环境变量给出序列号, 既不弹窗也不依赖 stdin, 且对控制台骨架无影响
+#   (控制台骨架未定义 provider, 走壳内默认实现回退 stdin, 行为不变)。
+$prevSerial = $env:PROT_SERIAL
+$env:PROT_SERIAL = $serialName
 $p = Start-Process -FilePath "$outDir\$appName.exe" `
     -ArgumentList '--license-file', "$outDir\license.txt", '--vm-blob', "$outDir\vm.blob", '--wait-after', '6000' `
     -RedirectStandardInput $inFile -RedirectStandardOutput $sOut -PassThru
@@ -298,6 +329,8 @@ Start-Sleep -Seconds 9
 if (-not $p.HasExited) { $p.WaitForExit(15000) | Out-Null }
 $smokeExited = $p.HasExited
 if (-not $smokeExited) { Stop-Process -Id $p.Id -Force }
+# 恢复 PROT_SERIAL (避免污染后续步骤)
+$env:PROT_SERIAL = $prevSerial
 $sLines = Get-Content -LiteralPath $sOut -ErrorAction SilentlyContinue
 $sText = ($sLines -join ' ')
 Write-Host "build_skeleton: smoke output: $($sLines -join ' | ')"

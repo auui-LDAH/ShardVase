@@ -29,4 +29,35 @@ typedef struct prot_business_ctx {
  * 返回值为程序最终退出码. */
 int prot_business_main(const prot_business_ctx* ctx);
 
+/* ==========================================================================
+ * 序列号来源提供者 (可选) —— 为 GUI / 无 stdin 场景
+ * ==========================================================================
+ *
+ * 背景 (实测): 保护壳默认从 **stdin** 读序列号。这对控制台程序没问题,
+ * 但 **GUI 程序双击运行时没有 stdin** —— 实测结果为序列号为空 ->
+ * license: 0 -> 拒绝运行。
+ *
+ * 解法: 业务层可注册一个"提供者", 壳在需要序列号时**优先**调用它;
+ * 未注册时**行为与现在完全一致**(回退 stdin), 故既有工程零影响。
+ *
+ * 用法 (GUI 程序):
+ *   业务层**直接定义**同名函数 prot_shell_serial_provider() 即可。
+ *   壳用 MSVC 的 `/alternatename` 弱符号机制解析:
+ *     · 业务层**未定义** -> 链接到壳内默认实现(回退 stdin), 行为与现在一致
+ *     · 业务层**已定义**   -> 用业务的实现(GUI 弹对话框)
+ *   该机制已实测验证(/alternatename:prot_shell_serial_provider=
+ *   prot_shell_serial_provider_default)。
+ *   构建脚本 (build_skeleton.ps1 -Gui) 会自动加该链接参数。
+ *
+ * 契约:
+ *   · 返回 0 表示已写入序列号(buf 为 NUL 结尾的 ASCII);
+ *   · 返回非 0 表示未取得(壳回退 stdin);
+ *   · buf 容量至少 48 字节(与壳内 mem.serial 一致)。
+ */
+#define PROT_SERIAL_BUF_SIZE 48
+
+/* 业务层可实现此函数以接管序列号获取(GUI 弹对话框等)。
+ * 不实现则由壳内默认实现回退 stdin。 */
+int prot_shell_serial_provider(char* buf, unsigned cap);
+
 #endif /* PROT_SHELL_H */
