@@ -29,10 +29,38 @@ os.chdir(REPO)
 LEAKS = ['issuer-host', 'test-host', 'DEV-MACHINE', 'devuser', 'devuser',
          'devuser', '100.x.x.x', '100.x.x.x']
 
-# 身份目标（与既有公开仓库一致）
+# 身份目标（与既有公开仓库一致）—— 这是**公开**信息，可硬编码
 NEWNAME = 'jurecoasertkrockt777'
 NEWMAIL = 'jurecoasertkrockt777@users.noreply.github.com'
-OLDMAILS = ['jurecoasertkrockt777@users.noreply.github.com', 'devusereim2025@outlook.com']
+
+# 旧身份**不硬编码**，改为运行期从 git 历史探测。
+#
+# 为什么（2026-09-21 教训）: 初版把个人邮箱写成常量 OLDMAILS = ['<邮箱>', ...]，
+# 结果**重写工具自己成了泄露源** —— 该文件入库后，历史里就永久留有那个邮箱，
+# 而 filter-repo 的 mailmap 只重写提交元数据，不会清理文件内容。
+# 改为探测后，工具本身不含任何个人数据，可安全公开。
+
+
+def discover_old_identities():
+    """从 git 历史探测需替换的旧身份（邮箱 + 用户名）。
+
+    返回 (emails, names)。排除已是 noreply 的目标身份。
+    """
+    emails, names = set(), set()
+    rc, out, _ = sh('git', 'log', '--all', '--format=%ae|%ce|%an|%cn')
+    for line in out.split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        for e in parts[:2]:
+            e = e.strip()
+            if e and e != NEWMAIL and 'noreply' not in e:
+                emails.add(e)
+        for n in parts[2:]:
+            n = n.strip()
+            if n and n != NEWNAME:
+                names.add(n)
+    return sorted(emails), sorted(names)
 
 
 def sh(*args, cwd=None, check=False):
@@ -88,10 +116,10 @@ def cmd_check():
     idbad = False
     for i in ids:
         flag = ''
-        for m in OLDMAILS:
-            if m in i:
-                flag = '  <== 需 --rewrite'
-                idbad = True
+        # 判定: 只要不是目标 noreply 身份就算需处理（不依赖硬编码名单）
+        if NEWMAIL not in i or NEWNAME not in i:
+            flag = '  <== 需 --rewrite'
+            idbad = True
         print('  %s%s' % (i, flag))
     ok = ok and not idbad
 
@@ -227,7 +255,17 @@ def cmd_rewrite():
             print('  [!] 目录副本创建失败（bundle 仍可用）: %s' % err[:80])
 
     # 规则文件
+    #
+    # 关键: 除 LEAKS 外, **还必须替换旧身份字符串** ——
+    # mailmap 只重写提交元数据(author/committer), **不清理文件内容**。
+    # 实测教训(A3): oss_release.py 自身与 HISTORY_REWRITE_PLAN.md 的旧版本
+    # 在文件内容里留有个⼈邮箱, mailmap 处理后仍在历史中(2 处残留)。
+    old_emails, old_names = discover_old_identities()
+    print('  探测到旧身份: %d 个邮箱, %d 个用户名'
+          % (len(old_emails), len(old_names)))
+
     repl = os.path.join(os.environ.get('TEMP', '/tmp'), 'oss-replacements.txt')
+    n_rules = 0
     with open(repl, 'w', encoding='utf-8', newline='\n') as f:
         for n in LEAKS:
             val = '100.x.x.x' if n.startswith('100.') else (
@@ -235,14 +273,26 @@ def cmd_rewrite():
                 'test-host' if n == 'test-host' else
                 'DEV-MACHINE' if n.startswith('DESKTOP') else 'devuser')
             f.write('%s==>%s\n' % (n, val))
-    print('  ✓ 替换规则: %s' % repl)
+            n_rules += 1
+        # 身份字符串（内容层面）—— 同样必须清除
+        for e in old_emails:
+            f.write('%s==>%s\n' % (e, NEWMAIL))
+            n_rules += 1
+        for nm in old_names:
+            f.write('%s==>%s\n' % (nm, NEWNAME))
+            n_rules += 1
+    print('  ✓ 替换规则 %d 条: %s' % (n_rules, repl))
 
-    mailmap = os.path.join(REPO, '.mailmap')
+    # mailmap 写在工作副本内（REPO 根），重写后应删除 —— 它本身含旧身份明文。
+    # 故写到临时目录 + 用 --mailmap 指定绝对路径，避免污染仓库。
+    mailmap = os.path.join(os.environ.get('TEMP', '/tmp'), 'oss-mailmap.txt')
     with open(mailmap, 'w', encoding='utf-8', newline='\n') as f:
-        f.write('%s <%s> <%s>\n' % (NEWNAME, NEWMAIL, OLDMAILS[0]))
-        f.write('%s <%s> <%s>\n' % (NEWNAME, NEWMAIL, OLDMAILS[1]))
-        f.write('%s <%s> jurecoasertkrockt777\n' % (NEWNAME, NEWMAIL))
-    print('  ✓ .mailmap 已写（身份统一为 noreply）')
+        for e in old_emails:
+            f.write('%s <%s> <%s>\n' % (NEWNAME, NEWMAIL, e))
+        for nm in old_names:
+            f.write('%s <%s> %s\n' % (NEWNAME, NEWMAIL, nm))
+    print('  ✓ mailmap %d 条（写在临时目录，不污染仓库）'
+          % (len(old_emails) + len(old_names)))
 
     # 执行
     print()
@@ -252,7 +302,7 @@ def cmd_rewrite():
     if not os.path.exists(fr):
         print('  [X] 找不到 git-filter-repo（pip install git-filter-repo）')
         return 1
-    p = subprocess.run([fr, '--replace-text', repl, '--mailmap', '.mailmap',
+    p = subprocess.run([fr, '--replace-text', repl, '--mailmap', mailmap,
                         '--force'], cwd=REPO, capture_output=True)
     out = (p.stdout + p.stderr).decode('utf-8', 'replace')
     for l in out.split('\n'):
