@@ -63,6 +63,34 @@ def discover_old_identities():
     return sorted(emails), sorted(names)
 
 
+def rm_dir(path):
+    """可靠地删除目录（Windows 文件锁环境下）。
+
+    教训（两次踩坑）:
+      1. shutil.rmtree 在 Windows 上常因文件锁**静默失败**（ignore_errors=True
+         会吞掉异常），留下半删目录
+      2. 残留目录会让后续 `git clone` 报 "already exists and is not an empty dir"
+
+    故: 先试 rmtree, 再用 `cmd /c rd /s /q` 兜底, 最后确认目录真的没了。
+    返回 True 表示目录已不存在。
+    """
+    if not os.path.isdir(path):
+        return True
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.isdir(path):
+        subprocess.run(['cmd', '/c', 'rd', '/s', '/q', path],
+                       capture_output=True)
+    if os.path.isdir(path):
+        # 再等一会（杀毒/索引可能短暂持有句柄）
+        import time
+        for _ in range(5):
+            time.sleep(0.4)
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.isdir(path):
+                break
+    return not os.path.isdir(path)
+
+
 def sh(*args, cwd=None, check=False):
     p = subprocess.run(list(args), cwd=cwd or REPO,
                        capture_output=True)
@@ -225,18 +253,23 @@ def cmd_rewrite():
 
     # 验证 bundle 可克隆（不验证的备份等于没有）
     verify = os.path.join(tmp, '_oss_backup_verify')
-    shutil.rmtree(verify, ignore_errors=True)
+    if not rm_dir(verify):
+        # 无法清空验证目录 —— 换一个带时间戳的路径，而不是误判为"备份不可用"
+        print('  [!] 验证目录无法清空, 改用新路径')
+        verify = os.path.join(tmp, '_oss_backup_verify_%d' % os.getpid())
     rc, out, _ = sh('git', 'clone', '-q', bundle, verify)
     n_cur = sh('git', 'rev-list', '--count', 'HEAD')[1].strip()
     if rc != 0 or not os.path.isdir(os.path.join(verify, '.git')):
+        err = sh('git', 'clone', bundle, verify)[2]
         print('  [X] bundle 验证失败 —— 中止（备份不可用不能继续）')
+        print('      原因: %s' % err.strip().split('\n')[-1][:100])
         return 1
     n_bak = sh('git', '-C', verify, 'rev-list', '--count', 'HEAD')[1].strip()
     print('  ✓ bundle 可克隆: %s 提交 (当前 %s)' % (n_bak, n_cur))
     if n_bak != n_cur:
         print('  [X] 备份提交数与当前不符 —— 中止')
         return 1
-    shutil.rmtree(verify, ignore_errors=True)
+    rm_dir(verify)
 
     # 目录副本（用 git clone, 而非 shutil.copytree）
     #  教训: copytree 对 .git 可能复制到半写状态, 且 rmtree 在 Windows 上
