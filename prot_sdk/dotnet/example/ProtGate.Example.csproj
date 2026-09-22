@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ProtGate.Example.csproj — .NET 接入门示例工程
+
+    用法:
+        dotnet build -c Release
+        dotnet run -c Release
+
+    注意:
+      · 本工程**不**编译原生 DLL —— 那由 tools/build_dotnet_gate.ps1 负责
+        （需要 MSVC）。这里只编托管侧，并期望 protgate.dll 在输出目录。
+      · 若本机无 .NET SDK，build_dotnet_gate.ps1 会回退用 Roslyn csc 编译
+        （见 prot_sdk/dotnet/README.md）。
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>gate_example</AssemblyName>
+    <RootNamespace>ShardVase.Example</RootNamespace>
+
+    <!-- 原生库是 x64，故托管侧固定 x64（AnyCPU 在 32 位宿主下会加载失败） -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 封装与示例的源码都在上一级 -->
+    <Compile Include="..\ProtGate.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>

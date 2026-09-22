@@ -1,0 +1,18 @@
+LIBRARY protgate
+EXPORTS
+    ; .NET / managed-side gate: the public ABI (3 int-level APIs,
+    ; zero marshalling burden).
+    ;
+    ; WHY .def instead of __declspec(dllexport):
+    ;   - does not touch the protection library headers, so existing
+    ;     C users are unaffected
+    ;   - plain ASCII, so tooling can verify the export table easily
+    ;
+    ; IMPORTANT: keep this file PURE ASCII. MSVC reads .def as ANSI/GBK,
+    ; so UTF-8 multi-byte comments corrupt parsing of following lines.
+    ; Observed failure (2026-09-21): a Chinese comment made the linker
+    ; silently drop the next export (prot_gate_version missing from the
+    ; DLL, P/Invoke then failed with EntryPointNotFound).
+    prot_gate_version
+    prot_gate_init
+    prot_gate_check
