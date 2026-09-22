@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /*
  * strcrypt.h — 字符串加密: 明文只在二进制中以密文存在
  *

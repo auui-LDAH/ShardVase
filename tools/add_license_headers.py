@@ -56,25 +56,55 @@ def has_spdx(text):
     return 'SPDX-License-Identifier' in text[:600]
 
 
+def read_src(path):
+    """读源文件, 返回 (文本, 是否有 BOM)。
+
+    **必须保留 BOM**: 实测 38 个 Python 文件中有 1 个带 BOM。
+    用 encoding='utf-8' 读取会自动吞掉 BOM, 写回时也丢失 ——
+    对 .ps1 会破坏 PowerShell 5.1 解析（本项目踩过多次），
+    对 .py 虽不影响执行, 但属无谓改动, 应保留原状。
+    """
+    raw = open(path, 'rb').read()
+    bom = raw[:3] == b'\xef\xbb\xbf'
+    return raw.decode('utf-8-sig'), bom
+
+
+def write_src(path, text, bom):
+    """写源文件, 按原状保留/不保留 BOM。"""
+    data = text.encode('utf-8')
+    if bom:
+        data = b'\xef\xbb\xbf' + data
+    with open(path, 'wb') as f:
+        f.write(data)
+
+
 def add_c(path, apply_):
-    text = open(path, encoding='utf-8', newline='').read()
+    text, bom = read_src(path)
     if has_spdx(text):
         return 'skip'
-    # 若以 /* 开头（文件头注释），插到其之前；否则插到最前
-    if text.lstrip().startswith('/*'):
-        # 找第一个 /* 的位置（含前导空白）
+    # 若首行是 #pragma（如 src/crc32.c 的 code_seg），插到它**之后** ——
+    # 保守做法: 编译指示保持在文件最前, 不依赖"注释不影响 pragma"的假设。
+    lines = text.split('\n')
+    ins = 0
+    for i, l in enumerate(lines[:5]):
+        if l.lstrip().startswith('#'):
+            ins = i + 1
+        else:
+            break
+    if ins:
+        new = '\n'.join(lines[:ins] + C_HEADER.rstrip('\n').split('\n') + lines[ins:])
+    elif text.lstrip().startswith('/*'):
         i = text.index('/*')
         new = text[:i] + C_HEADER + text[i:]
     else:
         new = C_HEADER + text
     if apply_:
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(new)
+        write_src(path, new, bom)
     return 'added'
 
 
 def add_py(path, apply_):
-    text = open(path, encoding='utf-8', newline='').read()
+    text, bom = read_src(path)
     if has_spdx(text):
         return 'skip'
     lines = text.split('\n')
@@ -85,8 +115,7 @@ def add_py(path, apply_):
         i += 1
     new = '\n'.join(lines[:i] + PY_HEADER.rstrip('\n').split('\n') + lines[i:])
     if apply_:
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(new)
+        write_src(path, new, bom)
     return 'added'
 
 

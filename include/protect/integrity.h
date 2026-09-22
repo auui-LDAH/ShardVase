@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /*
  * integrity.h — 完整性校验: 对自身 .text 段做 CRC32, 与构建期烧录值比对
  *

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # c2vasm_golden.py — A2 golden 验证: 原生 C 结果 vs VM 执行结果
 # 过程:
 #   1) 样例 .c (合法 C) 用 cl 编译为 host exe (宿主权威结果)

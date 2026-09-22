@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # c2vasm.py — C 子集 -> vasm 自动翻译器 (A2 原型, 2026-08-28)
 # 流水线: lexer -> recursive descent parser -> AST -> 栈式 vasm 代码生成
 # 支持子集: uint32_t/uint64_t 变量; 字面量(dec/hex); 二元 + - * / % & | ^ << >>

@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /*
  * selfcrypt.c — 运行时自变形 (N1 二期: II-1 解密态 CRC + II-2 D2b 调用级 + II-3 多函数)
  *

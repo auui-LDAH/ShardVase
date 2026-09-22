@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # vmcalc_build.py — A2 二阶段: prot_sdk 业务函数自动 VM 化构建辅助
 # 职责 (由 build_skeleton.ps1 调用):
 #   1) 扫描工程 .c 中 "// @vmcalc" 标注的下一个函数

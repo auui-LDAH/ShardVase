@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /*
  * vm_rekey.c — S2 (2026-08-29): 运行时密钥多样性
  * 装载后镜像差分流重编码: cc'[i] = cc[i] ^ B(key) ^ B(new)

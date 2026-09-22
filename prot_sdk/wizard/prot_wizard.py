@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # prot_wizard.py — 保护接入向导 (P0, prot_sdk/wizard)
 # 流程: 选择工程目录 -> 生成骨架(业务模板) -> 配置密钥/序列号 -> 构建 -> smoke
 # 核心函数 generate_project/build_project 与 GUI 解耦 (可无头调用/测试)。

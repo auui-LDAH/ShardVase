@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # vmcalc_flow_test.py — A2 二阶段流程级测试 (vmcalc_build 链路)
 # 覆盖: 多函数同文件 / 改名幂等 / 桩槽位静态断言 / 不一致状态自动修复
 # 用法: python vmcalc_flow_test.py
