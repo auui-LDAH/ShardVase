@@ -7,7 +7,21 @@
 param(
     [string]$Project = $null,
     [string]$Out = $null,
-    [string]$Composition = ''      # 阶段4: 拼装图名 (compositions/<name>.json)
+    [string]$Composition = '',     # 阶段4: 拼装图名 (compositions/<name>.json)
+    # GUI 骨架: 产出 WINDOWS 子系统程序 (无控制台窗口)。
+    #
+    # 原理 (经实测验证 2026-09-21):
+    #   保护壳 app_main.c 用的是标准 main(), 不是 WinMain。要让它在
+    #   WINDOWS 子系统中工作, 必须显式指定 CRT 入口:
+    #       /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
+    #   若不指定 /ENTRY, 链接器会去找 WinMain 并报 LNK2019 (已实测)。
+    #
+    #   这样做的价值: **保护壳源码零改动** —— 壳与业务形态彻底解耦,
+    #   不存在"GUI 版本壳"与"CONSOLE 版本壳"两套代码漂移的风险。
+    #
+    # 另经实测: GUI 子系统程序在 stdout 被重定向时 printf 仍正常,
+    #   故下方 smoke 测试可沿用同一判据 (匹配 'license: 1')。
+    [switch]$Gui
 )
 $ErrorActionPreference = 'Stop'
 # python 探测: 环境变量优先, 其次常见安装路径, 最后 PATH (避开 WindowsApps 占位)
@@ -202,11 +216,15 @@ $compSrcJoined = ($compSrcs | ForEach-Object { "`"$_`"" }) -join ' '
 Write-Host ("build_skeleton: composition '{0}' — {1} 源文件" -f $compName, $compSrcs.Count)
 
 <# 实际执行 (单独 cmd /c 以获得 vcvars 环境) #>
+# GUI 模式: WINDOWS 子系统 + 显式 CRT 入口 (见 param 段说明)。多链接 user32
+# 以支持业务层的窗口/消息 API; comctl32 供常见控件 (可选, 保留以免用户再次改脚本)。
+$subsys = if ($Gui) { '/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup user32.lib comctl32.lib' }
+          else { '/SUBSYSTEM:CONSOLE' }
 $clCmd = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I `"$REPO\include`" /I `"$genDir`" $defines /Fe:`"$outDir\$appName.exe`" " +
     "$compSrcJoined " +
     "`"$Project\app_main.c`" $busSrcs $vmcalcObj " +
     "`"$genDir\strings.c`" `"$genDir\license_pubkey.c`" `"$genDir\indirect_table.c`" `"$genDir\expect_default.c`" " +
-    "/link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
+    "/link $subsys bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
 cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath (Join-Path $outDir 'cl_log.txt') | Out-Host
 if ($LASTEXITCODE -ne 0) {
     $clLog = Join-Path $outDir 'cl_log.txt'
