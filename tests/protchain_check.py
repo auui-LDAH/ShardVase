@@ -43,13 +43,60 @@ SC_ENTRY_SIZE = 24
 SC_ENTRY_GROUP_OFF = 20
 
 
+def load_section_names(path=None):
+    """读取阶段1 生成的随机节名映射（**逻辑名 -> 实际名**）。
+
+    为什么需要（2026-09-23 教训）: 阶段1（第二支柱）把 `.protcry` 等节名
+    改为**每构建随机**，而本检查原先**硬编码** `.protcry`/`.protcrypt` ->
+    必然找不到节 -> P1/P2/P5 全 FAIL。
+
+    修法: 从 demo/gen/prot_sections.json 按**逻辑名**取实际名。
+    未提供时返回 {} -> 调用方回退旧名（向后兼容）。
+
+    ⚠️ 注意: 必须返回**映射**而非"所有名字的集合"。
+    初版误返回集合 -> `cry_section_names()` 变成全部随机名 ->
+    `next(...)` 匹配到第一个自定义节（`.protxec`）而非 `.protcry`，
+    导致 "bad selfcrypt count 149717832" 这类误判。
+    """
+    import json as _json
+    if path is None:
+        path = os.path.join(REPO, 'demo', 'gen', 'prot_sections.json')
+    try:
+        with open(path, encoding='ascii') as f:
+            data = _json.load(f)
+        secs = data.get('sections', {})
+        if isinstance(secs, dict):
+            return secs
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def crc_section_names():
+    """protcrc（烧录 CRC）节的名字候选（随机名优先，回退旧名）。"""
+    names = load_section_names()
+    live = names.get('protcrc')
+    if live:
+        return (live,)
+    return ('.protcrc',)
+
+
+def cry_section_names():
+    """selfcrypt 密文节的名字候选（随机名优先，回退旧名）。"""
+    names = load_section_names()
+    live = names.get('protcry')
+    if live:
+        return (live,)
+    return ('.protcrypt', '.protcry')
+
+
 def selfcrypt_meta(data, secs, entries_only=False):
     """从 .protcry 读 selfcrypt meta 条目 -> [(rva, len, group), ...].
 
     唯一的 meta 解析入口: 所有测试 (protchain / attacks / attack_drill)
     都经此读取, 避免步长散落成魔数后再次漂移。
     """
-    prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+    prot = next((s for s in secs if s['name'] in cry_section_names()), None)
     if prot is None:
         return []
     blob = data[prot['ptr_raw']:prot['ptr_raw'] + 256]
@@ -102,7 +149,7 @@ def scan_e8_calls(text):
 
 def p1_selfcrypt_ciphertext(data, secs):
     """P1: .text 加密函数区无 x64 序言特征 (密文)."""
-    prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+    prot = next((s for s in secs if s['name'] in cry_section_names()), None)
     text = next((s for s in secs if s['name'] == '.text'), None)
     if prot is None or text is None:
         return False, 'no .protcry/.text section'
@@ -126,7 +173,7 @@ def p1_selfcrypt_ciphertext(data, secs):
 
 def p2_mask_consistent(data, secs):
     """P2: mask 文件与 meta 一致."""
-    prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+    prot = next((s for s in secs if s['name'] in cry_section_names()), None)
     text = next((s for s in secs if s['name'] == '.text'), None)
     mask_path = os.path.join(REPO, 'build', 'selfcrypt_mask.txt')
     if not os.path.isfile(mask_path):
@@ -143,7 +190,10 @@ def p2_mask_consistent(data, secs):
     if sorted(meta) != sorted(masks):
         return False, 'meta %s != mask file %s' % (sorted(meta), sorted(masks))
     # 带掩码复算 .text CRC 与烧录值比对
-    protcrc = next((s for s in secs if s['name'] == '.protcrc'), None)
+    # 注意: 节名在阶段1 后是随机的 -> 用逻辑名映射（不能硬编码 .protcrc）
+    protcrc = next((s for s in secs if s['name'] in crc_section_names()), None)
+    if protcrc is None:
+        return False, 'no .protcrc section'
     crc_len = min(text['virtual_size'], text['size_raw'])
     raw = bytearray(data[text['ptr_raw']:text['ptr_raw'] + crc_len])
     for (mrva, mlen) in masks:
@@ -215,7 +265,7 @@ def p5_indirect_no_direct_call(data, secs):
     t = data[text['ptr_raw']:text['ptr_raw'] + text['size_raw']]
     targets = scan_e8_calls(t)
     # 从 .protcry meta 读加密函数 rva (与 P1 同源)
-    prot = next((s for s in secs if s['name'] in ('.protcrypt', '.protcry')), None)
+    prot = next((s for s in secs if s['name'] in cry_section_names()), None)
     if prot is None:
         return False, 'no .protcry'
     fns = [rva for rva, _ln, _grp in selfcrypt_meta(data, secs)]

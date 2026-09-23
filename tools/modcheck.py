@@ -109,7 +109,11 @@ def source_deps(src_path, mod_name):
             continue
         for m in re.finditer(r'#include\s+"protect/([^"]+)\.h"', read(p)):
             h = m.group(1)
-            if h not in ('protdef', mod_name):
+            # prot_sections 是**基础设施头**（阶段1 的随机节名映射），
+            # 不是模块 -> 与 protdef 同类，不计入模块依赖。
+            # 教训: 加该 include 时未同步这里，导致门禁报
+            # "源码依赖但注册表未登记: prot_sections"（2026-09-23）。
+            if h not in ('protdef', 'prot_sections', mod_name):
                 deps.add(h)
     return deps
 

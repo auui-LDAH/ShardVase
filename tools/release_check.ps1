@@ -38,7 +38,32 @@ $pass = 0; $fail = 0
 
 function Check([string]$name, [scriptblock]$cond) {
     try {
-        $ok = & $cond
+        # ⚠️ 必须只取 scriptblock 的**最后一个值**来判断成败。
+        #
+        # 严重教训（2026-09-23 实测）: 原写法 `$ok = & $cond` 会把 scriptblock
+        # 的**全部输出**赋给 $ok —— 包括被测命令打印的所有 stdout。
+        # 于是 `Check 'X' { & $tool; $LASTEXITCODE -eq 0 }` 得到的是
+        # 「多行文本 + 布尔」的**数组**，而 PowerShell 中**非空数组恒为真**
+        # -> `if ($ok)` 永远成立 -> **该项从不真正检查退出码**。
+        #
+        # 实测证据: 造一个必然失败（exit 1 + 有输出）的工具
+        #   旧写法 -> [ok]（谎报通过）
+        #   修正后 -> [X]（正确）
+        #
+        # 影响面: 当时 13 项中有 7 项属于此模式（e2e/attacks/vmc/protchain/
+        # modcheck/drills lint/doccheck），即**门禁大半失效**。
+        #
+        # 修法: 收集 scriptblock 输出，**只取最后一个值**作为判定结果。
+        $out = @(& $cond)
+        $ok = if ($out.Count -gt 0) { $out[-1] } else { $null }
+        # 末值必须是布尔；若拿到字符串（说明 scriptblock 末句不是布尔判断）
+        # 则视为检查写法错误 -> **失败而非静默通过**（P3: 不设可绕过的门禁）。
+        if ($ok -isnot [bool]) {
+            $script:fail++
+            Write-Host ("[X]  {0}: 检查写法错误（末值非布尔: {1}）" -f `
+                $name, ($ok | Out-String).Trim()) -ForegroundColor Red
+            return
+        }
         if ($ok) { $script:pass++; Write-Host ("[ok]  {0}" -f $name) -ForegroundColor Green }
         else { $script:fail++; Write-Host ("[X]  {0}" -f $name) -ForegroundColor Red }
     } catch {
