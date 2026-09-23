@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -29,6 +29,7 @@
  * 线程安全: 无共享状态, 可并发调用。
  */
 #include "protect/vm.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <windows.h>      /* QueryPerformanceCounter 等运行时熵源 */
 #include <string.h>       /* memset */
@@ -996,6 +997,7 @@ static const prot_vm_route g_routes[PROT_VM_OP_COUNT] = {
 
 prot_status prot_vm_run(const prot_vm_image* img, void* mem_base, size_t mem_size)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     /* §4.1 第 1 步: 参数校验 */
     if (img == NULL || img->code == NULL || mem_base == NULL ||
         img->code_len == 0u || img->code_len > (1u << 20) || mem_size == 0u)

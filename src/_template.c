@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -31,6 +31,7 @@
  *   · 绝不能静默吞掉错误 —— 诚实边界是这个项目的核心资产
  */
 #include "protect/protdef.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/_template.h"
 
 #include <windows.h>
@@ -53,6 +54,7 @@ static int g_last_valid = 0;
  * ------------------------------------------------------------------------- */
 prot_status prot_template_scan(prot_template_report* out)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (out == NULL)
         return PROT_ERR_INVALID_ARG;
 
@@ -88,6 +90,7 @@ prot_status prot_template_scan(prot_template_report* out)
  * ------------------------------------------------------------------------- */
 uint32_t prot_template_suspicious(const prot_template_report* rep)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (rep == NULL)
         return 0u;
 
@@ -106,6 +109,7 @@ uint32_t prot_template_suspicious(const prot_template_report* rep)
  * ------------------------------------------------------------------------- */
 prot_status prot_template_apply_policy(prot_policy pol)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (!g_last_valid)
         return PROT_OK;                 /* 未采集过, 无动作 */
 

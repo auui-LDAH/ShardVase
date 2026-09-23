@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "protect/antidebug.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/syscall.h" /* A6: direct syscall 直调 */
 
 /* S1 专项 (2026-08-30): 辅助函数移入 .protxec 独立页 (与加密段分页,
@@ -119,6 +120,7 @@ typedef struct prot_sys_kdbg_info {
 /* scan 及以下回 .text (scan 为加密目标, 需留在 .text) */
 #pragma code_seg()
 prot_status prot_antidebug_scan(prot_antidebug_report* out) {
+    PROT_NOISE();   /* W1.6: 每构建序言噪声（破坏特征匹配）*/
     uintptr_t peb;
     LARGE_INTEGER freq;
     LARGE_INTEGER t0;
@@ -320,6 +322,7 @@ prot_status prot_antidebug_scan(prot_antidebug_report* out) {
 }
 
 uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     /* S3 试点 (2026-08-30): 受限控制流平坦化 —— 关键位聚合改为等价
      * switch-dispatch 状态机 (语义不变, 静态分支不可直读). */
     uint32_t mask[7];
@@ -354,6 +357,7 @@ uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
 /* FAKE 策略伪结果标志 (契约 §6.2) */
 static volatile uint32_t g_fake;
 prot_status prot_antidebug_apply_policy(prot_policy pol) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     /* S3 扩展 (2026-08-30): 策略分发 switch-dispatch 化 (等价语义) */
     prot_antidebug_report rep;
     uint32_t st;
@@ -389,6 +393,7 @@ uint32_t prot_antidebug_fake_active(void) {
 }
 
 prot_status prot_antidebug_hide_thread(void) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     ad_resolve_ntdll();
     if (s_pNtSetInformationThread != NULL) {
         /* ThreadHideFromDebugger; 若正在被调试, 可能导致进程被调试器终止 */

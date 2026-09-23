@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -24,6 +24,7 @@
  * 注意: 本函数自身不得被加密 (它是解密桩的目标)。
  */
 #include "protect/selfcrypt.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <windows.h>
 #include <stdio.h>
@@ -52,6 +53,7 @@ const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
 
 prot_status prot_selfcrypt_init(void)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     return PROT_OK;
 }
 prot_status prot_selfcrypt_enter(uint32_t group) { (void)group; return PROT_OK; }
@@ -191,6 +193,7 @@ static void sc_group_range(uint32_t group, uint32_t* lo, uint32_t* hi)
 
 prot_status prot_selfcrypt_init(void)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint8_t* blob = g_prot_selfcrypt_blob;
     uint32_t n;
     uint32_t i;
@@ -216,6 +219,7 @@ prot_status prot_selfcrypt_init(void)
 
 prot_status prot_selfcrypt_enter(uint32_t group)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint32_t lo, hi, i;
     prot_status st = PROT_OK;
     if (!g_sc_d2b_enabled)
@@ -236,6 +240,7 @@ prot_status prot_selfcrypt_enter(uint32_t group)
 
 prot_status prot_selfcrypt_leave(uint32_t group)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint32_t lo, hi, i;
     if (!g_sc_d2b_enabled)
         return PROT_OK;

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -12,10 +12,12 @@
 #include <stdint.h>
 
 #include "protect/protdef.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/vm.h"
 
 prot_status prot_vm_rekey(prot_vm_image* img, uint64_t new_key)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint64_t a, b;
     uint8_t* code;
     uint32_t i;

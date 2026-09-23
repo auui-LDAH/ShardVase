@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -16,8 +16,10 @@
 #include <stdint.h>
 
 #include "protect/strcrypt.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 void prot_str_decrypt(const uint8_t* enc, uint32_t len, uint64_t key, char* out) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint64_t k;
     uint32_t i;
 

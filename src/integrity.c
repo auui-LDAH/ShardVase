@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "protect/antidebug.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/selfcrypt.h"
 #include "protect/integrity.h"
 
@@ -74,6 +75,7 @@ static SRWLOCK          g_wd_cb_lock = SRWLOCK_INIT;
 
 void prot_integrity_set_watchdog_callback(prot_wd_callback cb)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     AcquireSRWLockExclusive(&g_wd_cb_lock);
     g_wd_cb = cb;
     ReleaseSRWLockExclusive(&g_wd_cb_lock);
@@ -292,6 +294,7 @@ static uint32_t section_crc_masked(uint8_t* base, const uint8_t* mask,
 }
 
 prot_status prot_integrity_check_self(void) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     const IMAGE_DOS_HEADER* dos;
     const IMAGE_NT_HEADERS* nt;
     const IMAGE_SECTION_HEADER* sec;
@@ -390,6 +393,7 @@ static BOOL CALLBACK iat_snapshot_init(PINIT_ONCE once, PVOID p, PVOID* ctx)
 
 prot_status prot_integrity_check_iat(void)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     const IMAGE_DOS_HEADER* dos;
     const IMAGE_NT_HEADERS* nt;
     const IMAGE_DATA_DIRECTORY* iat;
@@ -427,6 +431,7 @@ prot_status prot_integrity_check_iat(void)
 }
 
 prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (interval_ms == 0) {
         return PROT_ERR_INVALID_ARG;
     }
@@ -455,6 +460,7 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
 }
 
 prot_status prot_integrity_stop_watchdog(void) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     HANDLE h;
 
     h = g_wd_thread;

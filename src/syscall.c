@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "protect/syscall.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #define PROT_SYS_SSN_INVALID 0xFFFFFFFFu
 
@@ -119,6 +120,7 @@ NTSTATUS prot_sys_nt_query_information_process(HANDLE h, ULONG cls,
                                                PVOID buf, ULONG len,
                                                PULONG ret)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     sys_init();
     if (s_stub_qip != NULL)
         return ((sys_ntqip_t)s_stub_qip)(h, cls, buf, len, ret);
@@ -128,6 +130,7 @@ NTSTATUS prot_sys_nt_query_information_process(HANDLE h, ULONG cls,
 NTSTATUS prot_sys_nt_query_system_information(ULONG cls, PVOID buf,
                                               ULONG len, PULONG ret)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     sys_init();
     if (s_stub_qsi != NULL)
         return ((sys_ntqsi_t)s_stub_qsi)(cls, buf, len, ret);
@@ -136,6 +139,7 @@ NTSTATUS prot_sys_nt_query_system_information(ULONG cls, PVOID buf,
 
 uint32_t prot_sys_available(void)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     sys_init();
     return (s_stub_qip != NULL && s_stub_qsi != NULL) ? 1u : 0u;
 }

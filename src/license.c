@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -16,6 +16,7 @@
  */
 
 #include "protect/license.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <string.h>       /* memcpy */
 #include <windows.h>
@@ -26,6 +27,7 @@ size_t prot_license_build_message(const char* serial, size_t serial_len,
                                   uint32_t expires,
                                   uint8_t* out_msg, size_t out_cap)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     size_t plen = serial_len + 8u + sizeof(PROT_LICENSE_PRODUCT) - 1u + 1u + 4u;
     size_t i;
     if (out_msg == NULL || out_cap < plen)
@@ -68,6 +70,7 @@ done:
 int prot_license_verify(const uint8_t* msg, size_t msg_len,
                         const uint8_t* sig, size_t sig_len)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     BCRYPT_ALG_HANDLE halg = NULL;
     BCRYPT_KEY_HANDLE hkey = NULL;
     BCRYPT_PKCS1_PADDING_INFO pad = { BCRYPT_SHA256_ALGORITHM };

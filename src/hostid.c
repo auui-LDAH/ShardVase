@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "protect/hostid.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 /* FNV-1a 64 位常量 */
 #define HOSTID_FNV_BASIS 0xCBF29CE484222325u
@@ -87,6 +88,7 @@ static int disk_serial(char out[64])
 }
 
 uint64_t prot_hostid_get(void) {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     uint64_t h = HOSTID_FNV_BASIS;
     WCHAR comp[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD n;

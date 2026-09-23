@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "protect/dbiguard.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #define DBIGUARD_RX_RW_MAX 8u
 #define DBIGUARD_THREADS_MAX 200u
@@ -130,6 +131,7 @@ static uint32_t scan_thread_count(void)
 
 prot_status prot_dbiguard_scan(prot_dbiguard_report* out)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (out == NULL)
         return PROT_OK;
     memset(out, 0, sizeof(*out));
@@ -142,6 +144,7 @@ prot_status prot_dbiguard_scan(prot_dbiguard_report* out)
 
 uint32_t prot_dbiguard_suspicious(const prot_dbiguard_report* rep)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (rep == NULL)
         return 0u;
     return (rep->inline_hooks || rep->frida_agent ||

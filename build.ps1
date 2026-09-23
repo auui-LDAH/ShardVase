@@ -43,11 +43,36 @@ param(
 # 节名仍每次不同，**破坏了项目的 I3 可复现属性**（repro_check 用的正是这条
 # 路径，却没有比对节名，故一度漏检）。
 $sectionsSeed = ''
+
+# W1.6(序言噪声): 构建盐 —— 让保护函数的**机器码**随构建变化，
+# 从而破坏攻击者的"字节特征跨构建匹配"（W5.6 实测 55.9% 可匹配）。
+# 允许外部（-BuildSalt 或环境变量）覆盖，否则由种子派生。
+$buildSalt = if ($env:PROT_BUILD_SALT) { $env:PROT_BUILD_SALT } else { '' }
 if ($SeedsFile -and (Test-Path -LiteralPath $SeedsFile)) {
     # 由种子表内容派生一个稳定种子（同表 -> 同节名；不同表 -> 不同节名）
     $seedHash = (Get-FileHash -LiteralPath $SeedsFile -Algorithm SHA256).Hash
     $sectionsSeed = '0x' + $seedHash.Substring(0, 16).ToLower()
 }
+
+# W1.6: 构建盐的派生（在种子确定之后）
+#
+# · 有确定性种子 -> 由它派生（保持 I3 可复现）
+# · 无种子（发布构建）-> **系统随机**（每构建必须不同）
+#
+# 注: 用种子的**不同片段**派生，避免与节名种子撞用同一值。
+if (-not $buildSalt) {
+    if ($sectionsSeed -and $sectionsSeed.Length -ge 10) {
+        $buildSalt = '0x' + $sectionsSeed.Substring(2, 8)
+    } else {
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $buf = New-Object byte[] 4
+        $rng.GetBytes($buf)
+        $rng.Dispose()
+        $buildSalt = '0x' + (($buf | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+}
+Write-Host ("build: 构建盐 {0}（序言噪声用）" -f $buildSalt)
+
 
 $ErrorActionPreference = 'Stop'
 
@@ -322,7 +347,7 @@ Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs
 # 阶段1(第二支柱): -DPROT_USE_GENERATED_SECTIONS 让 include/protect/
 # prot_sections.h 采用 demo\gen 下的**随机节名**（覆盖其默认值）。
 # 不定义该宏的独立构建（skeleton/examples/tests）沿用默认节名，不受影响。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -394,7 +419,7 @@ if (-not $NoPad) {
     if ($padBody -match '__declspec\(allocate') {
         Write-Host 'build: 应用节填充（二次编译）'
         Set-Content -LiteralPath build\_d9026_cmd.txt -Value $clCmd2 -Encoding UTF8
-        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
         if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (填充后重编译)' }
     } else {
         Write-Host 'build: 无需填充（当前组合已是最大尺寸）'

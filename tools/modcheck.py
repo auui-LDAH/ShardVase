@@ -109,11 +109,15 @@ def source_deps(src_path, mod_name):
             continue
         for m in re.finditer(r'#include\s+"protect/([^"]+)\.h"', read(p)):
             h = m.group(1)
-            # prot_sections 是**基础设施头**（阶段1 的随机节名映射），
-            # 不是模块 -> 与 protdef 同类，不计入模块依赖。
-            # 教训: 加该 include 时未同步这里，导致门禁报
-            # "源码依赖但注册表未登记: prot_sections"（2026-09-23）。
-            if h not in ('protdef', 'prot_sections', mod_name):
+            # prot_sections / prot_noise 是**基础设施头**，不是模块
+            # -> 与 protdef 同类，不计入模块依赖。
+            #
+            # 教训（2026-09-23，**同类错误犯过两次**）:
+            #   · 加 prot_sections.h（阶段1 节名随机化）-> 报未登记
+            #   · 加 prot_noise.h（W1.6 序言注入）-> 又报未登记
+            # **凡新增非模块的 protect/*.h，必须同步本列表。**
+            INFRA_HEADERS = ('protdef', 'prot_sections', 'prot_noise')
+            if h not in INFRA_HEADERS and h != mod_name:
                 deps.add(h)
     return deps
 

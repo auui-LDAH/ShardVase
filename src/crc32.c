@@ -1,5 +1,6 @@
-/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+﻿/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
 #include "protect/prot_sections.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #pragma code_seg(PROT_SEC_XEC)
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
@@ -54,6 +55,7 @@ static const uint32_t g_crc32_table[256] = {
 
 uint32_t prot_crc32(const void* data, size_t len)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     const uint8_t* p = (const uint8_t*)data;
     uint32_t crc = prot_crc32_init();
 
@@ -65,6 +67,7 @@ uint32_t prot_crc32(const void* data, size_t len)
 
 uint32_t prot_crc32_init(void)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     return 0xFFFFFFFFu;
 }
 
@@ -75,6 +78,7 @@ uint32_t prot_crc32_step(uint32_t crc, uint8_t byte)
 
 uint32_t prot_crc32_done(uint32_t crc)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     return crc ^ 0xFFFFFFFFu;
 }
 

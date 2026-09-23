@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -18,12 +18,14 @@
  * __declspec(noinline): 防止 /O2 把 resolve 内联进调用点 (保持间接形态)。
  */
 #include "protect/indirect.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <stdint.h>
 
 __declspec(noinline)
 prot_indirect_fnp prot_indirect_resolve(prot_indirect_fn fn_id)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     const prot_indirect_fnp* tab = prot_indirect_table();
     const uint8_t* perm = prot_indirect_perm();
 

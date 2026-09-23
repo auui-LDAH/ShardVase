@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "protect/vmdetect.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 static void hv_vendor_id(char out[13])
 {
@@ -77,6 +78,7 @@ static int has_vm_process(void)
 
 prot_status prot_vmdetect_scan(prot_vmdetect_report* out)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     int regs[4] = { 0, 0, 0, 0 };
     char vendor[13] = { 0 };
 
@@ -99,6 +101,7 @@ prot_status prot_vmdetect_scan(prot_vmdetect_report* out)
 
 uint32_t prot_vmdetect_suspicious(const prot_vmdetect_report* rep)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     if (rep == NULL)
         return 0u;
     return (rep->cpu_hypervisor || rep->hv_vendor ||

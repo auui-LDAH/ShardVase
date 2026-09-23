@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "protect/license.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/revoke.h"
 
 #define PROT_REVOKE_MAGIC_LEN 8u
@@ -57,6 +58,7 @@ prot_revoke_status prot_revoke_check(const char* path,
                                      const char* serial, uint32_t tier,
                                      uint32_t* out_ver)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     FILE* f;
     long fsz;
     uint8_t* buf;

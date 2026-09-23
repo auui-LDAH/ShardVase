@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "protect/blob.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/license.h"
 #include "protect/protdef.h"
 
@@ -80,6 +81,7 @@ prot_status prot_vm_blob_load(const char* path,
                               prot_vm_image* out,
                               void** out_buf, size_t* out_buf_size)
 {
+    PROT_NOISE();   /* W1.6 序言噪声 */
     FILE* f;
     long fsz;
     uint8_t* buf = NULL;
