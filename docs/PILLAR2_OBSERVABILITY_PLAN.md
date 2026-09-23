@@ -517,3 +517,99 @@ __declspec(allocate(".text")) unsigned char g_pad[N] = { 0 };
 ---
 
 *2026-09-23 · 成果与边界均为实测；§16.3 记录一次我自己的误判*
+
+---
+
+## 17. 阶段 2 接入 build.ps1（2026-09-23 完成）
+
+### 17.1 成果：minimal 与 full 的产物**完全同尺寸**
+
+填充已**接入 build.ps1 默认流程**（`-NoPad` 可关闭）。实测（真实 build.ps1）：
+
+| 验收 | full | minimal | 判定 |
+|------|------|---------|------|
+| **文件大小** | 229376 | **229376** | ★ **完全一致** |
+| 节数 | 11 | 11 | ✓ |
+| 节顺序 | `.text 896twuy .rdata .data .pdata wsllapv ...` | 仅 `.wsllapv` 位置略移 | ≈ |
+| **功能** | — | **rc=0, license: 1** | ✓ |
+
+**构建链路实测输出**（minimal，经真实 build.ps1）：
+```
+build: 应用节填充（二次编译）
+selfcrypt_proto: patched build\demo.exe (6 fns in-place, meta@0x32000 hdr=148)
+build: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段可烧录)
+DONE
+```
+
+> **selfcrypt 与 hashpatch 在填充后均正常** —— 这是本轮最高风险项，已通过。
+> 其中 hashpatch 的 SKIP 是**正确行为**（minimal 不含 integrity，本就无 CRC 可烧）。
+
+### 17.2 实现：两遍构建
+
+```
+第一遍编译（正常）
+   ↓
+measure_sections.py 量测当前节表
+   ↓
+gen_padding.py 按基线生成填充源（demo/gen/prot_padding.c）
+   ↓
+第二遍编译（带填充）—— 仅当填充源非空
+   ↓
+selfcrypt_proto -> hashpatch（原有顺序不变）
+```
+
+**基线**：`build/section_baseline.json`；不存在时用当前组合建立（首次）。
+
+### 17.3 门禁验证
+
+填充接入**默认流程**后，门禁 **13/14 全通过**（唯一失败=未提交），
+其中 `repro_check`（可复现性）、`e2e T1-T28`、`attacks A1-A12` 均 PASS
+→ **填充未破坏任何既有功能**。
+
+### 17.4 发现的残留可区分性（诚实记录，未解决）
+
+`.protcrc` 节的内容形态在两种组合下**语义不同**：
+
+| 组合 | `.protcrc` 前 16 字节 | 含义 |
+|------|----------------------|------|
+| `full`（含 integrity）| `5f74370633087e06 efdb3fe3 00000000` | magic + **真实 CRC**（`0xE33FDBEF`）|
+| `minimal`（填充创建）| `1be2ddac2b603839 ba89c1b2 218efb7a` | **纯随机**（无结构）|
+
+**两者静态看都是"16 字节随机"**（因 magic 本身已随机化，阶段 3 成果），
+**故直接读内容无法区分** ✓
+
+**但仍有一处残留**：攻击者可**重算 `.text` 的 CRC** 并与该字段比对 ——
+`full` 的字段是真值（匹配），`minimal` 的是填充值（不匹配）
+→ **能区分**。
+
+**处理方向**（未实施）：
+- 让无 integrity 的组合也**写入一个真实（但无意义）的 CRC**，使其"匹配"
+- 或让 integrity 的校验**不落静态字段**（运行期现算）—— 与 §4.2 方向一致
+
+### 17.5 剩余差异（`.data`/`.pdata`/`.reloc`）
+
+尺寸集合仍有两处不同：
+
+```
+full    : 0x760, 0x1da0, 0x2480   (.reloc, .pdata, .data)
+minimal : 0x71c, 0x1adc, 0x2400
+```
+
+合计差 920 字节。这些是**工具链管理的节**（尺寸是"代码的派生量"），
+需"增加函数"策略 —— 属独立工作（§16.2 边界 3）。
+
+### 17.6 本轮的三次自我纠错（教训）
+
+| # | 我一度认为 | 实际 |
+|---|-----------|------|
+| 1 | "填充破坏了 `.rsrc`" | 我的测试脚手架**漏了 `version.res`** |
+| 2 | "hashpatch 在填充后失败" | 我的脚手架**漏了 `--mask`** |
+| 3 | "minimal 的 hashpatch 报 magic 不匹配" | minimal **不含 integrity**，本就应 SKIP |
+
+> **共同教训**：**测试脚手架必须完整复刻真实构建链路**，
+> 否则会把自己的疏漏误判成被测对象的问题。
+> 最终用**真实 build.ps1** 验证才得到可信结论。
+
+---
+
+*2026-09-23 · 接入完成；§17.4 残留可区分性为诚实记录，未解决*

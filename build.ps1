@@ -30,6 +30,7 @@ param(
     [string]$ExtraSelfCrypt = '',  # S1 排障: 追加加密函数名 (逗号分隔)
     [switch]$ScDebug,              # selfcrypt 解密期诊断日志 (默认关闭)
     [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
+    [switch]$NoPad,                # 阶段2: 关闭节填充（默认开启）
     [switch]$Help
 )
 # 阶段1/3: 节名与 magic 的随机种子。
@@ -331,6 +332,57 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
 # 5c. 编译 A6 direct syscall 单测 (直调结果须与 API 路径一致)
 cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
+
+# 5d. 阶段2(第二支柱): 节填充（统一节尺寸，消除"组合可推断"）
+#
+# **为什么需要**: 不同组合因编入模块多少而有不同节尺寸（实测 .text 差 8704
+#   字节），攻击者可据此判断"开了哪些防护"。填到统一目标可消除该信号。
+#
+# **实现**: "先量测 -> 生成填充 -> 二次编译"。
+#   目标尺寸来自 build/section_baseline.json（由 -RecordBaseline 生成，
+#   或首次自动从当前组合推导）。
+#
+# **只填可安全填充的节**（实测边界）:
+#   .text/.rdata/自定义节 -> 可用源码级填充（pragma section/segment + allocate）
+#   .pdata/.reloc/.data/.rsrc -> **工具链管理**，填充会破坏节表（LNK4078 等），
+#                               其尺寸是"代码的派生量"，另行处理。
+#
+# **不填充时为默认行为**（-NoPad 可显式关闭）。
+if (-not $NoPad) {
+    $baselineFile = 'build\section_baseline.json'
+    $padSrc = 'demo\gen\prot_padding.c'
+    # 本脚本用相对路径（无 $REPO 变量）
+
+    # 量测当前产物（第一遍编译已完成）
+    & $py tools\measure_sections.py build\demo.exe --out-json build\section_actual.json
+    if ($LASTEXITCODE -ne 0) { throw 'build FAILED: measure_sections.py' }
+
+    # 基线不存在时，用当前组合作为基线（首次构建）
+    if (-not (Test-Path -LiteralPath $baselineFile)) {
+        Copy-Item build\section_actual.json $baselineFile
+        Write-Host 'build: 填充基线已建立（首次）'
+    }
+
+    # 生成填充源（若无需填充则产出空文件）
+    $padSeed = if ($sectionsSeed) { $sectionsSeed } else { '' }
+    $padArgs = @('tools\gen_padding.py', '--baseline', $baselineFile,
+                 '--actual', 'build\section_actual.json',
+                 '--out', $padSrc)
+    if ($padSeed) { $padArgs += @('--seed', $padSeed) }
+    & $py @padArgs
+    if ($LASTEXITCODE -ne 0) { throw 'build FAILED: gen_padding.py' }
+
+    # 二次编译（带填充）—— 仅当填充源非空
+    $padBody = if (Test-Path -LiteralPath $padSrc) {
+        (Get-Content -LiteralPath $padSrc -Raw) } else { '' }
+    if ($padBody -match '__declspec\(allocate') {
+        Write-Host 'build: 应用节填充（二次编译）'
+        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+        if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (填充后重编译)' }
+    } else {
+        Write-Host 'build: 无需填充（当前组合已是最大尺寸）'
+    }
+}
 
 # 6. N1 (阶段 0 原型): 引擎函数原位加密 (方案 B) —— 必须在 hashpatch 之前
 #     (加密改 .text, hashpatch 对加密段掩码后烧录, 两侧一致)。
