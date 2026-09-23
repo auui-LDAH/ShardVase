@@ -29,12 +29,47 @@ import random
 import sys
 
 # 可填充的节 -> （pragma 属性, 变量名前缀）
-# 注意: 属性必须与目标节一致，否则链接器不合并。
+# 属性必须与目标节一致，否则链接器不合并（取自 src/*.c 的现有声明）。
+#
+# ## 为什么只列这几个（实测边界，2026-09-23）
+# 填充**工具链管理的节**会破坏产物:
+#   · `.pdata`  -> LNK4078 特性冲突，节被分裂（0x1ADC 变 0x2C4）
+#   · `.reloc`  -> LNK4078（真 .reloc 是 DISCARDABLE，属性无法用 pragma 匹配）
+#   · `.rsrc`   -> **资源节丢失（变 0）**
+#   · `.data`   -> 部分生效但不确定
+# 而 `.text` 与 `.rdata` 填充**干净可用**（无警告，尺寸精确）。
+#
+# 那些节的尺寸是**代码的派生量**（.pdata 随函数数增长），正确的归一化
+# 方式是"增加函数"而非"塞数据" —— 属独立工作（见计划 §14.6）。
+#
+# 值 = (声明方式, pragma 参数, 变量前缀)
+#   'section'  -> #pragma section("<名>", <参数>)
+#   'code_seg' -> #pragma code_seg("<名>")     ← 必须与源码一致！
+#
+# **教训（2026-09-23 实测）**: `.protxec` 在源码里用 `code_seg` 声明，
+# 若填充时改用 `section`，属性不一致 -> 链接器建两个同名节 ->
+# LNK4078 + 节被扭曲（0x48B 变 0x280）。改用 `code_seg` 后干净生效
+# （0x47B -> 0x6FC，正好 +641，无警告）。
 PADDABLE = {
-    '.text':  ('read, execute', 'g_pad_text'),
-    '.rdata': ('read', 'g_pad_rdata'),
-    '.pdata': ('read', 'g_pad_pdata'),
-    '.protxec': ('read, execute', 'g_pad_xec'),
+    # 标准节: **只用 allocate**，不加 #pragma section ——
+    # 实测 C4325「忽略标准节的特性」在 /WX 下变错误（2026-09-23）。
+    '.text':    ('std', '', 'g_pad_text'),
+    '.rdata':   ('std', '', 'g_pad_rdata'),
+    # 自定义节用**逻辑名**（实际随机名由 name_map 替换 —— 见 main）
+    'protxec':  ('code_seg', '', 'g_pad_xec'),
+    'protcrc':  ('section', 'read', 'g_pad_crc'),
+    'protcry':  ('section', 'read, write', 'g_pad_cry'),
+    'protpad':  ('section', 'read', 'g_pad_pad'),
+    'fptable':  ('section', 'read, write', 'g_pad_fpt'),
+}
+
+# 明确排除（工具链管理，填充会破坏产物）—— 列出以便诊断时可见，
+# 而不是静默忽略。
+EXCLUDED = {
+    '.pdata': '工具链管理（含展开信息，随函数数增长）-> LNK4078',
+    '.reloc': '工具链管理（DISCARDABLE 属性无法用 pragma 匹配）-> LNK4078',
+    '.rsrc':  '资源节 -> 填充会导致其丢失',
+    '.data':  '工具链管理 -> 属性冲突',
 }
 
 MAX_FILL = 1 << 20   # 单节填充上限 1 MiB（防手误生成巨型数组）
@@ -50,6 +85,8 @@ def main():
     ap.add_argument('--header-out', default=None,
                     help='输出头文件（宏形式，供 C 侧引用）')
     ap.add_argument('--seed', default=None, help='填充内容种子（hex）')
+    ap.add_argument('--quiet', action='store_true',
+                    help='静默（构建流程中减少噪音）')
     args = ap.parse_args()
 
     base = json.load(open(args.baseline, encoding='ascii'))
@@ -57,46 +94,102 @@ def main():
     rng = random.Random(int(args.seed, 0) if args.seed else
                         random.SystemRandom().getrandbits(64))
 
+    # 读节名映射：把逻辑名（protcrc）换成实际随机名（.4ahve8v）
+    name_map = {}
+    j = os.path.join(os.path.dirname(args.actual), 'prot_sections.json')
+    if not os.path.exists(j):
+        j = 'demo/gen/prot_sections.json'
+    if os.path.exists(j):
+        try:
+            name_map = json.load(open(j, encoding='ascii')).get('sections', {})
+        except (OSError, ValueError):
+            name_map = {}
+    if not args.quiet and name_map:
+        print('gen_padding: 节名映射 %s' % name_map)
+
     lines = [
-        '/* 由 tools/gen_padding.py 生成, 请勿手工编辑（阶段2：统一节尺寸）',
+        '/* 由 tools/gen_padding.py 生成（阶段2: 统一节尺寸与集合）',
+        ' * 请勿手工编辑。',
         ' *',
-        ' * 为什么要填充: 不同组合因编入模块多少而有不同节尺寸，攻击者可据此',
-        ' * 判断"开了哪些防护"。填到统一目标可消除该信号。',
-        ' * 内容随机 -> 避免零区成为"这里是填充"的特征。',
+        ' * 为什么填充: 不同组合因编入模块多少而有不同节尺寸（实测 .text 差 8704',
+        ' * 字节），攻击者可据此判断"开了哪些防护"。填到统一目标可消除该信号。',
+        ' *',
+        ' * 为什么内容随机: 全零区本身是特征（"这里是被填充的"），故用伪随机',
+        ' * 字节；种子由构建种子派生，保证可复现（repro_check）。',
         ' */',
         '#include <stdint.h>',
         '',
     ]
 
-    total = 0
-    for sec, (attrs, prefix) in PADDABLE.items():
-        want = base.get(sec, {}).get('vsize', 0)
-        have = act.get(sec, {}).get('vsize', 0)
-        need = want - have
-        if need <= 0:
+    bs = base.get('sections', {})
+    as_ = act.get('sections', {})
+    filled, created, total = [], [], 0
+
+    skipped = []
+    for sec, want in sorted(bs.items()):
+        wv = want.get('vsize', 0)
+        if wv <= 0:
             continue
+        spec = PADDABLE.get(sec)
+        if spec is None:
+            have0 = as_.get(sec, {}).get('vsize', 0)
+            if wv > have0:
+                skipped.append((sec, wv - have0))
+            continue
+        decl, attrs, prefix = spec
+        # 逻辑名 -> 实际节名（随机）；标准节保持不变
+        real = sec if sec.startswith('.') else name_map.get(sec, '.%s' % sec)
+        have = as_.get(sec, {}).get('vsize', 0)
+        if have >= wv:
+            continue
+        need = wv - have
         if need > MAX_FILL:
-            print('gen_padding: %s 需填充 %d 字节，超过上限 %d —— 跳过'
-                  % (sec, need, MAX_FILL), file=sys.stderr)
+            if not args.quiet:
+                print('gen_padding: %s 需补 %d 字节，超上限 —— 跳过'
+                      % (sec, need), file=sys.stderr)
             continue
-        # 用一定周期的随机字节（避免整文件随机导致可复现性困难；
-        # 种子固定时输出稳定）
-        vals = [rng.randrange(1, 256) for _ in range(min(need, 256))]
-        body = ', '.join('0x%02X' % v for v in vals)
-        lines.append('/* %s: 补 %d 字节（目标 0x%X，实际 0x%X）*/'
-                     % (sec, need, want, have))
-        lines.append('#pragma section("%s")' % sec)
-        lines.append('__declspec(allocate("%s")) '
-                     'volatile unsigned char %s[%d] = { %s };'
-                     % (sec, prefix, need, body))
+
+        # 非 const + volatile: 避免常量折叠/被优化掉，也避免 C4132
+        vals = [rng.randrange(1, 256) for _ in range(min(need, 64))]
+        body = ', '.join('0x%02X' % v for v in vals) + \
+            (', 0' if need > 64 else '')
+        lines.append('/* %s: %s %d 字节（目标 0x%X，实际 0x%X）*/'
+                     % (real, '创建' if have == 0 else '补齐', need, wv, have))
+        # 声明方式必须与源码一致，否则属性冲突 -> LNK4078（实测教训）
+        if decl == 'std':
+            # 标准节的**正确写法**（实测三种写法后确定）:
+            #   pragma section 不带属性 -> 成功，VSize 精确增大
+            #   带属性 -> C4325（忽略标准节特性）-> /WX 错误
+            #   仅 allocate 无 pragma -> C2341（用法前必须定义段）
+            lines.append('#pragma section("%s")' % real)
+            lines.append('__declspec(allocate("%s")) '
+                         'volatile unsigned char %s[%d] = { %s };'
+                         % (real, prefix, need, body))
+        elif decl == 'code_seg':
+            lines.append('#pragma code_seg("%s")' % real)
+            lines.append('__declspec(allocate("%s")) '
+                         'volatile unsigned char %s[%d] = { %s };'
+                         % (real, prefix, need, body))
+            lines.append('#pragma code_seg()')   # 复位，避免影响后续
+        else:
+            lines.append('#pragma section("%s"%s)'
+                         % (real, (', ' + attrs) if attrs else ''))
+            lines.append('__declspec(allocate("%s")) '
+                         'volatile unsigned char %s[%d] = { %s };'
+                         % (real, prefix, need, body))
         lines.append('')
         total += need
+        if have == 0:
+            created.append(sec)
+        else:
+            filled.append((sec, need))
 
-    lines.append('/* 合计填充 %d 字节 */' % total)
+    lines.append('/* 合计填充 %d 字节；补齐 %d 节，创建 %d 个缺失节 */'
+                 % (total, len(filled), len(created)))
     with open(args.out, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
 
-    if args.header_out:
+    if getattr(args, 'header_out', None):
         with open(args.header_out, 'w', encoding='utf-8', newline='\n') as f:
             f.write('#ifndef PROT_PADDING_H\n#define PROT_PADDING_H\n'
                     '/* 阶段2: 节填充总量（诊断用）*/\n'
