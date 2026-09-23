@@ -32,9 +32,21 @@ param(
     [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
     [switch]$Help
 )
-# 阶段1: 节名/magic 的随机种子。留空 = 每次构建随机（**发布必须随机**，
-# 否则攻击者只需破一次；固定种子仅用于可复现验证）。
+# 阶段1/3: 节名与 magic 的随机种子。
+#
+# **两个方向都要满足**:
+#   · 未提供 -SeedsFile -> **系统随机**（发布必须随机，否则攻击者只需破一次）
+#   · 提供了 -SeedsFile -> **确定性派生**（满足 I3 可复现构建）
+#
+# 教训（2026-09-23 实测）: 初版把本变量恒置为 ''，导致传 -SeedsFile 时
+# 节名仍每次不同，**破坏了项目的 I3 可复现属性**（repro_check 用的正是这条
+# 路径，却没有比对节名，故一度漏检）。
 $sectionsSeed = ''
+if ($SeedsFile -and (Test-Path -LiteralPath $SeedsFile)) {
+    # 由种子表内容派生一个稳定种子（同表 -> 同节名；不同表 -> 不同节名）
+    $seedHash = (Get-FileHash -LiteralPath $SeedsFile -Algorithm SHA256).Hash
+    $sectionsSeed = '0x' + $seedHash.Substring(0, 16).ToLower()
+}
 
 $ErrorActionPreference = 'Stop'
 
