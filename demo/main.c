@@ -304,18 +304,30 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
 #ifdef PROT_MOD_ANTIDEBUG
 static void print_selftest(const prot_antidebug_report* rep)
 {
-    printf("  peb_being_debugged: %u\n", rep->peb_being_debugged);
-    printf("  peb_nt_global_flag: %u\n", rep->peb_nt_global_flag);
-    printf("  debug_port: %u\n", rep->debug_port);
-    printf("  debug_flags: %u\n", rep->debug_flags);
-    printf("  debug_object: %u\n", rep->debug_object);
-    printf("  hardware_breakpoints: %u\n", rep->hardware_breakpoints);
-    printf("  timing_suspicious: %u\n", rep->timing_suspicious);
-    printf("  kernel_debugger: %u\n", rep->kernel_debugger);
-    printf("  debug_heap_flags: %u\n", rep->debug_heap_flags);
-    printf("  int3_honey: %u\n", rep->int3_honey);
-    printf("  ppid_blacklist: %u\n", rep->ppid_blacklist);
-    printf("  clock_drift_sec: %u\n", rep->clock_drift_sec);
+    printf(prot_str_get(PROT_STR_SELFTEST_PEB), rep->peb_being_debugged);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_NTGFLAG), rep->peb_nt_global_flag);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_DEBUGPORT), rep->debug_port);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_DEBUGFLAGS), rep->debug_flags);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_DEBUGOBJ), rep->debug_object);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_HWBP), rep->hardware_breakpoints);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_TIMING), rep->timing_suspicious);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_KDBG), rep->kernel_debugger);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_HEAPFLAGS), rep->debug_heap_flags);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_INT3), rep->int3_honey);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_PPID), rep->ppid_blacklist);
+  printf("\n");
+    printf(prot_str_get(PROT_STR_SELFTEST_CLOCK), rep->clock_drift_sec);
+  printf("\n");
 }
 #endif /* PROT_MOD_ANTIDEBUG */   /* print_selftest 函数 */
 
@@ -517,10 +529,14 @@ int main(int argc, char** argv)
         prot_dbiguard_report drep;
         prot_dbiguard_scan(&drep);
         if (selftest) {
-            printf("  dbi_inline_hooks: %u\n", drep.inline_hooks);
-            printf("  dbi_frida_agent: %u\n", drep.frida_agent);
-            printf("  dbi_rxrw_regions: %u\n", drep.rx_rw_regions);
-            printf("  dbi_thread_count: %u\n", drep.thread_count);
+            printf(prot_str_get(PROT_STR_SELFTEST_DBI_HOOK), drep.inline_hooks);
+  printf("\n");
+            printf(prot_str_get(PROT_STR_SELFTEST_DBI_FRIDA), drep.frida_agent);
+  printf("\n");
+            printf(prot_str_get(PROT_STR_SELFTEST_DBI_RXRW), drep.rx_rw_regions);
+  printf("\n");
+            printf(prot_str_get(PROT_STR_SELFTEST_DBI_THREADS), drep.thread_count);
+  printf("\n");
         }
         if (prot_dbiguard_suspicious(&drep)) {
             printf("疑似动态插桩/hook 环境 (咨询项, 不影响运行)\n");
@@ -541,9 +557,12 @@ int main(int argc, char** argv)
         prot_vmdetect_report vmrep;
         prot_vmdetect_scan(&vmrep);
         if (selftest) {
-            printf("  vm_hypervisor: %u\n", vmrep.cpu_hypervisor);
-            printf("  vm_vendor: %u\n", vmrep.hv_vendor);
-            printf("  vm_processes: %u\n", vmrep.vm_processes);
+            printf(prot_str_get(PROT_STR_SELFTEST_VM_HV), vmrep.cpu_hypervisor);
+  printf("\n");
+            printf(prot_str_get(PROT_STR_SELFTEST_VM_VENDOR), vmrep.hv_vendor);
+  printf("\n");
+            printf(prot_str_get(PROT_STR_SELFTEST_VM_PROCS), vmrep.vm_processes);
+  printf("\n");
         }
         if (prot_vmdetect_suspicious(&vmrep)) {
             printf("疑似虚拟机环境 (咨询项, 不影响运行)\n");

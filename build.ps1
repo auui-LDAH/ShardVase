@@ -357,11 +357,16 @@ if (-not $NoPad) {
     & $py tools\measure_sections.py build\demo.exe --out-json build\section_actual.json
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: measure_sections.py' }
 
-    # 基线不存在时，用当前组合作为基线（首次构建）
-    if (-not (Test-Path -LiteralPath $baselineFile)) {
-        Copy-Item build\section_actual.json $baselineFile
-        Write-Host 'build: 填充基线已建立（首次）'
-    }
+    # 基线维护: **只增不减**（取"旧基线"与"本次实际"的较大值）
+    #
+    # 教训（2026-09-23）: 初版仅在"基线不存在"时建立一次。当源码变化使某
+    # 组合变大（如 §15 把字符串表从 14 条增至 33 条，.rdata 从 0xDBE2 增至
+    # 0xDDE2），旧基线成为**过期目标** -> 其它组合按旧目标填充 ->
+    # 组合间尺寸不一致（实测 minimal 229376 vs full 229888，差 512 字节）。
+    #
+    # 改为每次合并取 max -> 基线自动跟进"最大组合"，无需人工干预。
+    & $py tools\merge_baseline.py --baseline $baselineFile --actual build\section_actual.json
+    if ($LASTEXITCODE -ne 0) { throw 'build FAILED: merge_baseline.py' }
 
     # 生成填充源（若无需填充则产出空文件）
     $padSeed = if ($sectionsSeed) { $sectionsSeed } else { '' }

@@ -12,3 +12,23 @@ ONLINE_FMT|online check: %s
 MSG_HWID_FMT|0x%016llx
 MSG_REVOKE_CORRUPT|吊销列表损坏，已忽略。
 URL_CHECK_FMT|%s?serial=%s&mid=%llx&tier=%u&build=%s
+
+SELFTEST_PEB|  peb_being_debugged: %u
+SELFTEST_NTGFLAG|  peb_nt_global_flag: %u
+SELFTEST_DEBUGPORT|  debug_port: %u
+SELFTEST_DEBUGFLAGS|  debug_flags: %u
+SELFTEST_DEBUGOBJ|  debug_object: %u
+SELFTEST_HWBP|  hardware_breakpoints: %u
+SELFTEST_TIMING|  timing_suspicious: %u
+SELFTEST_KDBG|  kernel_debugger: %u
+SELFTEST_HEAPFLAGS|  debug_heap_flags: %u
+SELFTEST_INT3|  int3_honey: %u
+SELFTEST_PPID|  ppid_blacklist: %u
+SELFTEST_CLOCK|  clock_drift_sec: %u
+SELFTEST_DBI_HOOK|  dbi_inline_hooks: %u
+SELFTEST_DBI_FRIDA|  dbi_frida_agent: %u
+SELFTEST_DBI_RXRW|  dbi_rxrw_regions: %u
+SELFTEST_DBI_THREADS|  dbi_thread_count: %u
+SELFTEST_VM_HV|  vm_hypervisor: %u
+SELFTEST_VM_VENDOR|  vm_vendor: %u
+SELFTEST_VM_PROCS|  vm_processes: %u

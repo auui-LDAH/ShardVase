@@ -34,6 +34,30 @@ typedef enum prot_str_id {
     PROT_STR_MSG_HWID_FMT,  /* "0x%016llx" 机器标识格式 (S4 收敛) */
     PROT_STR_MSG_REVOKE_CORRUPT, /* 吊销列表损坏提示 (S4 收敛) */
     PROT_STR_URL_CHECK_FMT, /* 在线查询 URL 模板 (S4 收敛) */
+    /* §15(第二支柱): 自检输出所用的检测项名。
+     * 为什么加密: 这些名字原先以裸字面量出现在产物中，
+     * 攻击者 `strings` 一次即可判断"本次开了哪些防护"
+     * （如 frida_agent / vm_hypervisor 只在高组合出现）。
+     * 移入 strcrypt 后，所有组合持有同一张加密表 -> 信号消除。 */
+    PROT_STR_SELFTEST_PEB,
+    PROT_STR_SELFTEST_NTGFLAG,
+    PROT_STR_SELFTEST_DEBUGPORT,
+    PROT_STR_SELFTEST_DEBUGFLAGS,
+    PROT_STR_SELFTEST_DEBUGOBJ,
+    PROT_STR_SELFTEST_HWBP,
+    PROT_STR_SELFTEST_TIMING,
+    PROT_STR_SELFTEST_KDBG,
+    PROT_STR_SELFTEST_HEAPFLAGS,
+    PROT_STR_SELFTEST_INT3,
+    PROT_STR_SELFTEST_PPID,
+    PROT_STR_SELFTEST_CLOCK,
+    PROT_STR_SELFTEST_DBI_HOOK,
+    PROT_STR_SELFTEST_DBI_FRIDA,
+    PROT_STR_SELFTEST_DBI_RXRW,
+    PROT_STR_SELFTEST_DBI_THREADS,
+    PROT_STR_SELFTEST_VM_HV,
+    PROT_STR_SELFTEST_VM_VENDOR,
+    PROT_STR_SELFTEST_VM_PROCS,
     PROT_STR_COUNT
 } prot_str_id;
 
