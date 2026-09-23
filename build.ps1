@@ -322,7 +322,7 @@ Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs
 # 阶段1(第二支柱): -DPROT_USE_GENERATED_SECTIONS 让 include/protect/
 # prot_sections.h 采用 demo\gen 下的**随机节名**（覆盖其默认值）。
 # 不定义该宏的独立构建（skeleton/examples/tests）沿用默认节名，不受影响。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -369,10 +369,21 @@ if (-not $NoPad) {
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: merge_baseline.py' }
 
     # 生成填充源（若无需填充则产出空文件）
+    #
+    # W1（差异扩散）: --spread-ratio 让**每个组合**（含最大的 full）都有
+    # 随机填充区。旧逻辑是"补齐到基线即止"，而基线 = 各组合最大值 ->
+    # full 无需填充 -> per-build 差异仅 0.54%（实测），远低于 >30% 目标。
+    #
+    # 默认 0.35（目标尺寸的 35% 作为随机增量）—— 可按需调整；
+    # 设 0 可关闭（回退到"仅归一化"行为）。
+    $spreadRatio = if ($null -ne $env:PROT_SPREAD_RATIO) {
+        $env:PROT_SPREAD_RATIO } else { '0.35' }
     $padSeed = if ($sectionsSeed) { $sectionsSeed } else { '' }
     $padArgs = @('tools\gen_padding.py', '--baseline', $baselineFile,
                  '--actual', 'build\section_actual.json',
-                 '--out', $padSrc)
+                 '--out', $padSrc,
+                 '--spread-ratio', $spreadRatio,
+                 '--min-spread', '512')
     if ($padSeed) { $padArgs += @('--seed', $padSeed) }
     & $py @padArgs
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: gen_padding.py' }
@@ -382,7 +393,8 @@ if (-not $NoPad) {
         (Get-Content -LiteralPath $padSrc -Raw) } else { '' }
     if ($padBody -match '__declspec\(allocate') {
         Write-Host 'build: 应用节填充（二次编译）'
-        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c$scDef$resObj $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+        Set-Content -LiteralPath build\_d9026_cmd.txt -Value $clCmd2 -Encoding UTF8
+        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
         if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (填充后重编译)' }
     } else {
         Write-Host 'build: 无需填充（当前组合已是最大尺寸）'
@@ -426,6 +438,27 @@ if ($hasIntegrity) {
 } else {
     Write-Host 'build: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段可烧录)'
 }
+
+# 6.1 W1(差异扩散): 文件尾精确填充 —— 让所有组合**文件大小完全一致**
+#
+# **为什么需要**（实测 2026-09-23）: 节填充的预算按文件级算，但只能花在
+# **节**上，而节被链接器对齐到 0x200 -> 各组合最终大小仍差 512~1024 字节
+# （实测 minimal 305152 / standard 305664 / hardened 304640 / full 304640）
+# -> "文件大小可推断组合"的信号未完全消除。
+#
+# **为什么安全**:
+#   · PE 加载器只按 PE 头声明的长度映射，尾部多余字节被忽略
+#     （阶段2 早期实测: 追加 4096 字节后 rc=0 正常输出）
+#   · 完整性 CRC 只覆盖**节**（TARGET_NAMES = .text/.rdata/.pdata）
+#     -> 尾部不参与校验（已核实 tools/hashpatch.py）
+#
+# **插入顺序**: 必须在 hashpatch **之后**（否则 CRC 与最终字节不符）、
+#   在签名**之前**（否则签名失效）。
+$tailTarget = if ($null -ne $env:PROT_TAIL_TARGET) {
+    $env:PROT_TAIL_TARGET } else { '327680' }
+& $py tools\normalize_tail.py build\demo.exe --target $tailTarget `
+    $(if ($sectionsSeed) { @('--seed', $sectionsSeed) } else { @() }) --quiet
+if ($LASTEXITCODE -ne 0) { throw 'build FAILED: normalize_tail.py' }
 
 # 6.2 Release: 数字签名 (RELEASE §2.4, 自签证书) —— 必须在 hashpatch 之后
 # 注: 托管环境若启用 WDAC (代码完整性策略), 新构建的未签名 exe 可能被

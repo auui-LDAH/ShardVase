@@ -87,6 +87,18 @@ def main():
     ap.add_argument('--seed', default=None, help='填充内容种子（hex）')
     ap.add_argument('--quiet', action='store_true',
                     help='静默（构建流程中减少噪音）')
+    # W1（差异扩散）: 填充量 = 缺口 + 目标尺寸 × spread_ratio
+    #
+    # 为什么需要（2026-09-23 实测）: 旧逻辑是"补齐到基线即止"，而基线 =
+    # 各组合最大值 -> **full 无需填充** -> per-build 差异仅 0.54%，远低于
+    # ">30%" 的目标。且差异集中在 5 个 4KB 块 -> 攻击者 diff 一次即定位。
+    #
+    # 加入随机增量后，**每个组合**（含 full）都有随机填充区 -> 差异扩散。
+    ap.add_argument('--spread-ratio', dest='spread_ratio', type=float,
+                    default=0.0,
+                    help='差异扩散比例：额外填充 = 目标尺寸 × ratio（0=关闭）')
+    ap.add_argument('--min-spread', dest='min_spread', type=int, default=0,
+                    help='每节至少额外填充的字节数')
     args = ap.parse_args()
 
     base = json.load(open(args.baseline, encoding='ascii'))
@@ -123,11 +135,66 @@ def main():
 
     bs = base.get('sections', {})
     as_ = act.get('sections', {})
+
+    # ------------------------------------------------------------------
+    # W1 差异扩散: **总量固定 + 分布随机**
+    #
+    # 设计教训（2026-09-23 实测）: 初版按"每节 × ratio 再随机"实现，
+    # 结果**跨组合大小又不一致了**（275456/278016/281088）—— 因为起点
+    # （各组合实际尺寸）不同，各自加随机增量后总量自然不同。
+    #
+    # 归一化与扩散**并不矛盾**，只要区分:
+    #   · **总量**必须固定（= 基线总量 × (1+ratio)，与组合无关）-> 归一化 ✓
+    #   · **分布**每构建随机（把增量随机分配到各节）        -> 扩散 ✓
+    #
+    # 故随机性作用于"**分配比例**"，而非"**总量**"。
+    # ------------------------------------------------------------------
+    # 目标总量: 用**基线文件大小**（历史最大值，只增不减）作为统一目标。
+    #
+    # 为什么不用"各节 VSize 之和"（初版做法）: 那会漏掉**不可填充节**
+    # （.data/.pdata/.reloc）的缺口 —— 它们随代码量变化，minimal 天然更小，
+    # 而预算只能花在可填节上 -> 各组合最终大小仍差（实测 512 字节）。
+    #
+    # 改用 baseline.file（= 历史最大组合的实际文件大小）作目标:
+    #   · 它对**所有组合**是同一个值 -> 大小一致 ✓
+    #   · 只增不减（merge_baseline 保证）-> 不会因当前组合小而缩水
+    #
+    # 注: 基线文件大小含 PE 头与节对齐，故按"文件级"补偿而不仅是"节级"。
+    base_total = base.get('file', 0) or sum(v.get('vsize', 0) for v in bs.values())
+    target_total = int(base_total * (1.0 + args.spread_ratio)) \
+        if args.spread_ratio > 0 else base_total
+    actual_total = sum(v.get('vsize', 0) for v in as_.values())
+    budget = max(target_total - actual_total, 0)   # 本次要补的**总预算**
+
+    # 可填节列表（决定预算如何在它们之间分配）
+    fillable = [s for s in sorted(bs)
+                if bs[s].get('vsize', 0) > 0 and s in PADDABLE]
+    # 随机权重 -> 随机分布（权重每构建不同，总量恒定）
+    weights = {s: rng.random() + 0.15 for s in fillable} if fillable else {}
+    wsum = sum(weights.values()) or 1.0
+
     filled, created, total = [], [], 0
 
+    # 1) 先满足**各节基线**（归一化硬约束，不可随机）
+    need_map = {}
+    for sec in fillable:
+        wv = bs[sec].get('vsize', 0)
+        have = as_.get(sec, {}).get('vsize', 0)
+        if wv > have:
+            need_map[sec] = wv - have
+
+    # 2) 剩余预算按随机权重分配（纯扩散部分）
+    used = sum(need_map.values())
+    rest = max(budget - used, 0)
+    if rest > 0 and fillable:
+        for sec in fillable:
+            share = int(rest * weights[sec] / wsum)
+            if share > 0:
+                need_map[sec] = need_map.get(sec, 0) + share
+
     skipped = []
-    for sec, want in sorted(bs.items()):
-        wv = want.get('vsize', 0)
+    for sec in sorted(bs):
+        wv = bs[sec].get('vsize', 0)
         if wv <= 0:
             continue
         spec = PADDABLE.get(sec)
@@ -140,9 +207,9 @@ def main():
         # 逻辑名 -> 实际节名（随机）；标准节保持不变
         real = sec if sec.startswith('.') else name_map.get(sec, '.%s' % sec)
         have = as_.get(sec, {}).get('vsize', 0)
-        if have >= wv:
+        need = need_map.get(sec, 0)
+        if need <= 0:
             continue
-        need = wv - have
         if need > MAX_FILL:
             if not args.quiet:
                 print('gen_padding: %s 需补 %d 字节，超上限 —— 跳过'
