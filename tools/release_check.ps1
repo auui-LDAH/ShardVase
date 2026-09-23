@@ -17,6 +17,8 @@
 param(
     [switch]$SkipTest,
     [switch]$SkipDirtyCheck,
+    # W5: 启用检查器变异测试（较慢，约 2-4 分钟；发版/CI 建议启用）
+    [switch]$WithMutation,
     [string]$Python = ''
 )
 
@@ -130,6 +132,24 @@ if (Test-Path -LiteralPath 'build\keys\codesign.pfx') {
     }
 } else {
     Write-Host '[info] codesign.pfx absent - sign check skipped (demo/unsigned build only)' -ForegroundColor DarkYellow
+}
+
+# W5(验证框架): 检查器**变异测试** —— 每个检查器必须自证能抓错。
+#
+# **为什么这是门禁的一部分**（2026-09-23 教训）: 本门禁曾因
+# PowerShell 数组恒真而 **7/13 项失效**（必然失败的工具被报 [ok]），
+# 持续很久无人察觉。**一个只会通过的检查器比没有更危险。**
+#
+# 本项故意破坏各检查器的输入 -> 若它仍 PASS，则该项**盲**（never-fails）。
+#
+# 注: 默认跳过（较慢，约 2-4 分钟）。发版检查用 -WithMutation 启用；
+#     CI 可常态启用。**跳过时会明确标注，不静默通过。**
+if ($WithMutation) {
+    Check '检查器变异测试 (mutate_check)' {
+        & $py tools\mutate_check.py; $LASTEXITCODE -eq 0
+    }
+} else {
+    Write-Host '[info] 检查器变异测试未运行 (加 -WithMutation 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 Write-Host ''
