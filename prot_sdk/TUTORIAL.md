@@ -120,7 +120,7 @@ build_skeleton: smoke PASS (license gate passed)
 build_skeleton: DONE -> <工程>\build
 ```
 
-产物：`<工程>\build\myapp.exe`（实测 231384 字节）+ `vm.blob`。
+产物：`<工程>\build\myapp.exe`（实测 （统一尺寸，见 QUICKSTART） 字节）+ `vm.blob`。
 
 ### 实测结果（本教程跑通的完整链路）
 

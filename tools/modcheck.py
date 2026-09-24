@@ -333,6 +333,69 @@ def _composition_usage():
     return use
 
 
+def check_stringtables():
+    """校验所有 strings.txt 的 NAME 列表 == strcrypt.h 枚举。
+
+    ## 为什么需要（2026-09-23 实测缺陷）
+      §15 把 19 个检测项名加入 strcrypt 加密表时:
+        ✅ 改了 include/protect/strcrypt.h（加枚举）
+        ✅ 改了 demo/strings.txt
+        ❌ **漏了** prot_sdk/skeleton/strings.txt
+      -> `strgen` 强制 NAME 列表精确等于枚举 -> **骨架构建失败**
+      -> **所有 DIY 用户受阻**，而门禁**从未构建骨架** -> 缺陷溜过。
+
+      **本检查把"枚举 vs 各 strings.txt"的同步变成门禁项。**
+
+    ## 规则
+      对每个 `**/strings.txt`（排除 archive/）:
+        NAME 列表必须**精确等于** `include/protect/strcrypt.h` 的
+        `prot_str_id` 枚举（顺序与数量都要一致）。
+    """
+    import glob as _g
+    header = os.path.join(REPO, 'include', 'protect', 'strcrypt.h')
+    if not os.path.isfile(header):
+        return [], ['strings 表检查: 找不到 %s' % header]
+    txt = read(header)
+    m = re.search(r'enum\s+prot_str_id\s*\{(.*?)\}', txt, re.S)
+    if not m:
+        return [], ['strings 表检查: 无法解析 strcrypt.h 的 prot_str_id 枚举']
+    enum = [n for n in re.findall(r'PROT_STR_([A-Z0-9_]+)', m.group(1))
+            if n != 'COUNT']
+
+    errors, warnings = [], []
+    found = 0
+    for f in sorted(_g.glob(os.path.join(REPO, '**', 'strings.txt'),
+                            recursive=True)):
+        rel = os.path.relpath(f, REPO).replace('\\', '/')
+        if rel.startswith(('archive/', '.git/')):
+            continue
+        found += 1
+        names = []
+        for i, line in enumerate(read(f).split('\n'), 1):
+            s = line.strip()
+            if not s:
+                continue
+            if '|' not in s:
+                errors.append('%s:%d 缺 "|"（strgen 会拒绝）' % (rel, i))
+                continue
+            names.append(s.partition('|')[0].strip())
+        if names != enum:
+            miss = [n for n in enum if n not in names]
+            extra = [n for n in names if n not in enum]
+            if miss or extra:
+                errors.append(
+                    '%s: 与 strcrypt.h 枚举**不一致**'
+                    '（文件 %d 条 / 枚举 %d 条；缺 %d 个%s%s）'
+                    % (rel, len(names), len(enum), len(miss),
+                       (': ' + ', '.join(miss[:5])) if miss else '',
+                       ('；多 ' + ', '.join(extra[:3])) if extra else ''))
+            else:
+                errors.append('%s: 与枚举**顺序**不同（数量一致）' % rel)
+    if found == 0:
+        warnings.append('strings 表检查: 未找到任何 strings.txt')
+    return errors, warnings
+
+
 def check_protocol(reg):
     """W2(协议形式化 2026-09-23): 校验新协议字段。
 
@@ -739,6 +802,17 @@ def main():
         rc = 1
     elif not args.quiet:
         print('  [ok] 注册表与源码一致')
+
+    # --- A1b. strings 表与枚举同步（2026-09-23: 补骨架路径的回归覆盖）---
+    serr, swarn = check_stringtables()
+    for e in serr:
+        print('  [X] %s' % e)
+    for w in swarn:
+        print('  [!] %s' % w)
+    if serr:
+        rc = 1
+    elif not args.quiet:
+        print('  [ok] strings 表与 strcrypt.h 枚举一致')
 
     # --- A2. 协议字段检查 (W2 形式化) ---
     perr, pwarn = check_protocol(reg)

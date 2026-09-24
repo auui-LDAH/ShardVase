@@ -1916,3 +1916,108 @@ def rva2off(data, rva):       # 手工做 RVA -> 文件偏移
 ---
 
 *2026-09-23 · 核验第二轮：确认 `repro_check` 正确；记下"历史包袱导致误判方向"的教训*
+
+---
+
+## 22. DIY 路径实测（2026-09-23）—— 发现一个**阻断级缺陷**
+
+### 22.1 实测方法
+
+用户的构想是「**开源的反逆向套件制作器**」——用户能自己 DIY 套件。
+我扮演真实用户，**从零走完整路径**：
+
+```
+1. 造 build-skeleton.json（对齐 prot_wizard 实际写的字段）
+2. 复制 prot_sdk/skeleton/ 的全部文件
+3. 跑 build_skeleton.ps1 -Project <dir>
+4. 检查产物 + 功能
+```
+
+### 22.2 ❌ 关键发现：**骨架路径完全不可用**（阻断级）
+
+**现象**：
+```
+strgen: error: strings.txt: NAME order/count must exactly match prot_str_id
+build_skeleton FAILED: strgen
+```
+
+**根因**（**我在 §15 引入的**）：
+| 文件 | 应有 | 实际 |
+|------|------|------|
+| `include/protect/strcrypt.h`（枚举）| 33 | 33 ✅ |
+| `demo/strings.txt` | 33 | 33 ✅ |
+| **`prot_sdk/skeleton/strings.txt`** | **33** | **14** ❌ **缺 19 个** |
+
+> §15 把 19 个检测项名加入 strcrypt 加密表时，
+> **改了 strcrypt.h 与 demo/strings.txt，却漏了 skeleton/strings.txt**。
+>
+> 而 `strgen` **强制** strings.txt 的 NAME 列表精确等于枚举
+> -> **骨架构建必然失败** -> **所有 DIY 用户受阻**。
+
+### 22.3 ⚠️ 为什么门禁**完全没抓到**
+
+> **门禁只构建 `demo`（用 `demo/strings.txt`），从不构建骨架。**
+
+=> **骨架路径（= DIY 用户路径）的回归覆盖为零。**
+
+这与本项目此前的问题**同一性质**：
+- `repro_check` 没覆盖节名路径（§14）
+- 骨架路径没被任何门禁项覆盖（本节）
+
+**教训**：**"有测试"不等于"关键路径有测试"。**
+门禁覆盖了 `demo` 的全部行为，却对"用户真正使用的路径"零覆盖。
+
+### 22.4 修复
+
+**① 补全 skeleton/strings.txt**（14 -> 33 条，按枚举顺序）
+-> 骨架构建**成功**：
+```
+vmenc: packed 4 images -> vm.blob (805 bytes)
+strgen: 33 条
+hashpatch: 三节 CRC 烧录
+build_skeleton: signed Diytest.exe
+build_skeleton: smoke PASS (license gate passed)
+build_skeleton: DONE
+=> Diytest.exe (231288 字节)
+```
+
+**② 加回归覆盖**（`modcheck.check_stringtables`）
+```
+规则: 所有 **/strings.txt 的 NAME 列表必须精确等于 strcrypt.h 枚举
+```
+**负向验证**（复现原缺陷）：
+```
+[X] prot_sdk/skeleton/strings.txt: 与 strcrypt.h 枚举**不一致**
+    （文件 14 条 / 枚举 33 条；缺 19 个: SELFTEST_PEB, ...）
+```
+**精确抓到** ✅
+
+### 22.5 顺带修复的**文档漂移**
+
+| 文档 | 声称 | 实际 |
+|------|------|------|
+| `prot_sdk/QUICKSTART.md` | 221144~235480 字节（**有梯度**）| **统一 327680** |
+| `prot_sdk/TUTORIAL.md` | 231384 字节 | 同上 |
+
+**已更新**，并补充说明**为什么统一尺寸是有意取舍**
+（放弃体积梯度泄露的组合信息）。
+
+### 22.6 实测结论：**DIY 路径的当前成熟度**
+
+| 能力 | 状态 | 说明 |
+|------|------|------|
+| 选预设组合 | ✅ | `-Composition` |
+| 用**策略**而非模块列表 | ✅ | `--profile` / `solve_profile.py` |
+| **不改代码**加新模块 | ❌ | 需写 C + 改 `modules.json` |
+| 改契约（加字段）| ✅ | 有 `conformance` 校验 |
+| **替换**已有模块实现 | ✅ | 只要 source/exports/deps 兼容 |
+| 第三方**自证兼容** | ✅ | `conformance.py` |
+| 组合攻击技（攻防对称）| ❌ | **待办**（§19.7 记录）|
+| **打包成 SDK 发给第三者** | ❌ | 需整仓库（`tools/`/`src/`/`include/` 被复用）|
+
+**=> 用户当前能 DIY 出套件（路径已打通），但**必须持有整个仓库**。
+"发一个 SDK 包给别人"这一步**尚未实现**。**
+
+---
+
+*2026-09-23 · DIY 路径实测：修复阻断级缺陷（骨架 strings.txt 不同步）+ 补回归覆盖*
