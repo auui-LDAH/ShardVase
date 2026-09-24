@@ -313,6 +313,48 @@ def list_compositions():
     return sorted(f[:-5] for f in os.listdir(COMPOSITIONS) if f.endswith('.json'))
 
 
+
+def _drill_stats():
+    """从 drills/*.json 统计 {模块: (drill 数, BREACHED 数)}。"""
+    import glob as _g
+    stats = {}
+    d = os.path.join(REPO, 'drills')
+    if not os.path.isdir(d):
+        return stats
+    for f in sorted(_g.glob(os.path.join(d, '*.json'))):
+        if os.path.basename(f).startswith('_'):
+            continue
+        try:
+            data = json.load(open(f, encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        for r in data.get('attacks', data.get('drills', [])):
+            tm = r.get('target_module')
+            if not tm or tm == 'unmapped':
+                continue
+            nd, nb = stats.get(tm, (0, 0))
+            nd += 1
+            if str(r.get('result', '')).upper() in ('BREACHED', 'BROKEN',
+                                                    'FAIL'):
+                nb += 1
+            stats[tm] = (nd, nb)
+    return stats
+
+
+def _composition_usage():
+    """统计每个模块被多少个参考组合使用。"""
+    import glob as _g
+    use = {}
+    for f in sorted(_g.glob(os.path.join(REPO, 'compositions', '*.json'))):
+        try:
+            c = json.load(open(f, encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        for m in c.get('modules', []):
+            use[m] = use.get(m, 0) + 1
+    return use
+
+
 def check_protocol(reg):
     """W2(协议形式化 2026-09-23): 校验新协议字段。
 
@@ -442,6 +484,53 @@ def check_protocol(reg):
                 warnings.append('R16 %s: consumes %r 无模块 produces，'
                                 '也不在外部输入白名单' % (n, r))
 
+    # ---- R18 maturity 与证据一致（防"自封 core"）----
+    #
+    # ## 为什么需要（W6.4）
+    #   maturity 是**声明**，而 drill 记录是**证据**。
+    #   若允许"声明 core 但无证据"，分级就失去意义。
+    #   本规则从 drills/ 实测推导应得级别，与声明比对。
+    #
+    # 准入条件（与 modules.json 的 _maturity_scale 一致）:
+    #   experimental: 无要求
+    #   community:    >=1 条 drill
+    #   verified:     >=3 条 drill 且 >=1 条 BREACHED
+    #   core:         >=5 条 drill + >=1 BREACHED + 被 >=2 个参考组合使用
+    #
+    # 注: 只对**声明**做校验 —— 未声明 maturity 的模块跳过（向后兼容）。
+    try:
+        covers = _drill_stats()
+        comp_use = _composition_usage()
+        for n, m in sorted(mods.items()):
+            decl = m.get('maturity')
+            if not decl:
+                continue
+            nd, nb = covers.get(n, (0, 0))
+            nc = comp_use.get(n, 0)
+            if decl == 'core':
+                ok = (nd >= 5 and nb >= 1 and nc >= 2)
+                need = '>=5 drill + >=1 BREACHED + >=2 组合'
+            elif decl == 'verified':
+                ok = (nd >= 3 and nb >= 1)
+                need = '>=3 drill + >=1 BREACHED'
+            elif decl == 'community':
+                ok = (nd >= 1)
+                need = '>=1 drill'
+            elif decl == 'experimental':
+                ok, need = True, '(无要求)'
+            else:
+                errors.append('R18 %s: maturity 值非法 %r'
+                              '（应为 experimental/community/verified/core）'
+                              % (n, decl))
+                continue
+            if not ok:
+                errors.append(
+                    'R18 %s: 声明 maturity=%s 但证据不足'
+                    '（实测 drill=%d BREACHED=%d 组合=%d；%s 需要 %s）'
+                    % (n, decl, nd, nb, nc, decl, need))
+    except (OSError, ValueError):
+        pass  # 证据不可读时跳过（不因缺证据而阻塞）
+
     # ---- R17 deps 与 ordering 的**语义矛盾** ----
     #
     # ## 为什么需要（W3 实测发现 2026-09-23）
@@ -509,10 +598,15 @@ def selftest_protocol():
     def mut_r16(d):
         d['modules']['antidebug']['consumes'] = ['nobody.produces_this']
 
+    def mut_r18(d):
+        # 证据不足却自封 core（revoke 仅 1 条 drill、0 BREACHED）
+        d['modules']['revoke']['maturity'] = 'core'
+
     CASES = [
         ('R10', mut_r10, 'abi_version'), ('R11', mut_r11, 'ordering.after'),
         ('R12', mut_r12, '存在环'), ('R13', mut_r13, 'conflicts_with.with'),
         ('R14', mut_r14, 'resolution'), ('R15', mut_r15, '格式非法'),
+        ('R18', mut_r18, '证据不足'),
     ]
 
     print('=== W2 协议规则负向测试 ===')

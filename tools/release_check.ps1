@@ -154,6 +154,17 @@ if ($WithMutation) {
     Write-Host '[info] 检查器变异测试未运行 (加 -WithMutation 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
+# W6.2(协议治理): **兼容性套件自检 + 对本仓库注册表的合规检查**。
+#
+# **为什么入门禁**: conformance.py 是**第三方准入的唯一标准**。
+#   若它自身失效（如本门禁曾 7/13 静默通过），第三方会拿到错误结论。
+#   故必须每次门禁都跑，且**含负向自检**（自证能抓错）。
+Check '协议兼容性 (conformance)' {
+    & $py tools\conformance.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
+}
+
 # W5.7(验证框架): **迁移成本门禁** —— 防止 W1.6 的成果回退。
 #
 # **为什么需要**: W1.6 把"保护函数特征命中率"(M3) 从 **55.9% 降到 5.9%**。

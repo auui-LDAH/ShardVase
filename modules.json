@@ -39,7 +39,8 @@
       "consumes": [],
       "produces": [
         "debug.report"
-      ]
+      ],
+      "maturity": "community"
     },
     "dbiguard": {
       "source": "src/dbiguard.c",
@@ -69,7 +70,8 @@
       "consumes": [],
       "produces": [
         "dbi.report"
-      ]
+      ],
+      "maturity": "core"
     },
     "vmdetect": {
       "source": "src/vmdetect.c",
@@ -99,7 +101,8 @@
       "consumes": [],
       "produces": [
         "vm.detect_report"
-      ]
+      ],
+      "maturity": "community"
     },
     "integrity": {
       "source": "src/integrity.c",
@@ -154,7 +157,8 @@
       ],
       "produces": [
         "integrity.state"
-      ]
+      ],
+      "maturity": "community"
     },
     "selfcrypt": {
       "source": "src/selfcrypt.c",
@@ -202,7 +206,8 @@
       ],
       "produces": [
         "text.encrypted"
-      ]
+      ],
+      "maturity": "community"
     },
     "vm": {
       "source": "src/vm.c",
@@ -243,7 +248,8 @@
       ],
       "produces": [
         "vm.result"
-      ]
+      ],
+      "maturity": "community"
     },
     "blob": {
       "source": "src/blob.c",
@@ -282,7 +288,8 @@
       ],
       "produces": [
         "blob.loaded"
-      ]
+      ],
+      "maturity": "community"
     },
     "license": {
       "source": "src/license.c",
@@ -320,7 +327,8 @@
       ],
       "produces": [
         "license.state"
-      ]
+      ],
+      "maturity": "core"
     },
     "revoke": {
       "source": "src/revoke.c",
@@ -354,7 +362,8 @@
       ],
       "produces": [
         "revoke.state"
-      ]
+      ],
+      "maturity": "community"
     },
     "hostid": {
       "source": "src/hostid.c",
@@ -382,7 +391,8 @@
       "consumes": [],
       "produces": [
         "hostid.value"
-      ]
+      ],
+      "maturity": "community"
     },
     "strcrypt": {
       "source": "src/strcrypt.c",
@@ -414,7 +424,8 @@
       ],
       "produces": [
         "strings.plain"
-      ]
+      ],
+      "maturity": "community"
     },
     "syscall": {
       "source": "src/syscall.c",
@@ -445,7 +456,8 @@
       "consumes": [],
       "produces": [
         "syscall.table"
-      ]
+      ],
+      "maturity": "community"
     },
     "indirect": {
       "source": "src/indirect.c",
@@ -482,7 +494,8 @@
       "consumes": [],
       "produces": [
         "indirect.table"
-      ]
+      ],
+      "maturity": "community"
     }
   },
   "primitives": {
@@ -512,5 +525,12 @@
     }
   },
   "_protocol_version": 1,
-  "_protocol_note": "协议版本（与 _format_version 不同）: _format_version 指 JSON 结构版本，_protocol_version 指**模块契约语义版本**。模块的 abi_version 必须等于本值才被接受。"
+  "_protocol_note": "协议版本（与 _format_version 不同）: _format_version 指 JSON 结构版本，_protocol_version 指**模块契约语义版本**。模块的 abi_version 必须等于本值才被接受。",
+  "_maturity_scale": {
+    "experimental": "实验性: 接口可能变 (无 drill 要求)",
+    "community": "社区验证: >=1 条 drill 记录",
+    "verified": "经攻防验证: >=3 条 drill 且至少 1 条 BREACHED",
+    "core": "核心: >=5 条 drill + BREACHED + 被 >=2 个参考组合使用",
+    "_why_breached": "要求 BREACHED 是**诚实边界**(P4)的体现: 只被\"验证成功\"的模块说明**没被真正攻击过**; 承认\"被打穿过\"才是成熟度的证据。"
+  }
 }
