@@ -7,13 +7,13 @@
 ## 1. 版本规范
 
 ### 1.1 版本号
-- 语义化版本 `MAJOR.MINOR.PATCH`（如 `1.0.0`）+ 可选构建元数据 `-build.N`。
+- 语义化版本 `MAJOR.MINOR.PATCH`（如 `1.1.0`）+ 可选构建元数据 `-build.N`。
 - 定义位置：单一事实来源 `include/protect/version.h`（本次新增）：
   ```c
   #define PROT_VERSION_MAJOR 1
-  #define PROT_VERSION_MINOR 0
+  #define PROT_VERSION_MINOR 1
   #define PROT_VERSION_PATCH 0
-  #define PROT_VERSION_STR   "1.0.0"
+  #define PROT_VERSION_STR   "1.1.0"
   ```
 - 变更规则：破坏性接口/格式变化 → MAJOR；新能力（指令/检测项/格式兼容扩展）→ MINOR；
   缺陷修复 → PATCH。格式变化（license 载荷、blob 格式、demo_mem）必须升 MAJOR。
