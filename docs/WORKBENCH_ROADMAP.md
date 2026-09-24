@@ -1181,3 +1181,112 @@ compose: 警告: ordering 成环 integrity, selfcrypt
 ---
 
 *2026-09-23 · W3.3 完成；§15.2 记录三个我引入的缺陷（含一个真实的语义环）*
+
+---
+
+## 16. W3.2 + W3.4 策略求解与结构化计划（2026-09-23）
+
+### 16.1 成果：用户给**策略**，不再手写模块列表
+
+| 项 | 改动前 | 改动后 |
+|----|--------|--------|
+| 用户输入 | **手写模块列表**（`compositions/*.json`）| **描述策略**（威胁/强度/预算/约束）|
+| 求解 | 无（用户自己算）| `tools/solve_profile.py` 自动求解 |
+| 计划输出 | 只有源文件清单 | **结构化 JSON**（含每个模块"为何被选/排除"）|
+| 冲突处理 | 只报告冲突 | 报告冲突**及其共存条件**（`resolution`）|
+
+> 这是"工作台"与"模块拼装器"的分界：
+> **拼装器要求用户懂所有模块；工作台只要求用户懂自己的威胁。**
+
+### 16.2 新增 `profiles/` 策略库（4 个）
+
+| 策略 | 威胁 | 强度 | 性能预算 | 约束 |
+|------|------|------|---------|------|
+| `minimal-cost` | piracy | low | low | 禁页对齐/可写目录，≤8 模块 |
+| `balanced` | piracy, debugger, tamper | medium | medium | ≤12 模块 |
+| `hardened-threats` | + dbi, vm | high | medium | ≤16 模块 |
+| `paranoid-analysis` | + analysis | paranoid | high | 无上限 |
+
+### 16.3 求解流程（7 步）
+
+```
+1. 威胁 -> 能力映射（THREAT_CAPS）
+2. 按能力匹配模块（caps 字段）
+3. 过滤: 性能预算 / 部署约束 / 页面约束
+4. 依赖闭包（deps）+ 宿主下限（SUBSTRATE）
+5. 冲突检查（conflicts_with + resolution 可满足性）
+6. 数量上限（max_modules）
+7. 拓扑排序（ordering，复用 W3.3）
+```
+
+**实测（balanced 策略）**：
+```
+威胁 piracy/debugger/tamper -> 推导能力 detect, prevent, respond, verify
+选中 11 个模块（含 2 个依赖自动补入）
+排除  2 个（indirect/strcrypt: 能力 conceal 与所需无交集）
+冲突  2 项（integrity<->selfcrypt，均带共存条件）
+顺序  vm -> vm_rekey -> crc32 -> antidebug -> integrity -> ...
+```
+
+### 16.4 集成：`compose.py --profile`
+
+```
+python tools/compose.py --profile profiles/balanced.json \
+    --sources-out build/_srcs.txt --header-out demo/gen/prot_modconfig.h \
+    --plan-out build/build_plan.json
+```
+
+**实现要点**：求解后**合成一个内存中的组合**，再走原有 `resolve()` 路径
+-> 保留**单一代码路径**（所有校验/补入/排序逻辑一致，避免行为分叉）。
+
+### 16.5 ⚠️ 实现中发现的**真实缺陷**（我引入的）
+
+**现象**（首次跑 balanced 策略时）：
+```
+选中模块 (11): ..., selfcrypt [自动] 依赖闭包自动补入, syscall [自动] ...
+排除模块 (4):  ..., selfcrypt  能力 ['conceal'] 与所需 [...] 无交集
+                   syscall   能力 ['conceal'] 与所需 [...] 无交集
+```
+**同一模块既在"选中"又在"排除"** —— 计划**自相矛盾**，会误导用户。
+
+**根因**：`excluded[n]` 在"能力不匹配"时写入，之后**依赖闭包**把该模块补入
+`reasons`/`selected`，却**没有从 `excluded` 删除**。
+
+**修法**：依赖补入时 `excluded.pop(n)`，并在理由中**保留**原判信息
+（改述为"依赖闭包自动补入（原判: ...）"）—— **不丢信息**。
+
+**并加回归自检**：
+```python
+case('selected ∩ excluded 为空', sorted(overlap), [])
+case('全部策略均无重叠', bad, [])
+```
+
+### 16.6 负向测试
+
+`python tools/solve_profile.py --selftest` -> **13/13 通过**：
+- 威胁→能力映射（tamper→verify、analysis→conceal）
+- 性能预算过滤（low 预算排除 medium 开销模块）
+- 部署约束（禁页对齐 → 排除 `integrity`）
+- 依赖闭包（选中 `integrity` 自动补入其 deps）
+- 冲突记录（含 `resolution`）
+- **selected ∩ excluded 无重叠**（回归防护）
+- 空威胁 → 不选任何模块
+- 拓扑顺序无环
+
+### 16.7 门禁
+
+**14 项全绿**（唯一失败=工作区未提交）。
+
+### 16.8 W3 完成状态
+
+| # | 事项 | 状态 |
+|---|------|------|
+| W3.1 | 用户输入策略 | ✅（`profiles/*.json`）|
+| W3.2 | 策略 -> 模块集求解 | ✅ |
+| W3.3 | 拓扑排序（`ordering` 替代硬编码）| ✅ |
+| W3.4 | 结构化构建计划 | ✅ |
+| W3.5 | 冲突检测内聚到编排器 | ⬜（现由 `modcheck` 承担，功能已覆盖）|
+
+---
+
+*2026-09-23 · W3.2/W3.4 完成；§16.5 记录一个"计划自相矛盾"的缺陷*

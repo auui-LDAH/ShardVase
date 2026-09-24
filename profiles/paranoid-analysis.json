@@ -1,0 +1,19 @@
+{
+  "name": "paranoid-analysis",
+  "description": "抗分析优先: 最大化隐蔽性, 接受较高开销",
+  "strength": "paranoid",
+  "performance_budget": "high",
+  "threats": [
+    "piracy",
+    "debugger",
+    "tamper",
+    "dbi",
+    "vm",
+    "analysis"
+  ],
+  "constraints": {
+    "allow_page_align": true,
+    "allow_writable_dir": true,
+    "max_modules": 99
+  }
+}

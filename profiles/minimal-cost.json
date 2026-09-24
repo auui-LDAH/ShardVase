@@ -1,0 +1,15 @@
+{
+  "_comment": "策略库: 用户描述**威胁与约束**，由 tools/solve_profile.py 求解模块集。这与 compositions/ 的区别: compositions 是**已求解的结果**（模块列表），profiles 是**意图**（威胁+预算+约束）。",
+  "name": "minimal-cost",
+  "description": "最低开销: 仅授权链, 适合性能极敏感或已有外部保护",
+  "strength": "low",
+  "performance_budget": "low",
+  "threats": [
+    "piracy"
+  ],
+  "constraints": {
+    "allow_page_align": false,
+    "allow_writable_dir": false,
+    "max_modules": 8
+  }
+}

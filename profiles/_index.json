@@ -1,0 +1,51 @@
+[
+  {
+    "_comment": "策略库: 用户描述**威胁与约束**，由 tools/solve_profile.py 求解模块集。这与 compositions/ 的区别: compositions 是**已求解的结果**（模块列表），profiles 是**意图**（威胁+预算+约束）。",
+    "name": "minimal-cost",
+    "description": "最低开销: 仅授权链, 适合性能极敏感或已有外部保护",
+    "strength": "low",
+    "performance_budget": "low",
+    "threats": ["piracy"],
+    "constraints": {
+      "allow_page_align": false,
+      "allow_writable_dir": false,
+      "max_modules": 8
+    }
+  },
+  {
+    "name": "balanced",
+    "description": "推荐默认: 授权链 + 反调试 + 完整性 + VM 自加密",
+    "strength": "medium",
+    "performance_budget": "medium",
+    "threats": ["piracy", "debugger", "tamper"],
+    "constraints": {
+      "allow_page_align": true,
+      "allow_writable_dir": true,
+      "max_modules": 12
+    }
+  },
+  {
+    "name": "hardened-threats",
+    "description": "强化: 在 balanced 之上加入 DBI/VM 检测与函数级间接化",
+    "strength": "high",
+    "performance_budget": "medium",
+    "threats": ["piracy", "debugger", "tamper", "dbi", "vm"],
+    "constraints": {
+      "allow_page_align": true,
+      "allow_writable_dir": true,
+      "max_modules": 16
+    }
+  },
+  {
+    "name": "paranoid-analysis",
+    "description": "抗分析优先: 最大化隐蔽性, 接受较高开销",
+    "strength": "paranoid",
+    "performance_budget": "high",
+    "threats": ["piracy", "debugger", "tamper", "dbi", "vm", "analysis"],
+    "constraints": {
+      "allow_page_align": true,
+      "allow_writable_dir": true,
+      "max_modules": 99
+    }
+  }
+]

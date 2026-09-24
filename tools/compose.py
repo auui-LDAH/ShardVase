@@ -311,12 +311,72 @@ def list_compositions():
 def main():
     ap = argparse.ArgumentParser(description='组合驱动构建')
     ap.add_argument('composition', nargs='?', help='拼装图名 (compositions/<name>.json)')
+    ap.add_argument('--profile', default=None,
+                    help='W3.2: 策略文件 (profiles/*.json) —— '
+                         '用户给策略而非模块列表')
+    ap.add_argument('--plan-out', dest='plan_out', default=None,
+                    help='W3.4: 结构化构建计划输出路径 (JSON)')
     ap.add_argument('--header-out', help='输出 prot_modconfig.h')
     ap.add_argument('--sources-out', help='输出源文件列表 (每行一个)')
     ap.add_argument('--defines-out', help='输出 /D 定义列表 (空格分隔)')
     ap.add_argument('--list', action='store_true', help='列出全部拼装图')
     ap.add_argument('--show', action='store_true', help='打印解析结果')
     args = ap.parse_args()
+
+    # W3.2: 策略驱动 —— 用户给**策略**，本工具求解出组合
+    #
+    # 实现: 求解后**合成一个内存中的组合**，再走原有 resolve() 路径 ->
+    # 保留单一代码路径（所有校验/补入/排序逻辑一致，避免行为分叉）。
+    if args.profile:
+        import solve_profile as _sp
+        ppath = args.profile
+        if not os.path.isabs(ppath) and not os.path.exists(ppath):
+            ppath = os.path.join(REPO, ppath)
+        if not os.path.exists(ppath):
+            print('compose: 策略文件不存在 %s' % ppath, file=sys.stderr)
+            return 1
+        _reg = load_registry()
+        _prof = json.load(open(ppath, encoding='utf-8'))
+        _r = _sp.solve(_prof, _reg)
+        if args.plan_out:
+            with open(args.plan_out, 'w', encoding='utf-8', newline='\n') as _f:
+                json.dump(_r, _f, indent=2, ensure_ascii=False)
+                _f.write('\n')
+            print('compose: 构建计划 -> %s' % args.plan_out)
+        # 合成临时组合（内存）
+        comp = {
+            'name': _r['profile'] or 'profile',
+            'description': '由策略求解: %s' % _prof.get('description', ''),
+            'modules': _r['selected'],
+            '_from_profile': args.profile,
+            '_strategy': _r['strategy'],
+        }
+        if not getattr(args, 'quiet', False):
+            print('compose: 策略 %s -> %d 个模块（%d 个被排除）'
+                  % (_r['profile'], len(_r['selected']), len(_r['excluded'])))
+            for _c in _r['conflicts']:
+                print('compose: 冲突 %s <-> %s : %s'
+                      % (_c['a'], _c['b'], _c['resolution'][:60]))
+        _full, _srcs, _auto, _errs = resolve(comp, _reg)
+        if _errs:
+            for _e in _errs:
+                print('compose: [X] %s' % _e, file=sys.stderr)
+            return 1
+        if args.header_out:
+            # 注意: gen_header() **返回字符串**，由调用方写文件（非自写）。
+            _hdr = gen_header(_full, comp['name'], _reg)
+            with open(args.header_out, 'w', encoding='utf-8', newline='\n') as _f:
+                _f.write(_hdr)
+            print('compose: 条件编译头 -> %s' % args.header_out)
+        if args.sources_out:
+            with open(args.sources_out, 'w', encoding='utf-8', newline='\n') as _f:
+                _f.write('\n'.join(_srcs) + '\n')
+            print('compose: 源文件清单 -> %s (%d 个)' % (args.sources_out,
+                                                         len(_srcs)))
+        else:
+            for _s in _srcs:
+                print(_s)
+        return 0
 
     reg = load_registry()
 

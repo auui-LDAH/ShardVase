@@ -1,0 +1,16 @@
+{
+  "name": "balanced",
+  "description": "推荐默认: 授权链 + 反调试 + 完整性 + VM 自加密",
+  "strength": "medium",
+  "performance_budget": "medium",
+  "threats": [
+    "piracy",
+    "debugger",
+    "tamper"
+  ],
+  "constraints": {
+    "allow_page_align": true,
+    "allow_writable_dir": true,
+    "max_modules": 12
+  }
+}

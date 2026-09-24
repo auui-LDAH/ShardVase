@@ -1,0 +1,18 @@
+{
+  "name": "hardened-threats",
+  "description": "强化: 在 balanced 之上加入 DBI/VM 检测与函数级间接化",
+  "strength": "high",
+  "performance_budget": "medium",
+  "threats": [
+    "piracy",
+    "debugger",
+    "tamper",
+    "dbi",
+    "vm"
+  ],
+  "constraints": {
+    "allow_page_align": true,
+    "allow_writable_dir": true,
+    "max_modules": 16
+  }
+}
