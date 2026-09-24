@@ -36,6 +36,17 @@ SYNC = [
     ('ShardVase-website', 'index.html', 'docs/marketing/landing.html'),
     ('ShardVase-demo', 'README.md',
      'build/release-staging/hashcalc-demo/README.md'),
+    # W2/W6(2026-09-23): **协议层**文档 —— 面向第三方实现者。
+    #
+    # 只同步"协议层"，**不同步"防护层"**:
+    #   · MODULE_PROTOCOL_SPEC: 开放规范，第三方实现依据（本就公开）
+    #   · PROTOCOL_GOVERNANCE:  准入流程 / 版本化 / 成熟度分级
+    # 不同步（属内部）: WORKBENCH_ROADMAP（含量化防护指标）、
+    #   PILLAR2_*（第二支柱策略）、STRATEGY_*（方针评估）。
+    ('ShardVase-docs', 'module-protocol-spec.md',
+     'docs/MODULE_PROTOCOL_SPEC.md'),
+    ('ShardVase-docs', 'protocol-governance.md',
+     'docs/PROTOCOL_GOVERNANCE.md'),
 ]
 
 ORG = 'auui-LDAH'
@@ -94,7 +105,12 @@ def main():
         local = open(lpath, encoding='utf-8', newline='').read()
         remote, sha = remote_content(repo, rpath)
         if remote is None:
-            failed.append((repo, rpath, '读取远程失败或无此文件'))
+            # ⚠️ 修正（2026-09-23 实测）: "远程无此文件" **不是失败**，
+            # 而是**需新建**。初版把它归入 failed -> 新文件**永远不会被同步**
+            # （实测: 加两个新文档后 --apply 报"0 成功 0 失败"，文件未创建）。
+            #
+            # 创建时 GitHub API **不能带 sha** 字段（带了会报 422）。
+            changed.append((repo, rpath, lpath, local, None))
             continue
         if remote.replace('\r\n', '\n') == local.replace('\r\n', '\n'):
             same.append((repo, rpath))
@@ -110,8 +126,10 @@ def main():
     print('--- 需同步 (%d) ---' % len(changed))
     for repo, rpath, lpath, local, sha in changed:
         print('  %-20s %-18s <- %s' % (repo, rpath, lpath))
-        print('       %d 字节, 远程 sha %s' % (len(local.encode('utf-8')),
-                                              sha[:10]))
+        # sha 为 None 表示**远程不存在（新建）**
+        print('       %d 字节, %s'
+              % (len(local.encode('utf-8')),
+                 ('远程 sha %s' % sha[:10]) if sha else '**远程无此文件（将新建）**'))
 
     if failed:
         print()
@@ -128,12 +146,15 @@ def main():
     print('--- 执行同步 ---')
     nerr = 0
     for repo, rpath, lpath, local, sha in changed:
-        payload = json.dumps({
+        body = {
             'message': MSG,
             'content': base64.b64encode(local.encode('utf-8')).decode('ascii'),
-            'sha': sha,
             'branch': 'main',
-        }, ensure_ascii=False)
+        }
+        # 创建时**不带 sha**（带了会 422）；更新时必须带。
+        if sha:
+            body['sha'] = sha
+        payload = json.dumps(body, ensure_ascii=False)
         rc, out, err = gh('-X', 'PUT', 'repos/%s/%s/contents/%s' % (ORG, repo, rpath),
                           '--input', '-', data=payload)
         if rc == 0:
@@ -142,7 +163,8 @@ def main():
                 cs = d['commit']['sha'][:10]
             except Exception:
                 cs = '?'
-            print('  ✓ %-20s %-18s -> %s' % (repo, rpath, cs))
+            print('  ✓ %-20s %-18s -> %s%s'
+                  % (repo, rpath, cs, '  (新建)' if not sha else ''))
         else:
             nerr += 1
             print('  ✗ %-20s %-18s %s' % (repo, rpath, err.strip()[:70]))
