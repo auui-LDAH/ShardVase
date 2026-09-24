@@ -31,6 +31,11 @@ param(
     [switch]$ScDebug,              # selfcrypt 解密期诊断日志 (默认关闭)
     [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
     [switch]$NoPad,                # 阶段2: 关闭节填充（默认开启）
+    # W4(每用户唯一): 用户标识 —— 传入后**全部种子由该用户派生**,
+    # 使同一策略的两个用户产出**互不相同**的二进制。
+    # 未传时行为与改动前完全一致（每构建随机）。
+    # 优先级: -SeedsFile > -UserId > 系统随机。
+    [string]$UserId = '',
     [switch]$Help
 )
 # 阶段1/3: 节名与 magic 的随机种子。
@@ -53,6 +58,27 @@ if ($SeedsFile -and (Test-Path -LiteralPath $SeedsFile)) {
     $seedHash = (Get-FileHash -LiteralPath $SeedsFile -Algorithm SHA256).Hash
     $sectionsSeed = '0x' + $seedHash.Substring(0, 16).ToLower()
 }
+
+# W4: 用户种子派生（**优先于**系统随机，但**低于** -SeedsFile）
+#
+# 派生链（见 tools/identity.py）:
+#   user_seed = HKDF(master, project, version, user_id)
+#     [0:8]   -> sectionsSeed（节名/magic）
+#     [8:12]  -> buildSalt（序言噪声）
+#     [12:20] -> strgen seed（字符串加密）
+#     [20:28] -> indirect seed（间接表置换）
+#
+# 用**分段**而非逐维再派生: 简单、确定性、各段独立（便于单独重派生）。
+#
+# 优先级: -SeedsFile > -UserId > 系统随机
+#
+# ⚠️ 注意: 本段的**用户种子派生**必须放在 `$py` 定义之后（见下方
+# "identity 派生延后" 标记）—— 初版写在文件开头，而 `$py` 在
+# "python 探测" 段才定义 -> 运行时 `$py` 为空（2026-09-23 实测修正）。
+$userSeed = ''
+$userStrgenSeed = ''
+$userIndirectSeed = ''
+$userIdPending = $UserId      # 延后到 $py 可用时再派生
 
 # W1.6: 构建盐的派生（在种子确定之后）
 #
@@ -143,6 +169,26 @@ function Get-SeedArgs([string]$name) {
         $s = $seedMap.$name
         return @('--seed', $s.key0, '--perm-seed', $s.key1)
     }
+    # W4: 未提供 -SeedsFile 但有用户种子时，由**用户种子**为该镜像派生确定性
+    # 密钥/置换 -> 同用户可复现、跨用户唯一。
+    #
+    # ⚠️ 修正（2026-09-23 实测）: 初版**完全没接** blob 的种子 ->
+    #    `build/vm.blob` 每次都不同 -> 同 UserId 两次构建**不可复现**
+    #    （实测: blob sha 不同，而 strings.c/sec.json 相同 —— 精确定位到此）。
+    #
+    # 派生方式: HMAC(user_seed, image_name) -> 32 字节 ->
+    #   key0 = 前 16 hex, key1 = 后 16 hex
+    # 用镜像名做 info -> 各镜像**独立**（一个泄露不影响其它）。
+    if ($userSeed) {
+        $hmac = [System.Security.Cryptography.HMACSHA256]::new(
+            [System.Text.Encoding]::UTF8.GetBytes($userSeed))
+        $h = $hmac.ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes("shardvase-image|$name"))
+        $hmac.Dispose()
+        $hx = ($h | ForEach-Object { $_.ToString('x2') }) -join ''
+        return @('--seed', ('0x' + $hx.Substring(0, 16)),
+                 '--perm-seed', ('0x' + $hx.Substring(16, 16)))
+    }
     return @()
 }
 
@@ -212,6 +258,31 @@ function Find-Python {
 }
 $py = Find-Python -Explicit $Python
 Write-Host "build: python = $py"
+
+# W4: 用户种子派生（**在 $py 可用之后**执行）
+#
+# 为什么在此处而非文件开头: `$py` 由上面的 Find-Python 定义；
+# 初版把它放在文件开头 -> `$py` 为空 -> 派生静默失败
+# （实测: 两个用户的产物 SHA 完全相同，才暴露此问题）。
+if ($userIdPending -and -not $SeedsFile) {
+    $idOut = & $py tools\identity.py --project 'shardvase-demo' --version '1' --user $userIdPending 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "build FAILED: identity.py (UserId=$userIdPending) -> $idOut"
+    }
+    $userSeed = ($idOut | Where-Object { $_ -match '^0x[0-9a-f]{64}$' } |
+                 Select-Object -First 1)
+    if (-not $userSeed) {
+        throw "build FAILED: identity.py 未返回种子 (输出: $idOut)"
+    }
+    $hex = $userSeed.Substring(2)
+    $sectionsSeed = '0x' + $hex.Substring(0, 16)
+    $buildSalt = '0x' + $hex.Substring(16, 8)
+    $userStrgenSeed = '0x' + $hex.Substring(24, 16)
+    $userIndirectSeed = '0x' + $hex.Substring(40, 16)
+    Write-Host ("build: 用户 [{0}] 种子派生完成 (sections={1} salt={2})" -f `
+                $userIdPending, $sectionsSeed, $buildSalt)
+}
+
 
 # 1. 若 demo\vm_build.json 不存在 -> 写默认值 (machine_id=0 触发 auto=hostid; expect 由 genserial 补算)
 if (-not (Test-Path -LiteralPath $jsonPath)) {
@@ -283,6 +354,10 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm)' }
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (unit_vm_brk)' }
 
 # 4. 字符串加密 (I3: -SeedsFile 注入确定性密钥种子; -RecordSeeds 先定种子再构建)
+if ($userStrgenSeed -and $strgenSeedArgs.Count -eq 0) {
+    # W4: 用户种子优先（覆盖系统随机）
+    $strgenSeedArgs = @('--seed', $userStrgenSeed)
+}
 if ($RecordSeeds -and $strgenSeedArgs.Count -eq 0) {
     $seedHex = -join (1..16 | ForEach-Object { '{0:x1}' -f (Get-Random -Max 16) })
     $strgenSeedArgs = @('--seed', ('0x' + $seedHex))
@@ -306,6 +381,14 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: gen_sections.py' }
 
 # 4c. N4 函数级间接化: 生成槽位随机化函数指针表
 #     (I3: -SeedsFile 注入确定性种子; -RecordSeeds 先定种子再构建)
+#
+# W4: 用户种子优先于系统随机（但低于 -SeedsFile）
+# ⚠️ 修正（2026-09-23 实测）: 初版把用户种子分支错误地嵌进了
+#    `if ($RecordSeeds ...)` 块内部 -> **未传 -RecordSeeds 时用户种子不生效**
+#    -> 同 UserId 两次构建的 indirect_table.c **不同**（不可复现）。
+if (-not $indirectSeed -and $userIndirectSeed) {
+    $indirectSeed = @('--seed', $userIndirectSeed)   # W4 用户种子
+}
 if ($RecordSeeds -and $null -eq $indirectSeed) {
     $indirectSeed = @('--seed', ('0x' + (-join (1..16 | ForEach-Object { '{0:x1}' -f (Get-Random -Max 16) }))))
 }
