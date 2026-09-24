@@ -295,8 +295,24 @@ if (Test-Path -LiteralPath $pfx) {
         elseif (Test-Path -LiteralPath "$REPO\build\keys\sign.pass") {
             $pass = '/p ' + (Get-Content -LiteralPath "$REPO\build\keys\sign.pass" -Raw).Trim()
         }
-        cmd /c "`"$($signtool.FullName)`" sign /fd SHA256 /f `"$pfx`" $pass /t http://timestamp.digicert.com `"$outDir\$appName.exe`""
-        if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: signtool sign' }
+        # 时间戳: **默认不使用**（与 build.ps1 同源的修复，2026-09-23）
+        #
+        # ⚠️ 为什么默认关闭: `/t http://timestamp.digicert.com` 是**公网**服务
+        #   -> 网络抖动/服务不可达/备案期公网中断时 signtool 返回非 0
+        #   -> **整个骨架构建失败**。
+        #   本项目定位是**可复现构建 + 本地离线授权**，依赖公网时间戳自相矛盾；
+        #   且 RFC3161 时间戳会让签名**每次不同** -> 破坏字节级可复现。
+        #
+        # 需要时显式开启: $env:PROT_TIMESTAMP_URL = 'http://timestamp.digicert.com'
+        $tsArg = ''
+        if ($env:PROT_TIMESTAMP_URL) { $tsArg = "/t $($env:PROT_TIMESTAMP_URL)" }
+        cmd /c "`"$($signtool.FullName)`" sign /fd SHA256 /f `"$pfx`" $pass $tsArg `"$outDir\$appName.exe`""
+        if ($LASTEXITCODE -ne 0) {
+            $hint = if ($tsArg) {
+                '(已启用时间戳; 网络不可达是常见原因, 可 unset PROT_TIMESTAMP_URL 重试)'
+            } else { '(签名失败: 请检查证书与私钥口令)' }
+            throw "build_skeleton FAILED: signtool sign $hint"
+        }
         Write-Host "build_skeleton: signed $appName.exe"
     }
 } else {
