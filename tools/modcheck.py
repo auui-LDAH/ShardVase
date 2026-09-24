@@ -256,46 +256,24 @@ def check_composition(reg, names):
             if d not in selected:
                 errors.append('%s 依赖 %s, 但组合中未包含 %s' % (n, d, d))
 
-    # --- 2. .text 改写 vs 完整性校验冲突 (P2 的核心场景) ---
-    modifiers = [n for n in selected if mods[n].get('modifies_text')]
-    verifiers = [n for n in selected if mods[n].get('verifies_text')]
-    if modifiers and verifiers:
-        warnings.append(
-            '.text 冲突: %s 改写 .text, %s 校验 .text —— '
-            '必须启用 selfcrypt 掩码豁免 (integrity.build_selfcrypt_mask), '
-            '否则必然 TAMPERED'
-            % (', '.join(sorted(modifiers)), ', '.join(sorted(verifiers))))
+    # --- 2/3/4. 冲突检查（W3.5: 共用 tools/compat.py，消除规则分叉）---
+    #
+    # ## 为什么改用 compat（2026-09-23）
+    #   此前本函数**自行实现**冲突推导，而 solve_profile 只读
+    #   `conflicts_with` 字段、compose **完全不检查**
+    #   -> 同一组合在三个入口可能得到**不同结论**。
+    #
+    #   compat.check_conflicts 同时覆盖:
+    #     · **声明式**冲突（conflicts_with + resolution）
+    #     · **推导式**冲突（modifies_text × verifies_text / page_align）
+    #   三方共用 -> 规则**单一实现**。
+    import compat as _compat
+    _cerr, _cwarn, _cinfo, _ = _compat.check_conflicts(
+        reg, names, auto_added=[])
+    errors.extend(_cerr)
+    warnings.extend(_cwarn)
+    warnings.extend(_cinfo)
 
-    # --- 3. 页对齐资源 (P2: 页粒度自伤) ---
-    page_mods = [n for n in selected if mods[n].get('page_align')]
-    if len(page_mods) > 1:
-        warnings.append(
-            '多个模块要求页对齐: %s —— 需确认各自落在独立页 '
-            '(S1 已证明同页会导致 VirtualProtect 自伤)' % ', '.join(sorted(page_mods)))
-
-    # --- 4. 部署约束 ---
-    wr = [n for n in selected if mods[n].get('needs_writable_dir')]
-    if wr:
-        warnings.append('需要可写目录: %s (安装目录 ACL 只读时失效)'
-                        % ', '.join(sorted(wr)))
-
-    # --- 5. 宿主下限: 未显式声明但被宿主强依赖的模块 ---
-    # 依据 compose.py 的 SUBSTRATE (链接器实测)。差异必须如实报出,
-    # 否则拼装图会"看起来更小"而实际等价 (对使用者是误导)。
-    substrate = set(HOST_SUBSTRATE)
-    implicit = sorted(substrate - selected)
-    if implicit:
-        warnings.append(
-            '宿主下限未显式声明, 将自动补入: %s '
-            '(main.c/indirect_table.c 硬引用; 见 BLUEPRINT §5 阶段 2)'
-            % ', '.join(implicit))
-
-    # --- 6. 阶段顺序 ---
-    seen = set()
-    for ph in VALID_PHASES:
-        for n in sorted(selected):
-            if ph in mods[n].get('phases', []):
-                seen.add(ph)
     return errors, warnings
 
 

@@ -366,13 +366,70 @@ def main(argv=None):
     checked += ichecked
     errors.extend(ierr)
 
+    # --- 内网信息防泄漏（D: 2026-09-23）---
+    #
+    # ## 为什么需要
+    #   内网拓扑（Tailscale IP + 端口）**可被直接利用**。
+    #   对外目录（publish/ / docs/marketing/）会**随同步发布到公开仓库**
+    #   -> 那里出现内网 IP 是**必须拦截**的。
+    #   内部文档出现则提示脱敏（运维需要真实值时可从内部配置获取）。
+    #
+    # 规则:
+    #   D1 对外目录含内网 IP      -> **error**（会泄漏）
+    #   D2 内部文档含内网 IP      -> warning（建议脱敏）
+    import re as _re
+    # CGNAT 网段（RFC 6598）内的**具体**地址才敏感。
+    #
+    # ⚠️ **排除网段标识本身**（2026-09-23 实测误报）:
+    #   `100.64.0.0` / `100.64.0.0/10` 是**公开标准**的网段标识，
+    #   不含任何拓扑信息（任何 Tailscale 用户在都在此段）-> 不该报警。
+    #   初版把它当敏感地址 -> 在"脱敏示例"文档里误报。
+    _IP = _re.compile(
+        r'\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b'
+        r'(?!/10)')      # 排除 "x.x.x.x/10" 这种网段写法
+    _SEGMENT_ONLY = {'100.64.0.0'}   # 网段标识，非具体地址
+    _PUBLIC_DIRS = ('publish', 'docs/marketing')
+    _scanned = 0
+    for _root, _dirs, _files in os.walk('.'):
+        _r = _root.replace('\\', '/').lstrip('./')
+        if any(s in _r for s in ('.git', 'archive', 'node_modules',
+                                 'build/release-staging')):
+            continue
+        for _fn in _files:
+            if not _fn.endswith(('.md', '.html')):
+                continue
+            _p = os.path.join(_root, _fn).replace('\\', '/')
+            try:
+                _txt = open(_p, encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            _hits = [h for h in _IP.findall(_txt)
+                     if h not in _SEGMENT_ONLY]
+            # 同一行里若只是"/10"网段写法，也不计（已由负向 lookahead 处理）
+            if not _hits:
+                continue
+            _scanned += 1
+            _is_pub = _p.lstrip('./').startswith(_PUBLIC_DIRS)
+            if _is_pub:
+                errors.append('%s: **对外目录含内网 IP** %s（会随同步泄漏）'
+                              % (_p, sorted(set(_hits))[:3]))
+            else:
+                warnings.append('%s: 含内网 IP %s（建议脱敏为 '
+                                '<TAILSCALE_IP>）'
+                                % (_p, sorted(set(_hits))[:3]))
+    if _scanned == 0:
+        print('  [ok] 内网信息检查: 未发现内网 IP')
+
     for e in errors:
         print('  [X] %s' % e)
+
     for w in warnings:
         print('  [!] %s' % w)
     print()
     print('  检查数字 %d 处, 错误 %d, 警告 %d' % (checked, len(errors), len(warnings)))
     print()
+
+
     print('[doccheck] %s' % ('FAIL' if errors else 'PASS'))
     return 1 if errors else 0
 

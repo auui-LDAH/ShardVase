@@ -260,6 +260,30 @@ def resolve(comp, reg):
             with_prims.add(pname)
 
     srcs = ordered_sources(with_prims, reg)
+
+    # W3.5: 冲突检查（**只警告不阻塞**）
+    #
+    # ## 为什么此前不检查、现在为何仍不阻塞
+    #   · 此前 compose **完全不检查冲突** —— 组合的问题要等到 modcheck
+    #     才发现（构建已跑完）。
+    #   · 但**不能阻塞**: `compositions/full.json` 明确写着"故意包含已知
+    #     冲突，用于演示 modcheck 的组合校验能力" -> 阻塞会破坏既有行为。
+    #   => 在此**提前告知**（构建早期），但把"是否致命"留给 modcheck。
+    try:
+        import compat as _compat
+        _errs, _warns, _infos, _conf = _compat.check_conflicts(
+            reg, sorted(full | with_prims), auto_added=auto_added)
+        for _w in _warns:
+            print('compose: [冲突] %s' % _w)
+        for _i in _infos:
+            print('compose: [提示] %s' % _i)
+        if _conf:
+            _plan = _compat.apply_resolutions(reg, _conf)
+            for _c in _plan['conditions']:
+                print('compose: [共存条件] %s' % _c)
+    except ImportError:
+        pass      # compat 不可用时不影响构建（保守）
+
     # 注意: **不可**再 sorted() —— 顺序是语义相关的 (决定 .text 布局,
     # 进而决定加密段与 main 的页关系)。见 SOURCE_ORDER 注释。
     return full, srcs, auto_added, errors

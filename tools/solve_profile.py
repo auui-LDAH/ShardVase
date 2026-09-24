@@ -122,17 +122,14 @@ def solve(profile, reg):
             msg += '（原判: %s）' % why_was
         reasons.setdefault(n, []).append(msg)
 
-    # --- 5: 冲突检查 ---
-    conflicts = []
-    for n in sorted(full):
-        for c in (mods.get(n, {}).get('conflicts_with') or []):
-            w = c.get('with')
-            if w in full:
-                conflicts.append({
-                    'a': n, 'b': w,
-                    'reason': c.get('reason', ''),
-                    'resolution': c.get('resolution', ''),
-                })
+    # --- 5: 冲突检查（W3.5: 共用 tools/compat.py，消除规则分叉）---
+    #
+    # 为什么改用 compat: 此前此处**只读 conflicts_with 字段**，
+    # 而 modcheck 另有一套硬编码推导 -> 同一组合在**不同入口得到不同结论**。
+    # compat.check_conflicts 同时覆盖**声明式**与**推导式**两类冲突。
+    import compat as _compat
+    _errs, _warns, _infos, conflicts = _compat.check_conflicts(
+        reg, sorted(full), auto_added=auto)
 
     # --- 6: 数量上限 ---
     notes = []
