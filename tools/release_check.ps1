@@ -19,6 +19,8 @@ param(
     [switch]$SkipDirtyCheck,
     # W5: 启用检查器变异测试（较慢，约 2-4 分钟；发版/CI 建议启用）
     [switch]$WithMutation,
+    # W5.7: 启用迁移成本门禁（需两次构建，约 1-2 分钟；发版/CI 建议启用）
+    [switch]$WithMigration,
     [string]$Python = ''
 )
 
@@ -150,6 +152,26 @@ if ($WithMutation) {
     }
 } else {
     Write-Host '[info] 检查器变异测试未运行 (加 -WithMutation 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
+}
+
+# W5.7(验证框架): **迁移成本门禁** —— 防止 W1.6 的成果回退。
+#
+# **为什么需要**: W1.6 把"保护函数特征命中率"(M3) 从 **55.9% 降到 5.9%**。
+# 但**没有检查器的指标会悄悄退化** —— W5.6 之前，M3 的 55.9% 无人知晓，
+# 直到专门度量才发现。本项把它固化为判据。
+#
+# 判据（实测标定，3 轮完全可复现）:
+#   M3 保护函数特征命中率 <= 25%    （当前 5.9%；无注入时 55.9% 必被抓）
+#   M1 地址复用率         <= 25%    （当前 1.1%）
+#
+# 注: 默认跳过（需两次构建，约 1-2 分钟）。发版检查用 -WithMigration 启用；
+#     **跳过时明确标注，不静默通过**。
+if ($WithMigration) {
+    Check '迁移成本 (migration_gate)' {
+        & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
+    }
+} else {
+    Write-Host '[info] 迁移成本门禁未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 Write-Host ''

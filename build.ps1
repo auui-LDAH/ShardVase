@@ -499,8 +499,30 @@ function Sign-Binary([string]$exe) {
     elseif (Test-Path -LiteralPath 'build\keys\sign.pass') {
         $pass = '/p ' + (Get-Content -LiteralPath 'build\keys\sign.pass' -Raw).Trim()
     }
-    cmd /c "`"$($signtool.FullName)`" sign /fd SHA256 /f `"$pfx`" $pass /t http://timestamp.digicert.com $exe"
-    if ($LASTEXITCODE -ne 0) { throw "build FAILED: signtool sign $exe" }
+    # 时间戳: **默认不使用**（W5.7 实测修复 2026-09-23）
+    #
+    # **为什么默认关闭**:
+    #   · `/t http://timestamp.digicert.com` 是**公网**服务 -> 网络抖动/
+    #     服务不可达时 signtool 返回非 0 -> **整个构建失败**
+    #     （实测: 门禁中间歇失败、手动跑却成功 —— 典型网络抖动特征）。
+    #   · 本项目定位是**可复现构建** + 本地离线授权 —— 依赖公网时间戳自相矛盾。
+    #   · RFC3161 时间戳会让签名**每次不同** -> 反而**破坏**字节级可复现。
+    #   · 此处证书是**自签 demo 证书**，时间戳无实际信任价值。
+    #
+    # 若发版确需时间戳，设环境变量显式开启:
+    #     $env:PROT_TIMESTAMP_URL = 'http://timestamp.digicert.com'
+    $tsArg = ''
+    if ($env:PROT_TIMESTAMP_URL) {
+        $tsArg = "/t $($env:PROT_TIMESTAMP_URL)"
+    }
+    cmd /c "`"$($signtool.FullName)`" sign /fd SHA256 /f `"$pfx`" $pass $tsArg $exe"
+    if ($LASTEXITCODE -ne 0) {
+        # 明确诊断: 区分"证书问题"与"时间戳问题"（后者在网络不稳时常见）
+        $hint = if ($tsArg) {
+            '(已启用时间戳; 网络不可达是常见原因, 可 unset PROT_TIMESTAMP_URL 重试)'
+        } else { '(签名失败: 请检查证书与私钥口令)' }
+        throw "build FAILED: signtool sign $exe $hint"
+    }
     Write-Host "build: signed $exe"
 }
 
