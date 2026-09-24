@@ -31,7 +31,7 @@
 - `tools/mutate_check.py`: 门禁检查器**变异测试**（6/6 自证能抓错）
 - `tools/migration_gate.py`: 迁移成本门禁（阈值 12%）
 
-**W2 协议形式化**（契约 12 -> 17 字段）
+**W2 协议形式化**（契约 12 -> 17 字段；W6 加 maturity 后为 18）
 - `modules.json`: 新增 `abi_version` / `conflicts_with` / `ordering` /
   `consumes` / `produces`（13 模块 + 2 原语）
 - `docs/MODULE_PROTOCOL_SPEC.md`: **开放规范 v1**（独立于实现）
