@@ -186,22 +186,9 @@
       "abi_version": 1,
       "ordering": {
         "after": [
-          "vm",
-          "vm_rekey",
-          "crc32",
-          "antidebug",
-          "integrity",
-          "strcrypt",
-          "hostid",
-          "license",
-          "syscall",
-          "blob",
-          "revoke",
-          "vmdetect",
-          "dbiguard",
           "indirect"
         ],
-        "priority": 90
+        "priority": 140
       },
       "conflicts_with": [
         {
@@ -249,7 +236,7 @@
         "before": [
           "blob"
         ],
-        "priority": 10
+        "priority": 0
       },
       "consumes": [
         "vm.blob"
@@ -288,7 +275,7 @@
         "after": [
           "vm"
         ],
-        "priority": 20
+        "priority": 90
       },
       "consumes": [
         "vm.blob"
@@ -326,7 +313,7 @@
         "after": [
           "hostid"
         ],
-        "priority": 30
+        "priority": 70
       },
       "consumes": [
         "hostid.value"
@@ -490,7 +477,7 @@
         "before": [
           "selfcrypt"
         ],
-        "priority": 80
+        "priority": 130
       },
       "consumes": [],
       "produces": [

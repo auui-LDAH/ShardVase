@@ -442,6 +442,30 @@ def check_protocol(reg):
                 warnings.append('R16 %s: consumes %r 无模块 produces，'
                                 '也不在外部输入白名单' % (n, r))
 
+    # ---- R17 deps 与 ordering 的**语义矛盾** ----
+    #
+    # ## 为什么需要（W3 实测发现 2026-09-23）
+    #   我最初把 `deps` 混入**链接顺序图** -> 产生假环:
+    #     `integrity.deps` 含 `selfcrypt`（**能力依赖**: 需要它的掩码豁免），
+    #     而 `selfcrypt.ordering.after` 含 `integrity`（**链接顺序**）。
+    #     两者语义不同，混为一图 -> 报"环"。
+    #
+    #   => **`deps` = 运行时能力依赖；`ordering` = 链接顺序**，不可混用。
+    #      但若二者**明显矛盾**，说明契约可能写错 -> 提示（warning）。
+    #
+    # 矛盾定义: A.deps 含 B，而 B 声称"在 A 之后"（B.after 含 A）。
+    for a, m in sorted(mods.items()):
+        for b in (m.get('deps', []) or []):
+            bm = mods.get(b)
+            if not bm:
+                continue
+            b_after = (bm.get('ordering') or {}).get('after', []) or []
+            if a in b_after:
+                warnings.append(
+                    'R17 %s 依赖 %s（能力依赖），但 %s 声明 after %s'
+                    '（链接顺序）—— 语义不同属正常，但请确认契约无误'
+                    % (a, b, b, a))
+
     return errors, warnings
 
 
@@ -517,6 +541,16 @@ def selftest_protocol():
                                        len(warns)))
     if not hit16:
         fails.append('R16')
+
+    # R17: deps 与 ordering 矛盾（warning）
+    d = copy.deepcopy(base)
+    d['modules']['selfcrypt'].setdefault('ordering', {})['after'] = ['integrity']
+    _, warns17 = check_protocol(d)
+    hit17 = any('R17' in w for w in warns17)
+    print('  %s R17  变异后警告=%d' % ('ok ' if hit17 else '**FAIL**',
+                                       len(warns17)))
+    if not hit17:
+        fails.append('R17')
 
     # 基线: 未变异不应报错
     errs0, warns0 = check_protocol(copy.deepcopy(base))

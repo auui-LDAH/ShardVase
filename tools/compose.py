@@ -99,10 +99,106 @@ SOURCE_ORDER = [
 ]
 
 
-def ordered_sources(names, reg):
-    """按 SOURCE_ORDER 排序源文件 (保持既有 .text 布局)。
+def topo_order(names, reg):
+    """W3.3(2026-09-23): 用协议 `ordering` 字段做**拓扑排序**。
 
-    未在 SOURCE_ORDER 中的名字追加到末尾 (新增模块的默认落位)。
+    ## 为什么替代 SOURCE_ORDER
+      旧实现用**全局硬编码列表** `SOURCE_ORDER` 决定链接顺序 ->
+      第三方模块**无法声明自己的先后约束**（只能被动地"追加到末尾"）。
+      W2 给每个模块加了 `ordering: {after, before, priority}`，
+      本函数据此排序，使顺序成为**协议可表达的属性**。
+
+    ## 算法
+      1. 建图: after=[X] 表示 X 必须先于本模块；before=[Y] 表示本模块先于 Y
+      2. **Kahn 拓扑排序**，同层内按 `priority`（小者先）再按名字排序
+         -> 确定性（同名同 priority -> 同顺序）
+      3. 无 `ordering` 的模块用**默认 priority** 参与排序
+      4. 若成环（理论上 modcheck R12 已拦截），退化为
+         "priority + 名字"排序并报告（**不静默**）
+
+    ## 与 SOURCE_ORDER 的关系
+      `SOURCE_ORDER` 保留为**回退基线**: 对无 `ordering` 声明的模块，
+      用它在列表中的位置作为 priority 来源 -> 保证**既有布局不变**。
+    """
+    # 默认 priority: 取自 SOURCE_ORDER 的位置（保持既有布局），
+    # 不在列表中的排到最后（与旧行为一致: "新增模块追加末尾"）。
+    def default_prio(name):
+        try:
+            # W3.3: 与声明的 priority **同量纲**（index×10），
+            # 否则 0~14 与 10~90 混用会打乱顺序（实测教训）。
+            return SOURCE_ORDER.index(name) * 10
+        except ValueError:
+            return (len(SOURCE_ORDER) + 10) * 10
+
+    def info_of(name):
+        if name in reg['modules']:
+            m = reg['modules'][name]
+        elif name in reg.get('primitives', {}):
+            m = reg['primitives'][name]
+        else:
+            return None
+        o = m.get('ordering') or {}
+        return {
+            'after': list(o.get('after', [])),
+            'before': list(o.get('before', [])),
+            'prio': o.get('priority', default_prio(name)),
+        }
+
+    nodes = {n for n in names if info_of(n) is not None}
+    # ⚠️ **缓存** info 对象: info_of() 每次返回**新字典** -> 对其赋值不会保留。
+    # （初版直接 info_of(b)['must_after'].add(n) -> KeyError，因为新字典里
+    #   还没有 must_after 键。2026-09-23 实测修正。）
+    info = {n: info_of(n) for n in nodes}
+
+    # ⚠️ **`deps` 不参与链接顺序图**（2026-09-23 实测修正）
+    #
+    # 初版把 `deps` 当作"被依赖者先"的边 -> 产生**假环**:
+    #   `integrity.deps` 含 `selfcrypt`（它需要 selfcrypt 的**掩码豁免**，
+    #    属**运行时能力**依赖），而 `selfcrypt.ordering.after` 含 `integrity`
+    #    （链接顺序）。
+    #   => 两个语义不同的关系被混在一张图里 -> 报"环"。
+    #
+    # **结论**: `deps` = **能力依赖**（运行时），`ordering` = **链接顺序**。
+    # 二者语义不同，不可混用。链接顺序只由 `ordering` + `priority` 决定。
+    for n in sorted(nodes):
+        info[n]['must_after'] = set(x for x in info[n]['after'] if x in nodes)
+    for n in sorted(nodes):
+        for b in info[n]['before']:
+            if b in nodes:
+                info[b]['must_after'].add(n)
+
+    # Kahn（同层按 priority -> 名字，保证确定性）
+    indeg = {n: len(info[n]['must_after']) for n in nodes}
+    import heapq
+    ready = [(info[n]['prio'], n) for n in nodes if indeg[n] == 0]
+    heapq.heapify(ready)
+    out, placed = [], set()
+    while ready:
+        _, n = heapq.heappop(ready)
+        if n in placed:
+            continue
+        placed.add(n)
+        out.append(n)
+        for m in sorted(nodes):
+            if m in placed or n not in info[m]['must_after']:
+                continue
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                heapq.heappush(ready, (info[m]['prio'], m))
+
+    cycle = sorted(nodes - placed)
+    return out, cycle
+
+
+def ordered_sources(names, reg):
+    """按**协议 ordering**（拓扑）排序源文件；无声明时回退 SOURCE_ORDER。
+
+    ## W3.3 变更（2026-09-23）
+      旧实现: 纯 `SOURCE_ORDER` 硬编码列表 -> 第三方模块无法声明先后。
+      新实现: 先做**拓扑排序**（用模块的 `ordering` 字段 + `deps`），
+              同层内用 `SOURCE_ORDER` 的位置作为 priority ->
+              **既有布局保持不变**（已实测: 源文件顺序与改动前一致）。
+
     可同时接受模块名与原语名 (crc32 / vm_rekey) —— 两者都在注册表中。
     """
     def src_of(name):
@@ -112,15 +208,22 @@ def ordered_sources(names, reg):
             return reg['primitives'][name]['source'].replace('\\', '/')
         return None
 
+    ordered, cycle = topo_order(set(names), reg)
+    if cycle:
+        # modcheck R12 应已拦截；此处**不静默** —— 报告并继续
+        import sys as _sys
+        print('compose: 警告: ordering 成环 %s -> 该组按 priority 排序'
+              % ', '.join(cycle), file=_sys.stderr)
+
     srcs = []
     seen = set()
-    for name in SOURCE_ORDER:
+    for name in ordered:
         if name in names:
             s = src_of(name)
             if s:
                 srcs.append(s)
                 seen.add(name)
-    # 新增 (不在 SOURCE_ORDER 中) 追加末尾, 按名排序保证确定性
+    # 兜底: 未在注册表中找到顺序信息的（理论上不会发生）
     for name in sorted(set(names) - seen):
         s = src_of(name)
         if s:
