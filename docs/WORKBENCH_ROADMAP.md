@@ -960,3 +960,132 @@ $buildSalt = ...  # 见 build.ps1
 ---
 
 *2026-09-23 · W5.7 完成；§13.3 记录一个阈值设计缺陷，§13.4 记录一个网络依赖缺陷*
+
+---
+
+## 14. W2 协议形式化（2026-09-23 完成）
+
+### 14.1 成果概览
+
+| 子项 | 内容 | 状态 |
+|------|------|------|
+| W2.1 | `conflicts_with`（显式冲突声明 + 必填 `resolution`）| ✅ |
+| W2.2 | `ordering`（模块级 `after`/`before`/`priority`）| ✅ |
+| W2.3 | `consumes`/`produces`（数据流声明）| ✅ |
+| W2.4 | `abi_version` + 顶层 `_protocol_version` | ✅ |
+| W2.5 | **`docs/MODULE_PROTOCOL_SPEC.md`（独立于实现的开放规范）**| ✅ |
+| W2.6 | 兼容性自测（`modcheck --selftest` 内置负向测试）| ✅ |
+
+**契约字段：12 -> 17**
+```
+新增: abi_version / conflicts_with / ordering / consumes / produces
+```
+
+### 14.2 关键设计：**冲突有解，而非禁止**
+
+```json
+"conflicts_with": [
+  {"with": "integrity",
+   "reason": "selfcrypt 原地改写 .text，而 integrity 校验 .text",
+   "resolution": "必须启用 selfcrypt 掩码豁免"}   // <- 必填（R14）
+]
+```
+
+> **设计原则**：冲突**不等于禁止组合**。多数冲突有已知共存条件
+> （如掩码豁免）。协议要求把条件**写出来**，使编排器能自动满足。
+>
+> 此前该冲突是 `modcheck` 里**硬编码推导**的（只覆盖 1 类），
+> 现在成为**模块可自主声明的契约**。
+
+### 14.3 新校验规则 R10–R16（7 条）
+
+| 规则 | 内容 | 级别 |
+|------|------|------|
+| R10 | `abi_version` == 顶层 `_protocol_version` | error |
+| R11 | `ordering` 引用存在（含**原语**）| error |
+| R12 | `ordering` **无环**（环检测 DFS）| error |
+| R13 | `conflicts_with.with` 引用存在 | error |
+| R14 | `conflicts_with` 必须含 `resolution` | error |
+| R15 | 资源名格式合法（小写点分）| error |
+| R16 | `consumes` 有来源或属外部白名单 | warning |
+
+### 14.4 ⚠️ 新规则**第一次运行就抓到我自己的疏漏**
+
+```
+[X] R11 integrity: ordering.after 引用不存在的模块 'crc32'
+[X] R11 selfcrypt: ordering.after 引用不存在的模块 'vm_rekey' / 'crc32'
+[!] R16 integrity: consumes 'crc.value' 无模块 produces
+```
+
+**根因**：`modules.json` 有**两层** —— `modules`（13 个防护模块）与
+`primitives`（2 个原语 `crc32`/`vm_rekey`）。我在 `ORDERING`/`DATAFLOW`
+里把**原语当模块**写了。
+
+**修法（两个方向都做）**：
+1. R11/R16 **接受原语名**（原语也参与链接顺序与数据流）
+2. 给原语补 `abi_version`/`consumes`/`produces`
+
+> **这是新规则的价值证明**：规则上线**第一次运行**就发现了契约里的
+> 一处不一致 —— 而它此前无人察觉。
+
+### 14.5 负向测试（固化进工具）
+
+`python tools/modcheck.py --selftest`：
+```
+=== W2 协议规则负向测试 ===
+  ok  R10  变异后报错=1        ok  R13  变异后报错=1
+  ok  R11  变异后报错=1        ok  R14  变异后报错=1
+  ok  R12  变异后报错=1        ok  R15  变异后报错=1
+  ok  R16  变异后警告=1        ok  基线 未变异时报错=0
+[modcheck-selftest] PASS: 全部协议规则可自证能抓错
+```
+
+**8/8 通过**。每条规则用**已知违规输入**验证它会报错 —— 这是门禁失效后的
+强制纪律：**一个只会通过的检查器比没有更危险**。
+
+### 14.6 开放规范文档（W2.5 的核心交付）
+
+新建 `docs/MODULE_PROTOCOL_SPEC.md`（协议 v1），与既有文档**明确分工**：
+
+| 文档 | 角色 |
+|------|------|
+| **`MODULE_PROTOCOL_SPEC.md`** | **协议规范（版本化、独立、可独立实现）** |
+| `modules.json` | 机器可读契约（规范的实例）|
+| `modcheck.py` | 校验器（实现 R1–R16）|
+| `MODULAR_ARCH.md` | 本项目的架构（含实现细节）|
+| `CONTRACT.md` | 本项目的实现契约 |
+
+**规范先于实现**：若实现与规范冲突，**以规范为准**。
+（这是"开放规范"与"内部文档"的根本区别。）
+
+### 14.7 设计原则在协议中的体现
+
+| 原则 | 体现 |
+|------|------|
+| **P4 诚实边界是资产** | `known_limits` 为**必填**且不得为空 |
+| **效果而非实现** | `caps`/`phases` 声明能力，不规定实现方式 |
+| **冲突有解而非禁止** | `conflicts_with.resolution` 必填 |
+| **声明即可校验** | 每条规则都有机器检查（R1–R16）|
+| **检查器自证能抓错** | `--selftest` 内置负向测试 |
+| **向后兼容** | 新字段只增不改；缺省有默认语义 |
+
+### 14.8 门禁
+
+**16 项全绿**（唯一失败=工作区未提交），含 `modcheck`（现含协议字段检查）。
+
+### 14.9 阶段进度
+
+| 阶段 | 状态 |
+|------|------|
+| W1 差异扩散 | ✅ 0.54% -> 67.85% |
+| W1.6 序言注入 | ✅ M3 55.9% -> 5.9% |
+| W5 验证框架 | ✅ 六个子项 |
+| W5.7 迁移成本门禁 | ✅ |
+| **W2 协议形式化** | ✅ **本轮** |
+| W3 编排器升级 | ⬜ 下一个（依赖 W2 的 `ordering`）|
+| W4 每用户唯一 | ⬜ |
+| W6 协议治理 | ⬜ |
+
+---
+
+*2026-09-23 · W2 完成；§14.4 记录新规则第一次运行即抓到我的疏漏*

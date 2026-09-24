@@ -313,6 +313,228 @@ def list_compositions():
     return sorted(f[:-5] for f in os.listdir(COMPOSITIONS) if f.endswith('.json'))
 
 
+def check_protocol(reg):
+    """W2(协议形式化 2026-09-23): 校验新协议字段。
+
+    ## 为什么需要
+      只往 modules.json 加字段而**没人读它** = 装饰，不是协议。
+      本函数让新字段成为**可强制执行的契约**。
+
+    ## 校验规则
+      R10 `abi_version` 必须等于顶层 `_protocol_version`
+      R11 `ordering` 的 after/before 引用必须存在
+      R12 `ordering` 必须**无环**（可拓扑排序）
+      R13 `conflicts_with.with` 引用必须存在
+      R14 `conflicts_with` 必须声明 `resolution`（不能只说"冲突"不说怎么办）
+      R15 资源名格式合法（小写点分，如 `text.bytes`）
+      R16 **数据流自洽**: consumes 的资源必须有人 produces，或属外部输入白名单
+
+    返回 (errors, warnings)。
+    """
+    errors = []
+    warnings = []
+    mods = reg.get('modules', {})
+    # ⚠️ **必须包含 primitives**: 原语（crc32/vm_rekey）也参与链接顺序且
+    # 可 produces 资源。初版只取 modules -> R11 误报"引用不存在的模块 crc32"。
+    # （该误报是 W2 新规则**第一次运行就抓到的真实疏漏**，见 2026-09-23 记录。）
+    prims = reg.get('primitives', {})
+    names = set(mods) | set(prims)
+    proto = reg.get('_protocol_version')
+
+    # 外部输入白名单: 这些资源由宿主/构建系统提供，不必有模块 produces
+    EXTERNAL = {'text.bytes', 'rdata.bytes', 'pdata.bytes', 'strings.table',
+                'vm.blob'}
+
+    RES_RE = re.compile(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$')
+
+    # ---- R10 abi_version ----
+    if proto is None:
+        warnings.append('顶层缺 _protocol_version — 跳过 abi_version 校验')
+    else:
+        for n, m in sorted(mods.items()):
+            av = m.get('abi_version')
+            if av is None:
+                errors.append('R10 %s: 缺 abi_version（协议版本 %s 要求声明）'
+                              % (n, proto))
+            elif av != proto:
+                errors.append('R10 %s: abi_version=%s != _protocol_version=%s'
+                              % (n, av, proto))
+
+    # ---- R11/R12 ordering ----
+    edges = {}       # name -> set(必须在它之前的模块)
+    for n, m in sorted(mods.items()):
+        o = m.get('ordering')
+        if not o:
+            continue
+        for ref in o.get('after', []):
+            if ref not in names:
+                errors.append('R11 %s: ordering.after 引用不存在的模块 %r'
+                              % (n, ref))
+            else:
+                edges.setdefault(n, set()).add(ref)
+        for ref in o.get('before', []):
+            if ref not in names:
+                errors.append('R11 %s: ordering.before 引用不存在的模块 %r'
+                              % (n, ref))
+            else:
+                edges.setdefault(ref, set()).add(n)
+
+    # 环检测（DFS）
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in names}
+    cycle = []
+
+    def dfs(u, stack):
+        if color.get(u) == GRAY:
+            cycle.extend(stack[stack.index(u):] + [u] if u in stack else [u])
+            return True
+        if color.get(u) == BLACK:
+            return False
+        color[u] = GRAY
+        stack.append(u)
+        for v in sorted(edges.get(u, ())):
+            if dfs(v, stack):
+                return True
+        stack.pop()
+        color[u] = BLACK
+        return False
+
+    for n in sorted(names):
+        if color[n] == WHITE:
+            if dfs(n, []):
+                break
+    if cycle:
+        errors.append('R12 ordering 存在环: %s' % ' -> '.join(cycle))
+
+    # ---- R13/R14 conflicts_with ----
+    for n, m in sorted(mods.items()):
+        for c in m.get('conflicts_with', []) or []:
+            if not isinstance(c, dict):
+                errors.append('R13 %s: conflicts_with 元素必须是对象' % n)
+                continue
+            w = c.get('with')
+            if w not in names:
+                errors.append('R13 %s: conflicts_with.with 引用不存在的模块 %r'
+                              % (n, w))
+            if not c.get('resolution'):
+                errors.append('R14 %s: 与 %s 的冲突缺 resolution'
+                              '（必须说明如何共存，不能只说"冲突"）' % (n, w))
+
+    # ---- R15 资源名格式 ----
+    for n, m in sorted(mods.items()):
+        for kind in ('consumes', 'produces'):
+            for r in m.get(kind, []) or []:
+                if not RES_RE.match(str(r)):
+                    errors.append('R15 %s: %s 资源名 %r 格式非法'
+                                  '（应为小写点分，如 text.bytes）'
+                                  % (n, kind, r))
+
+    # ---- R16 数据流自洽 ----
+    produced = set()
+    for m in mods.values():
+        produced.update(m.get('produces', []) or [])
+    # 原语的 produces 同样算数（crc32 产 crc.value）
+    for p in prims.values():
+        produced.update(p.get('produces', []) or [])
+    for n, m in sorted(mods.items()):
+        for r in m.get('consumes', []) or []:
+            if r not in produced and r not in EXTERNAL:
+                warnings.append('R16 %s: consumes %r 无模块 produces，'
+                                '也不在外部输入白名单' % (n, r))
+
+    return errors, warnings
+
+
+def selftest_protocol():
+    """W2 协议规则**负向测试**（自证能抓错）。
+
+    ## 为什么必须内置（2026-09-23 教训）
+      本门禁曾因 PowerShell 数组恒真而 **7/13 项失效**。
+      **一个只会通过的检查器比没有更危险。**
+      故每条协议规则都必须用**已知违规输入**验证它能报错。
+
+    用法: python tools/modcheck.py --selftest
+    """
+    import copy
+    import tempfile
+    base = load_registry()
+    fails = []
+
+    # 每条规则: (规则号, 变异函数, 期望命中的提示文本)
+    def mut_r10(d):
+        d['modules']['antidebug']['abi_version'] = 999
+
+    def mut_r11(d):
+        d['modules']['indirect']['ordering'] = {'after': ['no_such_module']}
+
+    def mut_r12(d):
+        d['modules']['vm'].setdefault('ordering', {})['after'] = ['blob']
+        d['modules']['blob'].setdefault('ordering', {})['after'] = ['vm']
+
+    def mut_r13(d):
+        d['modules']['selfcrypt']['conflicts_with'] = [
+            {'with': 'ghost_module', 'resolution': 'x'}]
+
+    def mut_r14(d):
+        d['modules']['selfcrypt']['conflicts_with'] = [
+            {'with': 'integrity', 'reason': '仅说冲突'}]
+
+    def mut_r15(d):
+        d['modules']['antidebug']['produces'] = ['BAD_NAME']
+
+    def mut_r16(d):
+        d['modules']['antidebug']['consumes'] = ['nobody.produces_this']
+
+    CASES = [
+        ('R10', mut_r10, 'abi_version'), ('R11', mut_r11, 'ordering.after'),
+        ('R12', mut_r12, '存在环'), ('R13', mut_r13, 'conflicts_with.with'),
+        ('R14', mut_r14, 'resolution'), ('R15', mut_r15, '格式非法'),
+    ]
+
+    print('=== W2 协议规则负向测试 ===')
+    for rule, fn, needle in CASES:
+        d = copy.deepcopy(base)
+        try:
+            fn(d)
+        except (KeyError, TypeError) as e:
+            print('  **FAIL** %s 变异无法应用: %s' % (rule, e))
+            fails.append(rule)
+            continue
+        errs, _ = check_protocol(d)
+        hit = any(rule in e and needle in e for e in errs)
+        print('  %s %-4s 变异后报错=%s' % ('ok ' if hit else '**FAIL**',
+                                          rule, len(errs)))
+        if not hit:
+            fails.append(rule)
+            print('       实际报错: %s' % (errs[:2] if errs else '(无)'))
+
+    # R16 是 warning
+    d = copy.deepcopy(base)
+    mut_r16(d)
+    _, warns = check_protocol(d)
+    hit16 = any('R16' in w for w in warns)
+    print('  %s R16  变异后警告=%d' % ('ok ' if hit16 else '**FAIL**',
+                                       len(warns)))
+    if not hit16:
+        fails.append('R16')
+
+    # 基线: 未变异不应报错
+    errs0, warns0 = check_protocol(copy.deepcopy(base))
+    base_ok = not errs0
+    print('  %s 基线 未变异时报错=%d' % ('ok ' if base_ok else '**FAIL**',
+                                         len(errs0)))
+    if not base_ok:
+        fails.append('基线')
+        print('       基线报错: %s' % errs0[:3])
+
+    print()
+    if fails:
+        print('[modcheck-selftest] FAIL: %s' % ', '.join(fails))
+        return 1
+    print('[modcheck-selftest] PASS: 全部协议规则可自证能抓错')
+    return 0
+
+
 def check_drill_coverage(reg):
     """阶段 3 准入 (P4): 每个防御模块须有 ≥1 条 drill 记录。
 
@@ -366,7 +588,11 @@ def main():
     ap.add_argument('--list-compositions', action='store_true',
                     help='列出全部参考拼装图')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--selftest', action='store_true',
+                    help='W2 协议规则负向测试')
     args = ap.parse_args()
+    if args.selftest:
+        return selftest_protocol()
 
     reg = load_registry()
     mods = reg['modules']
@@ -407,6 +633,20 @@ def main():
         rc = 1
     elif not args.quiet:
         print('  [ok] 注册表与源码一致')
+
+    # --- A2. 协议字段检查 (W2 形式化) ---
+    perr, pwarn = check_protocol(reg)
+    if not args.quiet:
+        print()
+        print('=== 协议字段 (W2 形式化) ===')
+    for e in perr:
+        print('  [X] %s' % e)
+    for w in pwarn:
+        print('  [!] %s' % w)
+    if perr:
+        rc = 1
+    elif not args.quiet:
+        print('  [ok] 协议字段自洽')
 
     # --- B. 组合检查 ---
     targets = []
