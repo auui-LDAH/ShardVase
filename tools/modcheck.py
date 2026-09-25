@@ -123,7 +123,8 @@ def source_deps(src_path, mod_name):
             #    白名单中的头 -> **报错**。这样下次新增基础设施头时
             #    会被立刻提醒，而不是等门禁报"未登记依赖"。
             INFRA_HEADERS = ('protdef', 'prot_sections', 'prot_noise',
-                             'prot_platform', 'version')
+                             'prot_platform', 'version',
+                             'prot_crypto', 'prot_compiler')
             if h not in INFRA_HEADERS and h != mod_name:
                 deps.add(h)
     return deps
@@ -420,9 +421,11 @@ def check_infra_headers(reg):
     """
     # 基础设施头（非模块）—— **由 R20 本身发现并补全**（2026-09-23）
     INFRA = ('protdef', 'prot_sections', 'prot_noise',
-             'prot_platform', 'version')
+             'prot_platform', 'version',
+             'prot_crypto', 'prot_compiler')
     # 头文件名 -> 注册名的映射（platform_win 的头是 prot_platform.h）
-    alias = {'prot_platform': 'platform_win'}
+    alias = {'prot_platform': 'platform_win',
+             'prot_crypto': 'crypto_win'}
     hdr_dir = os.path.join(REPO, 'include', 'protect')
     if not os.path.isdir(hdr_dir):
         return [], ['R20 找不到 include/protect/']

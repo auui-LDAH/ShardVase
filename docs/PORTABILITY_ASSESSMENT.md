@@ -257,3 +257,151 @@ TerminateProcess     9      GS/FS 段读            1
 ---
 
 *2026-09-23 · L1 完成：接口可用性已**实测证明**；§5.2 含完整验证记录与诚实边界*
+
+---
+
+## 6. L2 完成记录：纯逻辑模块解耦（2026-09-23）
+
+### 6.1 目标
+把**纯逻辑模块**与平台层解耦 —— 提高可跨平台复用的比例。
+
+### 6.2 勘查：真实耦合（**不只看 WinAPI**）
+
+L1 的扫描只查"直接调 WinAPI"，结论是 8 个模块 0 WinAPI。
+但**没有 WinAPI 不等于可移植** —— L2 用 5 个维度重查：
+
+| 维度 | 检查内容 |
+|------|---------|
+| 平台头 | `windows.h` / `tlhelp32.h` / `bcrypt.h` … |
+| PE 依赖 | `IMAGE_*` / `PIMAGE_*` |
+| 平台类型 | `DWORD` / `HANDLE` / `BOOL` / `PUCHAR` … |
+| MSVC 专有 | `__declspec` / `#pragma section` / `__cpuid` … |
+| 其它平台头 | `intrin.h` / `winternl.h` / `wincrypt.h` … |
+
+**结果**：
+
+| 模块 | 判定 |
+|------|------|
+| `crc32` / `vm_rekey` / `strcrypt` / `blob` / `revoke` | ✅ **零耦合**（真纯逻辑）|
+| `indirect` | ⚠️ `__declspec(noinline)` ×1（**编译器专有**）|
+| `hostid` | ⚠️ `windows.h` + 注册表/卷序列号（**平台本质差异**）|
+| `license` | ⚠️ `windows.h` + BCrypt（**密码学调用**）|
+
+### 6.3 解耦 1：`indirect` 的编译器专有语法 ✅
+
+**新增** `include/protect/prot_compiler.h`：
+
+| 宏 | MSVC | GCC/Clang |
+|----|------|-----------|
+| `PROT_NOINLINE` | `__declspec(noinline)` | `__attribute__((noinline))` |
+| `PROT_USED` | （空）| `__attribute__((used))` |
+| `PROT_CALL` | `__cdecl` | （空）|
+| `PROT_PACK_*` | `__pragma(pack(...))` | `__attribute__((packed))` |
+
+`src/indirect.c` 改用 `PROT_NOINLINE` -> **不含编译器专有语法**。
+
+**验证**：MSVC 下宏**展开为完全相同的 `__declspec(noinline)`**；
+`prot_indirect_resolve` 在 map 中**仍是独立符号**（未被内联）——
+即**间接化语义保持**。
+
+> **设计说明**：这是 L1 平台抽象层（**运行期**能力）的
+> **编译期对应物** —— 两者共同构成"跨平台"的两个维度。
+
+### 6.4 解耦 2：`license` 的密码学 ✅（**价值最高**）
+
+**改动前**：`src/license.c` **直接调用 BCrypt** 做 SHA-256 与 RSA 验签
+-> **整个授权链（14 条 drill）不可移植**。
+
+**改动后**三层分离：
+
+```
+license.c            消息构造 + 流程编排   <- 纯逻辑，可移植
+     ↓
+prot_crypto.h        密码学接口（只暴露算法语义）
+     ↓
+prot_crypto_win.c    BCrypt 实现            <- 平台层
+```
+
+**`license.c` 的变化**：
+- 行数 **105 -> 78**
+- **残留平台符号：0**（`BCRYPT_*` / `NTSTATUS` / `PUCHAR` 等全部消失）
+- 不再 `#include <windows.h>` / `<bcrypt.h>`
+
+**关键设计（接口层）**：
+| 设计 | 理由 |
+|------|------|
+| 公钥为**不透明 blob + 长度** | Windows 用 `BCRYPT_RSAPUBLIC_BLOB`；其它平台可换标准格式 |
+| **不暴露平台类型** | 接口只用 `uint8_t` / `size_t` / `int` |
+| **错误与验签失败都返回 0** | 授权路径**不应泄漏**"是格式错还是签名错"（会成为 oracle）|
+| `PROT_SIG_LEN` 是**协议常量** | 384 字节（RSA-3072），非平台相关 |
+
+### 6.5 关键：BCrypt 调用是**逐字迁移**（而非重写）
+
+> 授权链有 **14 条 drill**，验签失败直接影响授权判定。
+> **重写密码学调用 = 引入真实风险。**
+> 故 `sha256_digest()` 与 `prot_license_verify()` 的 BCrypt 代码
+> **逐字搬到** `prot_crypto_win.c`，只换成接口签名。
+
+**行为等价性验证（实测）**：
+
+| # | 项 | 结果 |
+|---|----|------|
+| V1 | `license.c` 无平台符号 | ✅ **0 处** |
+| V2 | 密码学层真实编入 | ✅ **单独编译时 3 个符号全在 obj 中**；`demo.exe` **仍导入全部 7 个 BCrypt 函数**（证明调用链完整）|
+| V3 | **授权链功能**（e2e T1-T28 含授权用例）| ✅ PASS |
+| V4 | **攻击侧**（attacks A1-A12 含伪造/篡改授权）| ✅ PASS |
+| V5 | 保护链 P1-P6 | ✅ PASS |
+| V6 | **可复现性** | ✅ PASS（SHA-256 一致）|
+| V7 | R20 白名单自动发现 | ✅ 负向验证通过 |
+
+### 6.6 ⚠️ 门禁抓到的**真实回归**（L1 时漏检的路径）
+
+**现象**：`example E1-E7` 构建失败
+```
+license.obj : error LNK2019: 无法解析的外部符号
+              prot_crypto_rsa_verify_sha256
+```
+
+**根因**：`examples/tool_demo/build_example.ps1` 有**自己的硬编码
+源文件列表**（L89），未含新平台层。
+
+> **这是 L1 时我没发现的** —— L1 只改了 `vmdetect`（未被 example 引用），
+> 故 example 不受影响；L2 改 `license.c`（**被 example 引用**）后暴露。
+
+**教训**：**硬编码源文件列表有三处** ——
+`build.ps1` / `build_skeleton.ps1` / `build_example.ps1`。
+新增平台层必须**三处同改**。
+
+> 同类问题在本项目**反复出现**：
+> `SOURCE_ORDER` 硬编码（W3.3 已解决）、`INFRA_HEADERS` 白名单（R20 已解决）、
+> **构建脚本的源文件列表（本次，尚未自动化）**。
+
+### 6.7 解耦成果汇总
+
+| 模块 | L1 判定 | **L2 后** |
+|------|---------|----------|
+| `crc32` / `vm_rekey` / `strcrypt` / `blob` / `revoke` | 纯逻辑 | ✅ 纯逻辑（未变）|
+| `indirect` | ⚠️ 编译器专有 | ✅ **纯逻辑**（用 `PROT_NOINLINE`）|
+| `license` | ⚠️ BCrypt | ✅ **纯逻辑**（密码学已抽出）|
+| `hostid` | ⚠️ 注册表/卷序列号 | ⚠️ **未解耦**（见 §6.8）|
+
+**=> 从 5 个纯逻辑模块提升到 7 个**（13 个模块中）。
+
+### 6.8 诚实边界（L2 **未**做到的）
+
+| 边界 | 说明 |
+|------|------|
+| **`hostid` 未解耦** | 注册表 + 卷序列号是**平台本质差异**（Linux 用 `/etc/machine-id` + `statvfs`）—— 不是"抽个接口"就能解决，需真正实现 |
+| **密码学层只覆盖 2 个原语** | SHA-256 / RSA 验签；对称加密与 KDF **仍各自为政** |
+| **未实现其它平台** | Linux/Android 仍**未做** |
+| **平台层仍只 1 处被用** | `prot_plat_alloc/protect/free` 等**尚无模块使用** |
+| **构建脚本列表未自动化** | 三处硬编码列表仍需**手工同改**（§6.6）|
+
+### 6.9 下一步（L3）
+
+把**可移植内核**抽出为一个明确的 C 子集（平台无关），
+并**自动化构建脚本的源文件列表**（消除 §6.6 的三处手工同步）。
+
+---
+
+*2026-09-23 · L2 完成：授权链与间接化已解耦；§6.6 记录门禁抓到 L1 漏检的回归*

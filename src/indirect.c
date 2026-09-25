@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -15,14 +15,21 @@
  *     无直接 call 目标 (调用方无法静态读到最终函数地址);
  *   - 每次构建 seed 变化 -> perm 全变, 跨构建无法复用 patch。
  *
- * __declspec(noinline): 防止 /O2 把 resolve 内联进调用点 (保持间接形态)。
+ * PROT_NOINLINE: 防止 /O2 把 resolve 内联进调用点 (保持间接形态)。
+ *
+ * L2（2026-09-23）: 由 `__declspec(noinline)`（**MSVC 专有**）
+ *   改为 `PROT_NOINLINE`（见 protect/prot_compiler.h）——
+ *   本模块因此**不含编译器专有语法**，换编译器无需改源码。
+ *   MSVC 下该宏**展开为完全相同的 `__declspec(noinline)`**，
+ *   故产物行为不变（已实测门禁全绿 + 可复现性保持）。
  */
 #include "protect/indirect.h"
+#include "protect/prot_compiler.h"  /* L2: 编译器无关属性宏 */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <stdint.h>
 
-__declspec(noinline)
+PROT_NOINLINE
 prot_indirect_fnp prot_indirect_resolve(prot_indirect_fn fn_id)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */

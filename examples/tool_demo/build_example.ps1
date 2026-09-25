@@ -86,7 +86,19 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c src\selfcrypt.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
+#
+# L2（2026-09-23）: 加入平台层两个源文件。
+#
+# **为什么必须加**: `src/license.c` 的密码学已抽到
+#   `src/platform/prot_crypto_win.c`（L2 解耦）——
+#   本脚本的源文件列表是**硬编码**的，若不加入则会:
+#     `LNK2019: 无法解析的外部符号 prot_crypto_rsa_verify_sha256`
+#   这正是门禁 `example E1-E7` **抓到**的（L1 时我漏检了这条路径）。
+#
+# **教训**: 硬编码源文件列表有**三处**（build.ps1 / build_skeleton.ps1 /
+#   build_example.ps1）—— 新增平台层必须**三处同改**。
+#   （同类问题在本项目已出现多次: SOURCE_ORDER 硬编码、INFRA_HEADERS 白名单。）
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c src\selfcrypt.c src\platform\prot_platform_win.c src\platform\prot_crypto_win.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
 # 清理 cl 留在 cwd 的 .obj。注意 "nul.obj": 'nul' 是 Windows 保留设备名,
 # Get-ChildItem 会列出它但 Remove-Item 无法删除 (报 PathNotFound 刷屏)。

@@ -620,6 +620,17 @@
       ],
       "_comment": "平台抽象层（Windows 实现）—— L1 接入步骤。所有平台相关模块的公共底座；原语 = 基础设施，总是编译，不参与组合取舍。设计见 docs/PORTABILITY_ASSESSMENT.md",
       "deps": []
+    },
+    "crypto_win": {
+      "source": "src/platform/prot_crypto_win.c",
+      "header": "include/protect/prot_crypto.h",
+      "exports": [
+        "prot_crypto_sha256",
+        "prot_crypto_rsa_verify_sha256",
+        "prot_crypto_capabilities"
+      ],
+      "_comment": "密码学抽象层（Windows / BCrypt 实现）—— L2。把 SHA-256 与 RSA 验签从 license.c 抽出，使**授权链不再直接依赖 BCrypt**。BCrypt 调用逐字迁移，行为等价。",
+      "deps": []
     }
   },
   "_protocol_version": 1,

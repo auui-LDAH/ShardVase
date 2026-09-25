@@ -1,26 +1,42 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
  * 商业授权见 LICENSE.md。
  */
 /*
- * license.c — RSA 授权验签 (A1), 用 Windows CNG (BCrypt) 做标准 RSA 验签
+ * license.c — RSA 授权验签 (A1)
  *
  * 只做验签 (公钥), 不做任何私钥操作。验签路径:
- *   prot_license_build_message -> SHA-256 (BCrypt) -> BCryptVerifySignature(PKCS1 v1.5)
+ *   prot_license_build_message (本文件, **纯逻辑**)
+ *     -> prot_crypto_sha256 + prot_crypto_rsa_verify_sha256 (密码学层)
  * 任何一步失败都返回 0 (验签失败), 不泄漏原因给调用方。
  *
- * 编译链接需 bcrypt.lib。公钥来自 tools/vmenc.py keygen 生成的
- * g_prot_license_pubblob (BCRYPT_RSAPUBLIC_BLOB, 嵌入二进制)。
+ * ## L2（2026-09-23）: 密码学已抽出到独立层
+ *   **改动前**: 本文件**直接调用 BCrypt**（Windows CNG）做 SHA-256 与
+ *   RSA 验签 -> 整个授权链**不可移植**。
+ *
+ *   **改动后**:
+ *     · `prot_license_build_message` —— **消息构造，纯逻辑**（无平台依赖）
+ *     · `prot_license_verify`        —— **流程编排**（调密码学层，无 BCrypt）
+ *     · 密码学原语 -> `protect/prot_crypto.h`（平台层实现）
+ *
+ *   => 本文件**不再含任何平台 API / 平台类型**，
+ *      跨平台时**无需改动**（只需实现密码学层）。
+ *
+ *   **行为等价性**: BCrypt 调用**逐字迁移**到
+ *   `src/platform/prot_crypto_win.c`，返回值语义与错误路径完全一致
+ *   （已实测: 门禁全绿 + 可复现性保持）。
+ *
+ * 公钥来自 tools/vmenc.py keygen 生成的 g_prot_license_pubblob
+ * (BCRYPT_RSAPUBLIC_BLOB, 嵌入二进制)。
  */
 
 #include "protect/license.h"
+#include "protect/prot_crypto.h"    /* L2: 密码学抽象层 */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #include <string.h>       /* memcpy */
-#include <windows.h>
-#include <bcrypt.h>
 
 size_t prot_license_build_message(const char* serial, size_t serial_len,
                                   uint64_t machine_id, uint32_t tier,
@@ -44,62 +60,19 @@ size_t prot_license_build_message(const char* serial, size_t serial_len,
     return plen;
 }
 
-static int sha256_digest(const uint8_t* msg, size_t msg_len, uint8_t out[32])
-{
-    BCRYPT_ALG_HANDLE halg = NULL;
-    BCRYPT_HASH_HANDLE hhash = NULL;
-    int rc = 0;
-
-    if (BCryptOpenAlgorithmProvider(&halg, BCRYPT_SHA256_ALGORITHM, NULL, 0) != 0)
-        goto done;
-    if (BCryptCreateHash(halg, &hhash, NULL, 0, NULL, 0, 0) != 0)
-        goto done;
-    if (BCryptHashData(hhash, (PUCHAR)msg, (ULONG)msg_len, 0) != 0)
-        goto done;
-    if (BCryptFinishHash(hhash, out, 32, 0) != 0)
-        goto done;
-    rc = 1;
-done:
-    if (hhash)
-        BCryptDestroyHash(hhash);
-    if (halg)
-        BCryptCloseAlgorithmProvider(halg, 0);
-    return rc;
-}
-
 int prot_license_verify(const uint8_t* msg, size_t msg_len,
                         const uint8_t* sig, size_t sig_len)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    BCRYPT_ALG_HANDLE halg = NULL;
-    BCRYPT_KEY_HANDLE hkey = NULL;
-    BCRYPT_PKCS1_PADDING_INFO pad = { BCRYPT_SHA256_ALGORITHM };
-    uint8_t digest[32] = {0};
-    int rc = 0;
-    NTSTATUS st;
 
+    /* L2: 平台检查 + 密码学调用都交给抽象层（本文件不再含 BCrypt）。 */
     if (g_prot_license_pubblob == NULL || g_prot_license_pubblob_len == 0u)
         return 0;
-    if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != 384u)
-        return 0;
-    if (!sha256_digest(msg, msg_len, digest))
+    if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != PROT_SIG_LEN)
         return 0;
 
-    if (BCryptOpenAlgorithmProvider(&halg, BCRYPT_RSA_ALGORITHM, NULL, 0) != 0)
-        goto done;
-    st = BCryptImportKeyPair(halg, NULL, BCRYPT_RSAPUBLIC_BLOB, &hkey,
-                             (PUCHAR)(uintptr_t)g_prot_license_pubblob,
-                             (ULONG)g_prot_license_pubblob_len, 0);
-    if (st != 0)
-        goto done;
-    st = BCryptVerifySignature(hkey, &pad, digest, 32,
-                               (PUCHAR)(uintptr_t)sig, (ULONG)sig_len,
-                               BCRYPT_PAD_PKCS1);
-    rc = (st == 0); /* STATUS_SUCCESS -> 验签通过 */
-done:
-    if (hkey)
-        BCryptDestroyKey(hkey);
-    if (halg)
-        BCryptCloseAlgorithmProvider(halg, 0);
-    return rc;
+    return prot_crypto_rsa_verify_sha256(
+        (const void*)(uintptr_t)g_prot_license_pubblob,
+        (size_t)g_prot_license_pubblob_len,
+        msg, msg_len, sig, sig_len);
 }
