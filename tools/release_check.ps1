@@ -168,6 +168,23 @@ Check '协议兼容性 (conformance)' {
     & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
 }
 
+# 攻击技契约（缺口#2, 2026-09-23）: 攻防**契约层对称**。
+#
+# **为什么需要**: 此前"攻防对称"只到**数据层**（drills 记录），
+#   攻击技本身**无契约** —— 57 个 drill 函数散在 5 个脚本里，
+#   无法列举、无法校验、无法组合。
+#
+#   本项与 modcheck 对称:
+#     modcheck    -> modules.json（防御模块契约）
+#     attackcheck -> attacks.json（攻击技契约）
+#
+# 含**负向自检**（7 条规则自证能抓错）。
+Check '攻击技契约 (attackcheck)' {
+    & $py tools\attackcheck.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\attackcheck.py --quiet; $LASTEXITCODE -eq 0
+}
+
 # 骨架回归（2026-09-23）: 验证 **DIY 用户路径**可用。
 #
 # **为什么是门禁的一部分**: 本项目曾发生一次**阻断级缺陷** ——
