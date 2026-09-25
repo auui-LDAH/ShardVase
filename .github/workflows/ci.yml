@@ -59,6 +59,36 @@ jobs:
       - name: Public-material drift (doccheck)
         run: python tools\doccheck.py
 
+      # ============================================================
+      # 新增门禁项（2026-09-23）
+      #
+      # **为什么必须在这里也跑**：项目纪律 ——
+      #   "新增门禁项必须也在 CI 里跑，否则等于'本地才生效的门禁'，
+      #    与 P3 教训相悖（可绕过的门禁会掩盖缺陷）"。
+      # ============================================================
+
+      # 协议兼容性（W6.2）: 含**负向自检**（自证能抓错）
+      - name: Protocol conformance (含自检)
+        run: |
+          python tools\conformance.py --selftest
+          python tools\conformance.py modules.json
+
+      # 骨架回归（2026-09-23）: 验证 **DIY 用户路径**可用
+      #
+      # **为什么关键**: 曾发生阻断级缺陷 —— skeleton/strings.txt 未随
+      # strcrypt.h 枚举同步 -> **所有 DIY 用户构建失败**，而门禁没抓到，
+      # 因为"从不构建骨架"。本项覆盖该路径。
+      - name: Skeleton regression (DIY 路径)
+        run: python tools\skeleton_check.py
+
+      # 检查器变异测试（W5.4）: 每个检查器须自证能抓错
+      - name: Checker mutation test
+        run: python tools\mutate_check.py
+
+      # 迁移成本门禁（W5.7）: 防止 W1.6 成果回退
+      - name: Migration cost gate
+        run: python tools\migration_gate.py --quiet
+
       # 完整门禁（**阻塞式**）。CI 里跳过"工作区干净"检查 ——
       # 上游步骤已产生构建产物，该项在 CI 中恒失败；但其余 13 项必须全绿。
       # 注意: **不要**用 continue-on-error —— 那会让门禁变成"可绕过的门禁",
@@ -130,3 +160,63 @@ jobs:
             exit 1
           }
           Write-Host "reproducible: demo.exe + vm.blob byte-identical"
+
+
+  # ==============================================================
+  # SDK 打包与发布（缺口 #4，2026-09-23）
+  #
+  # 两个触发条件:
+  #   · push 到 main      -> 只**打包并上传 artifact**（验证打包可用）
+  #   · 推送 v* tag       -> 额外**建 GitHub Release 并上传 zip**
+  #
+  # **为什么需要**: 此前发布需手工跑 `sdk_pack.py` 再手工上传。
+  # 自动化后，"发布 SDK" = 推一个 tag。
+  # ==============================================================
+  sdk-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: build-and-verify
+    permissions:
+      contents: write        # 建 Release 需要
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC (Build Tools 2022 x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # 打包器自检（含"包内 skeleton/strings.txt 与枚举一致"的防复发检查）
+      - name: SDK packer selftest
+        run: python tools\sdk_pack.py --selftest
+
+      - name: Build SDK package
+        run: python tools\sdk_pack.py --force --zip
+
+      # **关键**: 验证包**独立可用**（脱离仓库能否构建）
+      - name: Verify SDK is standalone
+        run: python tools\verify_sdk_standalone.py
+
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shardvase-sdk
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # 仅 tag 推送时发布 Release
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $zip = Get-ChildItem dist\*.zip | Select-Object -First 1
+          Write-Host "publishing $ver -> $($zip.Name)"
+          gh release create $ver $zip.FullName `
+            --repo ${{ github.repository }} `
+            --title "ShardVase SDK $ver" `
+            --notes-file CHANGELOG.md `
+            --verify-tag
