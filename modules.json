@@ -40,7 +40,37 @@
       "produces": [
         "debug.report"
       ],
-      "maturity": "community"
+      "maturity": "community",
+      "host_hooks": [
+        {
+          "hook": "post_license",
+          "call": "prot_antidebug_scan",
+          "report_type": "prot_antidebug_report",
+          "predicate": "prot_antidebug_detected",
+          "on_trigger": "exit",
+          "needs_sc_ext": true,
+          "selftest_fn": "print_selftest",
+          "selftest_strs": [
+            "SELFTEST_PEB",
+            "SELFTEST_NTGFLAG",
+            "SELFTEST_DEBUGPORT",
+            "SELFTEST_DEBUGFLAGS",
+            "SELFTEST_DEBUGOBJ",
+            "SELFTEST_HWBP",
+            "SELFTEST_TIMING",
+            "SELFTEST_KDBG",
+            "SELFTEST_HEAPFLAGS",
+            "SELFTEST_INT3",
+            "SELFTEST_PPID",
+            "SELFTEST_CLOCK"
+          ]
+        },
+        {
+          "hook": "vm_result",
+          "call": "prot_antidebug_fake_active",
+          "on_trigger": "xor_vm_result"
+        }
+      ]
     },
     "dbiguard": {
       "source": "src/dbiguard.c",
@@ -71,7 +101,23 @@
       "produces": [
         "dbi.report"
       ],
-      "maturity": "core"
+      "maturity": "core",
+      "host_hooks": [
+        {
+          "hook": "pre_license",
+          "call": "prot_dbiguard_scan",
+          "report_type": "prot_dbiguard_report",
+          "predicate": "prot_dbiguard_suspicious",
+          "on_trigger": "exit",
+          "status": "PROT_ERR_INTEGRITY",
+          "selftest_strs": [
+            "SELFTEST_DBI_HOOK",
+            "SELFTEST_DBI_FRIDA",
+            "SELFTEST_DBI_RXRW",
+            "SELFTEST_DBI_THREADS"
+          ]
+        }
+      ]
     },
     "vmdetect": {
       "source": "src/vmdetect.c",
@@ -102,7 +148,21 @@
       "produces": [
         "vm.detect_report"
       ],
-      "maturity": "community"
+      "maturity": "community",
+      "host_hooks": [
+        {
+          "hook": "post_license",
+          "call": "prot_vmdetect_scan",
+          "report_type": "prot_vmdetect_report",
+          "predicate": "prot_vmdetect_suspicious",
+          "on_trigger": "warn",
+          "selftest_strs": [
+            "SELFTEST_VM_HV",
+            "SELFTEST_VM_VENDOR",
+            "SELFTEST_VM_PROCS"
+          ]
+        }
+      ]
     },
     "integrity": {
       "source": "src/integrity.c",
@@ -158,7 +218,28 @@
       "produces": [
         "integrity.state"
       ],
-      "maturity": "community"
+      "maturity": "community",
+      "host_hooks": [
+        {
+          "hook": "pre_business",
+          "call": "prot_integrity_check_self",
+          "predicate": "prot_integrity_check_self",
+          "on_trigger": "exit",
+          "status": "PROT_EXIT_TAMPERED",
+          "needs_sc_ext": true
+        },
+        {
+          "hook": "watchdog",
+          "call": "prot_integrity_start_watchdog",
+          "on_trigger": "watchdog",
+          "interval_ms": 5000
+        },
+        {
+          "hook": "watchdog",
+          "call": "prot_integrity_set_watchdog_callback",
+          "callback": "wd_n3_recheck"
+        }
+      ]
     },
     "selfcrypt": {
       "source": "src/selfcrypt.c",
@@ -532,5 +613,25 @@
     "verified": "经攻防验证: >=3 条 drill 且至少 1 条 BREACHED",
     "core": "核心: >=5 条 drill + BREACHED + 被 >=2 个参考组合使用",
     "_why_breached": "要求 BREACHED 是**诚实边界**(P4)的体现: 只被\"验证成功\"的模块说明**没被真正攻击过**; 承认\"被打穿过\"才是成熟度的证据。"
+  },
+  "_host_hooks_scale": {
+    "_comment": "宿主钩子协议（docs/HOST_HOOK_PROTOCOL.md）：声明模块在宿主的**哪个时机**被调用，使\"加模块不改宿主代码\"成为可能。",
+    "hook_points": [
+      "pre_license",
+      "post_license",
+      "pre_business",
+      "post_business",
+      "watchdog",
+      "selftest",
+      "vm_result"
+    ],
+    "on_trigger": [
+      "exit",
+      "warn",
+      "continue",
+      "xor_vm_result",
+      "watchdog"
+    ],
+    "_why": "把【模块能力】与【宿主策略】分离: 模块只声明\"在何时被调用、报告什么\"，宿主用 policy.json 决定\"检测到之后怎么办\"。"
   }
 }

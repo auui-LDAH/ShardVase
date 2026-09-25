@@ -525,6 +525,72 @@ def check_protocol(reg):
                 warnings.append('R16 %s: consumes %r 无模块 produces，'
                                 '也不在外部输入白名单' % (n, r))
 
+    # ---- R19 host_hooks 合法性（缺口#1: 宿主钩子协议）----
+    #
+    # ## 为什么需要
+    #   只加字段不校验 = 装饰。R19 让"模块声明自己在哪被调用"
+    #   成为**可强制执行的契约**，从而支撑"加模块不改宿主代码"。
+    #
+    # ## 规则
+    #   R19a hook 在值域内
+    #   R19b call 是该模块的 exports 之一（防"声明不存在的函数"）
+    #   R19c predicate（若有）也是 exports 之一
+    #   R19d report_type（若有）在该模块 header 里定义
+    #   R19e on_trigger 在值域内
+    #   R19f selftest_strs 是 strcrypt.h 里存在的 ID
+    _HOOKS = ['pre_license', 'post_license', 'pre_business', 'post_business',
+              'watchdog', 'selftest', 'vm_result']
+    _TRIGGERS = ['exit', 'warn', 'continue', 'xor_vm_result', 'watchdog']
+    _hdr = os.path.join(REPO, 'include', 'protect', 'strcrypt.h')
+    _str_ids = set()
+    if os.path.isfile(_hdr):
+        _hm = re.search(r'enum\s+prot_str_id\s*\{(.*?)\}',
+                        read(_hdr), re.S)
+        if _hm:
+            _str_ids = set('PROT_STR_%s' % x for x in
+                           re.findall(r'PROT_STR_([A-Z0-9_]+)', _hm.group(1)))
+    for n, m in sorted(mods.items()):
+        hooks = m.get('host_hooks')
+        if not hooks:
+            continue
+        if not isinstance(hooks, list):
+            errors.append('R19 %s: host_hooks 必须是数组' % n)
+            continue
+        exports = set(m.get('exports', []) or [])
+        hdr_path = os.path.join(REPO, m.get('header', ''))
+        hdr_txt = read(hdr_path) if os.path.isfile(hdr_path) else ''
+        for i, h in enumerate(hooks):
+            tag = 'R19 %s[%d]' % (n, i)
+            if not isinstance(h, dict):
+                errors.append('%s: 元素必须是对象' % tag)
+                continue
+            hk = h.get('hook')
+            if hk not in _HOOKS:
+                errors.append('%s: hook=%r 不在值域 %s'
+                              % (tag, hk, _HOOKS))
+            call = h.get('call')
+            if not call:
+                errors.append('%s: 缺 call' % tag)
+            elif call not in exports:
+                errors.append('%s: call=%r 不在该模块 exports 中'
+                              '（声明了不存在的函数）' % (tag, call))
+            pred = h.get('predicate')
+            if pred and pred not in exports:
+                errors.append('%s: predicate=%r 不在 exports 中' % (tag, pred))
+            rt = h.get('report_type')
+            if rt and hdr_txt and rt not in hdr_txt:
+                errors.append('%s: report_type=%r 未在 %s 中定义'
+                              % (tag, rt, m.get('header')))
+            ot = h.get('on_trigger')
+            if ot and ot not in _TRIGGERS:
+                errors.append('%s: on_trigger=%r 不在值域 %s'
+                              % (tag, ot, _TRIGGERS))
+            for sid in (h.get('selftest_strs') or []):
+                full = sid if str(sid).startswith('PROT_STR_') \
+                    else 'PROT_STR_%s' % sid
+                if _str_ids and full not in _str_ids:
+                    errors.append('%s: selftest_strs 含未知 ID %r' % (tag, sid))
+
     # ---- R18 maturity 与证据一致（防"自封 core"）----
     #
     # ## 为什么需要（W6.4）
