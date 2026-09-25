@@ -2391,3 +2391,101 @@ LNK2019: 无法解析的外部符号 prot_crypto_rsa_verify_sha256
 ---
 
 *2026-09-23 · L2 完成：授权链与间接化已解耦，纯逻辑模块 5 -> 7*
+
+---
+
+## 27. L3 完成：消除"硬编码源文件列表"（2026-09-23）
+
+### 27.1 勘查修正了 L2 的判断
+| 脚本 | 机制 | 结论 |
+|------|------|------|
+| `build.ps1` | `compose.py --sources-out` | ✅ 已注册表驱动 |
+| `build_skeleton.ps1` | 同上 | ✅ 已注册表驱动 |
+| **`build_example.ps1`** | **硬编码 12 个 src/*.c** | ❌ **唯一漂移源** |
+
+> L2 认为"三处都硬编码"，**实测只有一处**。
+
+### 27.2 修复 1: `build_example.ps1` 改注册表驱动 ✅
+新增 `compositions/example.json` + 改用 `compose.py example`。
+
+**过程中我自己的 2 个错误**:
+| # | 错误 | 表现 |
+|---|------|------|
+| 1 | 把 `crc32` 写进 `modules` 数组 | `拼装图含未登记模块: crc32`（它是**原语**）|
+| 2 | 从下限去掉 `strcrypt` | `LNK2019: prot_str_decrypt` |
+
+> **错误 2 的教训**: **"gen 产物存在" != "不需要对应模块"** ——
+> gen 产物往往**调用**对应模块。
+
+### 27.3 修复 2（**核心发现**）: `SUBSTRATE` 是**第四次**硬编码 ✅
+**发现经过**: 改用 compose 后示例仍失败 —— 宿主下限**强制补入 `indirect`**，
+而 `indirect_table.c` **硬编码** `load_and_verify_license(const char*, demo_mem*)`，
+`demo_mem` 是 **demo/main.c 的私有类型**。
+试 `exclude_primitives` -> **无效**（`full |= set(SUBSTRATE)` 无条件）。
+
+**根因**: `SUBSTRATE` 注释写着"宿主下限: **main.c** 无条件调用" ——
+指 **demo 的 main**。**故它不是普遍规律，而是 demo 宿主的硬引用集**。
+
+**修复**（低风险）:
+```python
+_substrate = comp.get('host_substrate')
+if _substrate is None:
+    _substrate = SUBSTRATE      # demo 默认，既有行为**逐字不变**
+full |= set(_substrate)
+```
+**验证**: 既有 4 档组合源文件列表**逐字不变**（12/15/17/17）；
+example 正确排除 indirect。
+
+### 27.4 修复 3: 加**防复发**检查 S1/S2 ✅
+本项目**四次**同类问题:
+```
+① SOURCE_ORDER 硬编码   -> W3.3 拓扑排序
+② INFRA_HEADERS 白名单  -> R20 自动发现
+③ 构建脚本源文件列表    -> L3 compose 驱动
+④ SUBSTRATE 宿主下限    -> L3 按宿主可声明
+```
+**S1**: 构建脚本不得硬编码 ≥3 个 `src/*.c`
+**S2**: `host_substrate` 模块必须真实存在
+**豁免机制**: `# S1-ALLOW: <理由>` —— 显式标注，且 modcheck **列出全部豁免**（**不静默**）
+
+### 27.5 ⚠️ 负向验证发现**我的错误**
+**第一次负向验证: S1/S2 都抓到 ✗**
+**根因**: 函数**定义了但从未被调用** —— 我的插入脚本用
+`if 'S1/S2: 防' in t` 判断，而**我自己刚写的 docstring 里就有这段文字**
+-> 误判 -> 跳过。
+
+> **与 R20 那次同类（第二次）**: 存在性检查必须查
+> **调用点**（`check_x(reg)`），而非裸名字或注释。
+
+### 27.6 S1 的**第一次真实捕获**
+`tools/build_dotnet_gate.ps1:57` 硬编码 4 个源文件。
+分析（`gate.c` 只引用 `prot_antidebug_report`）: 列表是
+**正确的最小集**（无缺无多），但仍**手工维护**。
+处置: 加 `S1-ALLOW` 豁免 + **修正原注释**
+（原注释说"用 minimal"，但 minimal **不含** antidebug）。
+
+### 27.7 成果
+| 项 | 结果 |
+|----|------|
+| 构建脚本硬编码列表 | ✅ **已消除** |
+| 宿主下限 | ✅ **按宿主可声明**（既有行为不变）|
+| 防复发检查 | ✅ S1/S2（含显式豁免）|
+| 门禁 | ✅ **19 项全绿** |
+| example 构建 | ✅ `license_ok=1` |
+
+### 27.8 诚实边界（L3 **未**做到的）
+· **`indirect_table.c` 仍硬编码 demo 宿主函数**
+  （`tools/indirect.py` L63/L141）—— 换宿主仍需改工具
+· `build_dotnet_gate.ps1` 仍是**手工最小集**（有显式豁免）
+· **未实现其它平台**（Linux/Android 仍为零）
+· 平台层仍只 **2 处**被用（alloc/protect/free 无使用）
+· `hostid` 未解耦
+
+### 27.9 下一步 L4
+**真正实现 Linux 平台层**（`mmap`/`ptrace`/`/proc`）。
+前置已具备: 接口已定义且**被 2 处使用**、纯逻辑模块 **7/13**、
+构建脚本**注册表驱动**（新增平台层不会再漏）。
+
+---
+
+*2026-09-23 · L3 完成：四次"硬编码列表"全部收尾*

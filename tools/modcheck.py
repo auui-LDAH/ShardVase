@@ -404,6 +404,90 @@ def check_stringtables():
     return errors, warnings
 
 
+def check_build_scripts(reg):
+    """S1/S2: 防"硬编码源文件列表"（本项目**第四次**同类问题后加）。
+
+    ## 为什么要加
+      本项目四次同类问题:
+        ① `SOURCE_ORDER` 硬编码      -> W3.3 拓扑排序
+        ② `INFRA_HEADERS` 白名单     -> R20 自动发现
+        ③ **构建脚本源文件列表**     -> L3 compose 驱动
+        ④ **`SUBSTRATE` 宿主下限**   -> L3 按宿主可声明
+
+      前三次都是"事后修"，缺少**防复发**。本检查补上:
+        构建脚本**不得硬编码 ≥3 个 `src/*.c`**
+        （应通过 `tools/compose.py --sources-out` 获取）。
+
+    ## 为什么阈值是 3
+      示例/骨架脚本可能合法地引用 1-2 个特定源文件
+      （如 `src/syscall.c` 做独立探测）；≥3 个则说明在**手工维护列表**。
+    """
+    import glob as _g
+    errors = []
+    scripts = []
+    for pat in ('*.ps1', 'tools/*.ps1', 'examples/**/*.ps1',
+                'prot_sdk/**/*.ps1'):
+        scripts.extend(_g.glob(os.path.join(REPO, pat), recursive=True))
+    seen = set()
+    for sp in scripts:
+        rp = os.path.relpath(sp, REPO).replace('\\', '/')
+        if rp in seen or rp.startswith('archive/'):
+            continue
+        seen.add(rp)
+        try:
+            txt = read(sp)
+        except OSError:
+            continue
+        # 找含多个 src/*.c 的行（排除注释行）
+        #
+        # ## 显式豁免机制（`# S1-ALLOW: <理由>`）
+        #   某些脚本**合法地**需要特定最小集（如 .NET gate 的 C 侧接线）。
+        #   豁免必须**显式标注 + 给出理由**，且 modcheck 会**列出全部豁免**
+        #   —— **不静默**（静默豁免 = 可绕过的检查，违反 P3 教训）。
+        _allow = 'S1-ALLOW:' in txt
+        for i, line in enumerate(txt.split('\n'), 1):
+            if line.lstrip().startswith('#'):
+                continue
+            if _allow:
+                continue
+            srcs = re.findall(r'src[\\/][\w\\/]+\.c', line)
+            if len(srcs) >= 3:
+                errors.append(
+                    'S1 %s:%d 硬编码了 %d 个 src/*.c —— '
+                    '应改用 `tools/compose.py <组合> --sources-out <文件>`'
+                    '（注册表驱动）。这是本项目**第四次**同类问题的防复发检查。'
+                    % (rp, i, len(srcs)))
+    # S2: host_substrate 的模块必须存在
+    known = set(reg.get('modules', {}))
+    for cf in sorted(_g.glob(os.path.join(REPO, 'compositions', '*.json'))):
+        try:
+            import json as _j
+            c = _j.load(open(cf, encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            continue
+        hs = c.get('host_substrate')
+        if hs is None:
+            continue
+        for m in hs:
+            if m not in known:
+                errors.append('S2 %s: host_substrate 含未登记模块 %r'
+                              % (os.path.basename(cf), m))
+    # 列出全部 S1 豁免（**不静默** —— 静默豁免 = 可绕过的检查）
+    for sp in sorted(seen):
+        try:
+            _tx = read(os.path.join(REPO, sp))
+        except OSError:
+            continue
+        if 'S1-ALLOW:' in _tx:
+            _why = ''
+            for _l in _tx.split('\n'):
+                if 'S1-ALLOW:' in _l:
+                    _why = _l.split('S1-ALLOW:', 1)[1].strip()
+                    break
+            print('  [i] S1 豁免: %s —— %s' % (sp, _why[:70]))
+    return errors, []
+
+
 def check_infra_headers(reg):
     """R20: 基础设施头白名单与实际头文件同步。
 
@@ -931,6 +1015,27 @@ def main():
         rc = 1
     elif not args.quiet:
         print('  [ok] strings 表与 strcrypt.h 枚举一致')
+
+    # --- S1/S2: 防"硬编码源文件列表"（第四次同类问题后加）---
+
+    #
+
+    # **为什么要加**: 本项目四次同类问题，前三次都是"事后修"，
+
+    #   缺少**防复发**。前三次: SOURCE_ORDER 硬编码 (W3.3) /
+
+    #   INFRA_HEADERS 白名单 (R20) / 构建脚本源文件列表 (L3)。
+
+    _serr, _ = check_build_scripts(reg)
+
+    for _e in _serr:
+
+        print('  [X] %s' % _e)
+
+    if _serr:
+
+        rc = 1
+
 
     # --- R20: 基础设施头白名单同步（防第四次同类错误）---
     _ierr, _ = check_infra_headers(reg)

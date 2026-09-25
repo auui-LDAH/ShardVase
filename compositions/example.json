@@ -1,0 +1,38 @@
+{
+  "_comment": "示例专用拼装图 (examples/tool_demo) —— L3 新增，替代该脚本原有的**硬编码源文件列表**。原 build_example.ps1 硬编码 12 个 src/*.c，L2 抽出平台层后构建失败 (LNK2019)。改为组合驱动后，新增/移动模块**本脚本无需改动**。",
+  "_why": "本项目第三次同类问题的收尾: SOURCE_ORDER 硬编码 (W3.3 已解决) / INFRA_HEADERS 白名单 (R20 已解决) / 构建脚本源文件列表 (本次)。",
+  "_note_on_primitives": "crc32 / vm_rekey / platform_win / crypto_win 是**原语**（基础设施），不在 modules 中 —— 它们总是参与编译。",
+  "name": "example",
+  "description": "接入示例: 授权链 + 反调试 + 完整性 + 自加密",
+  "modules": [
+    "license",
+    "hostid",
+    "antidebug",
+    "integrity",
+    "selfcrypt",
+    "syscall"
+  ],
+  "auto_added_by_host": [
+    "blob",
+    "vm",
+    "revoke"
+  ],
+  "use_case": "examples/tool_demo —— 展示\"你的工具如何接入保护套件\"，需覆盖授权+环境检测+自加密三类能力。**不含 indirect**（示例的 gen 目录不生成 indirect_table）。",
+  "expected_tradeoffs": [
+    "无间接化: 调用点直接暴露被调函数",
+    "无 VM 检测: 虚拟机环境不告警",
+    "无 DBI/hook 检测: Frida 类工具不告警",
+    "宿主下限自动补入 blob/vm/revoke (main 硬引用)"
+  ],
+  "_constraint": "**结构约束（实测 2026-09-23）**: `tools/indirect.py` 生成的 `demo/gen/indirect_table.c` **硬编码**宿主函数 `load_and_verify_license(const char*, demo_mem*)`，而 `demo_mem` 是 `demo/main.c` 的**私有类型**。示例有自己的 main 与不同业务函数 -> **无法使用 indirect**。故本组合显式排除 indirect。**这也说明**: §22 记录的\"宿主下限\"是**按 demo 宿主定义的**，换宿主时下限集可能不同。",
+  "host_substrate": [
+    "blob",
+    "hostid",
+    "license",
+    "revoke",
+    "selfcrypt",
+    "strcrypt",
+    "vm"
+  ],
+  "_substrate_note": "**本宿主的下限**（实测 2026-09-23）: 示例的 main 无条件调用 blob/vm；license/hostid/revoke 被其链引用；**strcrypt 必需** —— `demo/gen/strings.c` 调用 `prot_str_decrypt`，该符号由 `src/strcrypt.c` 提供（gen 产物**调用**模块，而非替代它）；selfcrypt 被 derive 链引用。**仅不含 `indirect`** —— 因为 `tools/indirect.py` 生成的 `indirect_table.c` **硬编码** demo 的宿主函数 `load_and_verify_license(const char*, demo_mem*)`，而 `demo_mem` 是 `demo/main.c` 的**私有类型**，示例的 main 没有它。"
+}

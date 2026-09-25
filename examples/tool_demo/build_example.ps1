@@ -87,18 +87,55 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
 #
-# L2（2026-09-23）: 加入平台层两个源文件。
+# ## L3（2026-09-23）: 从**硬编码列表**改为**注册表驱动**
 #
-# **为什么必须加**: `src/license.c` 的密码学已抽到
-#   `src/platform/prot_crypto_win.c`（L2 解耦）——
-#   本脚本的源文件列表是**硬编码**的，若不加入则会:
+# **改动前**（本脚本 L89 曾硬编码 12 个 src/*.c）:
+#   L2 把 `license.c` 的密码学抽到 `src/platform/prot_crypto_win.c` 后,
+#   本脚本**构建失败**:
 #     `LNK2019: 无法解析的外部符号 prot_crypto_rsa_verify_sha256`
-#   这正是门禁 `example E1-E7` **抓到**的（L1 时我漏检了这条路径）。
+#   —— 因为硬编码列表**不含**新平台层。这正是门禁 `example E1-E7` 抓到的。
 #
-# **教训**: 硬编码源文件列表有**三处**（build.ps1 / build_skeleton.ps1 /
-#   build_example.ps1）—— 新增平台层必须**三处同改**。
-#   （同类问题在本项目已出现多次: SOURCE_ORDER 硬编码、INFRA_HEADERS 白名单。）
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\tool_demo.exe src\vm.c src\crc32.c src\antidebug.c src\integrity.c src\hostid.c src\license.c src\blob.c src\revoke.c src\syscall.c src\selfcrypt.c src\platform\prot_platform_win.c src\platform\prot_crypto_win.c examples\tool_demo\main.c demo\gen\license_pubkey.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
+# **改动后**: 用 `tools/compose.py` 从 `modules.json` 生成源文件列表
+#   （与 `build.ps1` / `build_skeleton.ps1` **同一机制**）。
+#   => **新增/移动模块时本脚本无需改动**。
+#
+# **注意**: 这是本项目**第三次**同类问题的收尾 ——
+#   · SOURCE_ORDER 硬编码      -> W3.3 改为拓扑排序
+#   · INFRA_HEADERS 白名单     -> R20 自动发现
+#   · **构建脚本源文件列表**   -> 本次
+#
+# 组合: `example`（示例专用，见 compositions/example.json）
+#   —— **不含 indirect**（示例的 gen 目录不生成 indirect_table）。
+$compSrcList = 'build\_example_sources.txt'
+& $py tools\compose.py example --sources-out $compSrcList
+if ($LASTEXITCODE -ne 0) { throw 'example FAILED: compose.py' }
+$srcs = (Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() }) -join ' '
+if (-not $srcs) { throw 'example FAILED: compose 未产出源文件列表' }
+Write-Host "example: 注册表驱动 -> $((Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() }).Count) 个保护源文件"
+
+# ## 为什么还要补 gen 产物
+#   `compose.py example` 的**宿主下限**会强制补入 `indirect` / `strcrypt`
+#   （`main.c` / `indirect_table.c` 硬引用，见 §22 宿主下限机制）——
+#   这是**设计正确**的。故必须链接对应的 gen 产物:
+#     · `demo\gen\indirect_table.c` —— indirect 的置换表
+#     · `demo\gen\strings.c`        —— strcrypt 的字符串表
+#
+#   **这不是"手工列表"的回归** —— 这几个 gen 文件是**生成物拼接**，
+#   与"哪些模块参与编译"是两个维度（模块列表仍由注册表驱动）。
+$genSrcs = @(
+    # **不含** indirect_table.c —— 示例组合显式排除 indirect
+    # （indirect_table 硬编码 demo 的宿主函数与私有类型 demo_mem）
+    'demo\gen\strings.c',
+    'demo\gen\license_pubkey.c'
+)
+foreach ($g in $genSrcs) {
+    if (-not (Test-Path -LiteralPath $g)) {
+        throw "example FAILED: 缺 gen 产物 $g（先跑主构建生成 demo\gen）"
+    }
+}
+$genList = ($genSrcs -join ' ')
+
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\tool_demo.exe $srcs examples\tool_demo\main.c $genList /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: cl' }
 # 清理 cl 留在 cwd 的 .obj。注意 "nul.obj": 'nul' 是 Windows 保留设备名,
 # Get-ChildItem 会列出它但 Remove-Item 无法删除 (报 PathNotFound 刷屏)。

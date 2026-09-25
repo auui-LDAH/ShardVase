@@ -52,8 +52,18 @@ foreach ($f in @($defFile, $gateC)) {
 }
 
 $dll = Join-Path $Out 'protgate.dll'
-# 组合驱动: 用 minimal 以确保接线最小（只需 license/hostid/strcrypt/vm/blob）
-# 这里沿用标准做法: 直接编译 gate.c 所需的最小源集（antidebug + 依赖）
+# ## L3（2026-09-23）: 这是**刻意的最小集**，非"忘记用组合驱动"
+#
+# S1-ALLOW: .NET gate 的 C 侧接线只需 antidebug(+syscall 依赖)，strcrypt
+# 因 strings.c 需要，crc32 是原语。**不用 standard** 是因为那会引入
+# 不必要的模块，增大 DLL 体积。
+#
+# **实测依据**（2026-09-23）: `prot_sdk/dotnet/Native/gate.c` 只引用
+# `prot_antidebug_report` 一个模块符号 -> 真实模块依赖就是 antidebug。
+#
+# **注意**: 本脚本原有的注释（"用 minimal 以确保接线最小"）与实际
+# 列表**不符** —— minimal 实际含 blob/hostid/license/vm 等，**不含**
+# antidebug。故 L3 修正注释以反映真实依据。
 $srcs = @('src\antidebug.c', 'src\syscall.c', 'src\strcrypt.c',
           'src\crc32.c') | ForEach-Object { Join-Path $REPO $_ }
 $srcJoined = ($srcs | ForEach-Object { "`"$_`"" }) -join ' '

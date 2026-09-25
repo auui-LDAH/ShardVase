@@ -49,6 +49,23 @@ COMPOSITIONS = os.path.join(REPO, 'compositions')
 #     indirect   prot_indirect_resolve        (宿主 PROT_INDIRECT_CALL)
 #
 # 批1 (仅 vmdetect/dbiguard 可排除) 时此表为 11 项; 批2 后收敛为 8 项。
+#
+# ⚠️ **L3 修正（2026-09-23）: 这是【demo 宿主】的下限，不是普遍规律**
+#
+#   上表来自 `demo/main.c` 的硬引用实测。**换宿主则下限不同**:
+#     · `examples/tool_demo` 有自己的 main（不用间接化）
+#       -> 不需要 `indirect`，但旧实现**强制补入** -> 构建失败
+#       （`LNK2001: load_and_verify_license`，
+#        因 `indirect_table.c` 硬编码 demo 的宿主函数名 + 私有类型 `demo_mem`）
+#
+#   故本常量改为 **demo 的默认下限**；组合可通过 `host_substrate`
+#   声明自己的下限（见 resolve() 的 `_host_substrate`）。
+#
+#   这是本项目**第四次**"硬编码列表"问题的收尾:
+#     ① SOURCE_ORDER      -> W3.3 拓扑排序
+#     ② INFRA_HEADERS     -> R20 自动发现
+#     ③ 构建脚本源文件列表 -> L3 compose 驱动
+#     ④ **SUBSTRATE 宿主下限 -> 本次（改为按宿主可声明）**
 SUBSTRATE = ['blob', 'hostid', 'indirect', 'license', 'revoke',
              'selfcrypt', 'strcrypt', 'vm']
 
@@ -244,9 +261,16 @@ def resolve(comp, reg):
     # 依赖闭包
     full = closure(declared, reg)
 
-    # 宿主下限 (substrate): main.c 无条件调用这些模块, 缺失则无法链接。
+    # 宿主下限 (substrate): 该宿主的 main 无条件调用这些模块。
     # 自动补入而**不是**报错 (便利性), 但必须在 auto_added 中如实报告。
-    full |= set(SUBSTRATE)
+    #
+    # L3: 下限**按宿主可声明** —— 组合 JSON 的 `host_substrate` 覆盖默认值。
+    #   · 未声明 -> 用 demo 的 SUBSTRATE（**既有组合行为逐字不变**）
+    #   · 已声明 -> 用组合自己的下限（新宿主 / 第三方工具）
+    _substrate = comp.get('host_substrate')
+    if _substrate is None:
+        _substrate = SUBSTRATE
+    full |= set(_substrate)
 
     # 自动补入 = 闭包 + 下限 中所有未显式声明的部分
     auto_added = sorted(full - set(declared))
