@@ -44,3 +44,6 @@ sdk_service/issue-log*.csv
 #   保留位置: ..\Reverse Engineering-private-docs\
 docs/commercial/PRICING.md
 docs/COMMERCIAL_PLAN.md
+
+# SDK 打包产物（由 tools/sdk_pack.py 生成，可分发给用户，不入库）
+dist/

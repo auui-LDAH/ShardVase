@@ -21,6 +21,9 @@ param(
     [switch]$WithMutation,
     # W5.7: 启用迁移成本门禁（需两次构建，约 1-2 分钟；发版/CI 建议启用）
     [switch]$WithMigration,
+    # 骨架回归（2026-09-23）: 构建一次骨架工程，验证 **DIY 用户路径**可用。
+    # 约 30-60 秒；发版/CI 建议启用。
+    [switch]$WithSkeleton,
     [string]$Python = ''
 )
 
@@ -163,6 +166,25 @@ Check '协议兼容性 (conformance)' {
     & $py tools\conformance.py --selftest --quiet
     if ($LASTEXITCODE -ne 0) { return $false }
     & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
+}
+
+# 骨架回归（2026-09-23）: 验证 **DIY 用户路径**可用。
+#
+# **为什么是门禁的一部分**: 本项目曾发生一次**阻断级缺陷** ——
+#   `prot_sdk/skeleton/strings.txt` 未随 strcrypt.h 枚举同步，
+#   导致**所有走骨架路径的用户构建失败**，而门禁**完全没抓到**，
+#   因为**门禁从不构建骨架**（只构建 demo）。
+#
+#   => **骨架路径（= 用户真正使用的路径）此前回归覆盖为零。**
+#
+# 本项用非交互方式完整走一遍骨架构建（见 tools/skeleton_check.py），
+# 并对已知缺陷做过**双向验证**（复现 -> FAIL；恢复 -> PASS）。
+if ($WithSkeleton) {
+    Check '骨架回归 (skeleton_check)' {
+        & $py tools\skeleton_check.py --quiet; $LASTEXITCODE -eq 0
+    }
+} else {
+    Write-Host '[info] 骨架回归未运行 (加 -WithSkeleton 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 # W5.7(验证框架): **迁移成本门禁** —— 防止 W1.6 的成果回退。
