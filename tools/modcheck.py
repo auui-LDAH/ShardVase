@@ -112,11 +112,18 @@ def source_deps(src_path, mod_name):
             # prot_sections / prot_noise 是**基础设施头**，不是模块
             # -> 与 protdef 同类，不计入模块依赖。
             #
-            # 教训（2026-09-23，**同类错误犯过两次**）:
+            # 教训（2026-09-23，**同类错误犯过三次**）:
             #   · 加 prot_sections.h（阶段1 节名随机化）-> 报未登记
             #   · 加 prot_noise.h（W1.6 序言注入）-> 又报未登记
+            #   · 加 prot_platform.h（L1 平台抽象层）-> **第三次**
             # **凡新增非模块的 protect/*.h，必须同步本列表。**
-            INFRA_HEADERS = ('protdef', 'prot_sections', 'prot_noise')
+            #
+            # => 加 R20 检查（见 check_infra_headers）: 枚举
+            #    include/protect/*.h，凡既不在 modules 中、也不在本
+            #    白名单中的头 -> **报错**。这样下次新增基础设施头时
+            #    会被立刻提醒，而不是等门禁报"未登记依赖"。
+            INFRA_HEADERS = ('protdef', 'prot_sections', 'prot_noise',
+                             'prot_platform', 'version')
             if h not in INFRA_HEADERS and h != mod_name:
                 deps.add(h)
     return deps
@@ -394,6 +401,48 @@ def check_stringtables():
     if found == 0:
         warnings.append('strings 表检查: 未找到任何 strings.txt')
     return errors, warnings
+
+
+def check_infra_headers(reg):
+    """R20: 基础设施头白名单与实际头文件同步。
+
+    ## 为什么需要（2026-09-23，**同类错误犯过三次**）
+      `source_deps` 里的 `INFRA_HEADERS` 是**手工维护**的白名单:
+        protdef / prot_sections / prot_noise / prot_platform
+      每次新增基础设施头都要手工加 —— **已重复三次**。
+
+      本检查把它变成**自动校验**:
+        枚举 include/protect/*.h，凡既不在 modules/primitives 注册表内、
+        也不在白名单内的头文件 -> **报错并提示如何修**。
+
+    => 下次新增基础设施头时会被**立即提醒**，而非绕一圈才从
+       "未登记依赖" 推断出来。
+    """
+    # 基础设施头（非模块）—— **由 R20 本身发现并补全**（2026-09-23）
+    INFRA = ('protdef', 'prot_sections', 'prot_noise',
+             'prot_platform', 'version')
+    # 头文件名 -> 注册名的映射（platform_win 的头是 prot_platform.h）
+    alias = {'prot_platform': 'platform_win'}
+    hdr_dir = os.path.join(REPO, 'include', 'protect')
+    if not os.path.isdir(hdr_dir):
+        return [], ['R20 找不到 include/protect/']
+    known = set(reg.get('modules', {})) | set(reg.get('primitives', {}))
+    errors = []
+    for f in sorted(os.listdir(hdr_dir)):
+        if not f.endswith('.h') or f.startswith('_'):
+            continue
+        name = f[:-2]
+        if name in INFRA:
+            continue
+        if name in known or alias.get(name) in known:
+            continue
+        errors.append(
+            'R20 include/protect/%s: 既不在模块/原语注册表中，'
+            '也不在 INFRA_HEADERS 白名单中。'
+            '若为**基础设施头**（非模块）-> 在 modcheck.source_deps 的 '
+            'INFRA_HEADERS 加 %r；'
+            '若为**模块头** -> 在 modules.json 中登记。' % (f, name))
+    return errors, []
 
 
 def check_protocol(reg):
@@ -879,6 +928,13 @@ def main():
         rc = 1
     elif not args.quiet:
         print('  [ok] strings 表与 strcrypt.h 枚举一致')
+
+    # --- R20: 基础设施头白名单同步（防第四次同类错误）---
+    _ierr, _ = check_infra_headers(reg)
+    for _e in _ierr:
+        print('  [X] %s' % _e)
+    if _ierr:
+        rc = 1
 
     # --- A2. 协议字段检查 (W2 形式化) ---
     perr, pwarn = check_protocol(reg)

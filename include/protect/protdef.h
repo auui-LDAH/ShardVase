@@ -36,7 +36,13 @@ typedef enum prot_status {
     PROT_ERR_INTEGRITY,         /* 完整性校验失败 */
     PROT_ERR_BLOB_MISSING,      /* VM blob: 文件缺失/打不开 (DBI launcher) */
     PROT_ERR_BLOB_CORRUPT,      /* VM blob: 损坏 (magic/CRC/长度) */
-    PROT_ERR_BLOB_NAME          /* VM blob: 缺少所需镜像 */
+    PROT_ERR_BLOB_NAME,         /* VM blob: 缺少所需镜像 */
+    /* 平台抽象层（L1, 2026-09-23）: 该能力在本平台**未实现/不支持**。
+     *
+     * **为什么需要单独的码**: 跨平台时"平台不支持某能力"必须**明确表达**，
+     * 而非复用 PROT_ERR_INTERNAL —— 那会让调用方无法区分
+     * "实现有 bug" 与 "本平台没有这个能力"（P4 诚实边界）。 */
+    PROT_ERR_UNSUPPORTED
 } prot_status;
 
 typedef enum prot_policy {

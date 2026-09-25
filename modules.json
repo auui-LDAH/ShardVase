@@ -603,6 +603,23 @@
       "produces": [
         "vm.rekeyed"
       ]
+    },
+    "platform_win": {
+      "source": "src/platform/prot_platform_win.c",
+      "header": "include/protect/prot_platform.h",
+      "exports": [
+        "prot_plat_alloc",
+        "prot_plat_protect",
+        "prot_plat_free",
+        "prot_plat_capabilities",
+        "prot_plat_debug_primitives",
+        "prot_plat_enum_processes",
+        "prot_plat_enum_modules",
+        "prot_plat_monotonic_ns",
+        "prot_plat_self_path"
+      ],
+      "_comment": "平台抽象层（Windows 实现）—— L1 接入步骤。所有平台相关模块的公共底座；原语 = 基础设施，总是编译，不参与组合取舍。设计见 docs/PORTABILITY_ASSESSMENT.md",
+      "deps": []
     }
   },
   "_protocol_version": 1,

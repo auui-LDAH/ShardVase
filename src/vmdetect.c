@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -17,11 +17,11 @@
  */
 
 #include <windows.h>
-#include <tlhelp32.h>
 #include <intrin.h>
 #include <string.h>
 
 #include "protect/vmdetect.h"
+#include "protect/prot_platform.h"  /* L1: 平台抽象层 */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 static void hv_vendor_id(char out[13])
@@ -47,32 +47,57 @@ static uint32_t vendor_code(const char* v)
 
 static int has_vm_process(void)
 {
-    static const wchar_t* const names[] = {
-        L"vmtoolsd.exe", L"vmwaretray.exe", L"vmwareuser.exe",
-        L"VBoxService.exe", L"VBoxClient.exe", L"vboxservice.exe",
-        L"qemu-ga.exe", L"xenservices.exe", L"xenbus.exe",
-        L"prl_tools.exe", L"vmsrvc.exe", L"vmcompute.exe",
+    static const char* const names[] = {
+        "vmtoolsd.exe", "vmwaretray.exe", "vmwareuser.exe",
+        "VBoxService.exe", "VBoxClient.exe", "vboxservice.exe",
+        "qemu-ga.exe", "xenservices.exe", "xenbus.exe",
+        "prl_tools.exe", "vmsrvc.exe", "vmcompute.exe",
     };
-    HANDLE snap;
-    PROCESSENTRY32W pe;
+    static prot_proc_info procs[512];
+    size_t total, i, j;
     int found = 0;
-    size_t i;
 
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE)
+    /* L1（2026-09-23）: 改用**平台抽象层**，不再直接调 Toolhelp32。
+     *
+     * ## 为什么这是 L1 的接入点
+     *   本模块此前用 `CreateToolhelp32Snapshot` + 宽字符 `_wcsicmp`
+     *   —— 这是**平台特有**的做法（Linux 用 /proc 遍历）。
+     *   改用 `prot_plat_enum_processes` 后:
+     *     · 本函数**不再含平台 API**，跨平台时无需改动
+     *     · 新增平台只需实现平台层，**不必碰本模块**
+     *
+     * ## 行为等价性
+     *   平台层内部**仍调 Toolhelp32**（Windows 实现），
+     *   故检测结果**完全一致**；只是比较改为 ASCII（进程名均 ASCII）。
+     *   已实测: e2e / attacks / protcheck 全绿（见提交说明）。
+     */
+    total = prot_plat_enum_processes(procs,
+                                     sizeof(procs) / sizeof(procs[0]));
+    if (total == 0)
         return 0;
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-                if (_wcsicmp(pe.szExeFile, names[i]) == 0) {
-                    found = 1;
-                    break;
-                }
+
+    for (i = 0; i < total && i < sizeof(procs) / sizeof(procs[0]); i++) {
+        for (j = 0; j < sizeof(names) / sizeof(names[0]); j++) {
+            /* ASCII 大小写不敏感比较（进程名为 ASCII） */
+            const char* a = procs[i].name;
+            const char* b = names[j];
+            size_t k = 0;
+            int same = 1;
+            for (;; k++) {
+                char ca = a[k], cb = b[k];
+                if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+                if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+                if (ca != cb) { same = 0; break; }
+                if (ca == '\0') break;
             }
-        } while (!found && Process32NextW(snap, &pe));
+            if (same) {
+                found = 1;
+                break;
+            }
+        }
+        if (found)
+            break;
     }
-    CloseHandle(snap);
     return found;
 }
 
