@@ -686,6 +686,58 @@ uint32_t prot_plat_extra_debug_flags(void);
 prot_status prot_plat_hide_thread(void);
 
 /* ------------------------------------------------------------------ *
+ * 分组 13: HTTP 下载（B4，`demo` 的 `--blob-url` 用）
+ *
+ * ## 决策: Linux **如实降级**（不引入 libcurl）
+ *
+ * ### 依据（**实测代码语义**）
+ *   `demo/main.c` 的 `--blob-url` 在下载失败时**静默回退本地路径**
+ *   （L692 注释: "网络不可达/超时 -> 静默回退本地（离线优先, 不锁死）"）。
+ *   => Linux 返回"不可用" -> **行为与 Windows 网络失败时完全一致**。
+ *
+ * ### 为什么不用 libcurl
+ *   ① **不引入新依赖**（libcurl 会带来运行期依赖，与"最小侵入"相悖）
+ *   ② **诚实**: 明确返回"不支持"，而非**悄悄失败**
+ *   ③ **可扩展**: 若将来需要，只需在平台层填入 libcurl 实现
+ *
+ * ### 诚实边界
+ *   · Linux 产物的 `--blob-url` **不可用**（返回 `PROT_ERR_UNSUPPORTED`）
+ *   · 本地 `--vm-blob <路径>` **完全可用**
+ * ------------------------------------------------------------------ */
+
+/* 下载 URL 到本地文件。
+ *
+ * 返回:
+ *   `PROT_OK`             —— 下载成功（文件已写入 out_path）
+ *   `PROT_ERR_UNSUPPORTED`—— **本平台不支持**（调用方回退本地路径）
+ *   `PROT_ERR_INTERNAL`   —— 下载失败（网络不可达/超时/超限）
+ *
+ * `max_size` 为 0 表示用平台默认上限。
+ */
+prot_status prot_plat_http_get(const char* url, const char* out_path,
+                               size_t max_size);
+
+/* 下载 URL 到**调用方提供的内存缓冲**（有界）。
+ *
+ * ## 为什么需要第二个接口
+ *   `demo/main.c` 有**两处** HTTP 用途:
+ *     · `--blob-url`   -> 下载到**文件**（blob 可达数 MB）
+ *     · `--check-url`  -> 下载到**内存**（吊销 JSON，512 字节）
+ *   两者的大小与去向不同，故需两个接口。
+ *
+ * ## 参数
+ *   buf / cap —— 输出缓冲与容量（**不动态分配**，避免宿主管理内存）
+ *   out_len   —— 可选，接收实际长度
+ *
+ * ## 返回
+ *   `PROT_OK`              —— 成功（`*out_len` 为实际长度，**不含 NUL**）
+ *   `PROT_ERR_UNSUPPORTED` —— 本平台不支持
+ *   `PROT_ERR_INTERNAL`    —— 失败（网络/超限）
+ */
+prot_status prot_plat_http_get_mem(const char* url, char* buf, size_t cap,
+                                   size_t* out_len);
+
+/* ------------------------------------------------------------------ *
  * 平台实现约定
  *
  * Windows: src/platform/prot_platform_win.c（委托到现有 Windows API 调用）

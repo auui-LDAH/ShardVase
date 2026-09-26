@@ -32,6 +32,8 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <winhttp.h>
+#include "protect/prot_compiler.h"   /* B4: PROT_FOPEN_S */
 #include <psapi.h>
 #include <stdlib.h>   /* C3: malloc */
 #include <string.h>
@@ -994,6 +996,159 @@ prot_status prot_plat_hide_thread(void)
     /* 17 = ThreadHideFromDebugger */
     fn(GetCurrentThread(), 17u, NULL, 0);
     return PROT_OK;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 13: HTTP 下载（B4，Windows: WinHTTP）
+ *
+ * ⚠️ **本函数是 `demo/main.c` 原 WinHTTP 逻辑的搬迁** ——
+ *   但 `main.c` 的调用点**尚未改为调本函数**（那是 B4-3 的工作）。
+ *   本层先提供**可被调用的实现**。
+ * ------------------------------------------------------------------ */
+
+prot_status prot_plat_http_get(const char* url, const char* out_path,
+                               size_t max_size)
+{
+    HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
+    prot_status st = PROT_ERR_INTERNAL;
+    wchar_t wurl[1024];
+    wchar_t whost[256];
+    wchar_t wpath[512];
+    URL_COMPONENTS uc;
+    FILE* f = NULL;
+
+    if (url == NULL || out_path == NULL)
+        return PROT_ERR_INVALID_ARG;
+
+    if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024) == 0)
+        return PROT_ERR_INVALID_ARG;
+
+    memset(&uc, 0, sizeof(uc));
+    uc.dwStructSize = sizeof(uc);
+    uc.lpszHostName = whost; uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = wpath;  uc.dwUrlPathLength = 512;
+
+    hin = WinHttpOpen(L"PROT-Demo/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (hin == NULL)
+        return PROT_ERR_INTERNAL;
+
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc))
+        goto done;
+    hconn = WinHttpConnect(hin, whost, uc.nPort, 0);
+    if (hconn == NULL)
+        goto done;
+    hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
+                              WINHTTP_NO_REFERER,
+                              WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (hreq == NULL)
+        goto done;
+    if (!WinHttpSendRequest(hreq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, NULL, 0, 0, 0))
+        goto done;
+    if (!WinHttpReceiveResponse(hreq, NULL))
+        goto done;
+
+    /* B4: MSVC 报 C4996（fopen 不安全）-> 用统一宏 PROT_FOPEN_S */
+    if (PROT_FOPEN_S(&f, out_path, "wb") != 0)
+        goto done;
+    {
+        size_t total = 0u;
+        DWORD avail = 0u;
+        uint8_t chunk[4096];
+        size_t cap = (max_size != 0u) ? max_size : (16u * 1024u * 1024u);
+        int overflow = 0;
+        while (WinHttpQueryDataAvailable(hreq, &avail) && avail != 0u) {
+            DWORD want = (avail > sizeof(chunk)) ? (DWORD)sizeof(chunk) : avail;
+            DWORD got = 0u;
+            if (!WinHttpReadData(hreq, chunk, want, &got) || got == 0u)
+                break;
+            if (total + got > cap) { overflow = 1; break; }
+            total += got;
+            (void)fwrite(chunk, 1, got, f);
+        }
+        fclose(f);
+        f = NULL;
+        if (overflow) {
+            remove(out_path);
+            st = PROT_ERR_INTERNAL;
+        } else {
+            st = PROT_OK;
+        }
+    }
+
+done:
+    if (f != NULL)
+        fclose(f);
+    if (hreq != NULL)
+        WinHttpCloseHandle(hreq);
+    if (hconn != NULL)
+        WinHttpCloseHandle(hconn);
+    if (hin != NULL)
+        WinHttpCloseHandle(hin);
+    return st;
+}
+
+/* 下载到内存（`--check-url` 用）—— 复用 WinHTTP 流程，但写入缓冲。
+ *
+ * 实现方式: **先下载到临时文件再用 http_get 的公共部分**
+ *   —— 但那样多一次磁盘 IO。
+ *   故此处**独立实现**（代码短，且避免临时文件管理）。
+ */
+prot_status prot_plat_http_get_mem(const char* url, char* buf, size_t cap,
+                                   size_t* out_len)
+{
+    HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
+    prot_status st = PROT_ERR_INTERNAL;
+    wchar_t wurl[1024], whost[256], wpath[512];
+    URL_COMPONENTS uc;
+
+    if (url == NULL || buf == NULL || cap == 0u)
+        return PROT_ERR_INVALID_ARG;
+    if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024) == 0)
+        return PROT_ERR_INVALID_ARG;
+
+    memset(&uc, 0, sizeof(uc));
+    uc.dwStructSize = sizeof(uc);
+    uc.lpszHostName = whost; uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = wpath;  uc.dwUrlPathLength = 512;
+
+    hin = WinHttpOpen(L"PROT-Demo/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (hin == NULL)
+        return PROT_ERR_INTERNAL;
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc))
+        goto done;
+    hconn = WinHttpConnect(hin, whost, uc.nPort, 0);
+    if (hconn == NULL)
+        goto done;
+    hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL, WINHTTP_NO_REFERER,
+                              WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (hreq == NULL)
+        goto done;
+    if (!WinHttpSendRequest(hreq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 3000))
+        goto done;
+    if (!WinHttpReceiveResponse(hreq, NULL))
+        goto done;
+    {
+        DWORD avail = 0u;
+        DWORD got = 0u;
+        if (WinHttpQueryDataAvailable(hreq, &avail) && avail > 0u
+            && (size_t)avail < cap) {
+            if (WinHttpReadData(hreq, buf, avail, &got)) {
+                buf[got] = '\0';
+                if (out_len != NULL)
+                    *out_len = (size_t)got;
+                st = PROT_OK;
+            }
+        }
+    }
+
+done:
+    if (hreq != NULL)  WinHttpCloseHandle(hreq);
+    if (hconn != NULL) WinHttpCloseHandle(hconn);
+    if (hin != NULL)   WinHttpCloseHandle(hin);
+    return st;
 }
 
 #endif /* PROT_PLATFORM_WINDOWS */

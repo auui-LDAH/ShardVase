@@ -130,6 +130,28 @@ def main():
         ' * 字节；种子由构建种子派生，保证可复现（repro_check）。',
         ' */',
         '#include <stdint.h>',
+        # ## ⚠️ B 阶段（2026-09-25）实测教训: **必须 include 宏定义头**
+        #
+        #   我把节语法改为 `PROT_ALLOCATE_PLAIN` / `PROT_SECTION_BEGIN` /
+        #   `PROT_CODE_SEG` 等宏，却**忘了让生成物 include 定义它们的头**
+        #   （`protect/prot_compiler.h`）。
+        #
+        #   **后果**: 宏**未定义** -> MSVC 把它们当作**隐式函数声明**
+        #   （函数式宏的写法 `NAME("x")` 恰好像函数调用）——
+        #   于是
+        #     `PROT_ALLOCATE_PLAIN(".rdata") volatile unsigned char
+        #      g_pad_rdata[N] = { ... };`
+        #   被解析成**两个语句**（一个调用 + 一个**独立的数组定义**），
+        #   **填充数据完全没进目标节** ->
+        #   节尺寸**不再归一化** -> **M1 从 1.1% 退化到 100%**。
+        #
+        #   **由 `migration_gate` 抓到**（严谨二分: 每次测量先确认构建
+        #   真的成功 —— 否则"构建失败 + 旧 map"会给出假象）。
+        #
+        #   **教训**: **改生成器的输出语法时，必须同步检查生成物的
+        #   include 是否齐备** —— 否则"语法看着对，语义没了"。
+        '#include "protect/prot_compiler.h"'
+        '   /* PROT_ALLOCATE_* / PROT_SECTION_* / PROT_CODE_SEG */',
         '',
     ]
 
@@ -240,25 +262,61 @@ def main():
         lines.append('/* %s: %s %d 字节（目标 0x%X，实际 0x%X）*/'
                      % (real, '创建' if have == 0 else '补齐', need, wv, have))
         # 声明方式必须与源码一致，否则属性冲突 -> LNK4078（实测教训）
+        #
+        # ## B 阶段（2026-09-25）: 产出**跨平台**语法
+        #
+        # **问题**: 原实现**硬编码 MSVC 语法**
+        #   （`#pragma section` + `__declspec(allocate)`）——
+        #   gcc 报 `unknown-pragmas` / `unknown type name 'allocate'`
+        #   -> **Linux 构建失败**。
+        #
+        # **修法**: 用 `prot_compiler.h` 的宏（`PROT_SECTION_BEGIN` /
+        #   `PROT_ALLOCATE`），它们**按编译器展开**:
+        #     MSVC: `__pragma(section(...))` + `__declspec(allocate(...))`
+        #     gcc : 空 + `__attribute__((section(...)))`
+        #
+        # **为什么要 include 而非复制宏**: 单一来源（避免两处定义漂移）。
         if decl == 'std':
-            # 标准节的**正确写法**（实测三种写法后确定）:
-            #   pragma section 不带属性 -> 成功，VSize 精确增大
-            #   带属性 -> C4325（忽略标准节特性）-> /WX 错误
-            #   仅 allocate 无 pragma -> C2341（用法前必须定义段）
-            lines.append('#pragma section("%s")' % real)
-            lines.append('__declspec(allocate("%s")) '
+            # 标准节的**正确写法**（MSVC 实测三种写法后确定）:
+            #   ① **只用 allocate，不加 #pragma section**（本实现）——
+            #      实测 `#pragma section(".text")` 会触发
+            #      **C4325「忽略标准节的特性」** -> `/WX` 下**变错误**。
+            #   ② 带属性 -> 同 C4325
+            #   ③ 仅 allocate 无 pragma -> **正确**
+            #
+            # ## ⚠️ B 阶段（2026-09-25）实测教训 —— 我**差点搞错**
+            #   我给"标准节"引入了 `PROT_SECTION_PLAIN(sec)` 宏，
+            #   它在 MSVC 下展开为 `__pragma(section(sec))` ——
+            #   **正是上面 ① 说的 C4325 写法**！
+            #
+            #   后果: 构建仍能通过（`section(".text")` 不带属性时
+            #     MSVC **只警告 C4325**，而我误以为它安全），
+            #     但 **节的属性/大小语义变了** ->
+            #     **M1 地址复用率从 6.7% 退化到 100%**
+            #     （由 `migration_gate` 抓到）。
+            #
+            #   => **标准节只 emit `PROT_ALLOCATE_PLAIN(sec)`**
+            #      （MSVC 展开为 `__declspec(allocate(sec))`，无 pragma）。
+            #
+            # ## gcc 侧
+            #   `PROT_ALLOCATE_PLAIN` 展开为**空**（标准节不能用
+            #   `__attribute__((section))`）-> 填充变量落**默认节**。
+            #   **已知限制**: Linux 侧的标准节尺寸**不因填充而统一**
+            #   （B 阶段如实记录；需时可用链接脚本实现）。
+            lines.append('PROT_ALLOCATE_PLAIN("%s") '
                          'volatile unsigned char %s[%d] = { %s };'
                          % (real, prefix, need, body))
         elif decl == 'code_seg':
-            lines.append('#pragma code_seg("%s")' % real)
-            lines.append('__declspec(allocate("%s")) '
+            lines.append('PROT_CODE_SEG("%s")' % real)
+            lines.append('PROT_ALLOCATE("%s") '
                          'volatile unsigned char %s[%d] = { %s };'
                          % (real, prefix, need, body))
-            lines.append('#pragma code_seg()')   # 复位，避免影响后续
+            lines.append('PROT_CODE_SEG_END()')   # 复位，避免影响后续
         else:
-            lines.append('#pragma section("%s"%s)'
+            # 自定义节 —— 用**可变参数**宏（属性必须是**标识符**，不能加引号）
+            lines.append('PROT_SECTION_BEGIN("%s"%s)'
                          % (real, (', ' + attrs) if attrs else ''))
-            lines.append('__declspec(allocate("%s")) '
+            lines.append('PROT_ALLOCATE("%s") '
                          'volatile unsigned char %s[%d] = { %s };'
                          % (real, prefix, need, body))
         lines.append('')

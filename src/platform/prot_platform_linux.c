@@ -1394,4 +1394,42 @@ prot_status prot_plat_hide_thread(void)
     return PROT_ERR_UNSUPPORTED;
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 13: HTTP 下载（B4，Linux: **如实降级**）
+ *
+ * ## 为什么返回 UNSUPPORTED 而不是"假装失败"
+ *   `demo/main.c` 的 `--blob-url` 在下载失败时**静默回退本地路径**。
+ *   若本函数返回 `PROT_ERR_INTERNAL`（"网络失败"），调用方会回退 ——
+ *   **行为上等价**，但**语义上误导**（让人以为"网络不通"，
+ *   实际是"该平台未实现"）。
+ *
+ *   => 返回 **`PROT_ERR_UNSUPPORTED`** —— 调用方**同样回退**，
+ *      但**语义准确**（可据此区分"未实现"与"网络故障"）。
+ *
+ * ## 为什么不用 libcurl（**决策记录**）
+ *   见 `prot_platform.h` 分组 13 的注释:
+ *   ① 不引入新依赖 ② 诚实 ③ 可扩展（将来可填 libcurl 实现）
+ * ------------------------------------------------------------------ */
+
+prot_status prot_plat_http_get(const char* url, const char* out_path,
+                               size_t max_size)
+{
+    (void)url;
+    (void)out_path;
+    (void)max_size;
+    /* 如实声明: Linux 侧未实现网络下载 -> 调用方回退本地路径 */
+    return PROT_ERR_UNSUPPORTED;
+}
+
+/* 下载到内存（Linux: **同样如实降级**，理由见 prot_plat_http_get）。 */
+prot_status prot_plat_http_get_mem(const char* url, char* buf, size_t cap,
+                                   size_t* out_len)
+{
+    (void)url;
+    (void)buf;
+    (void)cap;
+    (void)out_len;
+    return PROT_ERR_UNSUPPORTED;
+}
+
 #endif /* PROT_PLATFORM_LINUX */

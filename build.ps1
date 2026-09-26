@@ -447,7 +447,7 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 #   另一处在 §7 附近，为 Invoke-Unit 版本）。两处都需同步。
 # S1-ALLOW: 单元测试**刻意只链接被测模块**（vm.c + crc32 + 平台层）——用完整组合会让"单元测试"变成"整套构建测试"，丧失定位能力。
 #   平台层为必需: vm.c 的熵源已改走 prot_plat_monotonic_ns（L6b）。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c src\platform\prot_platform_win.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c src\platform\prot_platform_win.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
 
 # 5c. 编译 A6 direct syscall 单测 (直调结果须与 API 路径一致)
@@ -682,7 +682,7 @@ function Invoke-Unit([string]$exe, [string]$clCmd, [string]$failMsg) {
 #   不适用组合驱动 —— 它们刻意保持"只链接被测模块"）。
 #   S1 已同步增强（见 tools/modcheck.py）。
 $platSrc = 'src\platform\prot_platform_win.c'
-$unitCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c $platSrc demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib"
+$unitCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c $platSrc demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
 # syscall_probe 只用 syscall.c（无平台层依赖）—— 保持不变
 $probeCl = 'cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE'
 Invoke-Unit 'vm_unit.exe' $unitCl 'vm_unit.exe (Phase 1D ops)'

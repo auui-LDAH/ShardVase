@@ -12,10 +12,14 @@
 #include <string.h>
 #include <time.h>
 
+#if PROT_PLATFORM == PROT_PLATFORM_WINDOWS
 #include <windows.h>
+#endif
 #include <winhttp.h>
 
 #include "protect/antidebug.h"
+#include "protect/prot_platform.h"
+#include "protect/prot_compiler.h"   /* B4: PROT_SNPRINTF */   /* B4: 平台抽象（HTTP/Sleep/时钟）*/
 
 #include "protect/blob.h"
 #include "protect/dbiguard.h"
@@ -505,7 +509,7 @@ int main(int argc, char** argv)
 
     /* 搂9.1-2: --wait-ms N 鍦ㄦ壂鎻忓墠寤舵椂 (涓鸿皟璇曢檮鍔犵暀鍑虹獥鍙? */
     if (wait_ms > 0) {
-        Sleep(wait_ms);
+        prot_plat_sleep_ms(wait_ms);
     }
 
 #ifdef PROT_MOD_ANTIDEBUG
@@ -610,86 +614,33 @@ int main(int argc, char** argv)
         const char* bp = (vm_blob_path != NULL) ? vm_blob_path : "vm.blob";
         size_t blob_size = 0u;
         if (blob_url != NULL) {
+            /* ## B4（2026-09-25）: WinHTTP -> **平台层**（跨平台）
+             *
+             * **改动前**: 82 行 WinHTTP 调用（`WinHttpOpen`/`Connect`/
+             *   `OpenRequest`/`SendRequest`/`ReceiveResponse`/
+             *   `QueryDataAvailable`/`ReadData`/`CloseHandle`）——
+             *   Windows 专有，Linux 无法编译。
+             *
+             * **改动后**: 一次 `prot_plat_http_get()` 调用。
+             *   平台实现:
+             *     · Windows —— **原 WinHTTP 逻辑搬迁**（行为不变）
+             *     · Linux   —— **如实返回 UNSUPPORTED**
+             *       （不引入 libcurl；见 prot_platform.h 分组 13 的决策）
+             *
+             * **语义等价性**: 原代码在下载失败时**静默回退本地**
+             *   （下方 `!ok` 分支）。Linux 返回 UNSUPPORTED -> 同样回退
+             *   -> **行为与 Windows 网络失败时完全一致**。
+             */
             static char tmp[64] = "vm_blob_dl.tmp";
-            HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
-            BOOL ok = FALSE;
-            hin = WinHttpOpen(L"PROT-Demo/1.0",
-                              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-            if (hin != NULL) {
-                wchar_t whost[256];
-                wchar_t wpath[512];
-                URL_COMPONENTS uc;
-                INTERNET_PORT port;
-                memset(&uc, 0, sizeof(uc));
-                uc.dwStructSize = sizeof(uc);
-                uc.lpszHostName = whost;
-                uc.dwHostNameLength = 256;
-                uc.lpszUrlPath = wpath;
-                uc.dwUrlPathLength = 512;
-                {
-                    wchar_t wurl[1024];
-                    MultiByteToWideChar(CP_UTF8, 0, blob_url, -1, wurl, 1024);
-                    if (WinHttpCrackUrl(wurl, 0, 0, &uc)) {
-                        port = uc.nPort;
-                        hconn = WinHttpConnect(hin, whost, port, 0);
-                        if (hconn != NULL) {
-                            hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
-                                                     WINHTTP_NO_REFERER,
-                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-                            if (hreq != NULL &&
-                                WinHttpSendRequest(hreq,
-                                                   WINHTTP_NO_ADDITIONAL_HEADERS,
-                                                   0, WINHTTP_NO_REQUEST_DATA,
-                                                   0, 0, 3000) &&
-                                WinHttpReceiveResponse(hreq, NULL)) {
-                                FILE* f = NULL;
-                                DWORD avail = 0u;
-                                unsigned long long total = 0ull;
-                                /* blob 涓婇檺闃?DoS: 鎭舵剰鏈嶅姟绔棤娉曞啓鐩樺～婊?*/
-                                const unsigned long long MAX_BLOB_DL_SIZE =
-                                    2ull * 1024ull * 1024ull;
-                                int overflow = 0;
-                                if (fopen_s(&f, tmp, "wb") == 0 && f != NULL) {
-                                    while (WinHttpQueryDataAvailable(hreq, &avail) &&
-                                           avail > 0u && !overflow) {
-                                        uint8_t chunk[4096];
-                                        DWORD got2 = 0u;
-                                        DWORD want = (avail < (DWORD)sizeof(chunk))
-                                                         ? avail : (DWORD)sizeof(chunk);
-                                        if (!WinHttpReadData(hreq, chunk, want, &got2) ||
-                                            got2 == 0u)
-                                            break;
-                                        if (total + got2 > MAX_BLOB_DL_SIZE) {
-                                            overflow = 1; /* 瓒呴檺: 涓, 涓嶈惤鐩?*/
-                                            break;
-                                        }
-                                        total += got2;
-                                        fwrite(chunk, 1, got2, f);
-                                    }
-                                    fclose(f);
-                                    if (overflow) {
-                                        /* 鍒犳帀鎴柇鐨勪复鏃舵枃浠? 鍥為€€鏈湴 */
-                                        remove(tmp);
-                                        tmp[0] = '\0';
-                                    } else {
-                                        ok = TRUE;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (hreq != NULL)
-                    WinHttpCloseHandle(hreq);
-                if (hconn != NULL)
-                    WinHttpCloseHandle(hconn);
-                WinHttpCloseHandle(hin);
+            prot_status dl_st = prot_plat_http_get(blob_url, tmp, 0u);
+            if (dl_st == PROT_OK) {
+                bp = tmp;   /* 用下载的 blob（装载时验签，失败仍 0xB10B）*/
+            } else {
+                /* 未实现 / 网络不可达 -> **回退本地路径**（离线优先，不锁死）。
+                 * Linux 侧走此分支（`PROT_ERR_UNSUPPORTED`）——
+                 * **与 Windows 网络故障时的行为一致**。 */
+                tmp[0] = '\0';
             }
-            if (ok) {
-                bp = tmp; /* 鐢ㄤ笅杞界殑 blob (瑁呰浇鏃堕獙绛? 澶辫触浠?0xB10B) */
-            }
-            /* !ok = 缃戠粶涓嶅彲杈?瓒呮椂 -> 闈欓粯鍥為€€鏈湴 (绂荤嚎浼樺厛, 涓嶉攣姝? */
         }
         if (sc_ext_enter() != PROT_OK) {
             printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL));
@@ -699,8 +650,8 @@ int main(int argc, char** argv)
                                &g_vm_blob_buf, &blob_size);
         /* S2: 装载后内存重编码 (每运行密钥域不同, 双 dump 失效) */
         if (st == PROT_OK) {
-            uint64_t ent = (uint64_t)GetTickCount64()
-                           ^ ((uint64_t)GetCurrentProcessId() << 32u)
+            uint64_t ent = (uint64_t)prot_plat_monotonic_ns() / 1000000ull
+                           ^ ((uint64_t)0ull << 32u)
                            ^ (uint64_t)(uintptr_t)bp;
             uint32_t vi;
             for (vi = 0u; vi < 4u; vi++)
@@ -715,7 +666,7 @@ int main(int argc, char** argv)
 
     /* A5 闀块┗鐣欏洖褰掗挬瀛? 鐪嬮棬鐙楀惎鍔ㄥ悗椹荤暀 N 姣, 璁╁懆鏈熷鏌ュ娆¤Е鍙?     * (e2e T11 鐢?--wait-after 楠岃瘉骞插噣鐜闆惰鎶? */
     if (wait_after_ms > 0) {
-        Sleep(wait_after_ms);
+        prot_plat_sleep_ms(wait_after_ms);
     }
 
     /* 搂9.1-7: 鏈哄櫒鏍囪瘑 (Phase 4: 鐪熷疄纭欢缁戝畾); 璇诲埌搴忓垪鍙峰墠鍏堟竻闆跺叏閮ㄥ尯 */
@@ -775,7 +726,7 @@ int main(int argc, char** argv)
         {
             char eye[64];
             /* 妯℃澘涓茬粡 strcrypt 鍔犲瘑 (N 鍔犲浐: 娑堥櫎鏄庢枃鐗瑰緛) */
-            _snprintf_s(eye, sizeof(eye), _TRUNCATE,
+            PROT_SNPRINTF(eye, sizeof(eye),
                         prot_str_get(PROT_STR_LICENSE_FMT),
                         mem.license_ok, mem.license_tier, mem.license_expires);
             printf("%s\n", eye);
@@ -813,64 +764,27 @@ int main(int argc, char** argv)
         if (check_url != NULL && !online_revoked) {
             char url[1024];
             char buf[512];
-            DWORD got = 0u;
-            HINTERNET hin = NULL, hconn = NULL, hreq = NULL;
-            BOOL ok = FALSE;
+            /* ## B4（2026-09-25）: 第二处 WinHTTP -> 平台层
+             *
+             * **改动前**: 约 62 行 WinHTTP 调用（下载吊销 JSON 到内存）。
+             * **改动后**: 一次 `prot_plat_http_get_mem()` 调用。
+             *
+             * **语义等价性**: 原代码在网络失败时**静默降级**
+             *   （`ok` 保持 FALSE -> 不解析）。Linux 返回 UNSUPPORTED
+             *   -> `ok` 同样保持 0 -> **行为一致**。
+             */
+            size_t got = 0u;
+            int ok = 0;
 
-            _snprintf_s(url, sizeof(url), _TRUNCATE,
+            PROT_SNPRINTF(url, sizeof(url),
                         prot_str_get(PROT_STR_URL_CHECK_FMT),
                         check_url, mem.serial,
                         (unsigned long long)mem.machine_id,
                         mem.license_tier, PROT_VERSION_STR);
-            /* 灏濊瘯 winhttp; 澶辫触/瓒呮椂 -> 闈欓粯闄嶇骇 (绂荤嚎浼樺厛) */
-            hin = WinHttpOpen(L"PROT-Demo/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-            if (hin != NULL) {
-                wchar_t whost[256];
-                wchar_t wpath[512];
-                URL_COMPONENTS uc;
-                INTERNET_PORT port;
-                memset(&uc, 0, sizeof(uc));
-                uc.dwStructSize = sizeof(uc);
-                uc.lpszHostName = whost;
-                uc.dwHostNameLength = 256;
-                uc.lpszUrlPath = wpath;
-                uc.dwUrlPathLength = 512;
-                {
-                    wchar_t wurl[1024];
-                    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024);
-                    if (WinHttpCrackUrl(wurl, 0, 0, &uc)) {
-                        port = uc.nPort;
-                        hconn = WinHttpConnect(hin, whost, port, 0);
-                        if (hconn != NULL) {
-                            hreq = WinHttpOpenRequest(hconn, L"GET", wpath, NULL,
-                                                     WINHTTP_NO_REFERER,
-                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-                            if (hreq != NULL &&
-                                WinHttpSendRequest(hreq,
-                                                   WINHTTP_NO_ADDITIONAL_HEADERS,
-                                                   0, WINHTTP_NO_REQUEST_DATA,
-                                                   0, 0, 3000) &&
-                                WinHttpReceiveResponse(hreq, NULL)) {
-                                DWORD avail = 0u;
-                                if (WinHttpQueryDataAvailable(hreq, &avail) &&
-                                    avail > 0u && avail < sizeof(buf)) {
-                                    if (WinHttpReadData(hreq, buf, avail, &got)) {
-                                        buf[got] = '\0';
-                                        if (strstr(buf, "\"revoked\"") != NULL)
-                                            online_revoked = 1;
-                                        ok = TRUE;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (hreq != NULL)
-                    WinHttpCloseHandle(hreq);
-                if (hconn != NULL)
-                    WinHttpCloseHandle(hconn);
-                WinHttpCloseHandle(hin);
+            if (prot_plat_http_get_mem(url, buf, sizeof(buf), &got) == PROT_OK) {
+                if (strstr(buf, "\"revoked\"") != NULL)
+                    online_revoked = 1;
+                ok = 1;
             }
             if (ok) {
                 char ob[32];
@@ -903,7 +817,7 @@ int main(int argc, char** argv)
                         }
                     }
                 }
-                _snprintf_s(ob, sizeof(ob), _TRUNCATE,
+                PROT_SNPRINTF(ob, sizeof(ob),
                             prot_str_get(PROT_STR_ONLINE_FMT),
                             online_revoked ? "revoked" : "ok");
                 printf("%s\n", ob);
@@ -949,7 +863,7 @@ int main(int argc, char** argv)
                 PROT_LOG_VM_ERR(st);
                 exit(1);
             }
-            Sleep(500); /* 鐣欏嚭瑙傛祴绐楀彛 (D2b 涓嬮棿闅欎负瀵嗘枃) */
+            prot_plat_sleep_ms(500); /* 鐣欏嚭瑙傛祴绐楀彛 (D2b 涓嬮棿闅欎负瀵嗘枃) */
         }
     }
 #endif /* PROT_DRILL_HOOK */

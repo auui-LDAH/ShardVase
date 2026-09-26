@@ -200,7 +200,7 @@ def run_case(name, src, host_hex):
              '"' + os.path.join(REPO, 'src', 'crc32.c') + '" '
              '"' + plat_src + '" '
              '"' + blob_c + '" "' + runner_c + '" '
-             '/link /SUBSYSTEM:CONSOLE advapi32.lib')
+             '/link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib')
     bat = os.path.join(BUILD, 'vmc_cl.bat')
     with open(bat, 'w', encoding='ascii') as f:
         f.write('@echo off\r\ncall "%s" >nul 2>&1\r\n%s\r\n' % (vcvars, clcmd))

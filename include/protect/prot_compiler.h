@@ -153,13 +153,44 @@
  *     （节归属由 `PROT_ALLOCATE` 的属性表达）
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * 节声明宏（**四件套**）
+ *
+ * ## 为什么是四个宏而不是两个（2026-09-25 实测修正）
+ *   `PROT_SECTION_BEGIN(sec, ...)` 用可变参数 ——
+ *   **无属性时**会展开成 `__pragma(section(sec, ))`（**多余逗号**）
+ *   -> MSVC 语法错误。
+ *
+ *   且 **gcc 侧标准节（`.text`/`.rdata`）不能**用
+ *   `__attribute__((section(...)))`（与编译器自身节冲突）。
+ *
+ *   => 拆成"**有属性 / 无属性**"两套:
+ *     · 自定义节  -> `PROT_SECTION_BEGIN` + `PROT_ALLOCATE`
+ *     · 标准节    -> `PROT_SECTION_PLAIN` + `PROT_ALLOCATE_PLAIN`
+ * ------------------------------------------------------------------ */
+
 /* MSVC: `__pragma(section(NAME, ATTRS...))`；GCC: 空（属性随变量走） */
 #if defined(PROT_COMPILER_MSVC)
 #  define PROT_SECTION_BEGIN(sec, ...) __pragma(section(sec, __VA_ARGS__))
-#  define PROT_ALLOCATE(sec) __declspec(allocate(sec))
+#  define PROT_SECTION_PLAIN(sec)      __pragma(section(sec))
+#  define PROT_ALLOCATE(sec)           __declspec(allocate(sec))
+#  define PROT_ALLOCATE_PLAIN(sec)     __declspec(allocate(sec))
 #else
-#  define PROT_SECTION_BEGIN(sec, ...)   /* GCC: 属性随变量走 */
-#  define PROT_ALLOCATE(sec) __attribute__((section(sec)))
+   /* ## GCC 侧的两点差异（**如实标注**）
+    *   ① 节属性**逐变量**表达 -> `PROT_SECTION_*` 展开为**空**
+    *   ② **标准节不能**用 `section` 属性（与编译器自身节冲突）——
+    *      故 `PROT_ALLOCATE_PLAIN` **也为空** ->
+    *      填充变量落在**默认节**（`.bss`）。
+    *
+    *   **这意味着什么**: Linux 侧的"节填充归一化"**不作用于标准节** ——
+    *   即 `.text`/`.rdata` 的尺寸**不因填充而统一**。
+    *   这是**已知限制**（B 阶段如实记录），需要时可在 ELF 侧用
+    *   链接脚本实现（**本阶段未做**）。
+    */
+#  define PROT_SECTION_BEGIN(sec, ...)  /* GCC: 属性随变量走 */
+#  define PROT_SECTION_PLAIN(sec)       /* GCC: 标准节无需声明 */
+#  define PROT_ALLOCATE(sec)            __attribute__((section(sec)))
+#  define PROT_ALLOCATE_PLAIN(sec)      /* GCC: 标准节落默认节 */
 #endif
 
 /* ------------------------------------------------------------------ *
@@ -185,6 +216,24 @@
  * **语义等价性（关键）**:
  *   两者都保证"失败时 *fpp 为 NULL"，故调用方判 `err != 0` 即可。
  */
+/* ## 平台化的"截断式 snprintf"（B4，2026-09-25 编译测试发现）
+ *
+ * `demo/main.c` 用 MSVC 的 `_snprintf_s(buf, n, _TRUNCATE, fmt, ...)` ——
+ * **MSVC 专有**（`_TRUNCATE` 是其特有常量）-> Linux 无法编译。
+ *
+ * **语义**: "格式化并**保证 NUL 结尾**，超长则**截断**"。
+ *   C99 的 `snprintf` **行为完全一致**（也保证 NUL + 截断）——
+ *   故 POSIX 侧**直接映射**。
+ *
+ * **用法**:
+ *   PROT_SNPRINTF(buf, sizeof(buf), fmt, ...);
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_SNPRINTF(buf, n, ...) _snprintf_s((buf), (n), _TRUNCATE, __VA_ARGS__)
+#else
+#  define PROT_SNPRINTF(buf, n, ...) snprintf((buf), (n), __VA_ARGS__)
+#endif
+
 #if defined(PROT_COMPILER_MSVC)
 #  define PROT_FOPEN_S(fpp, path, mode) fopen_s((fpp), (path), (mode))
 #else
