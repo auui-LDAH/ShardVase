@@ -26,6 +26,37 @@ import os
 import subprocess
 import sys
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
@@ -48,7 +79,7 @@ def to_wsl_path(win_path):
 def wsl(args, timeout=1800):
     env = dict(os.environ)
     env['WSL_UTF8'] = '1'
-    r = subprocess.run(['wsl.exe'] + args, capture_output=True,
+    r = winproc.run(['wsl.exe'] + args, capture_output=True,
                        timeout=timeout, env=env)
     return (r.returncode,
             r.stdout.decode('utf-8', 'replace')

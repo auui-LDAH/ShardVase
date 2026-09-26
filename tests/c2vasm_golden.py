@@ -17,6 +17,37 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 from c2vasm import parse_function, compile_ast, tokenize, Parser, gen_var_offsets, Codegen
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 CASES = os.path.join(ROOT, 'tests', 'c2vasm_cases')
 BUILD = os.path.join(ROOT, 'build', 'c2vasm')
 OUT_OFF = 0x1000
@@ -45,7 +76,7 @@ def run_bat(lines):
     bat = os.path.join(BUILD, '_cmd.bat')
     with open(bat, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
-    return subprocess.run(['cmd', '/c', bat], capture_output=True, text=True)
+    return winproc.run(['cmd', '/c', bat], capture_output=True, text=True)
 
 
 def get_vc_env():
@@ -128,7 +159,7 @@ def compile_sanity(case):
     src = os.path.join(CASES, case + '.c')
     env = dict(os.environ)
     env.update(get_vc_env())
-    r = subprocess.run([find_cl(), '/nologo', '/W3', '/std:c11', '/utf-8',
+    r = winproc.run([find_cl(), '/nologo', '/W3', '/std:c11', '/utf-8',
                         '/c', src, '/Fo:' + obj],
                        capture_output=True, text=True, env=env)
     if r.returncode != 0:

@@ -33,6 +33,37 @@ import subprocess
 import sys
 import zlib
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 EXE = os.path.join(REPO, 'build', 'demo.exe')
 JSON_PATH = os.path.join(REPO, 'demo', 'vm_build.json')
@@ -59,7 +90,7 @@ def _msg(name):
 
 def run_demo(args=None, stdin=None):
     cmd = [EXE] + (args or [])
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    p = winproc.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
     out, err = p.communicate(stdin, timeout=40)
     return p.returncode, out.decode('utf-8', 'replace')
@@ -216,7 +247,7 @@ def main():
     # (载荷含 machine_id, 与本地 hostid 不同 -> 验签失败)。
     try:
         other = os.path.join(REPO, 'build', 'license_othermachine.txt')
-        subprocess.run(
+        winproc.run(
             ['python', VMENC, 'sign', '--key',
              os.path.join(REPO, 'build', 'keys', 'license_priv.json'),
              '--json', JSON_PATH, '--out', other,

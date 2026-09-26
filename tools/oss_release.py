@@ -26,6 +26,37 @@ import tempfile
 import subprocess
 import sys
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 os.chdir(REPO)
 
@@ -147,7 +178,7 @@ def rm_dir(path):
         return True
     shutil.rmtree(path, ignore_errors=True)
     if os.path.isdir(path):
-        subprocess.run(['cmd', '/c', 'rd', '/s', '/q', path],
+        winproc.run(['cmd', '/c', 'rd', '/s', '/q', path],
                        capture_output=True)
     if os.path.isdir(path):
         # 再等一会（杀毒/索引可能短暂持有句柄）
@@ -161,7 +192,7 @@ def rm_dir(path):
 
 
 def sh(*args, cwd=None, check=False):
-    p = subprocess.run(list(args), cwd=cwd or REPO,
+    p = winproc.run(list(args), cwd=cwd or REPO,
                        capture_output=True)
     return p.returncode, p.stdout.decode('utf-8', errors='replace'), \
         p.stderr.decode('utf-8', errors='replace')
@@ -294,7 +325,7 @@ def cmd_check():
         sync_tool = os.path.join(REPO, 'tools', 'sync_public.py')
         n_pending = '?'
         if os.path.isfile(sync_tool):
-            p = subprocess.run([sys.executable, '-X', 'utf8', sync_tool],
+            p = winproc.run([sys.executable, '-X', 'utf8', sync_tool],
                                capture_output=True)
             txt = (p.stdout + p.stderr).decode('utf-8', 'replace')
             m = re.search(r'需同步 \((\d+)\)', txt)
@@ -428,7 +459,7 @@ def cmd_rewrite():
     if not os.path.exists(fr):
         print('  [X] 找不到 git-filter-repo（pip install git-filter-repo）')
         return 1
-    p = subprocess.run([fr, '--replace-text', repl, '--mailmap', mailmap,
+    p = winproc.run([fr, '--replace-text', repl, '--mailmap', mailmap,
                         '--force'], cwd=REPO, capture_output=True)
     out = (p.stdout + p.stderr).decode('utf-8', 'replace')
     for l in out.split('\n'):
@@ -450,7 +481,7 @@ def cmd_update_sha():
         print('[X] 找不到 %s —— 先执行 --rewrite' % cm)
         return 1
     tool = os.path.join(REPO, 'tools', 'update_sha_refs.py')
-    p = subprocess.run([sys.executable, '-X', 'utf8', tool, '--map', cm,
+    p = winproc.run([sys.executable, '-X', 'utf8', tool, '--map', cm,
                         '--apply'], capture_output=True)
     out = (p.stdout + p.stderr).decode('utf-8', 'replace')
     for l in out.split('\n')[-12:]:

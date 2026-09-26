@@ -38,6 +38,37 @@ import subprocess
 import sys
 import tempfile
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
@@ -74,7 +105,7 @@ def _seed_files(tmp):
 def _build(seedfile, salt, out_dir, tag):
     env = dict(os.environ)
     env['PROT_BUILD_SALT'] = salt
-    subprocess.run(['powershell', '-ExecutionPolicy', 'Bypass', '-File',
+    winproc.run(['powershell', '-ExecutionPolicy', 'Bypass', '-File',
                     'build.ps1', '-Config', 'Release', '-SkipSmoke',
                     '-SkipSign', '-Composition', 'full',
                     '-SeedsFile', seedfile],
@@ -98,7 +129,7 @@ def measure(quiet=False):
             return None, None, '构建 A 失败'
         if not _build(sb, '0xAAAAAAAA', tmp, 'B'):
             return None, None, '构建 B 失败'
-        r = subprocess.run([PY, '-X', 'utf8',
+        r = winproc.run([PY, '-X', 'utf8',
                             os.path.join(REPO, 'tools', 'migration_cost.py'),
                             os.path.join(tmp, 'A.exe'),
                             os.path.join(tmp, 'B.exe'),

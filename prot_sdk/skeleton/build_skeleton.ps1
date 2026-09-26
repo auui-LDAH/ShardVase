@@ -336,11 +336,18 @@ Remove-Item -LiteralPath $sOut -ErrorAction SilentlyContinue
 #   没有控制台窗口 -> 弹窗阻塞 -> smoke 超时 -> 构建被误判失败。
 # 用环境变量给出序列号, 既不弹窗也不依赖 stdin, 且对控制台骨架无影响
 #   (控制台骨架未定义 provider, 走壳内默认实现回退 stdin, 行为不变)。
+#
+# ## 2026-09-25: 加 `-WindowStyle Hidden`
+#   实测反馈: 构建时会有**黑窗闪烁**。
+#   `Start-Process` 默认**新建可见窗口** -> 对 GUI 骨架会额外弹一个控制台。
+#   加 `-WindowStyle Hidden` 后: 该子进程**不显示窗口**
+#   （仍能被 Redirect* 与 WaitForExit 正常控制，功能不变）。
 $prevSerial = $env:PROT_SERIAL
 $env:PROT_SERIAL = $serialName
 $p = Start-Process -FilePath "$outDir\$appName.exe" `
     -ArgumentList '--license-file', "$outDir\license.txt", '--vm-blob', "$outDir\vm.blob", '--wait-after', '6000' `
-    -RedirectStandardInput $inFile -RedirectStandardOutput $sOut -PassThru
+    -RedirectStandardInput $inFile -RedirectStandardOutput $sOut -PassThru `
+    -WindowStyle Hidden
 Start-Sleep -Seconds 9
 if (-not $p.HasExited) { $p.WaitForExit(15000) | Out-Null }
 $smokeExited = $p.HasExited

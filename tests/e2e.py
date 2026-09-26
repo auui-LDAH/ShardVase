@@ -35,6 +35,37 @@ import subprocess
 import sys
 import time
 
+# ---------------------------------------------------------------------------
+# 隐藏窗口（2026-09-25）
+#
+# Windows 上从 Python 启动控制台程序（powershell/cmd/wsl/cl）会**弹出黑窗**。
+# 统一用 tools/winproc.py 封装（CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE）。
+#
+# **为什么统一封装**: 实测本项目约 60 处调用都无隐藏措施；
+#   一处修好 = 全部修好，且可自检（见 winproc.py 的 --selftest）。
+#
+# 路径推导: 从本文件位置向上找含 tools/winproc.py 的目录。
+# ---------------------------------------------------------------------------
+import os as _os_hw
+import sys as _sys_hw
+
+
+def _hw_tools_dir():
+    d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))
+    for _ in range(4):
+        cand = _os_hw.path.join(d, 'tools')
+        if _os_hw.path.isfile(_os_hw.path.join(cand, 'winproc.py')):
+            return cand
+        d = _os_hw.path.dirname(d)
+    return None
+
+
+_hw_tools = _hw_tools_dir()
+if _hw_tools and _hw_tools not in _sys_hw.path:
+    _sys_hw.path.insert(0, _hw_tools)
+import winproc  # noqa: E402
+
+
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 EXE = os.path.join(REPO, 'build', 'demo.exe')
 BUILD = os.path.join(REPO, 'build')
@@ -88,7 +119,7 @@ def load_strings(path):
 def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
     """Run demo.exe; return (exitcode, decoded_stdout, decoded_stderr)."""
     cmd = [exe] + (args or [])
-    p = subprocess.Popen(
+    p = winproc.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, cwd=os.path.dirname(exe))
     out, err = p.communicate(stdin, timeout=timeout)
@@ -245,7 +276,7 @@ def main():
             results.append(('T3 debug-detect', 'SKIP',
                             'no debug session support in this env'))
         else:
-            proc = subprocess.Popen(
+            proc = winproc.Popen(
                 [EXE, '--wait-ms', '4000'],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
@@ -535,7 +566,7 @@ def main():
             args += ['--add', serial]
             if tier is not None:
                 args += ['--tier', str(tier)]
-        subprocess.run(args, check=True, capture_output=True)
+        winproc.run(args, check=True, capture_output=True)
         return os.path.join(BUILD, path)
 
     try:
@@ -606,7 +637,7 @@ def main():
     # ---- T20/T21: 试用期控制 (Phase 4 expires, 参与签名) ------------------
     vmenc = os.path.join(REPO, 'tools', 'vmenc.py')
     def make_license(expires, path):
-        subprocess.run(['python', vmenc, 'sign', '--key',
+        winproc.run(['python', vmenc, 'sign', '--key',
                         os.path.join(REPO, 'build', 'keys', 'license_priv.json'),
                         '--json', JSON_PATH, '--out', os.path.join(BUILD, path),
                         '--expires', str(expires)],

@@ -1193,3 +1193,127 @@ S1 只扫**独立 `*.ps1` 文件**，**没扫 `build.ps1` 内部的字符串**�
 ---
 
 *2026-09-25 · L6b 封装配送: 13/18；新增修 2 个真实缺陷；S1 两次自我修正*
+
+---
+
+## 14. 隐藏窗口改造（2026-09-25，用户反馈）
+
+### 14.1 问题
+
+**用户反馈**：运行时**弹出黑窗**。
+
+**根因**：Windows 上从 Python 启动**控制台程序**
+（`powershell` / `cmd` / `wsl` / `cl`）时，
+若未指定隐藏标志，系统会**分配新的控制台窗口** -> **黑窗闪烁**。
+
+### 14.2 盘点（实测，非估计）
+
+| 项 | 数量 |
+|----|------|
+| 会弹窗的**文件** | **27 个** |
+| 会弹窗的**调用点** | 约 **60 处** |
+| 有隐藏措施的 | **0 处** |
+
+### 14.3 修法：**统一封装**（而非逐处零散修）
+
+**新增** `tools/winproc.py`：
+
+| 能力 | 说明 |
+|------|------|
+| `winproc.run / Popen / check_output` | `subprocess.*` 的隐藏窗口版 |
+| `popen_kwargs()` | 只取"隐藏窗口"参数（供已有 subprocess 调用合入）|
+| `--selftest` | **7 项自检** |
+
+**隐藏手段**（双保险）：
+```python
+creationflags = CREATE_NO_WINDOW   # 0x08000000 —— 不分配控制台
+startupinfo.dwFlags |= STARTF_USESHOWWINDOW
+startupinfo.wShowWindow = SW_HIDE  # 0
+```
+
+**为什么统一封装**：
+- **一致性**：一处修好 = 全部修好，不会漏
+- **可验证**：可自检（见下）
+- **可扩展**：将来加超时/日志/重试只改一处
+
+### 14.4 自检 7/7 通过
+
+```
+ok  T1 Windows 下含 creationflags
+ok  T2 creationflags == CREATE_NO_WINDOW
+ok  T3 含 startupinfo
+ok  T4 wShowWindow == SW_HIDE
+ok  T5 dwFlags 含 STARTF_USESHOWWINDOW
+ok  T6 封装后子进程正常执行          <- 不破坏功能
+ok  T7 调用方 kwargs 可合入          <- 不锁死
+```
+
+> **诚实说明**：T1–T5 验证"**参数正确**"，T6–T7 验证"**没搞坏调用**"。
+> **"窗口是否真的不闪"无法自动断言**（需 UI 自动化）——
+> 这是**人工确认项**，如实标注。
+
+### 14.5 批量替换（**保守 + 可回滚**）
+
+| 项 | 结果 |
+|----|------|
+| 替换文件 | **23 个** |
+| 替换调用点 | **51 处** |
+| 失败回滚 | **0 个** |
+| 语法检查 | 每个文件 py_compile 通过 |
+
+**策略**：逐文件改 -> 立即语法检查 -> 失败则**回滚该文件**。
+
+### 14.6 替换中发现的**真实问题**
+
+**问题**：`test_example.py` 用了 `winproc.Popen` -> `AttributeError`。
+
+**根因**：我初版 `winproc` **只实现了 `run`/`check_output`**，
+漏了 `Popen`（而某个文件确实用了它）。
+
+> **门禁立即抓到**（`example E1-E7` 失败）——
+> **这正是"每次改动后跑完整门禁"纪律的价值**。
+
+**修法**：补 `winproc.Popen`。
+
+### 14.7 PowerShell 侧的处理（**澄清一个误区**）
+
+**盘点发现**：PowerShell 里有大量 `cmd /c` 与 `powershell -File` 调用。
+
+**关键区分（重要）**：
+| 场景 | 是否弹窗 |
+|------|---------|
+| 从 **Python** 调 `powershell -File x.ps1` | ✅ **弹窗**（已由 winproc 解决）|
+| 在 **PowerShell 内**调 `cmd /c "..."` | ❌ **不弹**（**同控制台**）|
+| 在 **PowerShell 内**调 `powershell -File y.ps1` | ❌ **不弹**（**继承控制台**）|
+| **`Start-Process`**（无 `-WindowStyle`）| ✅ **弹新窗** |
+
+**=> PowerShell 内部的 `cmd /c` 与 `powershell -File` 不需要隐藏。**
+
+**实际需修的只有 1 处**：
+`prot_sdk/skeleton/build_skeleton.ps1:347` 的 `Start-Process`（smoke 测试）
+-> 加 **`-WindowStyle Hidden`**。
+
+**验证**：骨架回归 PASS（`-WindowStyle Hidden` **不影响** smoke 的
+`Redirect*` 与 `WaitForExit`）。
+
+### 14.8 成果
+
+| 项 | 结果 |
+|----|------|
+| 新增工具 | ✅ `tools/winproc.py`（自检 7/7）|
+| Python 调用点 | ✅ **51 处**已隐藏 |
+| PowerShell `Start-Process` | ✅ 已加 `-WindowStyle Hidden` |
+| **门禁** | ✅ **19 项中 18 项通过**（唯一失败=未提交）|
+| 骨架回归 | ✅ PASS |
+
+### 14.9 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| **"不闪窗"无法自动验证** | 需 UI 自动化；自检只验证**参数正确** |
+| **GUI 程序不适用** | `CREATE_NO_WINDOW` 只对**控制台程序**有意义 |
+| **未覆盖 `.ps1` 内的所有子进程** | 仅 `Start-Process` 会弹新窗；`cmd /c` 不弹 |
+
+---
+
+*2026-09-25 · 隐藏窗口改造：新增 winproc（自检 7/7）+ 51 处替换 + Start-Process 加 Hidden*
