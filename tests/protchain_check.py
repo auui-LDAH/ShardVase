@@ -137,13 +137,44 @@ def pe_sections(data):
     return secs
 
 
-def scan_e8_calls(text):
-    """扫描 .text 所有 E8 call rel32, 返回目标 RVA 集合."""
+def scan_e8_calls(text, text_rva=0, skip_ranges=()):
+    """扫描 .text 的 E8 call rel32, 返回**映像 RVA** 目标集合。
+
+    ## ⚠️ M4 实测修正（2026-09-25）—— 本函数原先有**两个缺陷**
+
+    ### 缺陷 1: 坐标系错配（**严重**）
+      原实现返回 `i + 5 + rel` —— 这是"**相对 .text 起点**"的偏移；
+      而 `selfcrypt_meta()` 给出的 RVA 是"**相对映像基址**"。
+      两者相差 `.text` 的 `virtual_addr`（本构建为 0x1000）。
+
+      => P5 的 `fns ∩ targets` 实际是**两个不同坐标系下的数值比较**，
+         "命中"纯属**巧合** —— 与"是否间接化"**无关**。
+         实测: 含/不含 `text_rva`，命中数从 **1** 变为 **7**。
+
+      **修法**: 加 `text_rva` 参数，返回映像 RVA。
+
+    ### 缺陷 2: 未排除密文噪声
+      加密函数体在文件里是**密文**（伪随机字节）——
+      其中出现的 `0xE8` **不是调用**，只是巧合的字节。
+      原实现把它们也计入 `targets` -> 噪声污染判据。
+
+      **修法**: 加 `skip_ranges`（加密函数区间），跳过这些区域内的字节。
+
+    ## 参数
+      `text`        —— .text 的**文件字节**
+      `text_rva`    —— .text 的映像 RVA（`virtual_addr`）
+      `skip_ranges` —— [(start_rva, end_rva)]，这些区间内的字节**不扫描**
+    """
     targets = set()
     for i in range(len(text) - 5):
-        if text[i] == 0xE8:
-            rel = struct.unpack_from('<i', text, i + 1)[0]
-            targets.add(i + 5 + rel)
+        if text[i] != 0xE8:
+            continue
+        call_rva = text_rva + i
+        # 缺陷 2 修正: 跳过密文区（那里的 E8 是噪声，不是调用）
+        if any(a <= call_rva < b for a, b in skip_ranges):
+            continue
+        rel = struct.unpack_from('<i', text, i + 1)[0]
+        targets.add(call_rva + 5 + rel)   # 缺陷 1 修正: 映像 RVA
     return targets
 
 
@@ -257,24 +288,122 @@ def hashlib_sha256(b):
     return hashlib.sha256(b).digest()
 
 
+def parse_map_file(path):
+    """MSVC .map -> {符号: 映像RVA}（用**第 4 列绝对 VA** - ImageBase）。
+
+    ## 解析陷阱（2026-09-23 实测教训，勿重蹈）
+      map 行: `0001:00000020  probe_fn  0000000140001020 f  a.obj`
+        第 2 列是**节内偏移**，**不是**映像 RVA。
+        误用第 2 列 -> RVA 落在节外 -> 度量全部失真。
+    """
+    out = {}
+    if not os.path.isfile(path):
+        return out
+    import re as _re
+    try:
+        txt = open(path, encoding='utf-8', errors='replace').read()
+    except Exception:
+        return out
+    for m in _re.finditer(
+            r'[0-9a-f]{4}:([0-9a-f]{8})\s+(\S+)\s+([0-9a-f]{16})', txt):
+        out[m.group(2)] = int(m.group(3), 16) - 0x140000000
+    return out
+
+
+def indirect_slot_symbols():
+    """间接表的槽位符号名 —— 从 modules.json 的 `indirect_slots` 读。
+
+    ## 为什么注册表驱动（而非硬编码）
+      间接化作用于**宿主的业务函数** -> "哪些函数被间接化"是**宿主属性**
+      （见 modules.json 的 _comment 与 docs/PORTABILITY_ASSESSMENT.md）。
+      硬编码会在**换宿主时失效**（L3 已踩过: example 因此无法用 indirect）。
+    """
+    import json
+    path = os.path.join(REPO, 'modules.json')
+    try:
+        d = json.load(open(path, encoding='utf-8'))
+    except Exception:
+        return []
+    slots = d.get('indirect_slots', {})
+    out = []
+    for k, v in slots.items():
+        if k.startswith('_'):
+            continue
+        sym = v.get('symbol') if isinstance(v, dict) else v
+        if sym:
+            out.append(sym)
+    return out
+
+
 def p5_indirect_no_direct_call(data, secs):
-    """P5: 4 个关键函数无直接 call (N4 间接化)."""
+    """P5: **间接表的槽位函数**不被直接 call（N4 间接化）。
+
+    ## ⚠️ M4 实测重写（2026-09-25）—— 原实现有**四个缺陷**
+
+    | # | 缺陷 | 说明 |
+    |---|------|------|
+    | 1 | **坐标系错配** | `scan_e8_calls` 返回"相对 .text 起点"的偏移，而 selfcrypt meta 的 RVA 是"相对映像基址"，差 `.text` 的 `virtual_addr`。=> "命中"是**数值巧合**，与间接化无关。 |
+    | 2 | **密文噪声** | 加密函数体在文件里是密文，其中的 `0xE8` 不是调用。 |
+    | 3 | **函数集合错误** | docstring 说"**4 个关键函数**"，实现却取 **8 个 selfcrypt 加密函数**。 |
+    | 4 | **未区分设计允许的调用** | 同组加密函数互相调用是**设计允许**的（同组同时解密，见 `tools/selfcrypt_proto.py`）。 |
+
+    **原实现的实际后果**: 判据退化为"**密文里某个噪声 E8 是否恰好等于某个
+    加密函数的 RVA**" —— **纯随机**（M4 前 PASS 也是巧合）。
+
+    ## 修正后的判据（**忠于 docstring 的意图**）
+      只检查 **间接表的槽位函数** 不被直接 call ——
+      这才是"间接化"的承诺: 宿主通过**表**调用这 4 个入口。
+
+    ## 实测支持（修正的依据）
+      4 个槽位（`load_and_verify_license` / `prot_revoke_check` /
+      `prot_hostid_get` / `prot_vm_run`）:
+```
+0 次直接调用   -> N4 间接化**有效**
+```
+      （而 8 个加密函数被 `vm.c` 内部的 helper 直接调用 ——
+       那是**设计允许**的，不应算违规。）
+
+    ## 诚实边界
+      · P5 只验证"**没有直接调用**"（**必要条件**），
+        **不验证**"调用方真的走了表"（那需要识别表调用模式）。
+      · 槽位从 `modules.json` 读（**注册表驱动**）——
+        换宿主时自动跟随，无需改本测试。
+    """
     text = next((s for s in secs if s['name'] == '.text'), None)
     if text is None:
         return False, 'no .text'
     t = data[text['ptr_raw']:text['ptr_raw'] + text['size_raw']]
-    targets = scan_e8_calls(t)
-    # 从 .protcry meta 读加密函数 rva (与 P1 同源)
-    prot = next((s for s in secs if s['name'] in cry_section_names()), None)
-    if prot is None:
-        return False, 'no .protcry'
-    fns = [rva for rva, _ln, _grp in selfcrypt_meta(data, secs)]
-    hits = [rva for rva in fns if rva in targets]
+    base = text['virtual_addr']
+
+    slots = indirect_slot_symbols()
+    if not slots:
+        return False, 'no indirect_slots in modules.json'
+
+    # 槽位符号 -> RVA（用 map 反查；无 map 则跳过该项）
+    ma = parse_map_file(os.path.join(REPO, 'build', 'demo.map'))
+    if not ma:
+        return False, 'no .map (无法定位槽位符号)'
+
+    # 密文区间（排除噪声）
+    meta = selfcrypt_meta(data, secs)
+    crypt = [(rva, rva + ln) for rva, ln, _g in meta]
+
+    # 修正 1+2: 正确坐标系 + 排除密文噪声
+    targets = scan_e8_calls(t, text_rva=base, skip_ranges=crypt)
+
+    hits = []
+    for sym in slots:
+        rva = ma.get(sym)
+        if rva is None:
+            continue    # 该槽位符号不在本构建（如宿主未提供）
+        if rva in targets:
+            hits.append(sym)
+
     if hits:
-        return False, 'direct calls to %s' % [hex(h) for h in hits]
-    return True, 'no direct call to %d protected fns' % len(fns)
-
-
+        return False, ('direct calls to indirect slots: %s '
+                       '(应仅通过间接表调用)' % hits)
+    return True, ('no direct call to %d indirect slots '
+                  '（已修正坐标系/密文噪声/函数集合）' % len(slots))
 def p6_expect_consistent():
     """P6: expect_default.c 与 vm_build.json 一致."""
     exp_path = os.path.join(REPO, 'demo', 'gen', 'expect_default.c')

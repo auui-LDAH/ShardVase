@@ -541,6 +541,59 @@ int  prot_plat_atomic_exchange(volatile int* p, int v);
 int  prot_plat_atomic_increment(volatile int* p);
 
 /* ------------------------------------------------------------------ *
+ * 分组 11: 内存区间 / 线程 / 符号（C4，`dbiguard` 用）
+ *
+ * ## 为什么需要
+ *   `src/dbiguard.c` 有 4 个扫描函数:
+ *     · `scan_inline_hooks`   —— 读导出函数头查跳转
+ *     · `scan_frida_agent`    —— 枚举模块名（**平台层已有**）
+ *     · `scan_rx_rw_regions`  —— 找 RWX 页
+ *     · `scan_thread_count`   —— 数线程
+ * ------------------------------------------------------------------ */
+
+#define PROT_MEM_PROT_NONE  0x00u
+#define PROT_MEM_PROT_READ  0x01u
+#define PROT_MEM_PROT_WRITE 0x02u
+#define PROT_MEM_PROT_EXEC  0x04u
+
+typedef struct prot_mem_region {
+    void*  base;
+    size_t size;
+    uint32_t prot;      /* PROT_MEM_PROT_* 位或 */
+} prot_mem_region;
+
+/* 枚举自身进程的**已提交内存区间**（含权限）。
+ *
+ * Windows: `VirtualQuery` 遍历（只输出 MEM_COMMIT 的区）
+ * Linux  : 解析 `/proc/self/maps`（**权限字段直接给 rwxp**）
+ *
+ * 返回**真实总数**。
+ */
+size_t prot_plat_enum_memory(prot_mem_region* out, size_t capacity);
+
+/* 当前进程的**线程数**。
+ *
+ * Windows: Toolhelp32（`TH32CS_SNAPTHREAD` 过滤本进程）
+ * Linux  : 数 `/proc/self/task/` 下的条目
+ *
+ * 失败返回 0。
+ */
+size_t prot_plat_thread_count(void);
+
+/* 取模块导出符号的地址。
+ *
+ * Windows: `GetModuleHandleA` + `GetProcAddress`
+ * Linux  : `dlopen(module, RTLD_NOLOAD)` + `dlsym`
+ *
+ * 返回 NULL 表示未找到。
+ *
+ * ## 诚实边界
+ *   Linux 上 `dlopen(RTLD_NOLOAD)` 要求该库**已加载** ——
+ *   对 libc 等必然已加载的库成立；对未加载的库返回 NULL（**不主动加载**）。
+ */
+void* prot_plat_symbol_addr(const char* module, const char* symbol);
+
+/* ------------------------------------------------------------------ *
  * 平台实现约定
  *
  * Windows: src/platform/prot_platform_win.c（委托到现有 Windows API 调用）

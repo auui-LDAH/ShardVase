@@ -755,4 +755,81 @@ int prot_plat_atomic_increment(volatile int* p)
     return (p == NULL) ? 0 : (int)InterlockedIncrement((volatile LONG*)p);
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 11: 内存区间 / 线程 / 符号（C4，Windows）
+ * ------------------------------------------------------------------ */
+
+static uint32_t plat_win_prot(DWORD p)
+{
+    uint32_t r = 0u;
+    DWORD base = p & 0xFFu;
+    if (base == PAGE_NOACCESS)
+        return PROT_MEM_PROT_NONE;
+    if (base & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
+                | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+                | PAGE_EXECUTE_WRITECOPY))
+        r |= PROT_MEM_PROT_READ;
+    if (base & (PAGE_READWRITE | PAGE_WRITECOPY
+                | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+        r |= PROT_MEM_PROT_WRITE;
+    if (base & (PAGE_EXECUTE | PAGE_EXECUTE_READ
+                | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+        r |= PROT_MEM_PROT_EXEC;
+    return r;
+}
+
+size_t prot_plat_enum_memory(prot_mem_region* out, size_t capacity)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = 0u;
+    size_t n = 0;
+
+    while (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) != 0) {
+        if (mbi.State == MEM_COMMIT) {
+            if (out != NULL && n < capacity) {
+                out[n].base = mbi.BaseAddress;
+                out[n].size = (size_t)mbi.RegionSize;
+                out[n].prot = plat_win_prot(mbi.Protect);
+            }
+            n++;
+        }
+        addr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        if (addr == 0u)
+            break;
+    }
+    return n;
+}
+
+size_t prot_plat_thread_count(void)
+{
+    HANDLE snap;
+    THREADENTRY32 te;
+    size_t n = 0;
+    DWORD self = GetCurrentProcessId();
+
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    te.dwSize = sizeof(te);
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID == self)
+                n++;
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    return n;
+}
+
+void* prot_plat_symbol_addr(const char* module, const char* symbol)
+{
+    HMODULE h;
+    if (module == NULL || symbol == NULL)
+        return NULL;
+    h = GetModuleHandleA(module);
+    if (h == NULL)
+        return NULL;
+    return (void*)GetProcAddress(h, symbol);
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

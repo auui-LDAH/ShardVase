@@ -62,7 +62,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ptrace.h>
-#include <pthread.h>   /* C2: 互斥锁 */
+#include <pthread.h>
+#include <dlfcn.h>   /* C4: dlsym */   /* C2: 互斥锁 */
 
 /* ------------------------------------------------------------------ *
  * 工具
@@ -1006,6 +1007,90 @@ int prot_plat_atomic_increment(volatile int* p)
     if (p == NULL)
         return 0;
     return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST);
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 11: 内存区间 / 线程 / 符号（C4，Linux）
+ *
+ * ## 与 Windows 的差异（**Linux 侧更直接**）
+ *   `/proc/self/maps` 的**权限字段直接给 `rwxp`** ——
+ *   无需像 Windows 那样把 `PAGE_*` 位翻译成 READ/WRITE/EXEC。
+ * ------------------------------------------------------------------ */
+
+size_t prot_plat_enum_memory(prot_mem_region* out, size_t capacity)
+{
+    FILE* f;
+    char line[1024];
+    size_t n = 0;
+
+    f = fopen("/proc/self/maps", "r");
+    if (f == NULL)
+        return 0;
+
+    while (fgets(line, (int)sizeof(line), f) != NULL) {
+        unsigned long start = 0, end = 0;
+        char perms[8] = {0};
+        uint32_t prot = 0u;
+
+        if (sscanf(line, "%lx-%lx %7s", &start, &end, perms) < 3)
+            continue;
+        if (perms[0] == 'r') prot |= PROT_MEM_PROT_READ;
+        if (perms[1] == 'w') prot |= PROT_MEM_PROT_WRITE;
+        if (perms[2] == 'x') prot |= PROT_MEM_PROT_EXEC;
+
+        if (out != NULL && n < capacity) {
+            out[n].base = (void*)(uintptr_t)start;
+            out[n].size = (size_t)(end - start);
+            out[n].prot = prot;
+        }
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+size_t prot_plat_thread_count(void)
+{
+    DIR* d;
+    struct dirent* e;
+    size_t n = 0;
+
+    d = opendir("/proc/self/task");
+    if (d == NULL)
+        return 0;
+    while ((e = readdir(d)) != NULL) {
+        const char* p = e->d_name;
+        size_t i;
+        int numeric = (p[0] != '\0');
+        for (i = 0; p[i] != '\0'; i++) {
+            if (p[i] < '0' || p[i] > '9') { numeric = 0; break; }
+        }
+        if (numeric)
+            n++;
+    }
+    closedir(d);
+    return n;
+}
+
+void* prot_plat_symbol_addr(const char* module, const char* symbol)
+{
+    /* ## 为什么不主动 dlopen
+     *   用 `RTLD_NOLOAD` 表示"**仅当已加载时**取句柄" ——
+     *   避免为了查符号而**引入新的库依赖**（那会改变进程状态，
+     *   与 `dbiguard` 的"只读探测"原则相悖）。
+     *
+     *   对 libc/libpthread 等必然已加载的库有效；
+     *   对未加载的库返回 NULL（**如实**，而非"假装找不到"）。
+     */
+    void* h;
+    if (module == NULL || symbol == NULL)
+        return NULL;
+    h = dlopen(module, RTLD_LAZY | RTLD_NOLOAD);
+    if (h == NULL)
+        return NULL;
+    return dlsym(h, symbol);
+    /* 注: 不 dlclose —— RTLD_NOLOAD 获得的是**已有**引用，
+     *     关掉会减少引用计数（可能卸载别人正在用的库）。 */
 }
 
 #endif /* PROT_PLATFORM_LINUX */

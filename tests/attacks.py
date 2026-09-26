@@ -332,22 +332,26 @@ def main():
     # ---- A10: 静态追踪 N4 间接链 (ATTACK_PLAN) ---------------------------
     # 攻击者手段: dumpbin/反汇编静态追踪, 找 prot_vm_run 等目标函数的直接
     # call 或从间接表定位 —— N4 间接化应使"直接 call"不存在。
+    #
+    # ## ⚠️ M4 实测修正（2026-09-25）
+    #   本项原先**自己重算**一份与 P5 相同的判据，因而**继承了 P5 的四个缺陷**
+    #   （坐标系错配 / 密文噪声 / 函数集合错误 / 未区分设计允许的调用）。
+    #   证据: 修正前 A10 报 `direct-call=['0x6430']` —— 那是**数值巧合**，
+    #   与间接化无关（详见 `protchain_check.p5_indirect_no_direct_call`
+    #   的注释）。
+    #
+    #   => **改为直接复用 P5 的修正实现** ——
+    #      避免"同一判据在两处各写一遍"（复制即漂移；本项已因此错过修正）。
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.join(REPO, 'tests'))
-        from protchain_check import pe_sections, scan_e8_calls, selfcrypt_meta
+        from protchain_check import (pe_sections,
+                                     p5_indirect_no_direct_call)
         exe_data = open(EXE, 'rb').read()
         secs = pe_sections(exe_data)
-        text = next(s for s in secs if s['name'] == '.text')
-        t = exe_data[text['ptr_raw']:text['ptr_raw'] + text['size_raw']]
-        targets = scan_e8_calls(t)
-        # 从 .protcry meta 读受保护函数 rva
-        fns = [rva for rva, _ln, _grp in selfcrypt_meta(exe_data, secs)]
-        hits = [rva for rva in fns if rva in targets]
-        ok = (not hits)
+        ok, why = p5_indirect_no_direct_call(exe_data, secs)
         results.append(('A10 static-trace', 'PASS' if ok else 'FAIL',
-                        'direct-call=%s (N4 indirect, 0 direct)' %
-                        ([hex(h) for h in hits] or 'none')))
+                        'N4 indirect: %s' % why))
     except Exception as e:
         results.append(('A10 static-trace', 'FAIL', repr(e)))
 
