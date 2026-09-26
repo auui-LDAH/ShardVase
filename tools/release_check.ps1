@@ -188,7 +188,7 @@ Check '平台层契约 (platform conformance)' {
     if (-not $vc) { $vc = Get-Item 'D:\environment\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat' -EA SilentlyContinue }
     $bat = Join-Path $pcDir 'b.bat'
     $log = Join-Path $pcDir 'cl.log'
-    $cl = "cl /nologo /O2 /W4 /std:c11 /utf-8 /I include /Fe:`"$pcExe`" tests\platform_conformance.c src\platform\prot_platform_win.c /link /SUBSYSTEM:CONSOLE"
+    $cl = "cl /nologo /O2 /W4 /std:c11 /utf-8 /I include /Fe:`"$pcExe`" tests\platform_conformance.c src\platform\prot_platform_win.c /link /SUBSYSTEM:CONSOLE advapi32.lib"
     "call `"$($vc.FullName)`" >nul 2>&1`r`ncd /d `"$((Get-Location).Path)`"`r`n$cl > `"$log`" 2>&1" | Set-Content -Path $bat -Encoding ASCII
     cmd /c $bat | Out-Null
     if (-not (Test-Path $pcExe)) { return $false }

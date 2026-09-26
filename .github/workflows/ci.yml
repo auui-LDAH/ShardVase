@@ -220,3 +220,78 @@ jobs:
             --title "ShardVase SDK $ver" `
             --notes-file CHANGELOG.md `
             --verify-tag
+
+
+  # ==============================================================
+  # Linux 可移植性（L5c，2026-09-23）
+  #
+  # ## 为什么需要这个 job
+  #   L4 建立了**平台层契约测试**（tests/platform_conformance.c）——
+  #   它的设计目的正是: **任何平台实现，只要能通过该测试，即契约合规**。
+  #
+  #   本 job 在**真实 Linux** 上跑该测试 -> 让"Linux 支持"
+  #   从**口号**变成 **CI 可见的状态**。
+  #
+  # ## 当前预期
+  #   Linux 平台层**尚未实现** -> 编译会失败 -> **job 失败**。
+  #   这是**刻意的**: 未实现的状态应**明确可见**，而非静默跳过。
+  #
+  #   实现后（src/platform/prot_platform_linux.c 就位）本 job 即转绿。
+  #
+  # ## 同时验证"纯逻辑模块真的可移植"
+  #   这部分**现在就应该通过** —— 它验证 L2/L3 的解耦成果。
+  # ==============================================================
+  linux-portability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify toolchain
+        run: |
+          gcc --version | head -1
+          python3 --version
+
+      # ---- 第一部分: 纯逻辑模块的**平台无关性**（现在就应通过）----
+      #
+      # 这些模块经 L2/L3 解耦后**不含平台 API** -> 在 Linux 上应能编译。
+      # 若此步失败 -> 说明解耦不彻底（**真实回归**）。
+      - name: Pure-logic modules compile on Linux
+        run: |
+          set -e
+          mkdir -p /tmp/pl
+          for f in crc32 vm_rekey strcrypt; do
+            echo "=== src/$f.c ==="
+            gcc -c -O2 -Wall -Wextra -std=c11 -I include \
+                "src/$f.c" -o "/tmp/pl/$f.o"
+          done
+          echo "纯逻辑模块在 Linux 上编译通过"
+          ls -la /tmp/pl/
+
+      # ---- 第二部分: 平台层契约测试（Linux 实现就位后应通过）----
+      #
+      # 这是 L4-A 设计的**验收点**: 任何平台实现跑同一个测试。
+      - name: Platform layer conformance (Linux)
+        run: |
+          set -e
+          if [ ! -f src/platform/prot_platform_linux.c ]; then
+            echo "::error::Linux 平台层尚未实现（src/platform/prot_platform_linux.c 缺失）"
+            echo "契约测试是**验收条件**: 实现后本 job 应转绿。"
+            echo "设计见 docs/PORTABILITY_ASSESSMENT.md §8"
+            exit 1
+          fi
+          gcc -O2 -Wall -Wextra -std=c11 -I include \
+              tests/platform_conformance.c \
+              src/platform/prot_platform_linux.c \
+              -o /tmp/platconf
+          /tmp/platconf
+
+      # ---- 第三部分: 注册表与契约在 Linux 上一致 ----
+      #
+      # 这些工具是**纯 Python**，应与平台无关。
+      - name: Contract checks on Linux
+        run: |
+          set -e
+          python3 tools/modcheck.py
+          python3 tools/conformance.py modules.json
+          python3 tools/attackcheck.py --quiet

@@ -246,4 +246,145 @@ size_t prot_plat_self_path(char* out, size_t capacity)
     return (size_t)n;
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 5: 机器指纹因子（L5b）
+ *
+ * **逐字迁移**自 src/hostid.c 的 4 个因子来源 ——
+ * 保持**取值方式与顺序**完全一致，以**保证指纹不变**
+ * （基线: b4281468e21a4033，已实测比对）。
+ * ------------------------------------------------------------------ */
+
+/* 缓冲区生命周期: 因子里的 str 指向静态缓冲区 ->
+ * 调用方在**下次调用前**使用安全，且无需释放。
+ * （与原 hostid.c 的局部缓冲语义不同，但折叠是即时的，故等价。） */
+static char s_hf_guid[64];
+static char s_hf_dserial[64];
+
+/* MachineGuid: HKLM\SOFTWARE\Microsoft\Cryptography */
+static int hf_machine_guid(char out[64])
+{
+    HKEY key = NULL;
+    WCHAR wbuf[64];
+    DWORD sz = sizeof(wbuf);
+    DWORD type = 0;
+    LONG st;
+
+    st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                       L"SOFTWARE\\Microsoft\\Cryptography", 0,
+                       KEY_READ | KEY_WOW64_64KEY, &key);
+    if (st != ERROR_SUCCESS)
+        return 0;
+    st = RegQueryValueExW(key, L"MachineGuid", NULL, &type,
+                          (LPBYTE)wbuf, &sz);
+    RegCloseKey(key);
+    if (st != ERROR_SUCCESS || type != REG_SZ)
+        return 0;
+    if (WideCharToMultiByte(CP_ACP, 0, wbuf, -1, out, 64, NULL, NULL) == 0)
+        return 0;
+    return (out[0] != '\0');
+}
+
+/* 系统盘物理序列号: \\.\PhysicalDrive0 + IOCTL_STORAGE_QUERY_PROPERTY */
+static int hf_disk_serial(char out[64])
+{
+    HANDLE h;
+    STORAGE_PROPERTY_QUERY q;
+    char buf[1024];
+    DWORD ret = 0u;
+    int found = 0;
+
+    memset(&q, 0, sizeof(q));
+    q.PropertyId = StorageDeviceProperty;
+    q.QueryType = PropertyStandardQuery;
+    h = CreateFileW(L"\\\\.\\PhysicalDrive0", 0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                    OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof(q),
+                        buf, sizeof(buf), &ret, NULL)) {
+        STORAGE_DEVICE_DESCRIPTOR* d = (STORAGE_DEVICE_DESCRIPTOR*)buf;
+        if (d->SerialNumberOffset > 0u &&
+            d->SerialNumberOffset + 1u < sizeof(buf)) {
+            copy_narrow(out, 64, (const char*)buf + d->SerialNumberOffset);
+            found = 1;
+        }
+    }
+    CloseHandle(h);
+    return found;
+}
+
+size_t prot_plat_host_factors(prot_host_factor* out, size_t capacity)
+{
+    size_t n = 0;
+    WCHAR comp[MAX_COMPUTERNAME_LENGTH + 1];
+    DWORD cn = MAX_COMPUTERNAME_LENGTH + 1;
+    DWORD vol_serial = 0u, max_len = 0u, fs_flags = 0u;
+    DWORD comp_len = 0;
+
+    if (out == NULL || capacity == 0)
+        return 0;
+
+    /* ⚠️ **容量预检**（2026-09-23 实测教训: 初版容量 8 -> 指纹变了）
+     *
+     * 因子构成最坏: 卷 3 + 计算机名 ≤16 + GUID 1 + 磁盘序列号 1 = 21。
+     * 初版 PROT_HOST_MAX_FACTORS = 8 -> **静默截断** ->
+     * 折叠的码元数少于原实现 -> 指纹从 b4281468e21a4033 变成
+     * 1706bdf43d5c194c -> **会破坏所有已签发授权**。
+     *
+     * 故此处: 容量不足时**明确失败返回 0**，而非静默截断
+     * （宁可"取不到指纹"也不"取到错的指纹"）。 */
+    if (capacity < 3u + (size_t)MAX_COMPUTERNAME_LENGTH + 1u + 2u)
+        return 0;
+
+    /* --- 因子 1~3: 卷序列号（U32 × 3，与原实现同序）---
+     *
+     * 原 hostid.c 把这三个值**分别**折叠（vol_serial/max_len/fs_flags）。
+     * 为保持指纹不变，本接口把它们作为**三个独立 U32 因子**返回。 */
+    if (GetVolumeInformationW(L"C:\\", NULL, 0, &vol_serial, &max_len,
+                              &fs_flags, NULL, 0)) {
+        out[n].kind = PROT_HOST_FACTOR_U32; out[n].u32 = vol_serial;
+        out[n].str = NULL; out[n].str_len = 0; n++;
+        out[n].kind = PROT_HOST_FACTOR_U32; out[n].u32 = max_len;
+        out[n].str = NULL; out[n].str_len = 0; n++;
+        out[n].kind = PROT_HOST_FACTOR_U32; out[n].u32 = fs_flags;
+        out[n].str = NULL; out[n].str_len = 0; n++;
+    }
+
+    /* --- 因子 4: 计算机名（**UTF-16 码元**逐字符折叠）---
+     *
+     * ⚠️ 原实现按 **UTF-16 码元**折叠（`(uint16_t)comp[i]`），
+     * **不是**按 ASCII 字节！故此处把宽字符逐码元转成 U32 因子。
+     * （若误按 ASCII 折叠 -> 指纹会变 —— 见上"容量预检"注释中的教训。） */
+    if (GetComputerNameW(comp, &cn)) {
+        DWORD i;
+        comp_len = cn;
+        for (i = 0; i < comp_len; i++) {
+            out[n].kind = PROT_HOST_FACTOR_U32;
+            out[n].u32 = (uint32_t)(uint16_t)comp[i];
+            out[n].str = NULL; out[n].str_len = 0; n++;
+        }
+    }
+
+    /* --- 因子 5: MachineGuid（ASCII 逐字节）--- */
+    if (hf_machine_guid(s_hf_guid)) {
+        out[n].kind = PROT_HOST_FACTOR_STR;
+        out[n].str = s_hf_guid;
+        out[n].str_len = 0;
+        out[n].u32 = 0;
+        n++;
+    }
+
+    /* --- 因子 6: 物理盘序列号（ASCII 逐字节）--- */
+    if (hf_disk_serial(s_hf_dserial)) {
+        out[n].kind = PROT_HOST_FACTOR_STR;
+        out[n].str = s_hf_dserial;
+        out[n].str_len = 0;
+        out[n].u32 = 0;
+        n++;
+    }
+
+    return n;
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

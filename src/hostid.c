@@ -1,138 +1,81 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
  * 商业授权见 LICENSE.md。
  */
 /*
- * hostid.c — 机器标识 (Phase 4: 真实硬件绑定, D5 硬件因子增强)
+ * hostid.c — 机器指纹 (D5: 机器绑定因子)
  *
- * prot_hostid_get: 多因子 FNV-1a (64 位) 折叠:
- *   1) 系统盘卷序列号 (GetVolumeInformationW C:\)
- *   2) 计算机名 (GetComputerNameW)
- *   3) MachineGuid (HKLM\SOFTWARE\Microsoft\Cryptography)       [D5]
- *   4) 系统盘物理序列号 (IOCTL_STORAGE_QUERY_PROPERTY)           [D5]
- *   5) 最终 32 位高低折叠
- * 算法与 tools/vmenc.py 的 hostid() 完全一致 (docstring 标注), 保证构建期
- * genserial 烧录的 EXPECT 与运行期 demo 读取的 machine_id 对得上。
- * 任何一侧改动必须同步, 否则构建期校验结果与运行期不符。
- * 注意: 因子 3/4 属机器标识, 换机/换盘/重装会变化 (COMPAT §5)。
+ * ## L5b（2026-09-23）: 因子来源已抽到**平台层**
+ *
+ * **改动前**: 本文件**直接调用** Windows API 取 4 个因子:
+ *   卷序列号 / 计算机名 / MachineGuid(注册表) / 物理盘序列号
+ *   -> 机器绑定**不可移植**（含 windows.h + winioctl.h + 注册表 + DeviceIoControl）
+ *
+ * **改动后**:
+ *   · 因子来源 -> `prot_plat_host_factors()`（平台层）
+ *   · **FNV-1a 折叠** -> **留在本文件**（见下）
+ *
+ * ## ⚠️ 为什么折叠必须留在模块里（**关键约束**）
+ *   `prot_hostid_get()` 的返回值参与**授权签名**。
+ *   若折叠算法或**因子顺序**变化 -> 机器指纹变化 ->
+ *   **所有已签发授权失效**（用户机器"认不出自己"）。
+ *
+ *   故: **折叠算法是协议的一部分**，逐字节不变；
+ *       平台层只提供**因子来源**（平台属性）。
+ *
+ *   **验证**: 改动前后指纹**逐位相同**
+ *     （基线 `b4281468e21a4033`，已实测比对，见提交说明）。
+ *
+ * ## Linux 的现实（如实）
+ *   这些因子在 Linux **无 1:1 等价物**，只有替代方案
+ *   （machine-id / hostname / DMI uuid / 磁盘序列号）
+ *   -> **指纹值必然不同**（这是预期，不是缺陷）。
  */
 
-#include <windows.h>
-#include <winioctl.h>
-
-#include <stdlib.h>
 #include <string.h>
 
 #include "protect/hostid.h"
-#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
+#include "protect/prot_platform.h"   /* L5b: 平台层因子来源 */
+#include "protect/prot_noise.h"      /* W1.6 序言噪声 */
 
 /* FNV-1a 64 位常量 */
 #define HOSTID_FNV_BASIS 0xCBF29CE484222325u
 #define HOSTID_FNV_PRIME 0x100000001B3u
 
-/* MachineGuid: HKLM\SOFTWARE\Microsoft\Cryptography (Windows 安装唯一 ID).
- * 克隆 VM 时通常不同 (由虚拟化平台分配), 是防克隆的有效因子之一。 */
-static int machine_guid(char out[64])
-{
-    HKEY key = NULL;
-    WCHAR wbuf[64];
-    DWORD sz = sizeof(wbuf); /* REG_SZ 是 UTF-16, 需宽字符缓冲 */
-    DWORD type = 0;
-    LONG st;
-
-    st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                       L"SOFTWARE\\Microsoft\\Cryptography", 0,
-                       KEY_READ | KEY_WOW64_64KEY, &key);
-    if (st != ERROR_SUCCESS)
-        return 0;
-    st = RegQueryValueExW(key, L"MachineGuid", NULL, &type,
-                          (LPBYTE)wbuf, &sz);
-    RegCloseKey(key);
-    if (st != ERROR_SUCCESS || type != REG_SZ)
-        return 0;
-    /* 宽字符转 ASCII (guid 是 ASCII 字符集) */
-    if (WideCharToMultiByte(CP_ACP, 0, wbuf, -1, out, 64, NULL, NULL) == 0)
-        return 0;
-    return (out[0] != '\0');
-}
-
-/* 系统盘物理序列号: \\.\PhysicalDrive0 + IOCTL_STORAGE_QUERY_PROPERTY */
-static int disk_serial(char out[64])
-{
-    HANDLE h;
-    STORAGE_PROPERTY_QUERY q;
-    char buf[1024];
-    DWORD ret = 0u;
-    int found = 0;
-
-    memset(&q, 0, sizeof(q));
-    q.PropertyId = StorageDeviceProperty;
-    q.QueryType = PropertyStandardQuery;
-    h = CreateFileW(L"\\\\.\\PhysicalDrive0", 0,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE)
-        return 0;
-    if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof(q),
-                        buf, sizeof(buf), &ret, NULL)) {
-        STORAGE_DEVICE_DESCRIPTOR* d = (STORAGE_DEVICE_DESCRIPTOR*)buf;
-        if (d->SerialNumberOffset > 0u &&
-            d->SerialNumberOffset + 1u < sizeof(buf)) {
-            strncpy_s(out, 64, (const char*)buf + d->SerialNumberOffset, _TRUNCATE);
-            found = 1;
-        }
-    }
-    CloseHandle(h);
-    return found;
-}
-
 uint64_t prot_hostid_get(void) {
     PROT_NOISE();   /* W1.6 序言噪声 */
     uint64_t h = HOSTID_FNV_BASIS;
-    WCHAR comp[MAX_COMPUTERNAME_LENGTH + 1];
-    DWORD n;
-    DWORD vol_serial;
-    DWORD max_len;
-    DWORD fs_flags;
-    char guid[64];
-    char dserial[64];
-    uint32_t i;
+    prot_host_factor fac[PROT_HOST_MAX_FACTORS];
+    size_t nfac, i;
+    uint32_t j;
 
-    vol_serial = 0u;
-    max_len = 0u;
-    fs_flags = 0u;
-    if (GetVolumeInformationW(L"C:\\", NULL, 0, &vol_serial, &max_len, &fs_flags,
-                              NULL, 0)) {
-        h ^= (uint64_t)(uint32_t)vol_serial;
-        h *= HOSTID_FNV_PRIME;
-        h ^= (uint64_t)(uint32_t)max_len;
-        h *= HOSTID_FNV_PRIME;
-        h ^= (uint64_t)(uint32_t)fs_flags;
-        h *= HOSTID_FNV_PRIME;
-    }
+    /* **折叠顺序契约**: 必须与改动前**完全一致**。
+     *
+     * 改动前（原 hostid.c）的顺序:
+     *   1. 卷序列号(U32) -> 2. max_len(U32) -> 3. fs_flags(U32)
+     *   4. 计算机名(UTF-16 码元, 逐个) -> 5. MachineGuid(ASCII 字节)
+     *   6. 物理盘序列号(ASCII 字节)
+     *
+     * 平台层保证按此顺序返回（见 prot_plat_host_factors 的顺序契约），
+     * 本函数按返回顺序**原样折叠** —— 故指纹不变。
+     */
+    nfac = prot_plat_host_factors(fac, PROT_HOST_MAX_FACTORS);
+    if (nfac == 0)
+        return 0;   /* 与原实现一致: 无任何因子 -> 只余 BASIS */
 
-    n = MAX_COMPUTERNAME_LENGTH + 1;
-    if (GetComputerNameW(comp, &n)) {
-        for (i = 0; i < n; i++) {
-            h ^= (uint64_t)(uint16_t)comp[i];
+    for (i = 0; i < nfac; i++) {
+        if (fac[i].kind == PROT_HOST_FACTOR_U32) {
+            /* U32 因子: 直接折叠（原实现卷序列号/计算机名码元皆此路径）*/
+            h ^= (uint64_t)fac[i].u32;
             h *= HOSTID_FNV_PRIME;
-        }
-    }
-
-    /* D5: MachineGuid (Windows 安装唯一 ID) */
-    if (machine_guid(guid)) {
-        for (i = 0; guid[i] != '\0'; i++) {
-            h ^= (uint64_t)(uint8_t)guid[i];
-            h *= HOSTID_FNV_PRIME;
-        }
-    }
-
-    /* D5: 系统盘物理序列号 (ASCII) */
-    if (disk_serial(dserial)) {
-        for (i = 0; dserial[i] != '\0'; i++) {
-            h ^= (uint64_t)(uint8_t)dserial[i];
-            h *= HOSTID_FNV_PRIME;
+        } else if (fac[i].kind == PROT_HOST_FACTOR_STR && fac[i].str != NULL) {
+            /* 字符串因子: 按**字节**折叠（原实现的 GUID/序列号路径）*/
+            for (j = 0; fac[i].str[j] != '\0'; j++) {
+                h ^= (uint64_t)(uint8_t)fac[i].str[j];
+                h *= HOSTID_FNV_PRIME;
+            }
         }
     }
 
