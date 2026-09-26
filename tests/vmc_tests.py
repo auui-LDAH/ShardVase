@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 ShardVase contributors
 # 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
@@ -148,12 +148,28 @@ def run_case(name, src, host_hex):
             break
     if vcvars is None:
         return 'CL FAIL: vcvars not found'
+    # ## L6b（2026-09-25）: 加入平台层源文件
+    #
+    # **问题**: L6b 把 `vm.c` 的平台相关部分改走平台层
+    #   （`prot_plat_monotonic_ns`）后，本处**硬编码的源文件列表**缺平台层
+    #   -> `LNK2019: 无法解析的外部符号 prot_plat_monotonic_ns`
+    #   -> **门禁 vmc 项失败**（并连带使 mutate_check 报 BASELINE_FAIL）。
+    #
+    # **这是本项目"硬编码源文件列表"问题的第 6 处**
+    #   （L3 修了 build_example.ps1；L6b 修了 build.ps1 的两处；本处是第 6 处）。
+    #
+    # **为什么不改组合驱动**: 本测试刻意只链接**被测模块**
+    #   （vm.c + crc32.c + runner）—— 用完整组合会引入无关模块，
+    #   使"VM 编译器测试"变成"整套构建测试"。
+    plat_src = os.path.join(REPO, 'src', 'platform', 'prot_platform_win.c')
     clcmd = ('cl /nologo /O2 /W4 /WX /std:c11 /utf-8 '
              '/I "' + os.path.join(REPO, 'include') + '" /I "' + GEN + '" '
              '/Fe:"' + exe + '" '
              '"' + os.path.join(REPO, 'src', 'vm.c') + '" '
              '"' + os.path.join(REPO, 'src', 'crc32.c') + '" '
-             '"' + blob_c + '" "' + runner_c + '" /link /SUBSYSTEM:CONSOLE')
+             '"' + plat_src + '" '
+             '"' + blob_c + '" "' + runner_c + '" '
+             '/link /SUBSYSTEM:CONSOLE advapi32.lib')
     bat = os.path.join(BUILD, 'vmc_cl.bat')
     with open(bat, 'w', encoding='ascii') as f:
         f.write('@echo off\r\ncall "%s" >nul 2>&1\r\n%s\r\n' % (vcvars, clcmd))

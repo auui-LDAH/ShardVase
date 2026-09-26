@@ -434,7 +434,20 @@ cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I inclu
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE"
+#
+# ## L6b（2026-09-25）: 加入平台层源文件
+#   L6b 把 `vm.c` 的平台相关部分改走平台层（`prot_plat_monotonic_ns`）
+#   -> 本行**硬编码的源文件列表**缺平台层 ->
+#     `LNK2019: 无法解析的外部符号 prot_plat_monotonic_ns`
+#
+#   **为什么 L3 没抓到**: L3 修了 `build_example.ps1`，
+#   而 S1 检查只扫**独立 *.ps1 文件**，**没扫 build.ps1 内部的字符串**。
+#
+#   **注意**: 本文件里 vm_unit 的编译命令**出现两次**（L437 是本行，
+#   另一处在 §7 附近，为 Invoke-Unit 版本）。两处都需同步。
+# S1-ALLOW: 单元测试**刻意只链接被测模块**（vm.c + crc32 + 平台层）——用完整组合会让"单元测试"变成"整套构建测试"，丧失定位能力。
+#   平台层为必需: vm.c 的熵源已改走 prot_plat_monotonic_ns（L6b）。
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c src\platform\prot_platform_win.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
 
 # 5c. 编译 A6 direct syscall 单测 (直调结果须与 API 路径一致)
@@ -653,7 +666,24 @@ function Invoke-Unit([string]$exe, [string]$clCmd, [string]$failMsg) {
     throw "build FAILED: $failMsg (WDAC blocked after retries)"
 }
 
-$unitCl = 'cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE'
+# ## L6b（2026-09-25）: 修正**硬编码源文件列表**（本项目第 5 处）
+#
+# **问题**: 这两条命令**硬编码**了源文件列表。L6b 把 `vm.c` 的
+#   平台相关部分改走平台层（`prot_plat_monotonic_ns`）后:
+#     `LNK2019: 无法解析的外部符号 prot_plat_monotonic_ns，
+#              函数 prot_vm_run 中引用了该符号`
+#   —— 因为列表里**没有** `src\platform\prot_platform_win.c`。
+#
+# **为什么 L3 没抓到**: L3 修了 `build_example.ps1`，
+#   但 S1 检查只扫**独立的 *.ps1 文件**，**没扫 build.ps1 内部的字符串**
+#   -> build.ps1 里的这两条硬编码列表**逃过了检查**。
+#
+# **修法**: 显式加入平台层（这两个探测程序只需**最小集**，
+#   不适用组合驱动 —— 它们刻意保持"只链接被测模块"）。
+#   S1 已同步增强（见 tools/modcheck.py）。
+$platSrc = 'src\platform\prot_platform_win.c'
+$unitCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /Fe:build\vm_unit.exe src\vm.c src\crc32.c $platSrc demo\gen\vm_unit_blob.c demo\gen\vm_unit_brk_blob.c tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib"
+# syscall_probe 只用 syscall.c（无平台层依赖）—— 保持不变
 $probeCl = 'cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE'
 Invoke-Unit 'vm_unit.exe' $unitCl 'vm_unit.exe (Phase 1D ops)'
 Invoke-Unit 'syscall_probe.exe' $probeCl 'syscall_probe.exe (A6 direct syscall)'

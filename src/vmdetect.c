@@ -16,18 +16,17 @@
  * 全部为咨询项: 只报告不触发策略 (合法用户可能跑在 VM 里)。
  */
 
-#include <windows.h>
-#include <intrin.h>
 #include <string.h>
 
 #include "protect/vmdetect.h"
+#include "protect/prot_compiler.h"  /* L6b: PROT_CPUID（跨平台 CPU 内建）*/
 #include "protect/prot_platform.h"  /* L1: 平台抽象层 */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 static void hv_vendor_id(char out[13])
 {
     int regs[4] = { 0, 0, 0, 0 };
-    __cpuid(regs, 0x40000000);
+    PROT_CPUID(regs, 0x40000000);
     memcpy(out, &regs[1], 4);
     memcpy(out + 4, &regs[2], 4);
     memcpy(out + 8, &regs[3], 4);
@@ -111,7 +110,7 @@ prot_status prot_vmdetect_scan(prot_vmdetect_report* out)
         return PROT_OK;
     memset(out, 0, sizeof(*out));
 
-    __cpuid(regs, 1);
+    PROT_CPUID(regs, 1);
     out->cpu_hypervisor = ((uint32_t)regs[2] & 0x80000000u) ? 1u : 0u;
 
     if (out->cpu_hypervisor) {

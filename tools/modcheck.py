@@ -444,11 +444,28 @@ def check_build_scripts(reg):
         #   某些脚本**合法地**需要特定最小集（如 .NET gate 的 C 侧接线）。
         #   豁免必须**显式标注 + 给出理由**，且 modcheck 会**列出全部豁免**
         #   —— **不静默**（静默豁免 = 可绕过的检查，违反 P3 教训）。
-        _allow = 'S1-ALLOW:' in txt
-        for i, line in enumerate(txt.split('\n'), 1):
+        #
+        # ## ⚠️ 行级豁免（2026-09-25 修正）
+        #   **初版是文件级**（`_allow` 命中即**整文件跳过**）——
+        #   对 800 行的 `build.ps1` **太宽**，会掩盖该文件内的其它硬编码。
+        #   （实测: L6b 给 build.ps1 的 vm_unit 行加平台层后，
+        #    S1 报出该行 —— 若用文件级豁免，就会**连同该文件其它问题一起掩盖**。）
+        #
+        #   **改为行级**: 只豁免**紧邻**含 `S1-ALLOW:` 注释的那一行。
+        #
+        #   ⚠️ **窗口大小（2026-09-25 第二次修正）**:
+        #     初版用"往前 5 行"—— 但**合理的豁免注释往往是多行块**
+        #     （说明理由 + 实测依据 + 注意事项），远超 5 行。
+        #     实测: `tools/build_dotnet_gate.ps1` 的 S1-ALLOW 在第 57 行，
+        #     而代码在第 67 行（间隔 10 行）-> 漏豁免。
+        #     => 窗口放宽到 **20 行**（仍远小于"整文件"，保持行级语义）。
+        _lines = txt.split('\n')
+        for i, line in enumerate(_lines, 1):
             if line.lstrip().startswith('#'):
                 continue
-            if _allow:
+            # 往前 20 行找 S1-ALLOW（容许**多行豁免注释块**）
+            _lo = max(0, i - 21)
+            if any('S1-ALLOW:' in _lines[j] for j in range(_lo, i - 1)):
                 continue
             srcs = re.findall(r'src[\\/][\w\\/]+\.c', line)
             if len(srcs) >= 3:

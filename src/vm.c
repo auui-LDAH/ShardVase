@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -29,11 +29,11 @@
  * 线程安全: 无共享状态, 可并发调用。
  */
 #include "protect/vm.h"
+#include "protect/prot_platform.h"  /* L6b: prot_plat_monotonic_ns（跨平台高精度时钟）*/
+#include "protect/prot_compiler.h"  /* L6b: PROT_RDTSC（跨平台 TSC）*/
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
-#include <windows.h>      /* QueryPerformanceCounter 等运行时熵源 */
 #include <string.h>       /* memset */
-#include <intrin.h>       /* __rdtsc */
 
 /* 虚拟机栈容量 (CONTRACT §4.2) */
 #define PROT_VM_STACK_CAP 512u
@@ -297,21 +297,38 @@ static void vm_scrub(void* p, size_t n)
  * volatile 局部防止优化器把不同路径折叠成同一条指令序列。
  * ------------------------------------------------------------------------- */
 
-/* Phase 2c: 每实例熵播种 ctx. 用 TSC/墙钟/栈地址折叠, 使不同实例 ctx 不同,
- * 从而 vm_var 挑选不同等价路径. 该值只影响"走哪条等价路", 不影响最终语义. */
+/* Phase 2c: 每实例熵播种 ctx. 用 TSC/单调时钟/栈地址折叠, 使不同实例 ctx 不同,
+ * 从而 vm_var 挑选不同等价路径. 该值只影响"走哪条等价路", 不影响最终语义。
+ *
+ * ## L6b（2026-09-25）: 改为**平台层 + 跨平台内建**
+ *   **改动前**:
+ *     ```c
+ *     #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+ *         acc = (uint64_t)__rdtsc();
+ *     #else
+ *         acc = 0u;                  // <- 非 MSVC 直接退化为 0
+ *     #endif
+ *     QueryPerformanceCounter(&t);   // <- Windows 专有
+ *     acc ^= t.QuadPart;
+ *     ```
+ *   **问题**: 在 GCC 上 `acc` 恒为 0 + 无 QPC -> 熵源**完全失效**
+ *   （虽然"只影响走哪条等价路，不影响语义"，但**削弱了每实例随机性**）。
+ *
+ *   **改动后**:
+ *     · `PROT_RDTSC()`      —— 跨平台 TSC（GCC 用 `__builtin_ia32_rdtsc`）
+ *     · `prot_plat_monotonic_ns()` —— 跨平台高精度时钟（替代 QPC）
+ *   => GCC 下**同样有真实熵**（不再退化为 0）。
+ *
+ *   **语义等价性**: 两者都提供"随实例/时间漂移的高精度计数"，
+ *   折叠公式**逐字未变** -> VM 行为不变（已实测 e2e/vm_unit/vmc 全绿）。
+ */
 static uint64_t vm_ctx_seed(void)
 {
     uint64_t acc;
     uint64_t sa = (uint64_t)(uintptr_t)&acc;   /* 栈地址, 随加载布局漂移 */
-    LARGE_INTEGER t;
 
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-    acc = (uint64_t)__rdtsc();
-#else
-    acc = 0u;
-#endif
-    QueryPerformanceCounter(&t);
-    acc ^= t.QuadPart;
+    acc = (uint64_t)PROT_RDTSC();              /* 跨平台 TSC */
+    acc ^= prot_plat_monotonic_ns();           /* 跨平台高精度单调时钟 */
     acc ^= sa;
     acc ^= acc << 31;
     acc *= 0x5851F42D4C957F2Du;

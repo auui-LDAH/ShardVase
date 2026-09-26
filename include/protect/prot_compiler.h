@@ -70,6 +70,63 @@
 #endif
 
 /* ------------------------------------------------------------------ *
+ * CPU 内建指令的**兼容层**（L6b，2026-09-25）
+ *
+ * ## 为什么需要
+ *   实测 Linux 编译: `vmdetect` 与 `vm` 卡在 `<intrin.h>` 的
+ *   `__cpuid` / `__rdtsc` —— 它们是 **MSVC 专有内建**，
+ *   GCC/Clang 用**不同的形式**（内建函数或内联汇编）。
+ *
+ *   这两个模块的**平台依赖最轻**（只有 CPU 内建），故优先封装。
+ * ------------------------------------------------------------------ */
+
+/* CPUID 指令。
+ *
+ * MSVC:  `__cpuid(int regs[4], int leaf)`（intrin.h）
+ * GCC :  内联汇编（**不用 cpuid.h** —— 避免额外依赖，
+ *        且 cpuid.h 的 `__get_cpuid` 在部分环境下不可用）
+ *
+ * **用法**: int regs[4]; PROT_CPUID(regs, 1);
+ *           之后 regs[0]=EAX, regs[1]=EBX, regs[2]=ECX, regs[3]=EDX
+ *
+ * **顺序契约**: MSVC 的 `__cpuid` 也是 EAX,EBX,ECX,EDX 顺序
+ *   （与 x86 `cpuid` 指令的**物理寄存器顺序**不同 —— 指令是 EAX,EBX,ECX,EDX）。
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  include <intrin.h>
+#  define PROT_CPUID(regs, leaf) __cpuid((regs), (leaf))
+#elif defined(PROT_COMPILER_GCC) || defined(PROT_COMPILER_CLANG)
+#  define PROT_CPUID(regs, leaf)                                           \
+        __asm__ __volatile__("cpuid"                                       \
+            : "=a"((regs)[0]), "=b"((regs)[1]),                            \
+              "=c"((regs)[2]), "=d"((regs)[3])                             \
+            : "a"((leaf)))
+#else
+#  define PROT_CPUID(regs, leaf)                                           \
+        do { (regs)[0] = (regs)[1] = (regs)[2] = (regs)[3] = 0; } while (0)
+#endif
+
+/* 读时间戳计数器（TSC）。
+ *
+ * MSVC:  `__rdtsc()`（intrin.h）
+ * GCC :  `__builtin_ia32_rdtsc()`（x86 内建，无需头文件）
+ *
+ * **注意（x86 专有）**: 本封装假定 x86/x64。
+ *   在 ARM64 上应另有实现（如 CNTVCT_EL0）—— **本轮不支持**（如实标注）。
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_RDTSC() __rdtsc()
+#elif defined(PROT_COMPILER_GCC) || defined(PROT_COMPILER_CLANG)
+#  if defined(__x86_64__) || defined(__i386__)
+#    define PROT_RDTSC() __builtin_ia32_rdtsc()
+#  else
+#    define PROT_RDTSC() 0ull   /* 非 x86: 无 TSC（如实退化为 0）*/
+#  endif
+#else
+#  define PROT_RDTSC() 0ull
+#endif
+
+/* ------------------------------------------------------------------ *
  * MSVC 专有 API 的**兼容层**（L6b，2026-09-25 编译测试发现）
  *
  * ## 为什么需要
