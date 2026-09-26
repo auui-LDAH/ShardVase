@@ -864,3 +864,121 @@ MachineGuid 1 + 磁盘序列号 1 = **20 个**
 ---
 
 *2026-09-23 · L5a 清单完成 / L5b hostid 解耦（指纹逐位不变）/ WSL 待重启*
+
+---
+
+## 11. L5c 完成记录：Linux 平台层实现 ✅（2026-09-25）
+
+### 11.1 环境（实测）
+
+| 项 | 值 |
+|----|-----|
+| 发行版 | **Ubuntu 24.04.5 LTS**（WSL2）|
+| 内核 | 6.18.33.2-microsoft-standard-WSL2 |
+| 架构 | x86_64 |
+| 编译器 | **gcc 13.3.0** (Ubuntu 13.3.0-6ubuntu2~24.04.1) |
+| libc | glibc 2.39 (`libc6-dev`) |
+| 资源 | 20 核 / 15 GiB |
+
+**POSIX 能力实测**（编译 + 运行，非仅检查头文件）：
+```
+mmap  : 编译 OK -> 运行 mmap=0x7d816109d000
+ptrace: 编译 OK -> 运行 ptrace(TRACEME)=0
+```
+
+> ⚠️ **踩坑记录**：我最初用 `/usr/include/sys/mman.h` 判断"头文件缺失"，
+> 得出错误结论。实际路径是 `/usr/include/x86_64-linux-gnu/sys/mman.h`
+> （多架构布局）。
+> **教训**：**编译+运行才是判据**，检查文件存在与否会被路径布局误导。
+
+### 11.2 交付：`src/platform/prot_platform_linux.c`
+
+按 `docs/LINUX_MIGRATION_INVENTORY.md` 的**低难度项**起步：
+
+| 接口 | Linux 实现 | 关键差异 |
+|------|-----------|---------|
+| `prot_plat_alloc/protect/free` | `mmap`/`mprotect`/`munmap` | **`munmap` 必须传长度**（Windows 传 0）|
+| `prot_plat_monotonic_ns` | `clock_gettime(CLOCK_MONOTONIC)` | 无需"频率"概念（Windows 有 `QueryPerformanceFrequency`）|
+| `prot_plat_self_path` | `readlink("/proc/self/exe")` | `readlink` **不追加 NUL** -> 容量需留 1 字节 |
+| `prot_plat_debug_primitives` | `/proc/self/status` 的 **TracerPid** | **机制完全不同**（Windows 用 PEB）|
+| `prot_plat_enum_processes` | 遍历 `/proc` + `/proc/<pid>/comm` | 进程名限 **TASK_COMM_LEN-1 = 15 字符** |
+| `prot_plat_enum_modules` | 解析 `/proc/self/maps` | **需自己解析文本** |
+| `prot_plat_host_factors` | `/etc/machine-id` + `gethostname` | **是替代方案，非等价物**（值必然不同）|
+
+#### 关键设计：**如实声明不支持**
+
+`hardware_supported = 0` —— Linux 上**无法从自身可靠读取硬件断点**
+（需 `ptrace` 附加，而附加会改变 `TracerPid` -> **自相矛盾**）。
+
+> **不假装支持** —— 契约测试 C3.5 会检查"不支持时该字段为 0"。
+> 这正是"按能力条件断言"的设计意图（见 §8.2）。
+
+### 11.3 决定性验证：**契约测试 33/33 通过** 🎯
+
+```
+=== 平台层契约测试 (platform conformance) ===
+platform = 2                    (PROT_PLATFORM_LINUX)
+...
+通过 33 项，失败 0 项
+[platform_conformance] PASS: 契约合规
+```
+
+**严格编译**（`-Wall -Wextra -Werror`）：
+```
+STRICT_COMPILE_OK
+LINK_OK
+```
+
+> **这就是 L4-A 的价值兑现**：
+> Linux 实现**不需要在 Windows 上验证**，也不需要人工评审"移植对不对" ——
+> **在 Linux 上跑同一个契约测试即可**。
+>
+> 从"实现 Linux 平台层"到"验收通过"，**判据是客观的**。
+
+### 11.4 过程中修的 2 个缺陷
+
+| # | 缺陷 | 现象 | 教训 |
+|---|------|------|------|
+| 1 | **C 注释里的 `*/` 陷阱** | `/sys/block/*/device/serial` 中的 `*/` **提前闭合注释块** -> 后续中文注释被当 C 代码 -> `stray '\342' in program` | **第二次踩同一坑**（第一次在 `prot_platform.h`）。已扫描全部 `src/`+`include/`，确认无其它处 |
+| 2 | `-Wformat-truncation` 警告 | `snprintf` 拼 `/proc/<pid>/comm` 时 gcc 无法证明不截断 | 严格构建会因 `-Werror` 失败。已加**返回值边界检查** |
+
+### 11.5 新工具：`tools/verify_linux.py`
+
+从 Windows 侧一键在 WSL 内跑契约测试。
+
+> **为什么用 Python 而非 PowerShell**：PowerShell 会**抢先解析**
+> `$(...)`/引号/反斜杠，传给 `wsl.exe` 的 bash 命令会被**改写**
+> （本项目已多次踩坑）。Python 的 subprocess **原样传递**。
+
+### 11.6 成果
+
+| 项 | 结果 |
+|----|------|
+| **Linux 平台层** | ✅ **已实现**（含 7 组接口）|
+| **契约测试** | ✅ **33/33 通过**（Linux 上实跑）|
+| 严格编译 | ✅ `-Wall -Wextra -Werror` 通过 |
+| Windows 门禁 | ✅ **20 项全绿**（无回归）|
+| 验证工具 | ✅ `tools/verify_linux.py` |
+
+### 11.7 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| **只实现平台层，未移植模块** | `hostid`/`antidebug` 等仍用 Windows API（14 个待封装，见 inventory）|
+| **未实现"可运行的 Linux 产物"** | 平台层可用，但**整条构建链**（`build.ps1`）仍是 Windows/PowerShell |
+| **`host_factors` 只有 2 个因子** | Windows 有 4 个；磁盘序列号需读 `/sys`（权限受限）→ 未做 |
+| **指纹必然不同** | Linux 与 Windows **不共享授权**（替代方案非等价物）|
+| **CI job 未实跑** | `linux-portability` job 已定义，但**尚未推送到 GitHub 触发** |
+
+### 11.8 下一步（L6 候选）
+
+| 阶段 | 内容 | 前置 |
+|------|------|------|
+| **L6a** | 封装剩余 14 个 API（含 3 个🔴需重新设计）| Windows 可改，Linux 可验证 |
+| **L6b** | Linux 构建链（`build.sh` / CMake）| 需 WSL |
+| **L6c** | 把 `linux-portability` 推到 GitHub 让 CI 实跑 | 需推仓库 |
+| **L6d** | `__readgsqword`（PEB 反调试）的 Linux 重新设计 | **不是移植是重做** |
+
+---
+
+*2026-09-25 · L5c 完成：Linux 平台层实现 + 契约测试 33/33；§11.6 含 2 个修的缺陷*

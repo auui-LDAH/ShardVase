@@ -2669,3 +2669,83 @@ Linux 上能编译"，**实现后**跑契约测试（未实现时**明确失败*
 ---
 
 *2026-09-23 · L5a 清单完成 / L5b hostid 解耦 / WSL 待重启*
+
+---
+
+## 30. L5c 完成：Linux 平台层实现 ✅（2026-09-25）
+
+### 30.1 环境（实测）
+| 项 | 值 |
+|----|-----|
+| 发行版 | **Ubuntu 24.04.5 LTS**（WSL2）|
+| 内核 | 6.18.33.2-microsoft-standard-WSL2 |
+| 编译器 | **gcc 13.3.0** / glibc 2.39 |
+| 资源 | 20 核 / 15 GiB |
+
+**POSIX 实测**（编译+运行）: `mmap` OK / `ptrace(TRACEME)=0` OK
+> ⚠️ 我最初用 `/usr/include/sys/mman.h` 判断"缺失"，得出**错误结论**；
+> 实际在 `/usr/include/x86_64-linux-gnu/sys/`。
+> **教训: 编译+运行才是判据**，检查文件存在会被路径布局误导。
+
+### 30.2 交付: `src/platform/prot_platform_linux.c`
+7 组接口，关键差异:
+| 接口 | Linux | 差异 |
+|------|-------|------|
+| 页管理 | mmap/mprotect/munmap | **munmap 必须传长度**（Windows 传 0）|
+| 计时 | clock_gettime(MONOTONIC) | 无需"频率"概念 |
+| 自身路径 | readlink(/proc/self/exe) | **不追加 NUL** -> 容量留 1 |
+| 调试原语 | /proc/self/status **TracerPid** | **机制完全不同**（Windows 用 PEB）|
+| 进程枚举 | /proc 遍历 | 进程名限 **15 字符** |
+| 模块枚举 | /proc/self/maps | **需自己解析文本** |
+| host 因子 | machine-id + hostname | **替代方案，非等价物** |
+
+**关键设计: 如实声明不支持** —— `hardware_supported = 0`
+（Linux 读硬件断点需 ptrace 附加，而附加会改变 TracerPid -> **自相矛盾**）。
+> **不假装支持** —— 契约测试 C3.5 检查"不支持时该字段为 0"。
+
+### 30.3 🎯 决定性验证: **契约测试 33/33 通过**
+```
+platform = 2                    (PROT_PLATFORM_LINUX)
+通过 33 项，失败 0 项
+[platform_conformance] PASS: 契约合规
+```
+**严格编译**: `-Wall -Wextra -Werror` -> `STRICT_COMPILE_OK` + `LINK_OK`
+
+> **这就是 L4-A 的价值兑现**: Linux 实现**不需要在 Windows 上验证**，
+> 也**不需要人工评审**"移植对不对" —— 在 Linux 上跑**同一个契约测试**即可。
+
+### 30.4 过程中修的 2 个缺陷
+| # | 缺陷 | 现象 | 教训 |
+|---|------|------|------|
+| 1 | **C 注释 `*/` 陷阱** | `/sys/block/*/device/serial` 的 `*/` **提前闭合注释** -> `stray '\342'` | **第二次踩同一坑**（首次在 prot_platform.h）。已全仓扫描确认无其它 |
+| 2 | `-Wformat-truncation` | snprintf 拼路径 gcc 无法证明不截断 | 严格构建会失败。已加返回值边界检查 |
+
+### 30.5 新工具 `tools/verify_linux.py`
+从 Windows 侧一键在 WSL 内跑契约测试。
+> **为什么用 Python 而非 PowerShell**: PowerShell 会**抢先解析**
+> `$(...)`/引号/反斜杠 -> 传给 wsl.exe 的 bash 命令被**改写**（已多次踩坑）。
+
+### 30.6 成果
+| 项 | 结果 |
+|----|------|
+| **Linux 平台层** | ✅ **已实现**（7 组接口）|
+| **契约测试** | ✅ **33/33**（Linux 实跑）|
+| 严格编译 | ✅ `-Werror` 通过 |
+| Windows 门禁 | ✅ **20 项全绿**（无回归）|
+
+### 30.7 诚实边界
+· **只实现平台层，未移植模块**（14 个 API 待封装）
+· **未实现"可运行的 Linux 产物"** —— 构建链（build.ps1）仍是 Windows
+· `host_factors` 只有 **2 个**因子（Windows 有 4 个）
+· **指纹必然不同** —— 跨平台不共享授权（预期）
+· **CI job 未实跑**（已定义，尚未推送触发）
+
+### 30.8 下一步 L6 候选
+  L6a 封装剩余 14 个 API（含 3 个🔴需重新设计）
+  L6b Linux 构建链（build.sh/CMake）
+  L6c 推送让 CI 实跑
+  L6d `__readgsqword`（PEB 反调试）的 Linux **重新设计**（非移植）
+
+---
+
+*2026-09-25 · L5c 完成：Linux 平台层实现 + 契约测试 33/33*
