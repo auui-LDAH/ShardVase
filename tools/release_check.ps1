@@ -168,6 +168,24 @@ Check '协议兼容性 (conformance)' {
     & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
 }
 
+# C 注释词法检查（L6b, 2026-09-25）: 防"注释里的符号序列"陷阱。
+#
+# **为什么需要**: 本项目**三次**同类问题（都靠编译报错才发现）:
+#   ① `*/` 提前闭合 —— include/protect/prot_platform.h（L5b）
+#   ② `*/` 提前闭合 —— src/platform/prot_platform_linux.c（L5c）
+#   ③ `/*` 嵌套开启 —— include/protect/prot_sections.h（L6b）
+#
+# 三次都因**在注释里写路径通配**（`src/*.c`、`/sys/block/*/x`）时，
+# 忘了 `/*` 与 `*/` 在注释内**仍被词法器识别**。
+#
+# => 用工具检测，比"记得小心"可靠（与 R20/S1 同样的思路）。
+# **含负向自检**（6 个用例，含"路径通配只警告不报错"）。
+Check 'C 注释词法 (comment_lint)' {
+    & $py tools\comment_lint.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\comment_lint.py --quiet; $LASTEXITCODE -eq 0
+}
+
 # 平台层契约测试（L4-A, 2026-09-23）: 定义"**什么算合规的平台实现**"。
 #
 # **为什么需要**: L4 目标是"实现 Linux 平台层"。但新平台实现是否正确，

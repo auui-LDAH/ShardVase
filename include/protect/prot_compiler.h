@@ -69,6 +69,86 @@
 #  define PROT_USED
 #endif
 
+/* ------------------------------------------------------------------ *
+ * MSVC 专有 API 的**兼容层**（L6b，2026-09-25 编译测试发现）
+ *
+ * ## 为什么需要
+ *   实测在 Linux 上编译 18 个源文件，只有 3 个通过。失败原因中
+ *   **有一类是"MSVC 专有写法"而非"平台依赖"** —— 可统一抽象:
+ *     · `fopen_s(&f, path, mode)`（MSVC 安全版）
+ *     · `#pragma code_seg(...)`（MSVC 段控制）
+ *   这些**改一处即可跨平台**，不该散落在各模块里。
+ * ------------------------------------------------------------------ */
+
+/* 安全打开文件（统一调用形式）。
+ *
+ * MSVC:  `fopen_s(&fp, path, mode)`（返回 errno_t，0 为成功）
+ * POSIX: `fp = fopen(path, mode)` -> 转为同样的 errno_t 语义
+ *
+ * **用法**:
+ *   FILE* f = NULL;
+ *   if (PROT_FOPEN_S(&f, path, "rb") != 0) { ... }
+ *
+ * **语义等价性（关键）**:
+ *   两者都保证"失败时 *fpp 为 NULL"，故调用方判 `err != 0` 即可。
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_FOPEN_S(fpp, path, mode) fopen_s((fpp), (path), (mode))
+#else
+#  include <stdio.h>
+#  include <errno.h>
+#  define PROT_FOPEN_S(fpp, path, mode)                     \
+        ( (*(fpp) = fopen((path), (mode))) != NULL          \
+          ? 0 : (errno ? errno : EIO) )
+#endif
+
+/* 段控制（MSVC）。其它平台**忽略** —— 段布局是 PE 概念。
+ *
+ * ## 诚实说明
+ *   在 Linux 上忽略此指令 -> `crc32` 表不会被放到特定节。
+ *   **这不影响功能**（该指令用于"防止 crc 表被单独定位"的加固），
+ *   但**加固效果在 Linux 上不存在**（如实记录为平台差异）。
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_CODE_SEG(name) __pragma(code_seg(name))
+#  define PROT_CODE_SEG_END() __pragma(code_seg())
+#else
+#  define PROT_CODE_SEG(name)   /* 无对应：PE 段布局是平台概念 */
+#  define PROT_CODE_SEG_END()
+#endif
+
+/* 空操作指令（编译器无关）。
+ *
+ * ## 为什么需要（L6b，2026-09-25 编译测试发现）
+ *   `include/protect/prot_noise.h` 的 `PROT_NOISE()` 用了 `__nop()`
+ *   —— **MSVC 专有**内建。GCC/Clang **不认识**它 ->
+ *   **8 个"纯逻辑"模块**在 Linux 上编译失败（`implicit declaration
+ *   of function '__nop'`）。
+ *
+ *   **这是 L2 的遗漏**: L2 只处理了 `indirect.c` 的 `__declspec`，
+ *   而扫描维度里的关键词表**没列 `__nop`** -> 静态清单漏了它。
+ *
+ * ## 语义
+ *   · 目的: 给"永不执行"的分支一个**真实的指令**，
+ *     使编译器**不能把整个分支优化掉**（PROT_NOISE 的核心机制）
+ *   · MSVC:   `__nop()`  -> 展开为 `0x90`（x64）
+ *   · GCC:    `__asm__ __volatile__("nop")`
+ *   · 其它:   退化为空语句（噪声效果减弱，但**语义仍恒等**）
+ *
+ * ## 跨平台语义差异（**如实**）
+ *   MSVC 的 `__nop()` 与 x86 的 `nop` 在 x64 上都是 `0x90` ——
+ *   但 **ARM64 上 `__nop()` 是不同编码**。
+ *   故此处按编译器的**内建**选，而非硬编码 `0x90`：
+ *   让编译器产生它自己平台上正确的 NOP。
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_NOP() __nop()
+#elif defined(PROT_COMPILER_GCC) || defined(PROT_COMPILER_CLANG)
+#  define PROT_NOP() __asm__ __volatile__("nop")
+#else
+#  define PROT_NOP() ((void)0)
+#endif
+
 /* 调用约定：Windows 常见 __cdecl/__stdcall；其它平台无此概念。 */
 #if defined(PROT_COMPILER_MSVC)
 #  define PROT_CALL __cdecl

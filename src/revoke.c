@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "protect/prot_compiler.h"  /* L6b: MSVC 专有写法兼容 */
 #include "protect/license.h"
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/revoke.h"
@@ -73,7 +74,7 @@ prot_revoke_status prot_revoke_check(const char* path,
     if (path == NULL || serial == NULL)
         return PROT_REVOKE_INVALID_ARG;
 
-    if (fopen_s(&f, path, "rb") != 0 || f == NULL)
+    if (PROT_FOPEN_S(&f, path, "rb") != 0 || f == NULL)
         return PROT_REVOKE_NO_FILE;
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);

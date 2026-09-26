@@ -16,7 +16,7 @@
  * ## 为什么用"局部 volatile"（三次实测迭代后确定）
  *   | 写法 | 唯一字节序列 | 判定 |
  *   |------|-------------|------|
- *   | `__nop()` 序列 | —— | ✗ **被 /O2 完全优化掉** |
+ *   | `PROT_NOP()` 序列 | —— | ✗ **被 /O2 完全优化掉** |
  *   | `static volatile` + 分支 | 2/5 | ✗ 碰撞（见下）|
  *   | **局部 `volatile`** | **6/6** | ✅ **采用** |
  *   | 直接用 salt 做分支条件 | 2/6 | ✗ 碰撞 |
@@ -32,7 +32,7 @@
  *
  * ## 安全性
  *   · 语义恒等：`v_` 只用于一个**永不成立**的条件（0xDEADBEEF），
- *     不改变任何返回值/状态。即使分支被误判成立，执行的也只是 `__nop()`。
+ *     不改变任何返回值/状态。即使分支被误判成立，执行的也只是 `PROT_NOP()`。
  *   · 无 I/O、无内存写入（栈上局部）、无异常 -> 不引入新的失败模式。
  *   · 开销：一次栈写 + 一次栈读 + 一次比较（亚纳秒级，且不在循环内）。
  *
@@ -46,6 +46,8 @@
 
 #ifndef PROT_NOISE_H
 #define PROT_NOISE_H
+
+#include "protect/prot_compiler.h"   /* L6b: PROT_NOP() 跨平台 */
 
 #include <stdint.h>
 
@@ -67,7 +69,7 @@
     do {                                                                   \
         volatile uint32_t prot_k_ = PROT_BUILD_SALT;                       \
         uint32_t prot_v_ = prot_k_;                                        \
-        if (prot_v_ == 0xDEADBEEFu) { __nop(); }                           \
+        if (prot_v_ == 0xDEADBEEFu) { PROT_NOP(); }                           \
         (void)prot_v_;                                                     \
     } while (0)
 
@@ -80,7 +82,7 @@
         volatile uint32_t prot_k_ = (PROT_BUILD_SALT ^ 0x9E3779B9u);       \
         volatile uint32_t prot_m_ = (PROT_BUILD_SALT * 0x01000193u);       \
         uint32_t prot_v_ = (prot_k_ ^ prot_m_);                            \
-        if (prot_v_ == 0x1234ABCDu) { __nop(); }                           \
+        if (prot_v_ == 0x1234ABCDu) { PROT_NOP(); }                           \
         (void)prot_v_;                                                     \
     } while (0)
 

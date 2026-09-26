@@ -9,7 +9,7 @@
  *
  * ## 为什么需要这一层（设计教训，2026-09-21）
  * 阶段1（第二支柱）要让节名"每构建随机"，以消除 .protcrc/PROTCRCP 这类
- * 自解释线索。但若让 src/*.c 直接 include 生成的头（demo/gen/prot_sections.h），
+ * 自解释线索。但若让 src 下的 .c 直接 include 生成的头（demo/gen/prot_sections.h），
  * 就会**要求所有使用者都走 build.ps1** —— 而 skeleton / examples / tests
  * 等独立构建并没有 demo/gen 的 include 路径，于是全部 C1083 失败
  * （门禁实测抓到）。

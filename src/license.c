@@ -65,8 +65,21 @@ int prot_license_verify(const uint8_t* msg, size_t msg_len,
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
 
-    /* L2: 平台检查 + 密码学调用都交给抽象层（本文件不再含 BCrypt）。 */
-    if (g_prot_license_pubblob == NULL || g_prot_license_pubblob_len == 0u)
+    /* L2: 平台检查 + 密码学调用都交给抽象层（本文件不再含 BCrypt）。
+     *
+     * ⚠️ **L6b（2026-09-25）修正: 去掉 `g_prot_license_pubblob == NULL`**
+     *
+     *   `g_prot_license_pubblob` 声明为**数组**
+     *   （`extern const uint8_t g_prot_license_pubblob[]`）
+     *   -> 数组名**永不为 NULL** -> 该比较**恒假**（死代码）。
+     *
+     *   **GCC 的 `-Waddress` 抓到了**（`the comparison will always
+     *   evaluate as 'false'`），而 **MSVC 不报** ——
+     *   若不是做 Linux 移植，这段死代码会一直留着。
+     *
+     *   **正确判据是长度**（长度 0 才表示"无公钥"）。
+     */
+    if (g_prot_license_pubblob_len == 0u)
         return 0;
     if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != PROT_SIG_LEN)
         return 0;

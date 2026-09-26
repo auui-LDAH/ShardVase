@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "protect/prot_compiler.h"  /* L6b: MSVC 专有写法兼容 */
 #include "protect/blob.h"
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/license.h"
@@ -98,7 +99,7 @@ prot_status prot_vm_blob_load(const char* path,
     if (path == NULL || names == NULL || name_count == 0u || out == NULL)
         return PROT_ERR_INVALID_ARG;
 
-    if (fopen_s(&f, path, "rb") != 0 || f == NULL)
+    if (PROT_FOPEN_S(&f, path, "rb") != 0 || f == NULL)
         return PROT_ERR_BLOB_MISSING;
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);

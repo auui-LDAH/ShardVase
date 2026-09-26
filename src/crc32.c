@@ -1,7 +1,8 @@
 ﻿/* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+#include "protect/prot_compiler.h"  /* L6b: MSVC 专有写法兼容 */
 #include "protect/prot_sections.h"
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
-#pragma code_seg(PROT_SEC_XEC)
+PROT_CODE_SEG(PROT_SEC_XEC)
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
