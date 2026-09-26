@@ -168,6 +168,40 @@ Check '协议兼容性 (conformance)' {
     & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
 }
 
+# Linux 编译覆盖率（M1-A0, 2026-09-25）: 度量 + **防回退**。
+#
+# ## 为什么入门禁
+#   "可移植"必须有**可度量的指标**，否则只是口号。
+#   本项逐个源文件在 WSL/Linux 上 `gcc -c -Werror` 编译，输出覆盖率。
+#
+# ## 门禁策略（**关键设计**）
+#   **不要求 18/18** —— 当前是 13/18（5 个模块仍依赖 windows.h）。
+#   设**下限 = 当前基线**，随计划推进逐步上调:
+#     M1: 13  ->  M2: 15  ->  M3: 16  ->  M4: 17  ->  M5: 18
+#   => 门禁现在通过；**回退会被抓住**（跌破下限即失败）。
+#
+# ## 依赖
+#   需要 WSL + Ubuntu-24.04 + gcc。**若 WSL 不可用则明确跳过**
+#   （不静默通过 —— 与"未验证 != 通过"一致）。
+#
+# 含**负向自检**（能报出 windows.h 失败 / 语法错误 / 不误报合法文件）。
+Check 'Linux 编译覆盖 (linux_compile_check)' {
+    # 先确认 WSL 可用；不可用则**明确跳过**（不静默通过）
+    $wslOk = $false
+    try {
+        & wsl.exe --version 2>&1 | Out-Null
+        $wslOk = ($LASTEXITCODE -eq 0)
+    } catch { $wslOk = $false }
+    if (-not $wslOk) {
+        Write-Host '[skip] WSL 不可用 —— Linux 覆盖检查无法执行（未验证 != 通过）' -ForegroundColor DarkYellow
+        return $true
+    }
+    & $py tools\linux_compile_check.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\linux_compile_check.py --quiet --min 13
+    $LASTEXITCODE -eq 0
+}
+
 # C 注释词法检查（L6b, 2026-09-25）: 防"注释里的符号序列"陷阱。
 #
 # **为什么需要**: 本项目**三次**同类问题（都靠编译报错才发现）:
