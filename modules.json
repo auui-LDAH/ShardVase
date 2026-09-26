@@ -661,5 +661,22 @@
       "watchdog"
     ],
     "_why": "把【模块能力】与【宿主策略】分离: 模块只声明\"在何时被调用、报告什么\"，宿主用 policy.json 决定\"检测到之后怎么办\"。"
+  },
+  "indirect_slots": {
+    "_comment": "间接化槽位声明 —— 每个槽位对应【宿主导出】的函数。设计: docs/PORTABILITY_ASSESSMENT.md。**为什么需要**: 间接化作用于宿主的业务函数，故\"哪个函数被间接化\"是**宿主属性**，不是工具的常量。（此前 tools/indirect.py 硬编码 load_and_verify_license -> 换宿主即失效，L3 的 example 因此无法用 indirect。）",
+    "LICENSE": {
+      "symbol": "load_and_verify_license",
+      "extern": "extern int load_and_verify_license(const char*, void*);",
+      "_note": "宿主提供。签名涉及宿主私有类型（demo 的 demo_mem），故用 void* 声明、C 侧不做类型检查；extern 由宿主声明，不由模块 header 提供。"
+    },
+    "VM_RUN": {
+      "symbol": "prot_vm_run"
+    },
+    "REVOKE": {
+      "symbol": "prot_revoke_check"
+    },
+    "HOSTID": {
+      "symbol": "prot_hostid_get"
+    }
   }
 }

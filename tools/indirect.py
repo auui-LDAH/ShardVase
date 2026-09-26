@@ -20,6 +20,7 @@ CLI:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -56,13 +57,20 @@ def generate_c(seed, names):
     for i, p in enumerate(perm):
         inv[p] = i
 
-    # 跨编译单元可见的声明: load_and_verify_license 是 demo/main.c 的非 static
-    # 函数 (demo_mem 类型未导出, 用 void* 声明, C 侧不做类型检查)。
+    # 跨编译单元可见的声明。
+    #
+    # L4-C: 此前**硬编码**判断 name == 'load_and_verify_license'。
+    # 现改为: 由 modules.json 的 `indirect_slots.<SUFFIX>.extern` 声明
+    # （宿主侧符号才需要 extern；模块导出的符号由 header 提供）。
     externs = []
-    for name in names:
-        if name == 'load_and_verify_license':
-            externs.append(
-                'extern int load_and_verify_license(const char*, void*);')
+    for suffix, sym in _slots_symbols.items():
+        decl = _slots_externs.get(suffix)
+        if decl and sym in names:
+            externs.append(decl)
+    # 规范化顺序: 按 names 的顺序（保证产物确定性）
+    _decl_by_sym = {_slots_symbols[s]: _slots_externs[s]
+                    for s in _slots_externs if s in _slots_symbols}
+    externs = [_decl_by_sym[n] for n in names if n in _decl_by_sym]
     externs_src = '\n'.join(externs)
 
     # s_fn 按反置换顺序填充: s_fn[inv[i]] = fn_i -> 表内顺序 = fn_{inv[0]}, fn_{inv[1]}, ...
@@ -119,6 +127,8 @@ def main(argv=None):
 
     seed = args.seed if args.seed is not None else __import__('random').getrandbits(64)
     try:
+        global _slots_symbols, _slots_externs
+        _slots_symbols, _slots_externs = load_indirect_slots()
         names = _fn_order_from_header()
         src, perm = generate_c(seed, names)
         parent = os.path.dirname(os.path.abspath(args.out))
@@ -136,12 +146,57 @@ def main(argv=None):
 
 
 # 枚举后缀 -> 实际函数符号 (C 编译单元可见名)
-_FN_SYMBOLS = {
+#
+# ## L4-C（2026-09-23）: 改为从 modules.json 的 `indirect_slots` 读
+#
+#   **缺陷（改动前）**: 本表**硬编码** `'LICENSE': 'load_and_verify_license'`
+#     —— 那是 **demo 宿主**的函数（定义在 demo/main.c）。换宿主即失效
+#     （L3 的 example 正是因此无法使用 indirect）。
+#
+#   **为什么间接化必须宿主可声明**: 间接化作用于**宿主的业务函数**，
+#     故"哪个函数被间接化"**本质上是宿主属性**，不是工具的常量。
+#
+#   **本默认值 = 原有硬编码值** -> 既有产物**逐字不变**（已实测）。
+#     宿主可通过 modules.json 的 `indirect_slots` 覆盖。
+_FN_SYMBOLS_DEFAULT = {
     'VM_RUN': 'prot_vm_run',
     'LICENSE': 'load_and_verify_license',
     'REVOKE': 'prot_revoke_check',
     'HOSTID': 'prot_hostid_get',
 }
+
+
+_slots_symbols = dict(_FN_SYMBOLS_DEFAULT)
+_slots_externs = {}
+
+
+def load_indirect_slots():
+    """从 modules.json 读 `indirect_slots`；缺失则用默认表。
+
+    返回 (suffix -> symbol, suffix -> extern_decl or None)。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    reg_path = os.path.join(here, '..', 'modules.json')
+    symbols = dict(_FN_SYMBOLS_DEFAULT)
+    externs = {}
+    try:
+        with open(reg_path, 'r', encoding='utf-8') as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        return symbols, externs
+    slots = reg.get('indirect_slots')
+    if not isinstance(slots, dict):
+        return symbols, externs
+    for suffix, spec in slots.items():
+        if suffix.startswith('_') or not isinstance(spec, dict):
+            continue
+        sym = spec.get('symbol')
+        if not sym:
+            continue
+        symbols[suffix] = sym
+        if spec.get('extern'):
+            externs[suffix] = spec['extern']
+    return symbols, externs
 
 
 def _fn_order_from_header():
@@ -158,7 +213,7 @@ def _fn_order_from_header():
     for suffix in __import__('re').findall(r'PROT_INDIRECT_([A-Z0-9_]+)', m.group(1)):
         if suffix == 'COUNT':
             continue
-        sym = _FN_SYMBOLS.get(suffix)
+        sym = _slots_symbols.get(suffix)
         if sym is None:
             raise ValueError('unknown indirect fn suffix: %s' % suffix)
         names.append(sym)

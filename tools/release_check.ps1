@@ -168,6 +168,34 @@ Check '协议兼容性 (conformance)' {
     & $py tools\conformance.py modules.json --quiet; $LASTEXITCODE -eq 0
 }
 
+# 平台层契约测试（L4-A, 2026-09-23）: 定义"**什么算合规的平台实现**"。
+#
+# **为什么需要**: L4 目标是"实现 Linux 平台层"。但新平台实现是否正确，
+#   若靠人工判断就会变成"看起来对" —— 正是本项目反复批判的。
+#
+#   本项把"平台层是否正确"变成**可执行的验收条件**:
+#     **任何平台实现，只要能通过本测试，就视为契约合规。**
+#     => 把"实现 Linux"从**写代码**变成**通过测试**。
+#
+# 内容: 30 项断言，覆盖 capabilities 自洽 / 页管理往返 / 调试原语契约 /
+#   进程枚举容量语义 / 单调时钟 / 自身映像路径。
+# **含负向验证**: 已实测注入缺陷（alloc 恒 NULL）能被抓到。
+Check '平台层契约 (platform conformance)' {
+    $pcDir = Join-Path $env:TEMP 'shardvase_platconf'
+    New-Item -ItemType Directory -Force -Path $pcDir | Out-Null
+    $pcExe = Join-Path $pcDir 'platconf.exe'
+    $vc = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022' -Recurse -Filter vcvars64.bat -EA SilentlyContinue | Select-Object -First 1
+    if (-not $vc) { $vc = Get-Item 'D:\environment\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat' -EA SilentlyContinue }
+    $bat = Join-Path $pcDir 'b.bat'
+    $log = Join-Path $pcDir 'cl.log'
+    $cl = "cl /nologo /O2 /W4 /std:c11 /utf-8 /I include /Fe:`"$pcExe`" tests\platform_conformance.c src\platform\prot_platform_win.c /link /SUBSYSTEM:CONSOLE"
+    "call `"$($vc.FullName)`" >nul 2>&1`r`ncd /d `"$((Get-Location).Path)`"`r`n$cl > `"$log`" 2>&1" | Set-Content -Path $bat -Encoding ASCII
+    cmd /c $bat | Out-Null
+    if (-not (Test-Path $pcExe)) { return $false }
+    & $pcExe
+    $LASTEXITCODE -eq 0
+}
+
 # 攻击技契约（缺口#2, 2026-09-23）: 攻防**契约层对称**。
 #
 # **为什么需要**: 此前"攻防对称"只到**数据层**（drills 记录），

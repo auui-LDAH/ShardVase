@@ -132,7 +132,23 @@ typedef struct prot_proc_info {
     char     name[64];
 } prot_proc_info;
 
-/* 枚举进程。返回写入的条目数；capacity 不足时截断并报告真实数量。 */
+/* 枚举进程。
+ *
+ * ## 返回值语义（**契约** —— 平台实现必须遵守，见
+ *    `tests/platform_conformance.c` C4.4/C4.5）
+ *   返回**真实总数**（不论容量是否足够）:
+ *     · `capacity` 不足      -> 截断写入，**仍返回真实总数**
+ *     · `out == NULL`        -> **只计数**，不写入
+ *     · `capacity == 0`      -> 同 `out == NULL`（只计数）
+ *
+ * ## 为什么这样约定
+ *   调用方需要**两段式用法**: 先查总数 -> 分配缓冲 -> 再取。
+ *   若返回值受容量影响，两段式就不可行。
+ *
+ * ## 失败语义
+ *   枚举失败（如平台不支持）-> 返回 0。
+ *   （0 也意味着"系统里没有进程"，实际不可能 —— 调用方只需判 `> 0`。）
+ */
 size_t prot_plat_enum_processes(prot_proc_info* out, size_t capacity);
 
 typedef struct prot_module_info {
