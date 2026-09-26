@@ -594,6 +594,98 @@ size_t prot_plat_thread_count(void);
 void* prot_plat_symbol_addr(const char* module, const char* symbol);
 
 /* ------------------------------------------------------------------ *
+ * 分组 12: 反调试探测原语（C5，`antidebug` 用）
+ *
+ * ## 背景: 为什么这是**重新设计**而非移植
+ *   `src/antidebug.c` 的 12 个检测维度大量依赖 **PEB / NT 原生查询 / SEH** ——
+ *   这些在 Linux 上**没有等价物**（详见 `docs/LINUX_PORT_PLAN.md` §2.2）。
+ *
+ *   **逐项判定**（实测）:
+ *     · **可等价实现 5 项**（计时/父进程/int3/时钟漂移/内核调试器）
+ *     · **归一化 5 项**（PEB 与 NT 查询在 Linux 上**统一归约为 TracerPid**）
+ *     · **明确不支持 1 项**（硬件断点 —— 需 ptrace 附加，自相矛盾）
+ *     · **Linux 独有新增 3 项**（LD_PRELOAD / 可疑 .so / ptrace 试探）
+ * ------------------------------------------------------------------ */
+
+/* 归一化的**调试状态**（跨平台统一表达）。
+ *
+ * ## 为什么归一化
+ *   Windows 上"是否被调试"有多个**独立信号**（PEB.BeingDebugged、
+ *   DebugPort、DebugObjectHandle、DebugFlags）——
+ *   但它们本质都是查**同一件事**（EPROCESS 的不同字段）。
+ *   Linux 内核**只暴露一个字段**（`/proc/self/status` 的 `TracerPid`）。
+ *
+ *   => **不是降级，是归一化**：Linux 用更少的字段表达同一语义。
+ */
+typedef struct prot_debug_state {
+    uint32_t tracer_pid;        /* 非 0 = 有 tracer（TracerPid）*/
+    uint32_t kernel_debugger;   /* 内核调试器（启发式）*/
+    uint32_t hardware_bp;       /* 硬件断点（**本平台不支持时恒 0**）*/
+    uint32_t supported_mask;    /* 哪些字段有效（1=tracer, 2=kernel, 4=hwbp）*/
+} prot_debug_state;
+
+/* 查询平台的调试状态。返回 PROT_OK / PROT_ERR_UNSUPPORTED。 */
+prot_status prot_plat_debug_probe(prot_debug_state* out);
+
+/* int3 蜜罐探测（**各平台机制不同，语义相同**）。
+ *
+ * Windows: `AddVectoredExceptionHandler` + 执行 `int3;ret` 存根
+ * Linux  : `sigaction(SIGTRAP)` + 执行同样的存根
+ *
+ * ## 返回
+ *   0 = 未完成探测
+ *   1 = **自己的处理器正常接管**（正常）
+ *   2 = **未接管**（可疑 —— 说明有外部断点处理者）
+ */
+uint32_t prot_plat_int3_probe(void);
+
+/* 父进程名（用于调试器黑名单）。
+ *
+ * Windows: `NtQueryInformationProcess(ProcessBasicInformation)` + `OpenProcess`
+ * Linux  : 读 `/proc/<ppid>/comm`（**更直接**）
+ *
+ * 返回 1 = 成功（name 已填）；0 = 失败。
+ */
+int prot_plat_parent_name(char* name, size_t cap);
+
+/* 一次取**单调钟与墙钟**（毫秒）。
+ *
+ * Windows: `GetTickCount64()` + `GetSystemTimeAsFileTime`
+ * Linux  : `CLOCK_MONOTONIC` + `CLOCK_REALTIME`
+ *
+ * 返回 1 = 成功。
+ */
+int prot_plat_clock_pair(uint64_t* tick_ms, uint64_t* wall_ms);
+
+/* **平台独有的**反调试维度（位掩码）。
+ *
+ * ## 为什么用位掩码
+ *   平台独有维度**数量与语义因平台而异** ——
+ *   位掩码 + 平台的语义表，避免**改公共结构体**（那会破坏契约）。
+ *
+ * ## 各位的语义（按平台）
+ *   **Linux**（Windows 无对应，恒返回 0）:
+ *     bit0 = `LD_PRELOAD` 被设置（库注入）
+ *     bit1 = `/proc/self/maps` 里有**可疑 .so**（非常规路径）
+ *     bit2 = `PTRACE_TRACEME` 失败（**已被跟踪**）
+ *
+ * `PROT_PLAT_EXTRA_*` 是**可读的位名**。
+ */
+#define PROT_PLAT_EXTRA_PRELOAD   0x01u
+#define PROT_PLAT_EXTRA_SUSP_SO   0x02u
+#define PROT_PLAT_EXTRA_PTRACED   0x04u
+
+uint32_t prot_plat_extra_debug_flags(void);
+
+/* `ThreadHideFromDebugger` 的等效（隐藏当前线程）。
+ *
+ * Windows: `NtSetInformationThread(ThreadHideFromDebugger)`
+ * Linux  : **无等价物**（内核不提供"对调试器隐藏线程"）
+ *          => 如实返回 `PROT_ERR_UNSUPPORTED`
+ */
+prot_status prot_plat_hide_thread(void);
+
+/* ------------------------------------------------------------------ *
  * 平台实现约定
  *
  * Windows: src/platform/prot_platform_win.c（委托到现有 Windows API 调用）

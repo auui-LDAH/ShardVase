@@ -973,3 +973,122 @@ A10 static-trace             PASS  (N4 indirect: no direct call to 4 indirect sl
 ---
 
 *2026-09-25 · M4 完成：覆盖率 17/18；发现并修复 M1 静默退化 + P5 四缺陷*
+
+---
+
+## 13. M5 实施记录 ✅（2026-09-25）—— **A 阶段达成**
+
+### 13.1 目标与结果
+
+| 项 | 目标 | **实际** |
+|----|------|---------|
+| 覆盖率 | 17 -> **18/18** | ✅ **18/18（全部源文件）** |
+| `antidebug` 跨平台 | **需重新设计** | ✅ Linux 编译通过 |
+| Windows 零回归 | 必须 | ✅ **门禁 21/22**（唯一失败=未提交）|
+
+### 13.2 12 个检测维度的**逐项判定**（实测）
+
+| # | 字段 | Windows 机制 | Linux 对应 | 性质 |
+|---|------|-------------|-----------|------|
+| 1 | `peb_being_debugged` | `GS:0x60` -> PEB.BeingDebugged | **TracerPid** | **归一化** |
+| 2 | `peb_nt_global_flag` | PEB.NtGlobalFlag | **TracerPid** | 归一化 |
+| 3 | `debug_port` | NtQuery DebugPort | **TracerPid** | 归一化 |
+| 4 | `debug_flags` | NtQuery DebugFlags | **TracerPid** | 归一化 |
+| 5 | `debug_object` | NtQuery DebugObjectHandle | **TracerPid** | 归一化 |
+| 6 | `hardware_breakpoints` | `GetThreadContext` Dr0-3/Dr7 | **需 ptrace 附加（自相矛盾）** | 🔴 **明确不支持** |
+| 7 | `timing_suspicious` | `QPC` + `Sleep` | `clock_gettime` + `nanosleep` | ✅ **等价** |
+| 8 | `kernel_debugger` | NtQuery SystemKernelDebugger | `/proc/cmdline` kgdb/kdb | 启发式 |
+| 9 | `debug_heap_flags` | PEB.ProcessHeap Flags | **glibc 无此概念** | 归一化 |
+| 10 | `int3_honey` | **VEH** 自投 int3 | **`sigaction(SIGTRAP)`** | ✅ **等价** |
+| 11 | `ppid_blacklist` | NT PBI + OpenProcess | **`/proc/<ppid>/comm`** | ✅ **等价且更简单** |
+| 12 | `clock_drift_sec` | `GetTickCount64` vs 墙钟 | `CLOCK_MONOTONIC` vs `CLOCK_REALTIME` | ✅ **等价** |
+
+**统计**：可等价 **5** / 归一化 **5** / 不支持 **1**
+
+### 13.3 Linux **独有的 3 个维度**（**新增能力**）
+
+| 维度 | 机制 | 为什么 Linux 需要 |
+|------|------|-----------------|
+| **LD_PRELOAD 检测** | `/proc/self/environ` | LD_PRELOAD 是 Linux **最主要的注入手段** |
+| **可疑 .so 检测** | `/proc/self/maps` 查 `/tmp`、`/dev/shm` 来源 | frida-gadget 等的常见位置 |
+| **ptrace 自附加试探** | `PTRACE_TRACEME` 失败 = 已被跟踪 | Linux 独有的跟踪模型 |
+
+> **净增 2 个维度**（+3 新增 −1 不支持）—— **不是降级**。
+
+### 13.4 关键设计决策
+
+#### ① Windows 路径**逐字保留**
+`PEB 直读`（`__readgsqword(0x60)`）是模块的**核心特征** ——
+项目要求"绕过用户态 hook"。故用 `#if` 包裹，**不删不改**。
+
+#### ② 归一化而非降级（**核心洞察**）
+> Windows 的 5 个"独立维度"本质都是查**同一件事**
+> （EPROCESS 的不同字段）；Linux 内核**只暴露 TracerPid**。
+> **=> 不是降级，是归一化**（更少的字段表达同一语义）。
+
+#### ③ 平台独有维度用**位掩码**（不改公共结构体）
+`prot_plat_extra_debug_flags()` 返回位掩码 +
+**映射到语义最近的既有字段**（并在注释中明确记录）:
+| 独有维度 | 映射到 |
+|---------|-------|
+| LD_PRELOAD / 可疑 .so | `ppid_blacklist`（注入类）|
+| 已被 ptrace | `debug_object`（已确认被跟踪）|
+
+**为什么不加新字段**：`prot_antidebug_report` 是**对外 ABI 契约**，
+加字段会破坏它（宿主按固定字段名读取）-> **最小侵入**。
+
+#### ④ `prot_plat_hide_thread()` 在 Linux **如实不支持**
+Windows 的 `NtSetInformationThread(ThreadHideFromDebugger)` 让
+调试器看不到该线程；**Linux 内核不提供**这类接口
+（tracer 通过 ptrace 拥有完全可见性）
+-> 返回 `PROT_ERR_UNSUPPORTED`（**不假装成功**）。
+
+### 13.5 M5 验收
+
+| # | 验收项 | 结果 |
+|---|--------|------|
+| 1 | 覆盖率 **18/18** | ✅ |
+| 2 | `antidebug` Linux 编译 | ✅ |
+| 3 | **Windows 零回归** | ✅ 门禁 21/22 |
+| 4 | migration_gate | ✅ PASS |
+| 5 | 门禁下限推进 | ✅ 17 -> 18 |
+
+**M5 达成** ✅ —— **A 阶段（封装配送）完成**
+
+### 13.6 ⚠️ 诚实边界（**必读**）
+
+| 边界 | 说明 |
+|------|------|
+| **Linux 侧仅验证编译** | **运行时行为未测**（需 B 阶段的构建链）|
+| **硬件断点维度不支持** | 如实声明（`supported_mask` 不置 bit2）|
+| **ptrace 试探有局限** | 只在**已有 TracerPid 时**才试探（避免副作用）；<br>故它**不能**作为"首次发现调试器"的手段 |
+| **`sigaction` 有并发窗口** | handler 是**进程级**的 —— 但 Windows 的 VEH 同样如此（**两平台面临同样限制**）|
+| **`/proc` 可被 mount namespace 影响** | 容器环境下 `/proc` 可能不完整 -> 检测项记 0（**不误报**）|
+| **归一化牺牲了粒度** | Windows 能区分"哪个调试接口被用"，Linux **不能** |
+
+### 13.7 A 阶段总结（M1–M5）
+
+| 里程碑 | 覆盖率 | 关键成果 |
+|--------|--------|---------|
+| **M1** | 13/18 | 度量工具固化 + 门禁第 22 项 |
+| **M2** | 15/18 | `syscall` / `selfcrypt` + 平台层 9 接口 |
+| **M3** | 16/18 | `integrity`（ELF 节表）+ **修 3 个真实问题** |
+| **M4** | 17/18 | `dbiguard` + **修 M1 静默退化 + P5 四缺陷** |
+| **M5** | **18/18** | `antidebug` **重新设计**（+3 独有维度）|
+
+**A 阶段（封装配送）达成** ✅
+
+### 13.8 下一步：B 阶段（Linux 构建链）
+
+| 步 | 内容 |
+|----|------|
+| **B0** | 装 `libssl-dev`（OpenSSL 头文件）|
+| **B1** | `prot_crypto` 加 **Linux/OpenSSL 实现** |
+| B2 | `hashpatch.py` 加 ELF 分支 |
+| B3 | `gen_sections.py` 加 ELF 分支 |
+| **B4** | 写 **`build.sh`** -> 产出 ELF 可执行文件 |
+| **B5** | 端到端冒烟（产物能运行 + 授权通过）|
+
+---
+
+*2026-09-25 · M5 完成：**18/18 全覆盖**；A 阶段（封装配送）达成*

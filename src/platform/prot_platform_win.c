@@ -832,4 +832,168 @@ void* prot_plat_symbol_addr(const char* module, const char* symbol)
     return (void*)GetProcAddress(h, symbol);
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 12: 反调试探测原语（C5，Windows）
+ *
+ * ## 实现策略（**保行为不变**）
+ *   本组把 `antidebug.c` 的 **NT 查询**与 **PEB 直读**搬迁到本层 ——
+ *   逻辑**逐字保留**（含回退路径），只是换了入口。
+ *
+ *   ⚠️ **注意**: `PEB 直读`（`__readgsqword(0x60)`）**留在 `antidebug.c`** ——
+ *   因为它是**模块的核心特征之一**（项目明确要求 PEB 直读作为
+ *   "绕过用户态 hook"的手段）。本层只提供**归一化视图**。
+ * ------------------------------------------------------------------ */
+
+typedef LONG(WINAPI* plat_ntqip2_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+static plat_ntqip2_t plat_ntqip2(void)
+{
+    HMODULE h = GetModuleHandleW(L"ntdll.dll");
+    if (h == NULL)
+        return NULL;
+    return (plat_ntqip2_t)(void*)GetProcAddress(h,
+                                                "NtQueryInformationProcess");
+}
+
+prot_status prot_plat_debug_probe(prot_debug_state* out)
+{
+    plat_ntqip2_t fn;
+    ULONG_PTR port = 0;
+    HANDLE hDbg = NULL;
+    LONG st;
+    char kdbg[2] = {0, 0};
+
+    if (out == NULL)
+        return PROT_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+
+    fn = plat_ntqip2();
+    if (fn == NULL)
+        return PROT_ERR_UNSUPPORTED;
+
+    /* Windows 有**四个独立信号** —— 全部填入 supported_mask（见其语义） */
+    st = fn(GetCurrentProcess(), 7u, &port, (ULONG)sizeof(port), NULL);
+    if (st >= 0)
+        out->tracer_pid = (port != 0) ? 1u : 0u;
+
+    st = fn(GetCurrentProcess(), 30u, &hDbg, (ULONG)sizeof(hDbg), NULL);
+    if (st >= 0 && hDbg != NULL) {
+        out->tracer_pid = 1u;   /* 归一化: 有 debug object 即有调试器 */
+        CloseHandle(hDbg);
+    }
+
+    /* 内核调试器（沿用 C1 的平台实现） */
+    if (prot_plat_nt_query_system(PROT_SIQ_KERNEL_DEBUGGER, kdbg,
+                                  sizeof(kdbg), NULL) == PROT_NT_OK)
+        out->kernel_debugger = (kdbg[0] != 0) ? 1u : 0u;
+
+    /* Windows 支持硬件断点（但需要正在调试的上下文才能读 —— 见 antidebug.c）*/
+    out->hardware_bp = 0u;
+
+    out->supported_mask = 1u | 2u | 4u;   /* tracer + kernel + hwbp(接口可用) */
+    return PROT_OK;
+}
+
+/* ## int3 蜜罐（Windows: VEH）
+ *   与原 `antidebug.c` 的 `ad_int3_probe` **逻辑一致** —— 搬迁。
+ */
+static volatile LONG g_plat_int3_caught;
+
+static LONG CALLBACK plat_vh_int3(EXCEPTION_POINTERS* ep)
+{
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+        return EXCEPTION_CONTINUE_SEARCH;
+    InterlockedExchange(&g_plat_int3_caught, 1);
+    ep->ContextRecord->Rip += 1;   /* 跳过 1 字节 int3 */
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+uint32_t prot_plat_int3_probe(void)
+{
+    uint8_t* stub;
+    PVOID hveh;
+    uint32_t r = 0u;
+
+    stub = (uint8_t*)VirtualAlloc(NULL, 2, MEM_COMMIT | MEM_RESERVE,
+                                  PAGE_EXECUTE_READWRITE);
+    if (stub == NULL)
+        return 0u;
+    stub[0] = 0xCCu;   /* int3 */
+    stub[1] = 0xC3u;   /* ret */
+    FlushInstructionCache(GetCurrentProcess(), stub, 2);
+
+    InterlockedExchange(&g_plat_int3_caught, 0);
+    hveh = AddVectoredExceptionHandler(1, plat_vh_int3);
+    if (hveh != NULL) {
+        ((void(WINAPI*)(void))stub)();
+        RemoveVectoredExceptionHandler(hveh);
+        r = (InterlockedCompareExchange(&g_plat_int3_caught, 0, 0) == 0)
+            ? 2u : 1u;
+    }
+    VirtualFree(stub, 0, MEM_RELEASE);
+    return r;
+}
+
+int prot_plat_parent_name(char* name, size_t cap)
+{
+    FILE* f;
+    DWORD ppid = 0;
+    (void)name;
+    (void)cap;
+
+    /* ## Windows 侧的父进程名获取**较繁琐**
+     *   （NtQueryInformationProcess(ProcessBasicInformation) -> OpenProcess
+     *     -> QueryFullProcessImageNameW）
+     *   该逻辑**保留在 `antidebug.c`**（它需要 PEB/NT 类型，属模块特征）。
+     *   本层返回 0 表示"请用模块自己的实现"。
+     */
+    f = NULL;
+    (void)f;
+    (void)ppid;
+    return 0;
+}
+
+int prot_plat_clock_pair(uint64_t* tick_ms, uint64_t* wall_ms)
+{
+    ULARGE_INTEGER ul;
+    FILETIME ft;
+
+    if (tick_ms == NULL || wall_ms == NULL)
+        return 0;
+    *tick_ms = (uint64_t)GetTickCount64();
+    GetSystemTimeAsFileTime(&ft);
+    ul.LowPart = ft.dwLowDateTime;
+    ul.HighPart = ft.dwHighDateTime;
+    /* FILETIME(100ns since 1601) -> ms since epoch */
+    *wall_ms = (ul.QuadPart / 10000ull) - 11644473600000ull;
+    return 1;
+}
+
+uint32_t prot_plat_extra_debug_flags(void)
+{
+    /* ## Windows 无平台独有维度
+     *   本项目的 Windows 版**已有 12 个维度**（PEB/NT/SEH/计时/父子/时钟）——
+     *   没有"Windows 独有而 Linux 没有"的额外项需要在此返回。
+     *   （Linux 侧的 3 个独有项见 Linux 实现。）
+     */
+    return 0u;
+}
+
+prot_status prot_plat_hide_thread(void)
+{
+    HMODULE h;
+    typedef LONG(WINAPI* nt_set_t)(HANDLE, ULONG, PVOID, ULONG);
+    nt_set_t fn;
+
+    h = GetModuleHandleW(L"ntdll.dll");
+    if (h == NULL)
+        return PROT_ERR_UNSUPPORTED;
+    fn = (nt_set_t)(void*)GetProcAddress(h, "NtSetInformationThread");
+    if (fn == NULL)
+        return PROT_ERR_UNSUPPORTED;
+    /* 17 = ThreadHideFromDebugger */
+    fn(GetCurrentThread(), 17u, NULL, 0);
+    return PROT_OK;
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

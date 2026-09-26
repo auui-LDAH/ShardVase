@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -12,22 +12,47 @@
  *         ProcessDebugFlags / ProcessDebugObjectHandle / 硬件断点 /
  *         QPC+Sleep 计时 / 内核调试器标志。
  * 任何 WinAPI/ntdll 调用失败均将该检测项记为 0 (不误报)。
+ *
+ * ## 平台分支（M5，2026-09-25）—— **重新设计**，不是移植
+ *
+ * **Windows 路径逐字保留**（下方 `#if` 内）——
+ *   `PEB 直读`是模块的**核心特征**（项目要求"绕过用户态 hook"）。
+ *
+ * **Linux 路径是重新设计**（`#else` 分支）:
+ *   Windows 的 12 个维度依赖 **PEB / NT 原生查询 / SEH** ——
+ *   Linux 上**无等价物**（详见 docs/LINUX_PORT_PLAN.md §2.2）。
+ *
+ *   | 类 | 项数 | 说明 |
+ *   |----|------|------|
+ *   | **可等价实现** | 5 | 计时 / 父进程 / int3 / 时钟漂移 / 内核调试器 |
+ *   | **归一化**     | 5 | PEB 与 NT 查询 -> **统一归约为 TracerPid** |
+ *   | **明确不支持** | 1 | **硬件断点**（需 ptrace 附加，自相矛盾）|
+ *   | **Linux 独有** | **+3** | LD_PRELOAD / 可疑 .so / ptrace 试探 |
+ *
+ *   => **净增 2 个维度**（+3 −1）。**不是降级。**
  */
+
+#include "protect/antidebug.h"
+#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
+#include "protect/syscall.h"      /* A6: direct syscall 直调 */
+#include "protect/prot_platform.h"/* M5: 反调试探测原语（跨平台）*/
+#include "protect/prot_compiler.h"/* M5: PROT_CODE_SEG */
+
+/* ================================================================== *
+ * Windows 实现（**逐字保留**）
+ * ================================================================== */
+#if PROT_PLATFORM == PROT_PLATFORM_WINDOWS
 
 #include <windows.h>
 #include <intrin.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "protect/antidebug.h"
-#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
-#include "protect/syscall.h" /* A6: direct syscall 直调 */
-
 /* S1 专项 (2026-08-30): 辅助函数移入 .protxec 独立页 (与加密段分页,
  * 消除"页内未加密邻居被 VP 禁执行"自伤). scan 自身在下方恢复 .text. */
 /* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
 #include "protect/prot_sections.h"
-#pragma code_seg(PROT_SEC_XEC)
+PROT_CODE_SEG(PROT_SEC_XEC)
 
 /* Phase 3b: 多轮计时采样配置. 5 轮 × 20ms, 任一轮 < 5ms 判可疑. */
 #define PROT_AD_TIMING_ROUNDS 5u
@@ -118,7 +143,7 @@ typedef struct prot_sys_kdbg_info {
 } prot_sys_kdbg_info;
 
 /* scan 及以下回 .text (scan 为加密目标, 需留在 .text) */
-#pragma code_seg()
+PROT_CODE_SEG_END()
 prot_status prot_antidebug_scan(prot_antidebug_report* out) {
     PROT_NOISE();   /* W1.6: 每构建序言噪声（破坏特征匹配）*/
     uintptr_t peb;
@@ -321,6 +346,164 @@ prot_status prot_antidebug_scan(prot_antidebug_report* out) {
     return PROT_OK;
 }
 
+/* ================================================================== *
+ * 非 Windows（Linux 等）—— **重新设计**（M5，2026-09-25）
+ * ================================================================== */
+#else
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+/* 计时配置（与 Windows 侧同名同值，保持语义一致） */
+#define PROT_AD_TIMING_ROUNDS 5u
+#define PROT_AD_TIMING_SLEEP_MS 20u
+#define PROT_AD_TIMING_MIN_MS 5u
+
+/* 父进程调试器/分析工具黑名单（**Linux 语境**）
+ *
+ * ## 与 Windows 名单的差异（如实标注）
+ *   Windows 名单是**GUI 调试器**为主（x64dbg/windbg/IDA）；
+ *   Linux 侧应列**Linux 的常用工具**:
+ *     gdb / lldb / strace / ltrace / radare2 / r2 / ghidra / frida 等。
+ *   **保留 gdb 是两平台共有的**。
+ */
+static const char* const k_ad_dbg_parents[] = {
+    "gdb", "lldb", "strace", "ltrace", "radare2", "r2",
+    "ghidra", "frida", "frida-server", "perf", "valgrind", "rr",
+    NULL
+};
+
+prot_status prot_antidebug_scan(prot_antidebug_report* out)
+{
+    PROT_NOISE();   /* W1.6: 每构建序言噪声（破坏特征匹配）*/
+    prot_debug_state dbg;
+    uint32_t extra;
+    uint32_t round;
+
+    if (out == NULL)
+        return PROT_OK;   /* 契约: 永不失败, 返回 PROT_OK */
+    memset(out, 0, sizeof(*out));
+
+    /* ---- 归一化调试状态（TracerPid 等）----
+     *
+     * ## 为什么 5 个 Windows 维度在此**归一化为一个**
+     *   Windows 的 `peb_being_debugged` / `debug_port` / `debug_flags` /
+     *   `debug_object` / `peb_nt_global_flag` 本质都是查**同一件事**
+     *   （EPROCESS 的不同字段）。
+     *   Linux 内核**只暴露 `TracerPid`** -> 全部由它派生。
+     *
+     *   => **不是降级，是归一化**。
+     */
+    memset(&dbg, 0, sizeof(dbg));
+    if (prot_plat_debug_probe(&dbg) == PROT_OK) {
+        out->peb_being_debugged = dbg.tracer_pid;   /* 归一化 */
+        out->debug_port         = dbg.tracer_pid;   /* 归一化 */
+        out->debug_flags        = dbg.tracer_pid;   /* 归一化 */
+        out->debug_object       = dbg.tracer_pid;   /* 归一化 */
+        out->peb_nt_global_flag = dbg.tracer_pid;   /* 归一化 */
+        out->kernel_debugger    = dbg.kernel_debugger;
+        out->hardware_breakpoints = dbg.hardware_bp; /* **恒 0**（不支持）*/
+    }
+
+    /* ---- 调试堆标志 ----
+     *   glibc **无** "调试堆" 概念（Windows 的 PEB.ProcessHeap Flags 是
+     *   ntdll 堆管理器的实现细节）。故本项**归一化到 TracerPid**。
+     */
+    out->debug_heap_flags = out->peb_being_debugged;
+
+    /* ---- int3 蜜罐（`sigaction(SIGTRAP)`，**机制不同语义相同**）---- */
+    out->int3_honey = (prot_plat_int3_probe() == 2u) ? 1u : 0u;
+
+    /* ---- 计时检测（`clock_gettime` + `nanosleep`，**等价**）---- */
+    out->timing_suspicious = 0u;
+    for (round = 0u; round < PROT_AD_TIMING_ROUNDS; round++) {
+        struct timespec a, b;
+        int64_t dt_ms;
+        if (clock_gettime(CLOCK_MONOTONIC, &a) != 0)
+            break;
+        prot_plat_sleep_ms(PROT_AD_TIMING_SLEEP_MS);
+        if (clock_gettime(CLOCK_MONOTONIC, &b) != 0)
+            break;
+        dt_ms = (int64_t)(b.tv_sec - a.tv_sec) * 1000
+                + (int64_t)((b.tv_nsec - a.tv_nsec) / 1000000);
+        /* 任一轮耗时显著低于名义值即可疑（同 Windows 判据） */
+        if (dt_ms < (int64_t)PROT_AD_TIMING_MIN_MS) {
+            out->timing_suspicious = 1u;
+            break;
+        }
+    }
+
+    /* ---- 父进程黑名单（`/proc/<ppid>/comm`，**等价且更简单**）---- */
+    out->ppid_blacklist = 0u;
+    {
+        static char pname[256];
+        if (prot_plat_parent_name(pname, sizeof(pname))) {
+            int k;
+            for (k = 0; k_ad_dbg_parents[k] != NULL; k++) {
+                if (strstr(pname, k_ad_dbg_parents[k]) != NULL) {
+                    out->ppid_blacklist = 1u;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* ---- 时钟漂移（单调钟 vs 墙钟，**等价**）---- */
+    out->clock_drift_sec = 0u;
+    {
+        uint64_t t0t = 0, t0w = 0, t1t = 0, t1w = 0;
+        if (prot_plat_clock_pair(&t0t, &t0w)) {
+            prot_plat_sleep_ms(150);
+            if (prot_plat_clock_pair(&t1t, &t1w)) {
+                uint64_t dt_tick, dt_wall;
+                dt_tick = (t1t >= t0t) ? (t1t - t0t) : 0u;
+                dt_wall = (t1w >= t0w) ? (t1w - t0w) : 0u;
+                if (dt_tick > dt_wall + 250ull ||
+                    dt_wall > dt_tick + 250ull)
+                    out->clock_drift_sec = 1u;
+            }
+        }
+    }
+
+    /* ---- **Linux 独有的 3 个维度** ----
+     *
+     * ## 为什么这些是"独有"
+     *   Linux 的注入/HOOK 生态与 Windows **不同**:
+     *     · Windows: DLL 注入、IAT hook、inline hook
+     *     · Linux:   **LD_PRELOAD**、PLT/GOT hook、ptrace
+     *   => Linux 需要检查**自己的**主流注入方式。
+     *
+     * ## 字段映射（**如实说明**）
+     *   报表结构体**无**这三个字段（它是对外 ABI 契约）——
+     *   故映射到**语义最近的既有字段**，并在此**明确记录**:
+     *     · LD_PRELOAD     -> `ppid_blacklist`（**注入类检测**）
+     *     · 可疑 .so       -> `ppid_blacklist`（同上）
+     *     · 已被 ptrace    -> `debug_object`（**已确认被跟踪**）
+     *
+     *   **为什么不加新字段**: `prot_antidebug_report` 是对外契约
+     *   （`include/protect/antidebug.h`），加字段会**破坏 ABI**;
+     *   且宿主（demo）按固定字段名读取。
+     *   => 用既有字段 + **本注释记录语义扩展**（最小侵入）。
+     */
+    extra = prot_plat_extra_debug_flags();
+    if (extra != 0u) {
+        if ((extra & (PROT_PLAT_EXTRA_PRELOAD | PROT_PLAT_EXTRA_SUSP_SO))
+            != 0u)
+            out->ppid_blacklist = 1u;
+        if ((extra & PROT_PLAT_EXTRA_PTRACED) != 0u)
+            out->debug_object = 1u;
+    }
+
+    return PROT_OK;
+}
+
+#endif /* PROT_PLATFORM */
+
+/* ================================================================== *
+ * 平台无关的公共接口
+ * ================================================================== */
+
 uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
     PROT_NOISE();   /* W1.6 序言噪声 */
     /* S3 试点 (2026-08-30): 受限控制流平坦化 —— 关键位聚合改为等价
@@ -370,7 +553,7 @@ prot_status prot_antidebug_apply_policy(prot_policy pol) {
     for (;;) {
         switch (st) {
         case PROT_POLICY_EXIT:
-            TerminateProcess(GetCurrentProcess(), PROT_EXIT_DEBUG_DETECTED);
+            prot_plat_terminate(PROT_EXIT_DEBUG_DETECTED);   /* M5: 平台层 */
             st = 0xFFFFFFFFu;
             continue;
         case PROT_POLICY_FAKE:
@@ -394,11 +577,6 @@ uint32_t prot_antidebug_fake_active(void) {
 
 prot_status prot_antidebug_hide_thread(void) {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    ad_resolve_ntdll();
-    if (s_pNtSetInformationThread != NULL) {
-        /* ThreadHideFromDebugger; 若正在被调试, 可能导致进程被调试器终止 */
-        s_pNtSetInformationThread(GetCurrentThread(), PROT_THREAD_HIDE_FROM_DEBUGGER,
-                                  NULL, 0);
-    }
-    return PROT_OK;
+    /* M5: 平台层（Windows: NtSetInformationThread；Linux: 如实不支持）*/
+    return prot_plat_hide_thread();
 }

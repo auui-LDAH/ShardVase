@@ -63,6 +63,7 @@
 #include <sys/types.h>
 #include <sys/ptrace.h>
 #include <pthread.h>
+#include <sys/wait.h>
 #include <dlfcn.h>   /* C4: dlsym */   /* C2: 互斥锁 */
 
 /* ------------------------------------------------------------------ *
@@ -1091,6 +1092,306 @@ void* prot_plat_symbol_addr(const char* module, const char* symbol)
     return dlsym(h, symbol);
     /* 注: 不 dlclose —— RTLD_NOLOAD 获得的是**已有**引用，
      *     关掉会减少引用计数（可能卸载别人正在用的库）。 */
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 12: 反调试探测原语（C5，Linux）—— **重新设计**
+ *
+ * ## 与 Windows 的**本质差异**（如实标注）
+ *   Windows 有 12 个**独立维度**（PEB 多字段 + NT 查询 + SEH + 计时）。
+ *   Linux 内核**只暴露一个核心字段**（`TracerPid`）——
+ *   故 5 个 Windows 维度**归一化**为它。
+ *
+ *   **但 Linux 另有 3 个 Windows 没有的维度**（见 extra_debug_flags）——
+ *   净增 2 个维度。
+ * ------------------------------------------------------------------ */
+
+prot_status prot_plat_debug_probe(prot_debug_state* out)
+{
+    char buf[4096];
+    FILE* f;
+    int found_tracer = 0;
+
+    if (out == NULL)
+        return PROT_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+
+    /* TracerPid: Linux 的**核心调试信号**（内核提供，用户态不可 hook） */
+    f = fopen("/proc/self/status", "r");
+    if (f == NULL)
+        return PROT_ERR_UNSUPPORTED;
+    while (fgets(buf, (int)sizeof(buf), f) != NULL) {
+        if (strncmp(buf, "TracerPid:", 10) == 0) {
+            long pid = strtol(buf + 10, NULL, 10);
+            out->tracer_pid = (pid != 0) ? 1u : 0u;
+            found_tracer = 1;
+            break;
+        }
+    }
+    fclose(f);
+    if (!found_tracer)
+        return PROT_ERR_UNSUPPORTED;
+
+    /* 内核调试器（同 C1 的启发式） */
+    out->kernel_debugger = 0u;
+    {
+        char line[512];
+        FILE* c = fopen("/proc/cmdline", "r");
+        if (c != NULL) {
+            if (fgets(line, (int)sizeof(line), c) != NULL) {
+                if (strstr(line, "kgdb") != NULL ||
+                    strstr(line, "kdb") != NULL)
+                    out->kernel_debugger = 1u;
+            }
+            fclose(c);
+        }
+    }
+
+    /* ## 硬件断点: **如实声明不支持**
+     *   Linux 的硬件断点（DR0-3）需通过 `ptrace(PTRACE_PEEKUSER)` 读取 ——
+     *   而 `ptrace` 要求**另一个进程附加**（或被附加）。
+     *   自己读自己的 DR 寄存器在用户态**不可行**。
+     *
+     *   （`PTRACE_TRACEME` 可让**父进程**跟踪自己，但那会**改变进程状态** ——
+     *    与"只读探测"原则相悖。）
+     */
+    out->hardware_bp = 0u;
+
+    /* supported_mask: bit2(hwbp) **不置位** —— 如实声明不支持 */
+    out->supported_mask = 1u | 2u;
+    return PROT_OK;
+}
+
+/* ## int3 蜜罐（Linux: SIGTRAP + sigaction）
+ *
+ * ### 与 Windows 的对应
+ *   Windows 用 **VEH**（向量化异常处理）接管 int3；
+ *   Linux 用 **`sigaction(SIGTRAP)`** —— **机制不同，语义相同**：
+ *     两者都是"**自己安装处理器 -> 执行 int3 -> 看是否自己接管**"。
+ *
+ * ### 判定
+ *   · 自己的 handler 被调用 -> 正常（返回 1）
+ *   · 未调用 -> **有外部断点处理者**（返回 2，可疑）
+ *
+ * ### 诚实边界
+ *   · 全局 `sigaction` 会**短暂改变进程的信号处理**（安装后恢复）
+ *   · 多线程下 handler 是**进程级**的 —— 故本探测有**并发窗口**
+ *     （Windows 的 VEH 同样是进程级，故两平台**面临同样限制**）
+ */
+static volatile sig_atomic_t g_plat_trap_caught;
+
+static void plat_trap_handler(int sig, siginfo_t* info, void* ctx)
+{
+    (void)sig;
+    (void)info;
+    (void)ctx;
+    g_plat_trap_caught = 1;
+}
+
+uint32_t prot_plat_int3_probe(void)
+{
+    struct sigaction sa_new;
+    struct sigaction sa_old;
+    uint32_t r = 0u;
+
+    /* 可执行的 int3;ret 存根 */
+    static const uint8_t stub_code[2] = { 0xCCu, 0xC3u };
+    size_t pg = (size_t)sysconf(_SC_PAGESIZE);
+    uint8_t* stub = (uint8_t*)mmap(NULL, pg, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stub == MAP_FAILED)
+        return 0u;
+    memcpy(stub, stub_code, sizeof(stub_code));
+    if (mprotect(stub, pg, PROT_READ | PROT_EXEC) != 0) {
+        munmap(stub, pg);
+        return 0u;
+    }
+
+    memset(&sa_new, 0, sizeof(sa_new));
+    sa_new.sa_sigaction = plat_trap_handler;
+    sa_new.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa_new.sa_mask);
+    if (sigaction(SIGTRAP, &sa_new, &sa_old) != 0) {
+        munmap(stub, pg);
+        return 0u;
+    }
+
+    g_plat_trap_caught = 0;
+    ((void(*)(void))stub)();   /* 执行 int3;ret */
+
+    /* 恢复原 handler（**必须** —— 不改变进程的长期信号行为） */
+    (void)sigaction(SIGTRAP, &sa_old, NULL);
+    munmap(stub, pg);
+
+    r = (g_plat_trap_caught == 0) ? 2u : 1u;
+    return r;
+}
+
+int prot_plat_parent_name(char* name, size_t cap)
+{
+    /* ## Linux 侧的父进程名**极简单**
+     *   读 `/proc/<ppid>/comm` 即可 —— 无需 NT 查询 + 打开进程句柄。
+     */
+    char path[64];
+    FILE* f;
+    long ppid;
+
+    if (name == NULL || cap == 0)
+        return 0;
+
+    ppid = (long)getppid();
+    if (ppid <= 0)
+        return 0;
+
+    snprintf(path, sizeof(path), "/proc/%ld/comm", ppid);
+    f = fopen(path, "r");
+    if (f == NULL)
+        return 0;
+    if (fgets(name, (int)cap, f) == NULL) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+
+    /* 去掉尾部换行 */
+    {
+        size_t n = strlen(name);
+        while (n > 0 && (name[n - 1] == '\n' || name[n - 1] == '\r'))
+            name[--n] = '\0';
+    }
+    return (name[0] != '\0') ? 1 : 0;
+}
+
+int prot_plat_clock_pair(uint64_t* tick_ms, uint64_t* wall_ms)
+{
+    struct timespec mono;
+    struct timespec real;
+
+    if (tick_ms == NULL || wall_ms == NULL)
+        return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &mono) != 0)
+        return 0;
+    if (clock_gettime(CLOCK_REALTIME, &real) != 0)
+        return 0;
+
+    *tick_ms = (uint64_t)mono.tv_sec * 1000ull
+               + (uint64_t)(mono.tv_nsec / 1000000);
+    *wall_ms = (uint64_t)real.tv_sec * 1000ull
+               + (uint64_t)(real.tv_nsec / 1000000);
+    return 1;
+}
+
+/* ## Linux **独有**的 3 个反调试维度
+ *
+ * ### 为什么这些是"独有"
+ *   Windows 的注入/HOOK 生态与 Linux **不同**:
+ *     · Windows: DLL 注入、IAT hook、inline hook
+ *     · Linux:   **LD_PRELOAD**、PLT/GOT hook、ptrace
+ *   => Linux 需要检查**自己的**主流注入方式。
+ */
+uint32_t prot_plat_extra_debug_flags(void)
+{
+    uint32_t flags = 0u;
+
+    /* ---- ① LD_PRELOAD 检测 ----
+     *   LD_PRELOAD 是 Linux **最主要的用户态注入手段**
+     *   （等价于 Windows 的 DLL 注入，但更简单）。
+     *   检查 `/proc/self/environ`（**内核提供，不可被用户态伪造**）。
+     */
+    {
+        static const char needle[] = "LD_PRELOAD=";
+        FILE* f = fopen("/proc/self/environ", "r");
+        if (f != NULL) {
+            /* environ 用 NUL 分隔，需按块读 */
+            char buf[8192];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf) - 1, f)) > 0) {
+                size_t i;
+                buf[n] = '\0';
+                for (i = 0; i + sizeof(needle) <= n; i++) {
+                    if (memcmp(buf + i, needle, sizeof(needle) - 1) == 0) {
+                        /* 值非空才算（LD_PRELOAD= 空值无害）*/
+                        const char* v = buf + i + sizeof(needle) - 1;
+                        if (*v != '\0')
+                            flags |= PROT_PLAT_EXTRA_PRELOAD;
+                        break;
+                    }
+                }
+                if (flags & PROT_PLAT_EXTRA_PRELOAD)
+                    break;
+            }
+            fclose(f);
+        }
+    }
+
+    /* ---- ② 可疑 .so 检测 ----
+     *   正常进程的库来自**系统目录**（/usr/lib、/lib）
+     *   或**自身目录**。若映射里有来自 `/tmp`、`/dev/shm`、
+     *   当前目录**相对路径**的 .so -> 可疑（frida-gadget 等的常见位置）。
+     */
+    {
+        FILE* f = fopen("/proc/self/maps", "r");
+        if (f != NULL) {
+            char line[1024];
+            while (fgets(line, (int)sizeof(line), f) != NULL) {
+                const char* p = strchr(line, '/');
+                if (p == NULL)
+                    continue;
+                if (strstr(p, ".so") == NULL)
+                    continue;
+                if (strncmp(p, "/tmp/", 5) == 0 ||
+                    strncmp(p, "/dev/shm/", 9) == 0 ||
+                    strncmp(p, "/var/tmp/", 9) == 0) {
+                    flags |= PROT_PLAT_EXTRA_SUSP_SO;
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    /* ---- ③ ptrace 自附加试探 ----
+     *   `PTRACE_TRACEME` 的语义: "**让父进程跟踪我**"。
+     *   若**已被跟踪**（有 tracer）-> 内核拒绝再次 TRACEME -> 返回失败。
+     *
+     *   ⚠️ **副作用**: TRACEME 成功后，本进程**会被父进程跟踪**到退出。
+     *      为**避免副作用**，本实现**只在已有 TracerPid 时才试探**
+     *      （那时 TRACEME 必然失败 -> 无副作用）。
+     */
+    {
+        char buf[4096];
+        FILE* f = fopen("/proc/self/status", "r");
+        long tp = 0;
+        if (f != NULL) {
+            while (fgets(buf, (int)sizeof(buf), f) != NULL) {
+                if (strncmp(buf, "TracerPid:", 10) == 0) {
+                    tp = strtol(buf + 10, NULL, 10);
+                    break;
+                }
+            }
+            fclose(f);
+        }
+        if (tp != 0) {
+            /* 已被跟踪 -> TRACEME 必然失败，**调用它无副作用** */
+            if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0)
+                flags |= PROT_PLAT_EXTRA_PTRACED;
+        }
+    }
+
+    return flags;
+}
+
+prot_status prot_plat_hide_thread(void)
+{
+    /* ## Linux **无等价物**（如实声明）
+     *   Windows 的 `NtSetInformationThread(ThreadHideFromDebugger)` 让
+     *   **调试器看不到该线程的调试事件**。
+     *   Linux 内核**不提供**这类"对 tracer 隐藏"的接口 ——
+     *   tracer 通过 ptrace 拥有**完全可见性**。
+     *
+     *   => 如实返回 `PROT_ERR_UNSUPPORTED`（不假装成功）。
+     */
+    return PROT_ERR_UNSUPPORTED;
 }
 
 #endif /* PROT_PLATFORM_LINUX */
