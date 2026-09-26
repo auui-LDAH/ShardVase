@@ -706,4 +706,306 @@ void prot_plat_mutex_unlock(prot_plat_mutex* m)
     (void)pthread_mutex_unlock((pthread_mutex_t*)(void*)m->_opaque);
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 9: 节表 / 重定位 / IAT（C3，Linux）
+ *
+ * ## 与 Windows 的**真实差异**（如实标注）
+ *   | 项 | Windows | Linux |
+ *   |----|---------|-------|
+ *   | 节表来源 | 内存中的 PE 头 | **磁盘上的 ELF 节表**（映射到内存）|
+ *   | 节名 | .text/.rdata/.pdata | .text/.rodata/.eh_frame |
+ *   | 重定位 | .reloc 块 | .rela.dyn（`Elf64_Rela`）|
+ *   | IAT | 数据目录 12 | .got.plt（需解析 .dynamic）|
+ *
+ * ## 实现策略
+ *   ELF 节表**在内存中可用**（节表本身被映射），故直接读:
+ *     `Elf64_Ehdr`（映像基址）-> `e_shoff`/`e_shnum`/`e_shentsize`
+ *     -> `Elf64_Shdr[]` -> `sh_name`（查 `.shstrtab`）
+ *
+ * ## 诚实边界
+ *   · **`.pdata` 无对应物** -> 映射为 `.eh_frame`（最近的对应）
+ *   · **重定位枚举返回"需要修正的区间"** —— ELF 的 `.rela.dyn`
+ *     每项描述一个 8 字节槽；本实现按 `ELF64_R_TYPE` 过滤（只取
+ *     会**写入**的 relocation 类型）
+ *   · **IAT/GOT 解析需要 `.dynamic`** —— 本实现用"节名匹配 `.got`/.got.plt`"
+ *     作为简化（见下方说明）
+ * ------------------------------------------------------------------ */
+
+#include <elf.h>
+#include <string.h>
+
+/* 从映像基址取 ELF 头 */
+static const Elf64_Ehdr* lin_ehdr(void)
+{
+    uint8_t* base = (uint8_t*)prot_plat_self_base();
+    if (base == NULL)
+        return NULL;
+    if (base[0] != 0x7Fu || base[1] != 'E' || base[2] != 'L'
+        || base[3] != 'F')
+        return NULL;
+    if (base[EI_CLASS] != ELFCLASS64)
+        return NULL;
+    return (const Elf64_Ehdr*)base;
+}
+
+/* 取节表首地址 */
+static const Elf64_Shdr* lin_shdr_table(void)
+{
+    const Elf64_Ehdr* eh = lin_ehdr();
+    if (eh == NULL || eh->e_shoff == 0 || eh->e_shnum == 0)
+        return NULL;
+    return (const Elf64_Shdr*)((const uint8_t*)eh + eh->e_shoff);
+}
+
+/* 取节名字符串表 */
+static const char* lin_shstrtab(void)
+{
+    const Elf64_Ehdr* eh = lin_ehdr();
+    const Elf64_Shdr* sh;
+    if (eh == NULL)
+        return NULL;
+    if (eh->e_shstrndx == SHN_UNDEF || eh->e_shstrndx >= eh->e_shnum)
+        return NULL;
+    sh = (const Elf64_Shdr*)((const uint8_t*)eh + eh->e_shoff
+                             + (size_t)eh->e_shstrndx * eh->e_shentsize);
+    return (const char*)((const uint8_t*)eh + sh->sh_offset);
+}
+
+static void lin_copy_name(char* dst, size_t cap, const char* src)
+{
+    size_t i;
+    if (dst == NULL || cap == 0)
+        return;
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    for (i = 0; i + 1 < cap && src[i] != '\0'; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+size_t prot_plat_enum_sections(prot_section_view* out, size_t capacity)
+{
+    const Elf64_Ehdr* eh = lin_ehdr();
+    const Elf64_Shdr* sh = lin_shdr_table();
+    const char* strtab = lin_shstrtab();
+    size_t n = 0;
+    Elf64_Half i;
+
+    if (eh == NULL || sh == NULL)
+        return 0;
+
+    for (i = 0; i < eh->e_shnum; i++) {
+        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
+                                                  + (size_t)i
+                                                  * eh->e_shentsize);
+        if (s->sh_type == SHT_NULL)
+            continue;   /* 索引 0 是空节 */
+        if (out != NULL && n < capacity) {
+            lin_copy_name(out[n].name, PROT_SECTION_NAME_MAX,
+                          strtab ? (strtab + s->sh_name) : NULL);
+            out[n].rva = (size_t)s->sh_addr;      /* 运行期地址（已含基址）*/
+            out[n].size = (size_t)s->sh_size;
+        }
+        n++;
+    }
+    return n;
+}
+
+size_t prot_plat_reloc_ranges(prot_range* out, size_t capacity)
+{
+    /* ## 枚举 `.rela.dyn` 的**目标区间**
+     *
+     * 每项 `Elf64_Rela` 描述一个需要修正的槽:
+     *   `r_offset`（运行期地址）+ 类型决定宽度。
+     *
+     * **只取会写入的类型**（与 Windows 只取 type 3/10 对应）:
+     *   R_X86_64_RELATIVE(8) / GLOB_DAT(6) / JUMP_SLOT(7) -> 8 字节
+     *
+     * **诚实边界**: 本实现按"节名 `.rela.dyn`"定位（简化）；
+     *   完整实现应解析 `.dynamic` 的 `DT_RELA`/`DT_RELASZ`。
+     *   => 对标准静态/动态链接的 ELF **足够**；对剥离节表的极端情况**会返回 0**
+     *      （那会导致 CRC 恒不匹配 -> **安全侧失败**，不会漏检）。
+     */
+    const Elf64_Ehdr* eh = lin_ehdr();
+    const Elf64_Shdr* sh = lin_shdr_table();
+    const char* strtab = lin_shstrtab();
+    size_t n = 0;
+    Elf64_Half i;
+
+    if (eh == NULL || sh == NULL || strtab == NULL)
+        return 0;
+
+    for (i = 0; i < eh->e_shnum; i++) {
+        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
+                                                  + (size_t)i
+                                                  * eh->e_shentsize);
+        const char* nm = strtab + s->sh_name;
+        if (strcmp(nm, ".rela.dyn") != 0 && strcmp(nm, ".rela.plt") != 0)
+            continue;
+        {
+            const Elf64_Rela* rel = (const Elf64_Rela*)((const uint8_t*)eh
+                                                        + s->sh_addr);
+            size_t cnt = (size_t)(s->sh_size / sizeof(Elf64_Rela));
+            size_t k;
+            for (k = 0; k < cnt; k++) {
+                uint32_t type = (uint32_t)ELF64_R_TYPE(rel[k].r_info);
+                if (type == R_X86_64_RELATIVE || type == R_X86_64_GLOB_DAT
+                    || type == R_X86_64_JUMP_SLOT) {
+                    if (out != NULL && n < capacity) {
+                        out[n].rva = (size_t)rel[k].r_offset;
+                        out[n].size = 8u;
+                    }
+                    n++;
+                }
+            }
+        }
+    }
+    return n;
+}
+
+int prot_plat_iat_range(prot_range* out)
+{
+    /* ## IAT/GOT 定位（简化但可靠）
+     *
+     * **为什么按节名而非解析 `.dynamic`**:
+     *   `DT_PLTGOT` 指向 GOT，但解析 `.dynamic` 需额外代码；
+     *   而 `.got.plt`（或 `.got`）**节名即语义**，且始终存在（有导入时）。
+     *
+     * **诚实边界**: 若二进制被 strip 掉节名 -> 返回 0 ->
+     *   `integrity` 的 IAT 校验会**跳过**（而非误报）。
+     *   这是**安全侧的保守选择**（跳过 < 误杀）。
+     */
+    const Elf64_Ehdr* eh = lin_ehdr();
+    const Elf64_Shdr* sh = lin_shdr_table();
+    const char* strtab = lin_shstrtab();
+    Elf64_Half i;
+
+    if (eh == NULL || sh == NULL || strtab == NULL || out == NULL)
+        return 0;
+
+    for (i = 0; i < eh->e_shnum; i++) {
+        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
+                                                  + (size_t)i
+                                                  * eh->e_shentsize);
+        const char* nm = strtab + s->sh_name;
+        if (strcmp(nm, ".got.plt") == 0 || strcmp(nm, ".got") == 0) {
+            out->rva = (size_t)s->sh_addr;
+            out->size = (size_t)s->sh_size;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+const char* prot_plat_crc_target_name(unsigned idx)
+{
+    /* Linux: ELF 节名。
+     *
+     * **映射说明（如实）**:
+     *   idx 0: `.text`     -> `.text`（同名）
+     *   idx 1: `.rdata`    -> `.rodata`（**只读数据，概念对应**）
+     *   idx 2: `.pdata`    -> `.eh_frame`（**最近的对应物**）
+     *          —— PE 的 `.pdata` 是异常处理表；ELF 的 `.eh_frame` 是
+     *             展开信息表。**两者用途相近但格式不同**，
+     *             故这是"**替代**"而非"等价"。
+     */
+    static const char* const names[3] = { ".text", ".rodata", ".eh_frame" };
+    return (idx < 3u) ? names[idx] : NULL;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 10: 线程 / 计时 / 原子 / 终止（C3，Linux）
+ * ------------------------------------------------------------------ */
+
+void prot_plat_sleep_ms(uint32_t ms)
+{
+    struct timespec ts;
+    if (ms == 0u)
+        return;
+    ts.tv_sec = (time_t)(ms / 1000u);
+    ts.tv_nsec = (long)((ms % 1000u) * 1000000u);
+    /* 处理 EINTR（信号中断时继续睡剩余时间）—— 简化: 循环重试 */
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
+        ;
+}
+
+typedef struct plat_lin_thread_ctx {
+    prot_plat_thread_fn fn;
+    void* arg;
+} plat_lin_thread_ctx;
+
+static void* plat_lin_thread_entry(void* p)
+{
+    plat_lin_thread_ctx* c = (plat_lin_thread_ctx*)p;
+    prot_plat_thread_fn fn = c->fn;
+    void* arg = c->arg;
+    free(c);
+    if (fn != NULL)
+        fn(arg);
+    return NULL;
+}
+
+int prot_plat_thread_create(prot_plat_thread_fn fn, void* arg,
+                            void** out_handle)
+{
+    plat_lin_thread_ctx* c;
+    pthread_t tid;
+
+    if (fn == NULL)
+        return 0;
+    c = (plat_lin_thread_ctx*)malloc(sizeof(*c));
+    if (c == NULL)
+        return 0;
+    c->fn = fn;
+    c->arg = arg;
+
+    if (pthread_create(&tid, NULL, plat_lin_thread_entry, c) != 0) {
+        free(c);
+        return 0;
+    }
+    /* ## 为什么 detach（**与 Windows 语义对齐**）
+     *   Windows 的 `CreateThread` 返回句柄后即使不 join，线程结束即回收；
+     *   Linux 的 pthread **默认可 join** -> 不 join 会**积累僵尸线程**。
+     *   本模块只用"创建 + 停止标志"（不 join）-> 必须 `pthread_detach`。
+     */
+    (void)pthread_detach(tid);
+    if (out_handle != NULL)
+        *out_handle = (void*)(uintptr_t)tid;
+    return 1;
+}
+
+void prot_plat_terminate(int exit_code)
+{
+    /* ## 为什么用 `_exit` 而非 `exit`
+     *   Windows 的 `TerminateProcess` **立即终止**，不跑 atexit / 析构。
+     *   `exit()` 会跑 atexit handlers 与 stdio flush —— **语义不符**，
+     *   且在"检测到篡改"的场景下**不应**给攻击者执行额外代码的机会。
+     *   => 用 `_exit()`（直接系统调用，与 TerminateProcess 对齐）。
+     */
+    _exit((int)exit_code);
+}
+
+int prot_plat_atomic_load(volatile int* p)
+{
+    if (p == NULL)
+        return 0;
+    return __atomic_load_n(p, __ATOMIC_SEQ_CST);
+}
+
+int prot_plat_atomic_exchange(volatile int* p, int v)
+{
+    if (p == NULL)
+        return 0;
+    return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST);
+}
+
+int prot_plat_atomic_increment(volatile int* p)
+{
+    if (p == NULL)
+        return 0;
+    return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST);
+}
+
 #endif /* PROT_PLATFORM_LINUX */

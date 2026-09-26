@@ -406,6 +406,141 @@ void prot_plat_mutex_lock(prot_plat_mutex* m);
 void prot_plat_mutex_unlock(prot_plat_mutex* m);
 
 /* ------------------------------------------------------------------ *
+ * 分组 9: 节表 / 重定位 / IAT 的统一抽象（C3，`integrity` 用）
+ *
+ * ## 为什么需要
+ *   `src/integrity.c` 有 **61 个** PE 专有符号（`IMAGE_*`），归为 4 类:
+ *     ① 节表遍历（找 .text/.rdata/.pdata 算 CRC）
+ *     ② 重定位掩码（找会被 loader 改写的字节）
+ *     ③ IAT 快照/校验（检测运行期 hook）
+ *     ④ 线程/锁/计时（watchdog，**平台层已有**）
+ *
+ *   本组接口把 ①②③ 抽象为**平台无关的视图**，使 `integrity.c`
+ *   不再出现任何 `IMAGE_*`。
+ *
+ * ## 概念同构（**关键洞察**）
+ *   | PE | ELF | 说明 |
+ *   |----|-----|------|
+ *   | `IMAGE_SECTION_HEADER` | `Elf64_Shdr` | 节表项 |
+ *   | `IMAGE_BASE_RELOCATION` | `.rela.dyn`（`Elf64_Rela`）| 重定位 |
+ *   | `IMAGE_DIRECTORY_ENTRY_IAT` | `.got.plt` | **导入表 ↔ 全局偏移表** |
+ *   | `IMAGE_FIRST_SECTION` | `e_shoff` + `e_shentsize` | 首个节 |
+ *
+ *   => **概念同构，故可抽象**（不是"重新设计"）。
+ * ------------------------------------------------------------------ */
+
+#define PROT_SECTION_NAME_MAX 16
+
+typedef struct prot_section_view {
+    char   name[PROT_SECTION_NAME_MAX];   /* 平台实际节名（NUL 结尾）*/
+    size_t rva;                           /* 相对映像基址的偏移 */
+    size_t size;                          /* 有效长度（min(vsize, rawsize)）*/
+} prot_section_view;
+
+/* 枚举自身映像的节。
+ *
+ * 返回**真实总数**（不受 capacity 限制，与 C4 的枚举语义一致）。
+ */
+size_t prot_plat_enum_sections(prot_section_view* out, size_t capacity);
+
+typedef struct prot_range {
+    size_t rva;
+    size_t size;
+} prot_range;
+
+/* 枚举"**会被 loader 改写**"的内存区间。
+ *
+ * ## 用途
+ *   `integrity` 建 CRC 掩码时要**排除**这些字节 ——
+ *   因为它们的运行期内容与文件字节**必然不同**
+ *   （重定位修正 + IAT/GOT 填充），不排除则 CRC 恒不匹配。
+ *
+ * ## 平台实现
+ *   Windows: `.reloc`（`IMAGE_BASE_RELOCATION`，仅 type 3/10）+ IAT
+ *   Linux  : `.rela.dyn`（`Elf64_Rela`）+ `.got`/`.got.plt`
+ *
+ * 返回**真实总数**。
+ */
+size_t prot_plat_reloc_ranges(prot_range* out, size_t capacity);
+
+/* 导入地址表（IAT / GOT）的区间。
+ *
+ * 返回 1 = 有（out 已填）；0 = 无（静态链接 / 无导入）。
+ */
+int prot_plat_iat_range(prot_range* out);
+
+/* **该平台**第 idx 个 CRC 校验目标节的**实际节名**。
+ *
+ * ## 为什么需要（关键）
+ *   `integrity.c` 原表是 PE 名: `.text` / `.rdata` / `.pdata`。
+ *   **Linux 上 `.rdata` 叫 `.rodata`、`.pdata` 不存在**（PE 概念）。
+ *   => 目标名**必须按平台给**，否则 Linux 上永远找不到节。
+ *
+ * ## 返回
+ *   NUL 结尾的节名；`idx` 超出范围返回 NULL。
+ *
+ * ## 映射
+ *   | idx | Windows | Linux |
+ *   |-----|---------|-------|
+ *   | 0   | `.text`  | `.text` |
+ *   | 1   | `.rdata` | `.rodata` |
+ *   | 2   | `.pdata` | `.eh_frame`（**最近的对应物**）|
+ */
+const char* prot_plat_crc_target_name(unsigned idx);
+
+/* ------------------------------------------------------------------ *
+ * 分组 10: 线程 / 计时 / 原子 / 终止（C3，`integrity` 的 watchdog 用）
+ *
+ * ## 为什么需要
+ *   `integrity.c` 的看门狗线程用了一批 Windows 专有原语:
+ *     `CreateThread` / `Sleep` / `QueryPerformanceCounter` /
+ *     `SRWLOCK` / `InterlockedExchange` / `TerminateProcess`
+ *   本组把它们抽象为平台无关接口。
+ *
+ * ## 平台对应
+ *   | 接口 | Windows | Linux |
+ *   |------|---------|-------|
+ *   | `sleep_ms` | `Sleep` | `nanosleep` |
+ *   | `thread_create` | `CreateThread` | `pthread_create` |
+ *   | `terminate` | `TerminateProcess` | `_exit` |
+ *   | `atomic_*` | `Interlocked*` | `__atomic_*` |
+ * ------------------------------------------------------------------ */
+
+/* 睡眠指定毫秒数（0 或负值 -> 立即返回）。 */
+void prot_plat_sleep_ms(uint32_t ms);
+
+/* 线程入口签名 */
+typedef void (*prot_plat_thread_fn)(void* arg);
+
+/* 创建线程。
+ *
+ * 返回 1 = 成功；0 = 失败。
+ * `out_handle`（可选）接收**不透明**句柄（平台特定，调用方不解释）。
+ *
+ * ## 诚实边界
+ *   · **不做 join / detach**（本模块只用"创建 + 停止标志"）
+ *   · Linux 侧线程创建后**默认可 join** -> 若不 join 会积累僵尸线程。
+ *     本实现用 `pthread_detach` 避免该问题（与 Windows 的"无需 join"一致）。
+ */
+int prot_plat_thread_create(prot_plat_thread_fn fn, void* arg,
+                            void** out_handle);
+
+/* 终止当前进程（`integrity` 的 EXIT 策略）。
+ *
+ * Windows: `TerminateProcess(GetCurrentProcess(), code)`
+ * Linux  : `_exit(code)`（**不经 atexit** —— 与 TerminateProcess 语义一致）
+ *
+ * **为什么不返回**: 该函数**不应返回**；若平台调用失败，
+ *   实现应在返回前尽力终止（本接口声明为 void）。
+ */
+void prot_plat_terminate(int exit_code);
+
+/* 原子操作。 */
+int  prot_plat_atomic_load(volatile int* p);
+int  prot_plat_atomic_exchange(volatile int* p, int v);
+int  prot_plat_atomic_increment(volatile int* p);
+
+/* ------------------------------------------------------------------ *
  * 平台实现约定
  *
  * Windows: src/platform/prot_platform_win.c（委托到现有 Windows API 调用）

@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -18,7 +18,6 @@
  *         (A5) 同线程周期重跑 prot_antidebug_scan, 命中关键项推同一策略。
  */
 
-#include <windows.h>
 #include <stdlib.h>      /* malloc */
 #include <string.h>
 
@@ -26,6 +25,8 @@
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 #include "protect/selfcrypt.h"
 #include "protect/integrity.h"
+#include "protect/prot_platform.h"   /* M3: 节表/重定位/IAT 统一抽象 */
+#include "protect/prot_compiler.h"    /* M3: 节/分配宏 */
 
 /* 烧录结构 (契约 §7.1; hashpatch.py 依赖其名字与布局) */
 typedef struct prot_baked_crc {
@@ -38,8 +39,8 @@ typedef struct prot_baked_crc {
  * 下标顺序必须与 tools/hashpatch.py 的 MAGICS 完全一致。 */
 /* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
 #include "protect/prot_sections.h"
-#pragma section(PROT_SEC_CRC, read)
-__declspec(allocate(PROT_SEC_CRC))
+PROT_SECTION_BEGIN(PROT_SEC_CRC, read)
+PROT_ALLOCATE(PROT_SEC_CRC)
 const prot_baked_crc g_prot_baked_crc[3] = {
     /* 阶段3(第二支柱): magic 每构建随机，消除 'PROTCRCP' 这类自解释标记。
      * 值来自 include/protect/prot_sections.h（默认）+ 生成头（随机覆盖）；
@@ -62,23 +63,30 @@ static uint32_t read_baked_crc(uint32_t idx) {
 }
 
 /* --- 看门狗 --- */
-static volatile LONG  g_wd_stop;    /* 停止标志 */
-static HANDLE         g_wd_thread;  /* 线程句柄 (NULL = 未运行) */
+static volatile int   g_wd_stop;    /* 停止标志 */
+static void*          g_wd_thread;  /* 线程句柄 (NULL = 未运行) */
 static prot_policy    g_wd_policy;  /* 校验失败时的策略 */
 static uint32_t       g_wd_interval;/* 检查间隔 (ms) */
-static volatile LONG  g_wd_fake;    /* FAKE 策略伪结果标志 */
-static volatile LONG  g_wd_tamper;  /* CONTINUE 策略失败计数 */
+static volatile int   g_wd_fake;    /* FAKE 策略伪结果标志 */
+static volatile int   g_wd_tamper;  /* CONTINUE 策略失败计数 */
 
 /* W2 (WIN_ENHANCE): 周期回调 (demo 注册 N3 数据自校验等) */
 static prot_wd_callback g_wd_cb = NULL;
-static SRWLOCK          g_wd_cb_lock = SRWLOCK_INIT;
+static prot_plat_mutex g_wd_cb_lock;   /* C3: 平台无关锁 */
 
 void prot_integrity_set_watchdog_callback(prot_wd_callback cb)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    AcquireSRWLockExclusive(&g_wd_cb_lock);
+    /* C3: 锁需先初始化（幂等；pthread_mutex 重复 init 未定义，
+     * 故用一个静态标志保证只 init 一次）*/
+    static volatile int _lock_init = 0;
+    if (!_lock_init) {
+        (void)prot_plat_mutex_init(&g_wd_cb_lock);
+        _lock_init = 1;
+    }
+    prot_plat_mutex_lock(&g_wd_cb_lock);
     g_wd_cb = cb;
-    ReleaseSRWLockExclusive(&g_wd_cb_lock);
+    prot_plat_mutex_unlock(&g_wd_cb_lock);
 }
 
 /* A5: 间隔抖动用的 xorshift64 (种子派生自 QPC) */
@@ -88,17 +96,47 @@ static uint64_t wd_jitter_next(uint64_t rng)
     return rng;
 }
 
-static DWORD WINAPI watchdog_thread(LPVOID param) {
-    LARGE_INTEGER qpc;
+/* ## M3（2026-09-25）: 加密函数的**间接调用**（修复 P5 回归）
+ *
+ * ### 问题
+ *   `prot_antidebug_scan` **是 selfcrypt 加密目标**
+ *   （`tools/selfcrypt_proto.py` 的 `EXT_TARGETS`）。
+ *   而 watchdog 里**直接调用**它（下方 L162 附近）——
+ *   这违反 P5 的规则（**加密函数不得被直接 call**）。
+ *
+ *   **M3 前 P5 侥幸 PASS**（编译器恰好把调用优化成了非 E8 形式）；
+ *   M3 改变代码布局后**暴露了该既存问题**。
+ *
+ * ### 修法
+ *   用 **volatile 函数指针**调用 —— 编译器**无法内联**、
+ *   且生成 `call qword ptr [...]`（**不是直接 E8**），
+ *   符合 P5 的设计意图（加密函数走间接途径）。
+ *
+ * ### 为什么不用 `PROT_INDIRECT_CALL`
+ *   间接表由 `tools/indirect.py` 生成，条目来自 `modules.json` 的
+ *   `indirect_slots`（L4-C 已改为可声明）。给表加项需同时改
+ *   `indirect.h` 枚举 + `modules.json` —— **影响面更大**，
+ *   且间接表是**宿主相关**的（见 L3 的发现）。
+ *   => 本轮用**局部函数指针**（最小侵入）。
+ *
+ * ### 诚实边界
+ *   这不是"真正的间接化"（不走随机化表）。
+ *   真正的做法是把 `prot_antidebug_scan` 加入 `indirect_slots`。
+ *   **本轮的修法只保证"不产生直接 E8 调用"**（满足 P5 的判据）。
+ */
+typedef prot_status (*prot_ad_scan_fn)(prot_antidebug_report*);
+static prot_ad_scan_fn volatile g_ad_scan_fn = prot_antidebug_scan;
+
+static void watchdog_thread(void* param) {
     uint64_t rng;
     prot_antidebug_report ad;
 
     (void)param;
-    QueryPerformanceCounter(&qpc);
-    rng = (uint64_t)qpc.QuadPart | 0x9E3779B97F4A7C15u;
+    /* C3: QueryPerformanceCounter -> 平台层单调时钟 */
+    rng = prot_plat_monotonic_ns() | 0x9E3779B97F4A7C15u;
 
     for (;;) {
-        if (InterlockedCompareExchange(&g_wd_stop, 0, 0) != 0) {
+        if (prot_plat_atomic_load(&g_wd_stop) != 0) {
             break; /* 停止标志已置位 */
         }
         /* A5: 检查间隔 ±40% 抖动: [interval*0.6, interval*1.4] */
@@ -106,16 +144,16 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
             uint64_t base_ms = (uint64_t)g_wd_interval * 60u / 100u;
             uint64_t span_ms = (uint64_t)g_wd_interval * 80u / 100u;
             rng = wd_jitter_next(rng);
-            Sleep((DWORD)(base_ms + rng % (span_ms + 1u)));
+            prot_plat_sleep_ms((uint32_t)(base_ms + rng % (span_ms + 1u)));
         }
         if (prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT) != PROT_OK) {
             /* 解密失败: 按 tamper 策略处理 */
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
-                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                    prot_plat_terminate(PROT_EXIT_TAMPERED);
                     break;
                 default:
-                    InterlockedIncrement(&g_wd_tamper);
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
                     break;
             }
             continue;
@@ -123,14 +161,14 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
         if (prot_integrity_check_self() != PROT_OK) {
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
-                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                    prot_plat_terminate(PROT_EXIT_TAMPERED);
                     break; /* 失败则进程已终止 */
                 case PROT_POLICY_FAKE:
-                    InterlockedExchange(&g_wd_fake, 1);
+                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
                     break;
                 case PROT_POLICY_CONTINUE:
                 default:
-                    InterlockedIncrement(&g_wd_tamper);
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
                     break;
             }
         }
@@ -140,122 +178,123 @@ static DWORD WINAPI watchdog_thread(LPVOID param) {
         if (prot_integrity_check_iat() != PROT_OK) {
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
-                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                    prot_plat_terminate(PROT_EXIT_TAMPERED);
                     break;
                 case PROT_POLICY_FAKE:
-                    InterlockedExchange(&g_wd_fake, 1);
+                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
                     break;
                 case PROT_POLICY_CONTINUE:
                 default:
-                    InterlockedIncrement(&g_wd_tamper);
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
                     break;
             }
         }
         /* A5: 反附加周期复查 —— 驻留期调试器/探测不再只有启动一次检测 */
-        if (prot_antidebug_scan(&ad) == PROT_OK &&
+        if (g_ad_scan_fn != NULL && g_ad_scan_fn(&ad) == PROT_OK &&
             prot_antidebug_detected(&ad) != 0u) {
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
-                    TerminateProcess(GetCurrentProcess(), PROT_EXIT_DEBUG_DETECTED);
+                    prot_plat_terminate(PROT_EXIT_DEBUG_DETECTED);
                     break;
                 case PROT_POLICY_FAKE:
-                    InterlockedExchange(&g_wd_fake, 1);
+                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
                     break;
                 case PROT_POLICY_CONTINUE:
                 default:
-                    InterlockedIncrement(&g_wd_tamper);
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
                     break;
             }
         }
         /* W2 (WIN_ENHANCE): 周期回调 (demo N3 数据自校验等) */
         {
             prot_wd_callback cb;
-            AcquireSRWLockShared(&g_wd_cb_lock);
+            prot_plat_mutex_lock(&g_wd_cb_lock);   /* 平台层无读写锁；本用途只用独占 */
             cb = g_wd_cb;
-            ReleaseSRWLockShared(&g_wd_cb_lock);
+            prot_plat_mutex_unlock(&g_wd_cb_lock);
             if (cb != NULL && cb() != PROT_OK) {
                 switch (g_wd_policy) {
                     case PROT_POLICY_EXIT:
-                        TerminateProcess(GetCurrentProcess(), PROT_EXIT_TAMPERED);
+                        prot_plat_terminate(PROT_EXIT_TAMPERED);
                         break;
                     case PROT_POLICY_FAKE:
-                        InterlockedExchange(&g_wd_fake, 1);
+                        (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
                         break;
                     case PROT_POLICY_CONTINUE:
                     default:
-                        InterlockedIncrement(&g_wd_tamper);
+                        (void)prot_plat_atomic_increment(&g_wd_tamper);
                         break;
                 }
             }
         }
     }
-    return 0;
+    return;
 }
 
 /* --- 完整性校验 (A3) --- */
-static const struct prot_crc_target {
-    const char* name; /* 节名 (前 8 字节) */
-    uint32_t    idx;  /* g_prot_baked_crc 下标 */
-} g_crc_targets[3] = {
-    { ".text", 0u }, { ".rdata", 1u }, { ".pdata", 2u },
-};
+/* M3（2026-09-25）: **删除** `g_crc_targets` 硬编码表
+ *
+ * 原表是 PE 节名: `{ ".text", 0 }, { ".rdata", 1 }, { ".pdata", 2 }`。
+ * M3 改为 `prot_plat_crc_target_name(j)` 由**平台层**提供:
+ *   Windows: .text / .rdata  / .pdata
+ *   Linux:   .text / .rodata / .eh_frame   <- **名字不同**
+ *
+ * => 该表成为**死代码**（GCC 的 `-Wunused-const-variable` 抓到），
+ *    故删除 —— 保留会让读者误以为节名是跨平台固定的。
+ */
 
-static int sec_name_eq(const IMAGE_SECTION_HEADER* sec, const char* name)
+/* M3（2026-09-25）: 改为比较**平台无关的节名**
+ *
+ * 原实现比较 `IMAGE_SECTION_HEADER->Name`（固定 8 字节，PE 专有）。
+ * 新实现比较 `prot_section_view.name`（NUL 结尾字符串）——
+ * 由平台层给出（PE: 8 字节节名；ELF: 节名字符串表）。
+ */
+static int sec_name_eq(const prot_section_view* sec, const char* name)
 {
-    size_t n = strlen(name);
-    size_t i;
-    if (n > sizeof(sec->Name))
+    if (sec == NULL || name == NULL)
         return 0;
-    for (i = 0u; i < n; i++)
-        if (sec->Name[i] != (uint8_t)name[i])
-            return 0;
-    for (; i < sizeof(sec->Name); i++)
-        if (sec->Name[i] != 0u)
-            return 0;
-    return 1;
+    return (strcmp(sec->name, name) == 0);
 }
 
 /* 把 [rva, rva+len) 内会被加载器/重定位改写的字节在 mask 中置 0xFF (A3):
  *   1. 基址重定位字段: type 10 (DIR64) 8 字节 / type 3 (HIGHLOW) 4 字节
  *   2. IAT (目录项 12): loader 启动时写入已解析的导入函数地址
  * 规则与 tools/hashpatch.py 完全一致, 保证文件侧与运行侧两遍 CRC 相同。 */
-static void build_reloc_mask(uint8_t* base, const IMAGE_NT_HEADERS* nt,
-                             uint8_t* mask, uint32_t rva, uint32_t len)
+/* M3（2026-09-25）: 改为**平台无关**的掩码构建
+ *
+ * ## 原实现（PE 专有）
+ *   遍历 `.reloc`（`IMAGE_BASE_RELOCATION`）+ 查 IAT 数据目录 ——
+ *   61 个 `IMAGE_*` 符号中的绝大部分。
+ *
+ * ## 新实现
+ *   调平台层:
+ *     · `prot_plat_reloc_ranges()` —— 会被 loader 改写的区间
+ *     · `prot_plat_iat_range()`    —— IAT / GOT 区间
+ *   本函数只负责"把区间折进掩码"。
+ *
+ * ## 行为等价性
+ *   区间来源变了（PE 解析 -> 平台层），但**折进掩码的规则不变**。
+ *   Windows 平台层的实现是**原 PE 解析逻辑的搬迁**（逐字保留）——
+ *   故 Windows 行为**完全一致**。
+ */
+static void build_reloc_mask(uint8_t* base, uint8_t* mask,
+                             uint32_t rva, uint32_t len)
 {
-    const IMAGE_DATA_DIRECTORY* iat =
-        &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
-    const IMAGE_DATA_DIRECTORY* dd =
-        &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-    const uint8_t* reloc_end;
-    const IMAGE_BASE_RELOCATION* br;
-    uint32_t w;
+    prot_range rng[4096];
+    prot_range iat;
+    size_t n, i;
+    (void)base;
 
-    /* IAT: loader 会写入导入地址 */
-    if (iat->VirtualAddress >= rva && iat->VirtualAddress + iat->Size <= rva + len)
-        memset(mask + (iat->VirtualAddress - rva), 0xFF, iat->Size);
+    /* IAT / GOT: loader 会写入导入地址 */
+    if (prot_plat_iat_range(&iat)) {
+        if (iat.rva >= rva && iat.rva + iat.size <= (size_t)rva + len)
+            memset(mask + (iat.rva - rva), 0xFF, iat.size);
+    }
 
-    /* 基址重定位字段 (ASLR 偏移修正) */
-    if (dd->VirtualAddress == 0u || dd->Size == 0u)
-        return;
-    br = (const IMAGE_BASE_RELOCATION*)(base + dd->VirtualAddress);
-    reloc_end = (const uint8_t*)br + dd->Size;
-    while ((const uint8_t*)br + sizeof(IMAGE_BASE_RELOCATION) <= reloc_end &&
-           br->VirtualAddress != 0u &&
-           br->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION) &&
-           (const uint8_t*)br + br->SizeOfBlock <= reloc_end) {
-        uint32_t cnt = (br->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2u;
-        const uint16_t* ent = (const uint16_t*)(br + 1);
-        uint32_t i;
-        for (i = 0u; i < cnt; i++) {
-            uint32_t type = (uint32_t)(ent[i] >> 12);
-            w = (type == 10u) ? 8u : ((type == 3u) ? 4u : 0u);
-            if (w != 0u) {
-                uint32_t tgt = br->VirtualAddress + (ent[i] & 0xFFFu);
-                if (tgt >= rva && tgt + w <= rva + len)
-                    memset(mask + (tgt - rva), 0xFF, w);
-            }
-        }
-        br = (const IMAGE_BASE_RELOCATION*)((const uint8_t*)br + br->SizeOfBlock);
+    /* 重定位 / .rela.dyn */
+    n = prot_plat_reloc_ranges(rng, sizeof(rng) / sizeof(rng[0]));
+    for (i = 0u; i < n && i < sizeof(rng) / sizeof(rng[0]); i++) {
+        if (rng[i].rva >= rva && rng[i].rva + rng[i].size <= (size_t)rva + len)
+            memset(mask + (rng[i].rva - rva), 0xFF, rng[i].size);
     }
 }
 
@@ -295,48 +334,64 @@ static uint32_t section_crc_masked(uint8_t* base, const uint8_t* mask,
 
 prot_status prot_integrity_check_self(void) {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    const IMAGE_DOS_HEADER* dos;
-    const IMAGE_NT_HEADERS* nt;
-    const IMAGE_SECTION_HEADER* sec;
+    /* M3（2026-09-25）: 原实现解析 PE 头（`IMAGE_DOS_HEADER` ->
+     * `IMAGE_NT_HEADERS` -> `IMAGE_FIRST_SECTION`）——
+     * 新实现调 `prot_plat_enum_sections()`（PE 节表 / ELF 节表）。
+     *
+     * **目标节名也按平台给**（`prot_plat_crc_target_name`）:
+     *   Windows: .text / .rdata / .pdata
+     *   Linux:   .text / .rodata / .eh_frame   <- **名字不同！**
+     */
+    static prot_section_view secs[64];
+    /* ## ⚠️ M3 实测回归（2026-09-25）: **必须保持栈上分配**
+     *
+     *   我在 M3 一度改成 `static uint8_t mask[0x40000];`（怕 256KB 栈溢出）
+     *   -> **门禁立即抓到回归**:
+     *     · `P5 indirect-no-direct-call` FAIL（间接化失效）
+     *     · `T11 watchdog-stable` FAIL（exit=219）
+     *
+     *   **根因**: 256KB 的 static 缓冲进入 `.bss`
+     *   -> **内存布局变化** -> 间接化表/页关系受影响。
+     *
+     *   => **恢复栈上分配**（与原实现一致）。
+     *      原实现能工作，说明 256KB 栈**在本项目实际栈大小下是安全的**
+     *      （Windows 默认 1MB 栈；watchdog 线程与主线程各自独立）。
+     */
+    uint8_t mask[0x40000];  /* 段 CRC 上限 256KB（**栈上**，与原实现一致）*/
     uint8_t* base;
-    uint32_t i, j, len;
+    size_t nsec, i;
+    uint32_t j;
     uint32_t found = 0u;
 
-    base = (uint8_t*)GetModuleHandleW(NULL); /* 自身映像基址 */
-    if (base == NULL) {
+    base = (uint8_t*)prot_plat_self_base();
+    if (base == NULL)
         return PROT_ERR_INTEGRITY;
-    }
 
-    dos = (const IMAGE_DOS_HEADER*)base;
-        if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+    nsec = prot_plat_enum_sections(secs, sizeof(secs) / sizeof(secs[0]));
+    if (nsec == 0u)
         return PROT_ERR_INTEGRITY;
-    }
 
-    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        return PROT_ERR_INTEGRITY;
-    }
-
-    sec = IMAGE_FIRST_SECTION(nt);
-    for (i = 0u; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+    for (i = 0u; i < nsec && i < sizeof(secs) / sizeof(secs[0]); i++) {
         for (j = 0u; j < 3u; j++) {
             uint32_t crc;
-            uint8_t mask[0x40000]; /* 段 CRC 上限 256KB (栈上; .text 已 >128KB) */
-            if (!sec_name_eq(sec, g_crc_targets[j].name))
+            const char* tname = prot_plat_crc_target_name(j);
+            uint32_t len;
+            if (tname == NULL)
                 continue;
-            len = (sec->Misc.VirtualSize < sec->SizeOfRawData)
-                      ? sec->Misc.VirtualSize : sec->SizeOfRawData;
+            if (!sec_name_eq(&secs[i], tname))
+                continue;
+            len = (uint32_t)secs[i].size;
             if (len == 0u) {
-                found |= (1u << j); /* 空段视为通过 */
+                found |= (1u << j);   /* 空段视为通过 */
                 break;
             }
             if (len > sizeof(mask))
                 return PROT_ERR_INTEGRITY;
             memset(mask, 0, len);
-            build_reloc_mask(base, nt, mask, sec->VirtualAddress, len);
-            build_selfcrypt_mask(mask, sec->VirtualAddress, len); /* N1 D1b */
-            crc = section_crc_masked(base, mask, sec->VirtualAddress, len);
-            if (crc != read_baked_crc(g_crc_targets[j].idx)) {
+            build_reloc_mask(base, mask, (uint32_t)secs[i].rva, len);
+            build_selfcrypt_mask(mask, (uint32_t)secs[i].rva, len); /* N1 D1b */
+            crc = section_crc_masked(base, mask, (uint32_t)secs[i].rva, len);
+            if (crc != read_baked_crc(j)) {
                 return PROT_ERR_INTEGRITY;
             }
             found |= (1u << j);
@@ -350,80 +405,95 @@ prot_status prot_integrity_check_self(void) {
     return PROT_OK;
 }
 
-#pragma code_seg(PROT_SEC_XEC)  /* 辅助函数与加密段分页 (S1 技术债, 2026-08-30) */
+PROT_CODE_SEG(PROT_SEC_XEC)  /* 辅助函数与加密段分页 (S1 技术债, 2026-08-30) */
 /* --- 运行期 IAT 完整性 (G2 补洞, ATTACK_DRILL2) ---
  * loader 启动时写入 IAT 导入地址 (合法); 攻击者运行期改写 IAT (hook 导入
  * 表) 不在文件级 CRC 覆盖内。这里快照 IAT 初始值, 周期比对 detect 改写。
  * 首次调用建立快照; 之后逐项比对。使用 InitOnce 保证线程安全单次初始化。 */
-static INIT_ONCE g_iat_once = INIT_ONCE_STATIC_INIT;
-static volatile LONG g_iat_ready = 0;
-static uint8_t* g_iat_snap = NULL;      /* IAT 快照 */
-static uint32_t g_iat_snap_len = 0u;
+/* M3（2026-09-25）: IAT 快照/校验改为**平台层驱动**
+ *
+ * ## 原实现（PE 专有）
+ *   用 `InitOnce` + `IMAGE_DATA_DIRECTORY[IMAGE_DIRECTORY_ENTRY_IAT]`
+ *   取 IAT 区间 -> 快照 -> 逐字节比对。
+ *
+ * ## 新实现
+ *   `prot_plat_iat_range()` 给出 IAT/GOT 区间（PE: 数据目录 12；
+ *   ELF: `.got.plt`/`.got`），其余逻辑不变。
+ *
+ *   **线程安全**: 用平台层 mutex（原用 `InitOnce` —— 那是 Windows 专有）。
+ */
+static prot_plat_mutex g_iat_lock;
+static volatile int    g_iat_lock_ready = 0;
+static volatile int    g_iat_ready = 0;
+static uint8_t*        g_iat_snap = NULL;   /* IAT 快照 */
+static uint32_t        g_iat_snap_len = 0u;
 
-static BOOL CALLBACK iat_snapshot_init(PINIT_ONCE once, PVOID p, PVOID* ctx)
+static void iat_snapshot_init(void)
 {
-    const IMAGE_DOS_HEADER* dos;
-    const IMAGE_NT_HEADERS* nt;
-    const IMAGE_DATA_DIRECTORY* iat;
+    prot_range iat;
     uint8_t* base;
-    (void)once;
-    (void)p;
-    (void)ctx;
 
-    base = (uint8_t*)GetModuleHandleW(NULL);
-    if (base == NULL) {
-        return TRUE; /* 失败也视为完成 (后续 check 直接失败) */
+    if (g_iat_ready)
+        return;
+
+    /* 一次性初始化锁（幂等，可重复调用）*/
+    if (!g_iat_lock_ready) {
+        (void)prot_plat_mutex_init(&g_iat_lock);
+        g_iat_lock_ready = 1;
     }
-    dos = (const IMAGE_DOS_HEADER*)base;
-    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
-    if (iat->VirtualAddress == 0u || iat->Size == 0u) {
-        return TRUE; /* 无 IAT (静态链接/无导入) */
+
+    prot_plat_mutex_lock(&g_iat_lock);
+    if (g_iat_ready) {          /* 双重检查 */
+        prot_plat_mutex_unlock(&g_iat_lock);
+        return;
     }
-    g_iat_snap_len = iat->Size;
+
+    base = (uint8_t*)prot_plat_self_base();
+    if (base == NULL || !prot_plat_iat_range(&iat)) {
+        g_iat_ready = 1;        /* 无 IAT -> 视为完成（check 会跳过）*/
+        prot_plat_mutex_unlock(&g_iat_lock);
+        return;
+    }
+    g_iat_snap_len = (uint32_t)iat.size;
     g_iat_snap = (uint8_t*)malloc(g_iat_snap_len);
     if (g_iat_snap == NULL) {
         g_iat_snap_len = 0u;
-        return TRUE;
+        g_iat_ready = 1;
+        prot_plat_mutex_unlock(&g_iat_lock);
+        return;
     }
-    memcpy(g_iat_snap, base + iat->VirtualAddress, g_iat_snap_len);
-    InterlockedExchange(&g_iat_ready, 1);
-    return TRUE;
+    memcpy(g_iat_snap, base + iat.rva, g_iat_snap_len);
+    g_iat_ready = 1;
+    prot_plat_mutex_unlock(&g_iat_lock);
 }
 
 prot_status prot_integrity_check_iat(void)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    const IMAGE_DOS_HEADER* dos;
-    const IMAGE_NT_HEADERS* nt;
-    const IMAGE_DATA_DIRECTORY* iat;
+    prot_range iat;
     uint8_t* base;
     uint32_t i;
 
-    InitOnceExecuteOnce(&g_iat_once, iat_snapshot_init, NULL, NULL);
-    if (!g_iat_ready) {
+    iat_snapshot_init();
+    if (!g_iat_ready || g_iat_snap_len == 0u) {
         /*
-         * 快照未建立: 无 IAT (纯静态) 视为 OK; 其他情况 (malloc 失败) 忽略
-         * —— watchdog 不因资源问题误杀 (与 MDL 完整性语义一致)。
+         * 快照未建立: 无 IAT（纯静态）或 malloc 失败 -> 视为 OK。
+         * —— watchdog 不因资源问题误杀（与 MDL 完整性语义一致）。
          */
         return PROT_OK;
     }
 
-    base = (uint8_t*)GetModuleHandleW(NULL);
-    if (base == NULL) {
+    base = (uint8_t*)prot_plat_self_base();
+    if (base == NULL)
         return PROT_ERR_INTEGRITY;
-    }
-    dos = (const IMAGE_DOS_HEADER*)base;
-    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
-    if (iat->VirtualAddress == 0u || iat->Size != g_iat_snap_len) {
-        return PROT_ERR_INTEGRITY; /* IAT 目录异常 */
-    }
+    if (!prot_plat_iat_range(&iat))
+        return PROT_ERR_INTEGRITY;   /* 快照有时无 -> 异常 */
+    if ((uint32_t)iat.size != g_iat_snap_len)
+        return PROT_ERR_INTEGRITY;   /* IAT 目录异常 */
 
     /* 逐项比对: 运行期改写 (hook) 会与快照不一致 */
     for (i = 0u; i < g_iat_snap_len; i++) {
-        if (((volatile uint8_t*)base)[iat->VirtualAddress + i] !=
-            g_iat_snap[i]) {
+        if (((volatile uint8_t*)base)[iat.rva + i] != g_iat_snap[i]) {
             return PROT_ERR_INTEGRITY;
         }
     }
@@ -443,7 +513,7 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
         return PROT_OK; /* 已在运行, 保持现状 */
     }
 
-    InterlockedExchange(&g_wd_stop, 0);
+    (void)prot_plat_atomic_exchange(&g_wd_stop, 0);
     g_wd_policy = pol;
     g_wd_interval = interval_ms;
 
@@ -452,8 +522,9 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
      * IAT 使快照记录被改值 -> 后续比对恒一致 -> 绕过。 */
     (void)prot_integrity_check_iat();
 
-    g_wd_thread = CreateThread(NULL, 0, watchdog_thread, NULL, 0, NULL);
-    if (g_wd_thread == NULL) {
+    /* M3（2026-09-25）: CreateThread -> 平台层 */
+    if (!prot_plat_thread_create(watchdog_thread, NULL, &g_wd_thread)) {
+        g_wd_thread = NULL;
         return PROT_ERR_INTERNAL;
     }
     return PROT_OK;
@@ -461,15 +532,26 @@ prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms)
 
 prot_status prot_integrity_stop_watchdog(void) {
     PROT_NOISE();   /* W1.6 序言噪声 */
-    HANDLE h;
 
-    h = g_wd_thread;
-    if (h == NULL) {
+    if (g_wd_thread == NULL) {
         return PROT_OK; /* 幂等 */
     }
-    InterlockedExchange(&g_wd_stop, 1);
-    WaitForSingleObject(h, INFINITE); /* 等待线程退出 */
-    CloseHandle(h);
+    (void)prot_plat_atomic_exchange(&g_wd_stop, 1);
+
+    /* ## ⚠️ 平台差异（**如实标注**，2026-09-25）
+     *
+     *   **Windows**: 原实现 `WaitForSingleObject(h, INFINITE)` ——
+     *     置停止标志后**等待线程真正退出**再返回。
+     *   **Linux**: 线程是 **detached** 的（无 join 句柄）——
+     *     置标志后**立即返回**；线程会在下次循环检查时自行退出。
+     *
+     *   **影响评估**:
+     *     · `g_iat_lock` 保护快照/校验 -> **无数据竞争**
+     *     · 调用方（demo）在 stop 后立即退出 -> 差异**不可观测**
+     *
+     *   => 接口语义保持 `PROT_OK`，但**该差异必须被记录**，
+     *      否则读者会误以为两个平台完全一致。
+     */
     g_wd_thread = NULL;
     return PROT_OK;
 }

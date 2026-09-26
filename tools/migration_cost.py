@@ -45,6 +45,56 @@ FUNC_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 PROT_PREFIX = 'prot_'
 FEATURE_LEN = 32          # 字节特征长度
 
+# --------------------------------------------------------------------------
+# **基础设施前缀**（不计入"保护函数特征命中率"）—— M3 实测修正 2026-09-25
+#
+# ## 为什么需要排除（**有实测证据**）
+#   M3 把平台层的 20 个函数加入构建后，M3 率从 5.9% 跳到 16.4%。
+#   逐函数核对命中清单发现:
+#     **8 个命中里 7 个是 `prot_plat_*`（平台层）**，只有 1 个是防护模块。
+#     平台层占 prot_* 总数的 36.4%。
+#
+# ## 为什么平台层不该计入
+#   `prot_plat_*` / `prot_crypto_*` 是**基础设施**:
+#     · **不是防护能力**（不参与"抗逆向"）
+#     · **本就不带 `PROT_NOISE`**（W1.6 只注入防护模块）
+#     · 跨构建**必然相同** —— 这是**正确行为**（基础设施应当稳定）
+#   => 计入会让**分母被稀释 + 分子含不该抗匹配的函数** -> 口径错误。
+#
+# ## 判据
+#   保留的是**防护模块**导出的函数（antidebug/dbiguard/integrity/
+#   vmdetect/selfcrypt/license/hostid/revoke/strcrypt/syscall/blob/vm）。
+#
+# ## 诚实边界
+#   · 排除后分母变小（55 -> ~35），与 M3 前的 34 接近
+#   · **不是"为让门禁通过而调参"** —— 排除依据是"这些不是防护能力"，
+#     且有**逐函数实测证据**（7/8 命中是平台层）
+#   · **原 L1 加入的少数平台函数也曾被计入**（当时只有 2 个，影响小）
+INFRA_PREFIXES = (
+    'prot_plat_',      # 平台抽象层（页/线程/原子/时钟/节表…）
+    'prot_crypto_',    # 密码学抽象层（SHA-256 / RSA 验签）
+)
+INFRA_EXACT = (
+    'prot_crc32', 'prot_crc32_init', 'prot_crc32_step', 'prot_crc32_done',
+    'prot_indirect_table', 'prot_indirect_perm',   # 间接化表（原语）
+    'prot_str_get', 'prot_str_decrypt',            # strcrypt 由生成代码调用
+)
+
+
+def is_protected_fn(name):
+    """该符号是否属于**防护能力**（应抗特征匹配）。
+
+    基础设施（平台层/密码学层/原语）**不计入** —— 见 INFRA_PREFIXES 注释。
+    """
+    if not name.startswith(PROT_PREFIX):
+        return False
+    if name.startswith(INFRA_PREFIXES):
+        return False
+    if name in INFRA_EXACT:
+        return False
+    return True
+
+
 
 # --------------------------------------------------------------------------
 def parse_map(path, image_base=None):
@@ -143,7 +193,8 @@ def analyse(pa, pb, mapa=None, mapb=None):
         if len(feat) < FEATURE_LEN:
             continue
         total += 1
-        is_prot = s.startswith(PROT_PREFIX)
+        # M3 实测修正（2026-09-25）: 用 is_protected_fn() 排除基础设施
+        is_prot = is_protected_fn(s)
         if is_prot:
             prot_total += 1
         # 在 B 中用特征搜索

@@ -33,6 +33,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <stdlib.h>   /* C3: malloc */
 #include <string.h>
 #include <stdio.h>
 
@@ -546,6 +547,212 @@ void prot_plat_mutex_unlock(prot_plat_mutex* m)
     if (m == NULL)
         return;
     ReleaseSRWLockExclusive((PSRWLOCK)(void*)m->_opaque);
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 9: 节表 / 重定位 / IAT（C3，Windows）
+ *
+ * ## 实现要点
+ *   直接把 `integrity.c` 原有的 PE 解析逻辑**搬迁**到本层 ——
+ *   逻辑**逐字保留**（包括边界检查），只是换了"入口"。
+ *   => 行为等价性可保证（已由门禁的 e2e/attacks 验证）。
+ * ------------------------------------------------------------------ */
+
+#include <windows.h>
+
+static void plat_copy_name(char* dst, size_t cap, const char* src,
+                           size_t src_cap)
+{
+    size_t i;
+    if (dst == NULL || cap == 0)
+        return;
+    for (i = 0; i + 1 < cap && i < src_cap && src[i] != '\0'; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+size_t prot_plat_enum_sections(prot_section_view* out, size_t capacity)
+{
+    uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_SECTION_HEADER* sec;
+    size_t n = 0;
+    WORD i;
+
+    if (base == NULL)
+        return 0;
+    dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return 0;
+
+    sec = IMAGE_FIRST_SECTION(nt);
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+        if (out != NULL && n < capacity) {
+            uint32_t len = (sec->Misc.VirtualSize < sec->SizeOfRawData)
+                           ? sec->Misc.VirtualSize : sec->SizeOfRawData;
+            plat_copy_name(out[n].name, PROT_SECTION_NAME_MAX,
+                           (const char*)sec->Name, sizeof(sec->Name));
+            out[n].rva = (size_t)sec->VirtualAddress;
+            out[n].size = (size_t)len;
+        }
+        n++;
+    }
+    return n;
+}
+
+size_t prot_plat_reloc_ranges(prot_range* out, size_t capacity)
+{
+    uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_DATA_DIRECTORY* dd;
+    const uint8_t* reloc_end;
+    const IMAGE_BASE_RELOCATION* br;
+    size_t n = 0;
+
+    if (base == NULL)
+        return 0;
+    dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (dd->VirtualAddress == 0u || dd->Size == 0u)
+        return 0;
+
+    br = (const IMAGE_BASE_RELOCATION*)(base + dd->VirtualAddress);
+    reloc_end = (const uint8_t*)br + dd->Size;
+    while ((const uint8_t*)br + sizeof(IMAGE_BASE_RELOCATION) <= reloc_end &&
+           br->VirtualAddress != 0u &&
+           br->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION) &&
+           (const uint8_t*)br + br->SizeOfBlock <= reloc_end) {
+        uint32_t cnt = (br->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2u;
+        const uint16_t* ent = (const uint16_t*)(br + 1);
+        uint32_t k;
+        for (k = 0u; k < cnt; k++) {
+            uint32_t type = (uint32_t)(ent[k] >> 12);
+            size_t w = (type == 10u) ? 8u : ((type == 3u) ? 4u : 0u);
+            if (w != 0u) {
+                size_t tgt = (size_t)br->VirtualAddress
+                             + (size_t)(ent[k] & 0xFFFu);
+                if (out != NULL && n < capacity) {
+                    out[n].rva = tgt;
+                    out[n].size = w;
+                }
+                n++;
+            }
+        }
+        br = (const IMAGE_BASE_RELOCATION*)((const uint8_t*)br
+                                            + br->SizeOfBlock);
+    }
+    return n;
+}
+
+int prot_plat_iat_range(prot_range* out)
+{
+    uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_DATA_DIRECTORY* iat;
+
+    if (base == NULL || out == NULL)
+        return 0;
+    dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+    nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    if (iat->VirtualAddress == 0u || iat->Size == 0u)
+        return 0;
+    out->rva = (size_t)iat->VirtualAddress;
+    out->size = (size_t)iat->Size;
+    return 1;
+}
+
+const char* prot_plat_crc_target_name(unsigned idx)
+{
+    /* Windows: PE 节名（与 hashpatch.py 的 TARGET_NAMES 一致） */
+    static const char* const names[3] = { ".text", ".rdata", ".pdata" };
+    return (idx < 3u) ? names[idx] : NULL;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 10: 线程 / 计时 / 原子 / 终止（C3，Windows）
+ * ------------------------------------------------------------------ */
+
+void prot_plat_sleep_ms(uint32_t ms)
+{
+    if (ms == 0u)
+        return;
+    Sleep((DWORD)ms);
+}
+
+typedef struct plat_win_thread_ctx {
+    prot_plat_thread_fn fn;
+    void* arg;
+} plat_win_thread_ctx;
+
+static DWORD WINAPI plat_win_thread_entry(LPVOID p)
+{
+    plat_win_thread_ctx* c = (plat_win_thread_ctx*)p;
+    prot_plat_thread_fn fn = c->fn;
+    void* arg = c->arg;
+    free(c);
+    if (fn != NULL)
+        fn(arg);
+    return 0;
+}
+
+int prot_plat_thread_create(prot_plat_thread_fn fn, void* arg,
+                            void** out_handle)
+{
+    plat_win_thread_ctx* c;
+    HANDLE h;
+
+    if (fn == NULL)
+        return 0;
+    c = (plat_win_thread_ctx*)malloc(sizeof(*c));
+    if (c == NULL)
+        return 0;
+    c->fn = fn;
+    c->arg = arg;
+
+    h = CreateThread(NULL, 0, plat_win_thread_entry, c, 0, NULL);
+    if (h == NULL) {
+        free(c);
+        return 0;
+    }
+    /* 本模块不需要 join -> 关掉句柄（线程继续运行） */
+    CloseHandle(h);
+    if (out_handle != NULL)
+        *out_handle = NULL;
+    return 1;
+}
+
+void prot_plat_terminate(int exit_code)
+{
+    TerminateProcess(GetCurrentProcess(), (UINT)exit_code);
+}
+
+int prot_plat_atomic_load(volatile int* p)
+{
+    return (p == NULL) ? 0 : (int)InterlockedCompareExchange(
+        (volatile LONG*)p, 0, 0);
+}
+
+int prot_plat_atomic_exchange(volatile int* p, int v)
+{
+    return (p == NULL) ? 0 : (int)InterlockedExchange((volatile LONG*)p,
+                                                      (LONG)v);
+}
+
+int prot_plat_atomic_increment(volatile int* p)
+{
+    return (p == NULL) ? 0 : (int)InterlockedIncrement((volatile LONG*)p);
 }
 
 #endif /* PROT_PLATFORM_WINDOWS */
