@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -24,10 +24,12 @@
  * 注意: 本函数自身不得被加密 (它是解密桩的目标)。
  */
 #include "protect/selfcrypt.h"
+#include "protect/prot_platform.h"  /* C2: 平台抽象层 */
+#include "protect/prot_compiler.h"  /* C2: PROT_SECTION_* / PROT_ALLOCATE */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
-#include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>   /* C2: malloc（安全读缓冲）*/
 #include <string.h>
 
 /* .protcrypt 专用节容器 (N1): 构建期 selfcrypt_proto.py 写入 meta
@@ -39,12 +41,22 @@
  * 页粒度 VP 禁执行自伤。 */
 /* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
 #include "protect/prot_sections.h"
-#pragma section(PROT_SEC_PAD, read)
-__declspec(allocate(PROT_SEC_PAD))
+/* ## C2（2026-09-25）: 自定义节改为**跨平台宏**
+ *
+ * ⚠️ **MSVC 的属性参数不能加引号**（实测踩坑）:
+ *   `__pragma(section(".foo", "read, write"))` -> MSVC 报
+ *     `C4081: 应输入"标识符"；找到"字符串"`
+ *   **正确**: `__pragma(section(".foo", read, write))`（标识符，无反引号）
+ *
+ * 故宏签名为 `PROT_SECTION_BEGIN(sec, attrs...)` —— **可变参数**，
+ * 让 MSVC 与 GCC 各自展开（GCC 侧的属性随变量走，忽略此宏）。
+ */
+PROT_SECTION_BEGIN(PROT_SEC_PAD, read)
+PROT_ALLOCATE(PROT_SEC_PAD)
 const char g_prot_pad[4096] = {0};
 
-#pragma section(PROT_SEC_CRY, read, write)
-__declspec(allocate(PROT_SEC_CRY))
+PROT_SECTION_BEGIN(PROT_SEC_CRY, read, write)
+PROT_ALLOCATE(PROT_SEC_CRY)
 uint8_t g_prot_selfcrypt_blob[16384];
 
 const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
@@ -53,6 +65,8 @@ const uint32_t g_prot_selfcrypt_blob_size = sizeof(g_prot_selfcrypt_blob);
 
 prot_status prot_selfcrypt_init(void)
 {
+    /* C2: 初始化平台无关互斥锁（幂等，可重复调用）*/
+    (void)prot_plat_mutex_init(&g_sc_lock);
     PROT_NOISE();   /* W1.6 序言噪声 */
     return PROT_OK;
 }
@@ -91,12 +105,12 @@ static volatile uint8_t g_sc_d2b_enabled = 0u;
 #endif
 
 /* 互斥: D2b 下多线程并发 enter/leave 保护 (SRWLock 无锁读优化) */
-static SRWLOCK g_sc_lock = SRWLOCK_INIT;
+static prot_plat_mutex g_sc_lock;   /* C2: 平台无关互斥锁 */
 
 /* 独立节 .protxec (2026-08-29): 解密器与加密目标分页,
  * 避免 VirtualProtect 切换目标页权限时把自身执行页
  * 关了 (0x5000 同页自伤崩溃的根源). */
-#pragma code_seg(PROT_SEC_XEC)
+PROT_CODE_SEG(PROT_SEC_XEC)
 static void sc_xor_range(uint8_t* dst, uint32_t len, uint64_t key)
 {
     uint64_t k = key;
@@ -111,15 +125,16 @@ static void sc_xor_range(uint8_t* dst, uint32_t len, uint64_t key)
 static prot_status sc_do_range(uint32_t idx, int decrypt)
 {
     const uint8_t* e = g_prot_selfcrypt_blob + 4u + idx * SC_ENTRY_SIZE;
-    HMODULE hmod = GetModuleHandleW(NULL);
-    uint8_t* base = (uint8_t*)hmod;
+    uint8_t* base = (uint8_t*)prot_plat_self_base();
     uint8_t* dst;
     uint32_t rva, len;
     uint64_t k;
     uint32_t crc;
-    DWORD oldp = 0u;
+    prot_status st;
 
-    if (hmod == NULL)
+    /* C2（2026-09-25）: 原 `HMODULE hmod = GetModuleHandleW(NULL)` 改为
+     * 平台层 `prot_plat_self_base()`（Linux 用 dl_iterate_phdr）。 */
+    if (base == NULL)
         return PROT_ERR_INTERNAL;
     SC_DBG("[SCDBG] idx=%u decrypt=%d\n", idx, decrypt);
 
@@ -131,39 +146,71 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
     SC_DBG("[SCDBG]   rva=0x%x len=%u k=0x%llx crc=0x%x dst=%p\n",
            rva, len, (unsigned long long)k, crc, (void*)dst);
     SC_DBG("[SCDBG]   PRE-VP\n");
-    if (!VirtualProtect((LPVOID)dst, len, PAGE_READWRITE, &oldp)) {
-        SC_DBG("[SCDBG]   VP-FAIL err=%lu\n", GetLastError());
+    /* C2: VirtualProtect -> prot_plat_protect（Linux 用 mprotect） */
+    if (prot_plat_protect(dst, len, PROT_PAGE_READWRITE) != PROT_OK) {
+        SC_DBG("[SCDBG]   VP-FAIL\n");
         return PROT_ERR_INTERNAL;
     }
     SC_DBG("[SCDBG]   VP-OK\n");
     sc_xor_range(dst, len, k);
     SC_DBG("[SCDBG]   XOR-OK\n");
     if (decrypt) {
-        /* II-1: 解密态 CRC 校验 (内联逐字节, 标准 0xEDB88320) */
-        __try {
+        /* II-1: 解密态 CRC 校验 (内联逐字节, 标准 0xEDB88320)
+         *
+         * ## C2（2026-09-25）: `__try/__except` -> 平台层安全读
+         *
+         * **改动前**: 内联 SEH 包住整个 CRC 循环 ——
+         *   因为 dst 是"刚解密的代码段"，理论上可能不可读。
+         *
+         * **改动后**: 先 `prot_plat_safe_read` 把该段读进**临时缓冲**，
+         *   再对缓冲算 CRC。
+         *   · Windows: 平台层内部仍用 `__try/__except`（**语义等价**）
+         *   · Linux:   `mincore()` 探测映射（**不引入信号处理**）
+         *
+         * **为什么改成"先读进缓冲"**:
+         *   原设计是"边遍历边读"，靠 SEH 兜住故障；
+         *   平台层接口是"一次读 len 字节"，故需缓冲。
+         *   **行为等价**: CRC 的输入字节完全一致。
+         *
+         * **额外收益**: 读进缓冲后，CRC 循环**不再触碰可能失效的地址** ——
+         *   遍历过程本身绝对安全。
+         */
+        uint8_t* tmp = (uint8_t*)malloc(len);
+        if (tmp == NULL) {
+            (void)prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ);
+            return PROT_ERR_INTERNAL;
+        }
+        st = prot_plat_safe_read(tmp, dst, len);
+        if (st != PROT_OK) {
+            free(tmp);
+            SC_DBG("[SCDBG]   SAFE-READ-FAIL\n");
+            (void)prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ);
+            return PROT_ERR_INTEGRITY;
+        }
+        {
             uint32_t got = 0xFFFFFFFFu;
             uint32_t j;
             for (j = 0u; j < len; j++) {
                 uint32_t b;
-                got ^= dst[j];
+                got ^= tmp[j];
                 for (b = 0u; b < 8u; b++)
-                    got = (got >> 1) ^ (0xEDB88320u & (uint32_t)-(int)(got & 1u));
+                    got = (got >> 1)
+                        ^ (0xEDB88320u & (uint32_t)-(int)(got & 1u));
             }
             got ^= 0xFFFFFFFFu;
+            free(tmp);
             SC_DBG("[SCDBG]   CRC got=0x%x want=0x%x\n", got, crc);
             if (got != crc) {
-                VirtualProtect((LPVOID)dst, len, oldp, &oldp);
+                (void)prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ);
                 return PROT_ERR_INTEGRITY;
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SC_DBG("[SCDBG]   CRC-EXCEPTION code=0x%x\n",
-                   (unsigned)GetExceptionCode());
-            return PROT_ERR_INTEGRITY;
         }
     }
-    FlushInstructionCache(GetCurrentProcess(), (LPCVOID)dst, len);
+    /* C2: FlushInstructionCache -> prot_plat_flush_icache
+     * （Linux/x86 上是空操作 —— x86 指令/数据缓存一致） */
+    prot_plat_flush_icache(dst, len);
     SC_DBG("[SCDBG]   FLUSH-OK\n");
-    VirtualProtect((LPVOID)dst, len, PAGE_EXECUTE_READ, &oldp);
+    (void)prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ);
     SC_DBG("[SCDBG]   RX-OK\n");
     return PROT_OK;
 }
@@ -225,7 +272,7 @@ prot_status prot_selfcrypt_enter(uint32_t group)
     if (!g_sc_d2b_enabled)
         return PROT_OK; /* D2a: 函数已常驻明文 */
     sc_group_range(group, &lo, &hi);
-    AcquireSRWLockExclusive(&g_sc_lock);
+    prot_plat_mutex_lock(&g_sc_lock);
     for (i = lo; i < hi; i++) {
         if (!g_sc_state[i]) {
             st = sc_do_range(i, 1);
@@ -234,7 +281,7 @@ prot_status prot_selfcrypt_enter(uint32_t group)
             g_sc_state[i] = 1u;
         }
     }
-    ReleaseSRWLockExclusive(&g_sc_lock);
+    prot_plat_mutex_unlock(&g_sc_lock);
     return st;
 }
 
@@ -245,14 +292,14 @@ prot_status prot_selfcrypt_leave(uint32_t group)
     if (!g_sc_d2b_enabled)
         return PROT_OK;
     sc_group_range(group, &lo, &hi);
-    AcquireSRWLockExclusive(&g_sc_lock);
+    prot_plat_mutex_lock(&g_sc_lock);
     for (i = lo; i < hi; i++) {
         if (g_sc_state[i]) {
             sc_do_range(i, 0); /* 重加密 (对称 XOR), 不校验 */
             g_sc_state[i] = 0u;
         }
     }
-    ReleaseSRWLockExclusive(&g_sc_lock);
+    prot_plat_mutex_unlock(&g_sc_lock);
     return PROT_OK;
 }
 

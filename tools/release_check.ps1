@@ -176,8 +176,8 @@ Check '协议兼容性 (conformance)' {
 #
 # ## 门禁策略（**关键设计**）
 #   **不要求 18/18** —— 当前是 13/18（5 个模块仍依赖 windows.h）。
-#   设**下限 = 当前基线**，随计划推进逐步上调:
-#     M1: 13  ->  M2: 15  ->  M3: 16  ->  M4: 17  ->  M5: 18
+#   设**下限 = 当前基线**，随计划推进逐步上调（**M2 已达 15**）:
+#     M1: 13  [OK]  ->  M2: 15  [OK]  ->  M3: 16  ->  M4: 17  ->  M5: 18
 #   => 门禁现在通过；**回退会被抓住**（跌破下限即失败）。
 #
 # ## 依赖
@@ -198,7 +198,7 @@ Check 'Linux 编译覆盖 (linux_compile_check)' {
     }
     & $py tools\linux_compile_check.py --selftest --quiet
     if ($LASTEXITCODE -ne 0) { return $false }
-    & $py tools\linux_compile_check.py --quiet --min 13
+    & $py tools\linux_compile_check.py --quiet --min 15
     $LASTEXITCODE -eq 0
 }
 

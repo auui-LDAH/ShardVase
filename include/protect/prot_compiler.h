@@ -127,6 +127,42 @@
 #endif
 
 /* ------------------------------------------------------------------ *
+ * 自定义节（C2，2026-09-25）
+ *
+ * ## 为什么需要
+ *   `selfcrypt.c` 用 MSVC 专有语法建自定义节:
+ *     `#pragma section(".protcry", read, write)`
+ *     `__declspec(allocate(".protcry")) uint8_t blob[N];`
+ *   GCC/Clang 用 `__attribute__((section(".protcry")))`。
+ *
+ * ## 用法（**属性必须是标识符，不加引号**）
+ *   ```c
+ *   PROT_SECTION_BEGIN(PROT_SEC_CRY, read, write)
+ *   PROT_ALLOCATE(PROT_SEC_CRY) uint8_t g_blob[16384];
+ *   ```
+ *
+ * ## ⚠️ 实测踩坑（2026-09-25）
+ *   初版把属性写成**字符串**: `PROT_SECTION_BEGIN(sec, "read, write")`
+ *   -> MSVC 报 **C4081（应输入"标识符"；找到"字符串"）** -> `/WX` 失败。
+ *   MSVC 的 `__pragma(section(...))` 要的是**标识符**。
+ *   故改用**可变参数** `...`，让两侧各自展开。
+ *
+ * ## 诚实边界
+ *   · MSVC 的 `#pragma section` 影响**其后所有** `__declspec(allocate)`
+ *   · GCC 的属性是**逐变量**的 -> **该宏在 GCC 上展开为空**
+ *     （节归属由 `PROT_ALLOCATE` 的属性表达）
+ * ------------------------------------------------------------------ */
+
+/* MSVC: `__pragma(section(NAME, ATTRS...))`；GCC: 空（属性随变量走） */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_SECTION_BEGIN(sec, ...) __pragma(section(sec, __VA_ARGS__))
+#  define PROT_ALLOCATE(sec) __declspec(allocate(sec))
+#else
+#  define PROT_SECTION_BEGIN(sec, ...)   /* GCC: 属性随变量走 */
+#  define PROT_ALLOCATE(sec) __attribute__((section(sec)))
+#endif
+
+/* ------------------------------------------------------------------ *
  * MSVC 专有 API 的**兼容层**（L6b，2026-09-25 编译测试发现）
  *
  * ## 为什么需要

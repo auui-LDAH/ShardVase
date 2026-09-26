@@ -256,6 +256,156 @@ typedef struct prot_host_factor {
 size_t prot_plat_host_factors(prot_host_factor* out, size_t capacity);
 
 /* ------------------------------------------------------------------ *
+ * 分组 6: NT 原生查询的**跨平台等价物**（C0/C1）
+ *
+ * ## 为什么需要
+ *   `src/syscall.c`（A6 direct syscall）与 `src/antidebug.c` 用 NT 专有查询:
+ *     · `NtQueryInformationProcess(ProcessDebugPort/DebugFlags/
+ *        DebugObjectHandle)` —— 查调试器附加状态
+ *     · `NtQuerySystemInformation(SystemKernelDebuggerInformation)`
+ *
+ *   这些 API 在 Linux 上**没有直接等价物**，但**用途可以映射**。
+ *
+ * ## 语义映射（**实测** `antidebug.c` 的实际用法）
+ *   | NT 查询 | 判断条件 | Linux 对应 |
+ *   |---------|---------|-----------|
+ *   | `ProcessDebugPort` | `port != 0` | `/proc/self/status` **TracerPid != 0** |
+ *   | `ProcessDebugFlags` | `flags != 1` | 同 TracerPid 派生 |
+ *   | `ProcessDebugObjectHandle` | `hDbg != NULL` | 同 TracerPid |
+ *   | `SystemKernelDebuggerInformation` | flags | `/proc/cmdline` 含 kgdb/kdb |
+ *
+ *   **关键**: Windows 上三个 PID 查询本质是查**同一个状态**的不同字段；
+ *   Linux 用 **TracerPid 一个字段**表达同一件事。
+ *   => **不是"降级"，是"归一化"** —— 且 Linux **另有** Windows 没有的
+ *      维度（LD_PRELOAD / 可疑 .so / ptrace 试探）。
+ *
+ * ## 返回值契约
+ *   统一用 `PROT_NT_*`，**不暴露 NTSTATUS**（那是 Windows 专有类型）:
+ *     · `PROT_NT_OK`          = 0   —— 查询成功，buf 已填
+ *     · `PROT_NT_UNSUPPORTED` = 1   —— **该平台不支持此查询**（调用方回退）
+ *     · `PROT_NT_ERROR`       = 2   —— 查询出错
+ *
+ *   **为什么用 1 表示不支持**（而非负值）:
+ *     原 `syscall.c` 用 `STATUS_UNSUCCESSFUL`（负值）触发回退；
+ *     本接口显式区分"不支持"，调用方**更精确**。
+ * ------------------------------------------------------------------ */
+
+#define PROT_NT_OK          0
+#define PROT_NT_UNSUPPORTED 1
+#define PROT_NT_ERROR       2
+
+/* 进程级查询（对应 NtQueryInformationProcess）。
+ *
+ * ## 参数
+ *   cls    —— **平台无关的信息类**（见 `PROT_PIQ_*`）
+ *   buf/len—— 输出缓冲
+ *   ret    —— 可选，接收实际长度（可 NULL）
+ *
+ * ## 已支持的 cls（平台无关编号）
+ *   `PROT_PIQ_DEBUG_PORT`          -> 输出 `uintptr_t`（0 = 无调试端口）
+ *   `PROT_PIQ_DEBUG_FLAGS`         -> 输出 `uint32_t`（1 = 无调试）
+ *   `PROT_PIQ_DEBUG_OBJECT_HANDLE` -> 输出 `void*`（NULL = 无）
+ */
+#define PROT_PIQ_DEBUG_PORT          1u
+#define PROT_PIQ_DEBUG_FLAGS         2u
+#define PROT_PIQ_DEBUG_OBJECT_HANDLE 3u
+
+int prot_plat_nt_query_process(uint32_t cls, void* buf, size_t len,
+                               size_t* ret);
+
+/* 系统级查询（对应 NtQuerySystemInformation）。
+ *   `PROT_SIQ_KERNEL_DEBUGGER` -> 输出 `uint32_t`（1 = 内核调试器已启用）
+ */
+#define PROT_SIQ_KERNEL_DEBUGGER 1u
+
+int prot_plat_nt_query_system(uint32_t cls, void* buf, size_t len,
+                              size_t* ret);
+
+/* 1 = 至少一个 NT 等价查询可用（对应原 `prot_sys_available()`）。 */
+uint32_t prot_plat_nt_query_available(void);
+
+/* ------------------------------------------------------------------ *
+ * 分组 7: 自身映像与安全读取（C2，`selfcrypt` 用）
+ *
+ * ## 为什么需要
+ *   `src/selfcrypt.c` 用 4 类 Windows 专有依赖:
+ *     · `GetModuleHandleW(NULL)`  —— 自身映像基址
+ *     · `VirtualProtect`          —— 改页保护（**平台层已有**）
+ *     · `FlushInstructionCache`   —— 指令缓存刷新
+ *     · `__try/__except`          —— 安全读（CRC 遍历可能越界）
+ * ------------------------------------------------------------------ */
+
+/* 自身映像的**加载基址**。
+ *
+ * Windows: `GetModuleHandleW(NULL)`（HMODULE 即基址）
+ * Linux  : 第一个 `PT_LOAD` 段的对齐基址（`dl_iterate_phdr` 或 auxv）
+ *
+ * 返回 NULL 表示失败。
+ */
+void* prot_plat_self_base(void);
+
+/* 刷新指令缓存。
+ *
+ * Windows: `FlushInstructionCache`
+ * Linux  : **x86 上无需操作**（指令/数据缓存一致），
+ *          但 ARM 等需要 —— 故保留接口，Linux/x86 实现为空操作。
+ *
+ * **为什么要保留**: selfcrypt 解密**代码段**后必须让 CPU 看到新指令；
+ *   x86 恰好自动一致，但**接口语义必须表达这个需求**（跨架构正确）。
+ */
+void prot_plat_flush_icache(void* addr, size_t len);
+
+/* **安全读取**: 把 src 的 len 字节复制到 dst。
+ *
+ * ## 为什么需要（替代 SEH）
+ *   `selfcrypt.c` 原用 `__try/__except` 包住 CRC 遍历 ——
+ *   因为 dst 是"解密后的代码段"，理论上可能未映射。
+ *
+ * ## 跨平台实现
+ *   **Windows**: `__try/__except`（SEH）—— 与原实现**语义等价**
+ *   **Linux**:   `mincore()` 探测映射 -> 通过才读
+ *                （**不改全局信号状态**，比 sigsetjmp 轻量）
+ *
+ * ## 返回
+ *   `PROT_OK` —— 读取成功
+ *   `PROT_ERR_INTEGRITY` —— 读取失败（未映射/不可读）
+ */
+prot_status prot_plat_safe_read(void* dst, const void* src, size_t len);
+
+/* ------------------------------------------------------------------ *
+ * 分组 8: 互斥锁（C2，`selfcrypt` 用）
+ *
+ * ## 为什么需要
+ *   `selfcrypt.c` 用 Windows 的 `SRWLOCK` 串行化 enter/leave
+ *   （多线程同时解密同一段会**数据竞争**）。
+ *
+ * ## 设计（**不透明类型**）
+ *   用 `prot_plat_mutex` 不透明句柄，避免暴露平台类型:
+ *     Windows: `SRWLOCK`（独占模式）
+ *     Linux  : `pthread_mutex_t`
+ *
+ * ## API
+ *   `prot_plat_mutex_init(m)`  —— 初始化（返回 PROT_OK）
+ *   `plat_mutex_lock/unlock`   —— 加锁/解锁（**可重入? 否**）
+ *
+ * ## 诚实说明
+ *   · Windows 的 `SRWLOCK` 是**读写锁**，本用途只用独占 -> `pthread_mutex` 等价
+ *   · `prot_plat_mutex` 在头文件里是**不透明字节数组**（够大即可），
+ *     避免 include 平台头
+ * ------------------------------------------------------------------ */
+
+#define PROT_PLAT_MUTEX_SIZE 64     /* 足够容纳 SRWLOCK(8) / pthread_mutex_t(40) */
+
+typedef struct prot_plat_mutex {
+    /* 对齐到指针宽度，保证可用作平台类型的容器 */
+    unsigned long long _opaque[PROT_PLAT_MUTEX_SIZE / 8];
+} prot_plat_mutex;
+
+prot_status prot_plat_mutex_init(prot_plat_mutex* m);
+void prot_plat_mutex_lock(prot_plat_mutex* m);
+void prot_plat_mutex_unlock(prot_plat_mutex* m);
+
+/* ------------------------------------------------------------------ *
  * 平台实现约定
  *
  * Windows: src/platform/prot_platform_win.c（委托到现有 Windows API 调用）

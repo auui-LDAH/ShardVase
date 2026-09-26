@@ -62,6 +62,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ptrace.h>
+#include <pthread.h>   /* C2: 互斥锁 */
 
 /* ------------------------------------------------------------------ *
  * 工具
@@ -433,6 +434,276 @@ size_t prot_plat_host_factors(prot_host_factor* out, size_t capacity)
     }
 
     return n;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 6: NT 查询的 **Linux 等价物**（C0/C1）
+ *
+ * ## 语义映射（见 prot_platform.h 的表）
+ *   三个 PID 查询在 Linux 上**归一化为 TracerPid** ——
+ *   因为内核不暴露等价的细分字段。
+ *
+ *   **这不是"降级"**: Windows 的三个查询本质也是查同一个
+ *   "是否有调试器附加"状态（EPROCESS 的不同字段）。
+ * ------------------------------------------------------------------ */
+
+/* 读 /proc/self/status 的 TracerPid；返回 -1 表示读取失败。 */
+static long lin_tracer_pid(void)
+{
+    FILE* f;
+    char buf[4096];
+    long pid = -1;
+
+    f = fopen("/proc/self/status", "r");
+    if (f == NULL)
+        return -1;
+    while (fgets(buf, (int)sizeof(buf), f) != NULL) {
+        if (strncmp(buf, "TracerPid:", 10) == 0) {
+            pid = strtol(buf + 10, NULL, 10);
+            break;
+        }
+    }
+    fclose(f);
+    return pid;
+}
+
+int prot_plat_nt_query_process(uint32_t cls, void* buf, size_t len,
+                               size_t* ret)
+{
+    long tp;
+
+    if (buf == NULL)
+        return PROT_NT_ERROR;
+    tp = lin_tracer_pid();
+    if (tp < 0)
+        return PROT_NT_ERROR;
+
+    switch (cls) {
+    case PROT_PIQ_DEBUG_PORT:
+        /* Windows: port != 0 表示有调试端口。Linux: TracerPid != 0 */
+        if (len < sizeof(uintptr_t))
+            return PROT_NT_ERROR;
+        *(uintptr_t*)buf = (tp != 0) ? (uintptr_t)tp : (uintptr_t)0;
+        if (ret) *ret = sizeof(uintptr_t);
+        return PROT_NT_OK;
+
+    case PROT_PIQ_DEBUG_FLAGS:
+        /* Windows: flags != 1 表示被调试（1 = 无调试）。
+         * Linux: 归一化为 TracerPid == 0 时返回 1（无调试）。 */
+        if (len < sizeof(uint32_t))
+            return PROT_NT_ERROR;
+        *(uint32_t*)buf = (tp == 0) ? 1u : 0u;
+        if (ret) *ret = sizeof(uint32_t);
+        return PROT_NT_OK;
+
+    case PROT_PIQ_DEBUG_OBJECT_HANDLE:
+        /* Windows: hDbg != NULL 表示有调试对象。Linux: 同 TracerPid */
+        if (len < sizeof(void*))
+            return PROT_NT_ERROR;
+        *(void**)buf = (tp != 0) ? (void*)(uintptr_t)tp : NULL;
+        if (ret) *ret = sizeof(void*);
+        return PROT_NT_OK;
+
+    default:
+        return PROT_NT_UNSUPPORTED;
+    }
+}
+
+int prot_plat_nt_query_system(uint32_t cls, void* buf, size_t len,
+                              size_t* ret)
+{
+    char line[512];
+    FILE* f;
+    int found = 0;
+
+    if (buf == NULL)
+        return PROT_NT_ERROR;
+    if (cls != PROT_SIQ_KERNEL_DEBUGGER)
+        return PROT_NT_UNSUPPORTED;
+
+    /* Linux 的内核调试器: 检查 /proc/cmdline 是否含 kgdb/kdb 参数。
+     *
+     * **诚实说明**: 这是**启发式**（Windows 的 SystemKernelDebuggerInformation
+     * 是内核直接暴露的标志）。Linux 无等价接口 -> 用 cmdline 推断。
+     */
+    f = fopen("/proc/cmdline", "r");
+    if (f != NULL) {
+        if (fgets(line, (int)sizeof(line), f) != NULL) {
+            if (strstr(line, "kgdb") != NULL ||
+                strstr(line, "kdb") != NULL)
+                found = 1;
+        }
+        fclose(f);
+    }
+
+    if (len < sizeof(uint32_t))
+        return PROT_NT_ERROR;
+    *(uint32_t*)buf = found ? 1u : 0u;
+    if (ret) *ret = sizeof(uint32_t);
+    return PROT_NT_OK;
+}
+
+uint32_t prot_plat_nt_query_available(void)
+{
+    /* Linux 上 /proc 始终可用 -> 始终返回 1
+     * （与原 `prot_sys_available()` 的语义一致: "查询可用"）。 */
+    return 1u;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 7: 自身映像与安全读取（C2，Linux）
+ * ------------------------------------------------------------------ */
+
+/* ## 取自身映像基址（Linux）
+ *
+ * 为什么用 `dl_iterate_phdr` 而非 `dladdr`:
+ *   · `dl_iterate_phdr` 直接给**每个已加载对象**的基址与 phdr
+ *   · 第一个对象的 `dlpi_addr` 即**主程序**的加载基址
+ *   · 无需链接 `-ldl`（glibc 将其放在 libc 内）
+ */
+#include <link.h>
+
+struct lin_base_ctx {
+    void* base;
+    int   found;
+};
+
+static int lin_base_cb(struct dl_phdr_info* info, size_t size, void* data)
+{
+    struct lin_base_ctx* ctx = (struct lin_base_ctx*)data;
+    (void)size;
+    /* 第一个回调对象 = 主程序（name 为空串） */
+    ctx->base = (void*)(uintptr_t)info->dlpi_addr;
+    ctx->found = 1;
+    return 1;   /* 非 0 = 停止遍历 */
+}
+
+void* prot_plat_self_base(void)
+{
+    struct lin_base_ctx ctx;
+    ctx.base = NULL;
+    ctx.found = 0;
+    (void)dl_iterate_phdr(lin_base_cb, &ctx);
+    return ctx.found ? ctx.base : NULL;
+}
+
+void prot_plat_flush_icache(void* addr, size_t len)
+{
+    /* ## 为什么 Linux/x86 上是空操作
+     *   x86 的**指令缓存与数据缓存一致**（self-modifying code 无需显式刷新，
+     *   只要不发生跨核竞态）。ARM 需要 `__builtin___clear_cache`。
+     *
+     *   **如实说明**: 本实现在 x86_64 上正确；若将来支持 ARM64，
+     *   需改为 `__builtin___clear_cache((char*)addr, (char*)addr + len)`。
+     */
+#if defined(__aarch64__) || defined(__arm__)
+    __builtin___clear_cache((char*)addr, (char*)addr + len);
+#else
+    (void)addr;
+    (void)len;
+#endif
+}
+
+prot_status prot_plat_safe_read(void* dst, const void* src, size_t len)
+{
+    /* ## 用 `mincore()` 探测映射（**不引入信号处理**）
+     *
+     * **为什么不用 sigsetjmp/SIGSEGV**:
+     *   那会**改变进程的全局信号行为**（安装/恢复 handler），
+     *   与项目"最小侵入"原则相悖；且多线程下 handler 是**进程级**的，
+     *   会影响其它线程 —— 风险高于收益。
+     *
+     * **mincore 方案**:
+     *   ① 把 src 向下页对齐，算出覆盖 len 的页数
+     *   ② `mincore()` 查询这些页是否在内存中
+     *   ③ 通过才 `memcpy`
+     *
+     * **诚实边界**:
+     *   `mincore` 检查的是"**页是否在物理内存中**"，
+     *   严格来说不保证"可读"（映射存在但 PROT_NONE 时仍可能故障）。
+     *   => 本实现是 **"尽力而为的安全读"**，不是绝对保证。
+     *      对本用途（读自身已解密代码段）**足够** ——
+     *      因为该段刚刚被 `mprotect` 设为可读可写。
+     */
+    long page;
+    uintptr_t pstart;
+    uintptr_t pend;
+    size_t npages;
+    unsigned char* vec;
+    size_t i;
+
+    if (dst == NULL || src == NULL)
+        return PROT_ERR_INVALID_ARG;
+    if (len == 0)
+        return PROT_OK;
+
+    page = sysconf(_SC_PAGESIZE);
+    if (page <= 0)
+        return PROT_ERR_UNSUPPORTED;
+
+    pstart = (uintptr_t)src & ~((uintptr_t)page - 1u);
+    pend = ((uintptr_t)src + len + (uintptr_t)page - 1u)
+           & ~((uintptr_t)page - 1u);
+    npages = (size_t)((pend - pstart) / (uintptr_t)page);
+    if (npages == 0)
+        npages = 1;
+
+    vec = (unsigned char*)malloc(npages);
+    if (vec == NULL)
+        return PROT_ERR_INTERNAL;
+
+    if (mincore((void*)pstart, npages * (size_t)page, vec) != 0) {
+        free(vec);
+        return PROT_ERR_INTEGRITY;   /* 未映射 -> 读取会故障 */
+    }
+    for (i = 0; i < npages; i++) {
+        if ((vec[i] & 1u) == 0u) {    /* bit0 = 在内存中 */
+            free(vec);
+            return PROT_ERR_INTEGRITY;
+        }
+    }
+    free(vec);
+
+    memcpy(dst, src, len);
+    return PROT_OK;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 8: 互斥锁（C2，Linux 用 pthread_mutex）
+ * ------------------------------------------------------------------ */
+
+prot_status prot_plat_mutex_init(prot_plat_mutex* m)
+{
+    pthread_mutexattr_t attr;
+    if (m == NULL)
+        return PROT_ERR_INVALID_ARG;
+    /* 用**默认**属性（非递归）—— 与 Windows SRWLOCK 独占语义一致。
+     * 若初始化失败则回退为全零（PTHREAD_MUTEX_INITIALIZER 等价）。 */
+    memset(m, 0, sizeof(*m));
+    if (pthread_mutexattr_init(&attr) != 0)
+        return PROT_ERR_INTERNAL;
+    (void)pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL);
+    if (pthread_mutex_init((pthread_mutex_t*)(void*)m->_opaque,
+                           &attr) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return PROT_ERR_INTERNAL;
+    }
+    (void)pthread_mutexattr_destroy(&attr);
+    return PROT_OK;
+}
+
+void prot_plat_mutex_lock(prot_plat_mutex* m)
+{
+    if (m == NULL)
+        return;
+    (void)pthread_mutex_lock((pthread_mutex_t*)(void*)m->_opaque);
+}
+
+void prot_plat_mutex_unlock(prot_plat_mutex* m)
+{
+    if (m == NULL)
+        return;
+    (void)pthread_mutex_unlock((pthread_mutex_t*)(void*)m->_opaque);
 }
 
 #endif /* PROT_PLATFORM_LINUX */

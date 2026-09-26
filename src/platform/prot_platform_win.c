@@ -387,4 +387,165 @@ size_t prot_plat_host_factors(prot_host_factor* out, size_t capacity)
     return n;
 }
 
+/* ------------------------------------------------------------------ *
+ * 分组 6: NT 原生查询（C0/C1）
+ *
+ * ## 实现策略（**保行为不变**）
+ *   Windows 上**直接调用原生 API**（`NtQueryInformationProcess` 等）——
+ *   与原 `syscall.c` / `antidebug.c` 的行为**逐字一致**。
+ *
+ *   **注意**: 本层**不做** "从 ntdll stub 提取 SSN + 构造直调 stub"
+ *   （那仍由 `src/syscall.c` 负责 —— 它是**Windows 特有的绕 hook 手段**）。
+ *   本层只提供"**查询语义**"。
+ * ------------------------------------------------------------------ */
+
+typedef LONG(WINAPI* plat_ntqip_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+typedef LONG(WINAPI* plat_ntqsi_t)(ULONG, PVOID, ULONG, PULONG);
+
+/* 平台无关 cls -> Windows NT class */
+static ULONG plat_piq_to_nt(uint32_t cls)
+{
+    switch (cls) {
+    case PROT_PIQ_DEBUG_PORT:          return 7u;   /* ProcessDebugPort */
+    case PROT_PIQ_DEBUG_FLAGS:         return 31u;  /* ProcessDebugFlags */
+    case PROT_PIQ_DEBUG_OBJECT_HANDLE: return 30u;  /* ProcessDebugObjectHandle */
+    default: return 0u;
+    }
+}
+
+static plat_ntqip_t plat_ntqip(void)
+{
+    HMODULE h = GetModuleHandleW(L"ntdll.dll");
+    if (h == NULL)
+        return NULL;
+    return (plat_ntqip_t)(void*)GetProcAddress(h,
+                                               "NtQueryInformationProcess");
+}
+
+static plat_ntqsi_t plat_ntqsi(void)
+{
+    HMODULE h = GetModuleHandleW(L"ntdll.dll");
+    if (h == NULL)
+        return NULL;
+    return (plat_ntqsi_t)(void*)GetProcAddress(h,
+                                               "NtQuerySystemInformation");
+}
+
+int prot_plat_nt_query_process(uint32_t cls, void* buf, size_t len,
+                               size_t* ret)
+{
+    plat_ntqip_t fn;
+    ULONG rl = 0;
+    ULONG ntcls = plat_piq_to_nt(cls);
+    LONG st;
+
+    if (buf == NULL)
+        return PROT_NT_ERROR;
+    if (ntcls == 0u)
+        return PROT_NT_UNSUPPORTED;
+
+    fn = plat_ntqip();
+    if (fn == NULL)
+        return PROT_NT_UNSUPPORTED;
+
+    st = fn(GetCurrentProcess(), ntcls, buf, (ULONG)len, &rl);
+    if (ret != NULL)
+        *ret = (size_t)rl;
+    return (st >= 0) ? PROT_NT_OK : PROT_NT_ERROR;
+}
+
+int prot_plat_nt_query_system(uint32_t cls, void* buf, size_t len,
+                              size_t* ret)
+{
+    plat_ntqsi_t fn;
+    ULONG rl = 0;
+    LONG st;
+
+    if (buf == NULL)
+        return PROT_NT_ERROR;
+    if (cls != PROT_SIQ_KERNEL_DEBUGGER)
+        return PROT_NT_UNSUPPORTED;
+
+    fn = plat_ntqsi();
+    if (fn == NULL)
+        return PROT_NT_UNSUPPORTED;
+
+    st = fn(0x23u, buf, (ULONG)len, &rl);   /* SystemKernelDebuggerInformation */
+    if (ret != NULL)
+        *ret = (size_t)rl;
+    return (st >= 0) ? PROT_NT_OK : PROT_NT_ERROR;
+}
+
+uint32_t prot_plat_nt_query_available(void)
+{
+    return (plat_ntqip() != NULL && plat_ntqsi() != NULL) ? 1u : 0u;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 7: 自身映像与安全读取（C2）
+ * ------------------------------------------------------------------ */
+
+void* prot_plat_self_base(void)
+{
+    /* HMODULE 即**加载基址**（Windows 语义） */
+    return (void*)GetModuleHandleW(NULL);
+}
+
+void prot_plat_flush_icache(void* addr, size_t len)
+{
+    if (addr == NULL || len == 0)
+        return;
+    FlushInstructionCache(GetCurrentProcess(), addr, len);
+}
+
+prot_status prot_plat_safe_read(void* dst, const void* src, size_t len)
+{
+    /* ## 用 SEH 实现（与 selfcrypt.c 的原实现**语义等价**）
+     *
+     * 原代码在 selfcrypt.c 内联了 `__try/__except`；
+     * 本函数把它**集中到平台层** —— 逻辑不变，位置变了。
+     */
+    if (dst == NULL || src == NULL)
+        return PROT_ERR_INVALID_ARG;
+    if (len == 0)
+        return PROT_OK;
+
+    __try {
+        memcpy(dst, src, len);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return PROT_ERR_INTEGRITY;
+    }
+    return PROT_OK;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分组 8: 互斥锁（C2）
+ *
+ * Windows 用 `SRWLOCK`（与原 selfcrypt.c 的用法一致）——
+ * 放在 `_opaque` 缓冲里（大小 64 >= sizeof(SRWLOCK) == 8）。
+ * ------------------------------------------------------------------ */
+
+prot_status prot_plat_mutex_init(prot_plat_mutex* m)
+{
+    if (m == NULL)
+        return PROT_ERR_INVALID_ARG;
+    /* SRWLOCK 无需显式初始化（SRWLOCK_INIT 即全零） */
+    memset(m, 0, sizeof(*m));
+    return PROT_OK;
+}
+
+void prot_plat_mutex_lock(prot_plat_mutex* m)
+{
+    if (m == NULL)
+        return;
+    AcquireSRWLockExclusive((PSRWLOCK)(void*)m->_opaque);
+}
+
+void prot_plat_mutex_unlock(prot_plat_mutex* m)
+{
+    if (m == NULL)
+        return;
+    ReleaseSRWLockExclusive((PSRWLOCK)(void*)m->_opaque);
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

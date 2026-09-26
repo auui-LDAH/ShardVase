@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: AGPL-3.0-or-later
  * Copyright (C) 2026 ShardVase contributors
  *
  * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
@@ -11,25 +11,38 @@
  * 在 ntdll 导出 stub 可能被 inline hook 的场景下, 从 stub 字节码中提取
  * syscall 号 (SSN) 并绕开 stub 入口直接 syscall 进入内核。
  *
- * 实现:
- *   1. 定位 ntdll 导出函数 (GetProcAddress, 只读地址, 与 hook 无关)。
- *   2. 在其字节码窗口内扫描 `0F 05` (syscall), 向前找最近的 `B8 <imm32>`
- *      (mov eax, SSN) —— 标准 x64 stub 形态 (Win10/11 均含; 部分版本有
- *      `test byte ptr [7FFE0308],1` 分支, syscall 指令仍唯一)。
- *   3. 在可执行内存生成 12 字节 stub: mov r10,rcx; mov eax,SSN; syscall; ret
- *      (x64 调用约定第 1 参须移入 r10; 第 5+ 参由调用者压栈, stub 不动)。
- *   4. 任何失败 (SSN 提取失败/分配失败) -> 返回 STATUS_UNSUCCESSFUL,
- *      调用方回退 GetProcAddress 路径 —— 与现状等价, 不新增误报面。
+ * ## 平台分支（C1，2026-09-25）
  *
- * 线程安全: 一次性初始化 (InterlockedCompareExchange 自旋), stub 只读后
- * 可并发调用。
+ * **Windows（原实现，逐字保留）** —— 4 步手工绕 hook:
+ *   1. 定位 ntdll 导出函数 (GetProcAddress, 只读地址, 与 hook 无关)
+ *   2. 在字节码窗口内扫描 `0F 05`, 向前找 `B8 <imm32>` (mov eax, SSN)
+ *   3. 运行时生成 12 字节 stub: `mov r10,rcx; mov eax,SSN; syscall; ret`
+ *   4. 调用 stub; 任何失败 -> STATUS_UNSUCCESSFUL, 调用方回退
+ *
+ * **Linux（C1 新增）** —— **不需要上述任何一步**:
+ *   `syscall(SYS_xxx, ...)` 本身就是**直接陷入内核**,
+ *   **不经过任何用户态 stub** -> **天然免疫** LD_PRELOAD / PLT hook。
+ *
+ *   > **Windows 需要"绕"的东西，在 Linux 上根本不存在。**
+ *   > 这不是"降级"，而是**该平台的原生做法本就更直接**。
+ *
+ *   实现: 直接转调平台层 `prot_plat_nt_query_*`
+ *   （Linux 实现读 `/proc/self/status` 的 TracerPid —— 内核提供，
+ *     **用户态无法 hook**，与 Windows 直调的**目的一致**）。
  */
+
+#include "protect/syscall.h"
+#include "protect/prot_platform.h"   /* C1: 跨平台 NT 查询等价物 */
+#include "protect/prot_noise.h"
+#include <stdint.h>   /* C1: uint32_t（非 Windows 分支）*/      /* W1.6 序言噪声 */
+
+/* ================================================================== *
+ * Windows 实现（**原实现，逐字保留**）
+ * ================================================================== */
+#if PROT_PLATFORM == PROT_PLATFORM_WINDOWS
 
 #include <windows.h>
 #include <string.h>
-
-#include "protect/syscall.h"
-#include "protect/prot_noise.h"   /* W1.6 序言噪声 */
 
 #define PROT_SYS_SSN_INVALID 0xFFFFFFFFu
 
@@ -116,24 +129,41 @@ static void sys_init(void)
     }
 }
 
-NTSTATUS prot_sys_nt_query_information_process(HANDLE h, ULONG cls,
-                                               PVOID buf, ULONG len,
-                                               PULONG ret)
+NTSTATUS prot_sys_nt_query_information_process(void* h, uint32_t cls,
+                                               void* buf, uint32_t len,
+                                               uint32_t* ret)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
     sys_init();
-    if (s_stub_qip != NULL)
-        return ((sys_ntqip_t)s_stub_qip)(h, cls, buf, len, ret);
+    if (s_stub_qip != NULL) {
+        /* ## 类型转换（2026-09-25 实测修正）
+         *   接口已平台无关化（`void*`/`uint32_t`），而 Windows 原生 stub
+         *   需要 `HANDLE`/`ULONG`/`PVOID`/`PULONG`。
+         *   本次**显式转换**（而非依赖隐式）—— 否则 MSVC 报
+         *   **C4057**（"PULONG 在间接程度上与 uint32_t* 的基类型存在细微差异"）
+         *   -> `/WX` 下失败。
+         *
+         *   **为什么** `PULONG` 与 `uint32_t*` 不同:
+         *     `ULONG` = `unsigned long`，而 `uint32_t` = `unsigned int`；
+         *     虽然都是 32 位，但 MSVC 视为**不同基类型**。
+         */
+        return ((sys_ntqip_t)s_stub_qip)((HANDLE)h, (ULONG)cls,
+                                         (PVOID)buf, (ULONG)len,
+                                         (PULONG)ret);
+    }
     return (NTSTATUS)0xC0000001; /* STATUS_UNSUCCESSFUL: 调用方回退 */
 }
 
-NTSTATUS prot_sys_nt_query_system_information(ULONG cls, PVOID buf,
-                                              ULONG len, PULONG ret)
+NTSTATUS prot_sys_nt_query_system_information(uint32_t cls, void* buf,
+                                              uint32_t len, uint32_t* ret)
 {
     PROT_NOISE();   /* W1.6 序言噪声 */
     sys_init();
-    if (s_stub_qsi != NULL)
-        return ((sys_ntqsi_t)s_stub_qsi)(cls, buf, len, ret);
+    if (s_stub_qsi != NULL) {
+        /* 同上的显式转换（避免 C4057） */
+        return ((sys_ntqsi_t)s_stub_qsi)((ULONG)cls, (PVOID)buf, (ULONG)len,
+                                         (PULONG)ret);
+    }
     return (NTSTATUS)0xC0000001; /* STATUS_UNSUCCESSFUL: 调用方回退 */
 }
 
@@ -143,3 +173,78 @@ uint32_t prot_sys_available(void)
     sys_init();
     return (s_stub_qip != NULL && s_stub_qsi != NULL) ? 1u : 0u;
 }
+
+/* ================================================================== *
+ * 非 Windows 实现（C1 新增）
+ * ================================================================== */
+#else
+
+/* ## 为什么不需要 stub
+ *   Windows 的 SSN 提取 + 直调 stub 是为了**绕开可被 hook 的 ntdll stub**。
+ *   Linux 上:
+ *     · `syscall()` 本身即直调 —— **没有 stub 可供 hook**
+ *     · 本模块转调平台层，而平台层读 `/proc/self/status`（**内核提供**）
+ *   => 两者**目的一致**（拿到未被用户态篡改的事实），
+ *      但 Linux 的实现**更直接**（无需自建 stub）。
+ *
+ * ## 语义保持
+ *   返回值约定与 Windows 完全一致:
+ *     · 成功 -> 0
+ *     · 失败 -> 0xC0000001 (STATUS_UNSUCCESSFUL)，**调用方回退**
+ *   => `antidebug.c` 的回退逻辑**无需改动**。
+ */
+
+NTSTATUS prot_sys_nt_query_information_process(void* h, uint32_t cls,
+                                               void* buf, uint32_t len,
+                                               uint32_t* ret)
+{
+    size_t rl = 0;
+    uint32_t pcls;
+    int r;
+    (void)h;   /* 本平台只查**自身进程**（与调用方语义一致）*/
+
+    PROT_NOISE();   /* W1.6 序言噪声 */
+
+    /* NT class -> 平台无关 cls */
+    switch (cls) {
+    case 7u:  pcls = PROT_PIQ_DEBUG_PORT; break;
+    case 31u: pcls = PROT_PIQ_DEBUG_FLAGS; break;
+    case 30u: pcls = PROT_PIQ_DEBUG_OBJECT_HANDLE; break;
+    default:  return (NTSTATUS)0xC0000001;
+    }
+
+    r = prot_plat_nt_query_process(pcls, buf, (size_t)len, &rl);
+    if (r != PROT_NT_OK)
+        return (NTSTATUS)0xC0000001;
+    if (ret != NULL)
+        *ret = (uint32_t)rl;
+    return (NTSTATUS)0;
+}
+
+NTSTATUS prot_sys_nt_query_system_information(uint32_t cls, void* buf,
+                                              uint32_t len, uint32_t* ret)
+{
+    size_t rl = 0;
+    int r;
+
+    PROT_NOISE();   /* W1.6 序言噪声 */
+
+    if (cls != 0x23u)   /* 只支持 SystemKernelDebuggerInformation */
+        return (NTSTATUS)0xC0000001;
+
+    r = prot_plat_nt_query_system(PROT_SIQ_KERNEL_DEBUGGER, buf,
+                                  (size_t)len, &rl);
+    if (r != PROT_NT_OK)
+        return (NTSTATUS)0xC0000001;
+    if (ret != NULL)
+        *ret = (uint32_t)rl;
+    return (NTSTATUS)0;
+}
+
+uint32_t prot_sys_available(void)
+{
+    PROT_NOISE();   /* W1.6 序言噪声 */
+    return prot_plat_nt_query_available();
+}
+
+#endif /* PROT_PLATFORM */
