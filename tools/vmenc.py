@@ -36,6 +36,7 @@ import json
 import os
 import random
 import secrets
+import socket
 import struct
 import sys
 import zlib
@@ -835,11 +836,72 @@ def disk_serial_string():
         return None
 
 
+def hostid_linux():
+    """Linux 的 machine_id（**与 src/hostid.c + prot_platform_linux.c 逐字一致**）。
+
+    ## 为什么需要（L5b 缺口的兑现）
+      原实现 `return 0`（"构建期应在 Windows 上运行"）——
+      但 Linux 侧**必须自洽**: 构建期算的 machine_id 要与运行期
+      `prot_hostid_get()` 相同，否则**序列号永远无效**
+      （实测: `genserial --machine-id auto` 写出 machine_id=0 ->
+       expect2 与运行期不符 -> 授权链断在最后一环）。
+
+    ## 因子来源（**顺序必须与 C 侧一致**）
+      见 `src/platform/prot_platform_linux.c` 的 `prot_plat_host_factors`:
+        ① `/etc/machine-id`（回退 `/var/lib/dbus/machine-id`）
+        ② `hostname`
+      两者都是 **STR 因子**（按 UTF-8 **字节**折叠）。
+
+    ## 折叠（与 src/hostid.c 的 STR 路径一致）
+      `h ^= byte; h *= FNV_PRIME`，逐字节；最后 `h ^= h >> 32`。
+
+    ## 诚实边界
+      · Linux 与 Windows 的指纹**必然不同**（因子不同）—— 设计预期
+      · 同一台机器上**构建期与运行期一致** —— 这才是目标
+      · `/etc/machine-id` 不可读 -> 退化为 hostname 单因子
+        （**与 C 侧一致**: 读不到就少一个因子）
+    """
+    FNV_BASIS = 0xCBF29CE484222325
+    FNV_PRIME = 0x100000001B3
+    M64 = (1 << 64) - 1
+
+    factors = []   # 与 C 侧**同序**: machine-id -> hostname
+
+    for p in ('/etc/machine-id', '/var/lib/dbus/machine-id'):
+        try:
+            with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                v = f.readline().strip()
+            if v:
+                factors.append(v)
+                break
+        except OSError:
+            continue
+
+    try:
+        hn = socket.gethostname()
+        if hn:
+            factors.append(hn)
+    except OSError:
+        pass
+
+    if not factors:
+        return 0   # 与 C 侧一致: 无因子 -> 只余 BASIS（此处返回 0）
+
+    h = FNV_BASIS
+    for fac in factors:
+        for b in fac.encode('utf-8'):
+            h = ((h ^ b) * FNV_PRIME) & M64
+    h ^= h >> 32
+    return h & M64
+
+
 def hostid():
     """machine_id 算法 (与 src/hostid.c prot_hostid_get 一致). 返回 64 位整数."""
     if sys.platform == 'win32':
         return hostid_windows()
-    return 0  # 非 Windows 兜底 (构建期应在 Windows 上运行)
+    # ## C 阶段修正（2026-09-25）: Linux 侧**不能返回 0**
+    #   原 `return 0` 使构建期与运行期**不自洽** -> 授权链断裂。
+    return hostid_linux()
 
 
 # ---------------------------------------------------------------------------

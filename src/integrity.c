@@ -28,6 +28,20 @@
 #include "protect/prot_platform.h"   /* M3: 节表/重定位/IAT 统一抽象 */
 #include "protect/prot_compiler.h"    /* M3: 节/分配宏 */
 
+/* ## 诊断输出（2026-09-25，**opt-in**）
+ *
+ * **为什么 opt-in**: 打印"算出的 CRC / 烧录值 / 节范围"等于把
+ * 完整性校验的**期望值与定位信息**免费交给攻击者 ——
+ * 故默认关闭，仅排障时 `-DPROT_INTEGRITY_DEBUG` 启用。
+ * （与 `selfcrypt.c` 的 `SC_DBG` 同一纪律。）
+ */
+#ifdef PROT_INTEGRITY_DEBUG
+#include <stdio.h>
+#define IDBG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define IDBG(...) ((void)0)
+#endif
+
 /* 烧录结构 (契约 §7.1; hashpatch.py 依赖其名字与布局) */
 typedef struct prot_baked_crc {
     uint8_t magic[8];    /* 标记: PROTCRCP(.text)/PROTCRCD(.rdata)/PROTCRDP(.pdata) */
@@ -284,10 +298,25 @@ static void build_reloc_mask(uint8_t* base, uint8_t* mask,
     size_t n, i;
     (void)base;
 
-    /* IAT / GOT: loader 会写入导入地址 */
-    if (prot_plat_iat_range(&iat)) {
-        if (iat.rva >= rva && iat.rva + iat.size <= (size_t)rva + len)
-            memset(mask + (iat.rva - rva), 0xFF, iat.size);
+    /* IAT / GOT: loader 会写入导入地址
+     *
+     * ## C 阶段修正（2026-09-25）: 改用**多区间**
+     *   ELF 有 `.got` **与** `.got.plt` 两个 GOT 类节，**两者都被 loader
+     *   填充**。原用单区间接口 -> 只掩一个 -> **与构建侧口径不一致** ->
+     *   运行时报"完整性校验失败"（实测）。
+     *   => 用 `prot_plat_iat_ranges` 掩**全部**。
+     */
+    {
+        prot_range iats[8];
+        size_t ni = prot_plat_iat_ranges(iats,
+                                         sizeof(iats) / sizeof(iats[0]));
+        size_t k;
+        (void)iat;
+        for (k = 0u; k < ni && k < sizeof(iats) / sizeof(iats[0]); k++) {
+            if (iats[k].rva >= rva &&
+                iats[k].rva + iats[k].size <= (size_t)rva + len)
+                memset(mask + (iats[k].rva - rva), 0xFF, iats[k].size);
+        }
     }
 
     /* 重定位 / .rela.dyn */
@@ -364,13 +393,27 @@ prot_status prot_integrity_check_self(void) {
     uint32_t found = 0u;
 
     base = (uint8_t*)prot_plat_self_base();
+    IDBG("[IDBG] check_self: base=%p\n", (void*)base);
     if (base == NULL)
         return PROT_ERR_INTEGRITY;
 
     nsec = prot_plat_enum_sections(secs, sizeof(secs) / sizeof(secs[0]));
+    IDBG("[IDBG] check_self: nsec=%u (capacity=%u)\n",
+         (unsigned)nsec, (unsigned)(sizeof(secs) / sizeof(secs[0])));
     if (nsec == 0u)
         return PROT_ERR_INTEGRITY;
+    {
+        size_t _k;
+        for (_k = 0u; _k < nsec && _k < 6u; _k++)
+            IDBG("[IDBG]   sec[%u] name=%s rva=0x%x size=%u\n",
+                 (unsigned)_k, secs[_k].name,
+                 (unsigned)secs[_k].rva, (unsigned)secs[_k].size);
+    }
 
+    for (j = 0u; j < 3u; j++)
+        IDBG("[IDBG]   target[%u] = %s\n", (unsigned)j,
+             prot_plat_crc_target_name(j) ? prot_plat_crc_target_name(j)
+                                          : "(null)");
     for (i = 0u; i < nsec && i < sizeof(secs) / sizeof(secs[0]); i++) {
         for (j = 0u; j < 3u; j++) {
             uint32_t crc;
@@ -391,6 +434,10 @@ prot_status prot_integrity_check_self(void) {
             build_reloc_mask(base, mask, (uint32_t)secs[i].rva, len);
             build_selfcrypt_mask(mask, (uint32_t)secs[i].rva, len); /* N1 D1b */
             crc = section_crc_masked(base, mask, (uint32_t)secs[i].rva, len);
+            IDBG("[IDBG] sec=%s rva=0x%x len=%u got=0x%08x want=0x%08x %s\n",
+                 tname, (unsigned)secs[i].rva, (unsigned)len,
+                 (unsigned)crc, (unsigned)read_baked_crc(j),
+                 (crc == read_baked_crc(j)) ? "OK" : "**MISMATCH**");
             if (crc != read_baked_crc(j)) {
                 return PROT_ERR_INTEGRITY;
             }

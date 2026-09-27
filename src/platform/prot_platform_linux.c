@@ -143,15 +143,63 @@ void* prot_plat_alloc(size_t size, prot_page_prot prot)
     return p;
 }
 
-prot_status prot_plat_protect(void* addr, size_t size, prot_page_prot prot)
+prot_status prot_plat_protect(void* addr, size_t size,
+                              prot_page_prot prot)
 {
-    int mp;
-    if (addr == NULL || size == 0)
+    /* ## ⚠️ 页对齐必须**自己做**（2026-09-25 实测根因）
+     *
+     * **根因**: POSIX 的 `mprotect` 要求 `addr` **页对齐** ——
+     *   否则返回 **EINVAL**。而调用方传的是**函数内的任意地址**
+     *   （如 `selfcrypt` 传 `base + 0xc2f2`，1164 字节）——
+     *   实测 `VP-FAIL` -> selfcrypt 解密失败 -> 报"完整性校验失败"。
+     *
+     * **Windows 侧为什么没有这个问题**:
+     *   `VirtualProtect` **自动向下对齐**到页边界
+     *   （MSDN: "the address is rounded down to the next page boundary"）
+     *   —— 故 PE 侧从不暴露该差异。
+     *
+     * **=> 平台层必须吸收这个差异**（调用方不该关心页对齐）:
+     *   把 [addr, addr+size) **向外扩展到整页**再 mprotect，
+     *   语义与 Windows **一致**（Windows 也是整页生效）。
+     *
+     * **诚实边界**: 扩展后**相邻数据也被改保护** —— 这是页粒度保护的
+     *   固有性质（Windows 同样如此），两侧行为**等价**。
+     */
+    int prot_native;
+    long pg;
+    uintptr_t a, lo, hi;
+    size_t span;
+
+    if (addr == NULL || size == 0u)
         return PROT_ERR_INVALID_ARG;
-    if (!lin_prot_of(prot, &mp))
-        return PROT_ERR_INVALID_ARG;
-    if (mprotect(addr, size, mp) != 0)
-        return PROT_ERR_UNSUPPORTED;
+
+    switch (prot) {
+    case PROT_PAGE_READ:              prot_native = PROT_READ; break;
+    case PROT_PAGE_READWRITE:         prot_native = PROT_READ | PROT_WRITE;
+                                      break;
+    case PROT_PAGE_EXECUTE:           prot_native = PROT_EXEC; break;
+    case PROT_PAGE_EXECUTE_READ:      prot_native = PROT_READ | PROT_EXEC;
+                                      break;
+    case PROT_PAGE_EXECUTE_READWRITE: prot_native = PROT_READ | PROT_WRITE
+                                                  | PROT_EXEC;
+                                      break;
+    default: return PROT_ERR_INVALID_ARG;
+    }
+
+    pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0)
+        return PROT_ERR_INTERNAL;
+
+    /* 向外扩展到整页（与 Windows 的"向下对齐"等价且更完整）*/
+    a = (uintptr_t)addr;
+    lo = a & ~((uintptr_t)pg - 1u);
+    hi = (a + size + (uintptr_t)pg - 1u) & ~((uintptr_t)pg - 1u);
+    span = (size_t)(hi - lo);
+    if (span == 0u)
+        span = (size_t)pg;
+
+    if (mprotect((void*)lo, span, prot_native) != 0)
+        return PROT_ERR_INTERNAL;
     return PROT_OK;
 }
 
@@ -737,40 +785,166 @@ void prot_plat_mutex_unlock(prot_plat_mutex* m)
 #include <string.h>
 
 /* 从映像基址取 ELF 头 */
-static const Elf64_Ehdr* lin_ehdr(void)
+/* ================================================================== *
+ * ELF 元数据的读取（C 阶段修正，2026-09-25）
+ *
+ * ## ⚠️ 关键事实: **ELF 节表不在内存里**
+ *   实测: 原实现假设"映像基址处是 ELF 头、节表紧随其后" ->
+ *   `nsec = 0`（节枚举失败）-> integrity 报"完整性校验失败"。
+ *
+ *   **两个原因**:
+ *     ① `dl_iterate_phdr` 给的 `dlpi_addr` 对 **PIE** 是**加载偏移**，
+ *        基址处**未必**是 ELF 头
+ *     ② **`e_shoff` 是文件偏移** —— 内核只映射 **PT_LOAD 段**，
+ *        **节表不加载**（这与 PE 不同: PE 的节表在映像内）
+ *
+ * ## 修正后的数据来源（**各取其正确者**）
+ *   | 数据 | 来源 |
+ *   |------|------|
+ *   | 节表（名/偏移/大小/`sh_addr`）| **文件** `/proc/self/exe` |
+ *   | 运行期地址 | `sh_addr + load_bias`（`dlpi_addr`）|
+ *
+ * ## 为什么 `/proc/self/exe`
+ *   · 指向**本进程实际的可执行文件**（即使被重命名也指向打开时的 inode）
+ *   · 始终存在（Linux 提供）-> 无额外依赖
+ *   · **只读**打开 -> 与"最小侵入"一致
+ *
+ * ## 诚实边界
+ *   · `/proc` 未挂载（极简容器）-> 返回 NULL -> 枚举返回 0
+ *     （调用方按"枚举失败"处理，**不误报**）
+ *   · 每次调用重新读文件（简单优先；如需可加缓存）
+ * ================================================================== */
+
+/* 加载偏移（PIE 的 dlpi_addr）。失败返回 0。 */
+static uintptr_t lin_load_bias(void)
 {
-    uint8_t* base = (uint8_t*)prot_plat_self_base();
-    if (base == NULL)
-        return NULL;
-    if (base[0] != 0x7Fu || base[1] != 'E' || base[2] != 'L'
-        || base[3] != 'F')
-        return NULL;
-    if (base[EI_CLASS] != ELFCLASS64)
-        return NULL;
-    return (const Elf64_Ehdr*)base;
+    struct lin_base_ctx ctx;
+    ctx.base = NULL;
+    ctx.found = 0;
+    (void)dl_iterate_phdr(lin_base_cb, &ctx);
+    return ctx.found ? (uintptr_t)ctx.base : (uintptr_t)0;
 }
 
-/* 取节表首地址 */
-static const Elf64_Shdr* lin_shdr_table(void)
+/* 打开自身可执行文件；失败返回 NULL。 */
+static FILE* lin_open_self(void)
 {
-    const Elf64_Ehdr* eh = lin_ehdr();
-    if (eh == NULL || eh->e_shoff == 0 || eh->e_shnum == 0)
-        return NULL;
-    return (const Elf64_Shdr*)((const uint8_t*)eh + eh->e_shoff);
+    FILE* f = fopen("/proc/self/exe", "rb");
+    if (f != NULL)
+        return f;
+    /* 回退: dl_iterate_phdr 的 dlpi_name（主程序通常是空串 ->
+     * 再试 /proc/self/exe 已失败，故此处基本不会成功；
+     * 保留为**显式失败**而非静默返回错误数据）。 */
+    return NULL;
 }
 
-/* 取节名字符串表 */
-static const char* lin_shstrtab(void)
+/* 从文件读整个节表（调用方 free）。
+ *
+ * ⚠️ **注释里绝不能出现"斜杠+星号"两字符组合**（连举例都不行）——
+ *    那会被编译器当作**嵌套注释起始**（GCC `-Wcomment` -> `-Werror`
+ *    直接失败）。本项目第 5 次同类陷阱: 前 4 次分别出现在
+ *    `prot_platform.h`、`prot_platform_linux.c`（两处）、
+ *    `prot_sections.h`；**第 5 次是我在写"解释该陷阱"的注释时又踩了**。
+ *    由 `tools/comment_lint.py` 的 C1 规则抓到（这正是它存在的意义）。
+ *    描述该序列时请用中文表述，不要写出实际字符。
+ *
+ * 输出: 节表指针、条目数（out_num）、条目大小（out_entsize）、
+ *       名字表索引（out_strndx）。
+ * 失败: 返回 NULL 并置 out_num = 0。
+ */
+static Elf64_Shdr* lin_read_shdrs_from_file(size_t* out_num,
+                                            size_t* out_entsize,
+                                            size_t* out_strndx)
 {
-    const Elf64_Ehdr* eh = lin_ehdr();
-    const Elf64_Shdr* sh;
-    if (eh == NULL)
+    FILE* f;
+    Elf64_Ehdr eh;
+    Elf64_Shdr* shdrs;
+    uint64_t shoff;
+    uint16_t shnum, shentsize, shstrndx;
+
+    *out_num = 0u;
+    *out_entsize = 0u;
+    *out_strndx = 0u;
+
+    f = lin_open_self();
+    if (f == NULL)
         return NULL;
-    if (eh->e_shstrndx == SHN_UNDEF || eh->e_shstrndx >= eh->e_shnum)
+
+    if (fread(&eh, 1, sizeof(eh), f) != sizeof(eh)) {
+        fclose(f);
         return NULL;
-    sh = (const Elf64_Shdr*)((const uint8_t*)eh + eh->e_shoff
-                             + (size_t)eh->e_shstrndx * eh->e_shentsize);
-    return (const char*)((const uint8_t*)eh + sh->sh_offset);
+    }
+    if (eh.e_ident[0] != 0x7Fu || eh.e_ident[1] != 'E'
+        || eh.e_ident[2] != 'L' || eh.e_ident[3] != 'F'
+        || eh.e_ident[EI_CLASS] != ELFCLASS64) {
+        fclose(f);
+        return NULL;
+    }
+
+    shoff = eh.e_shoff;
+    shnum = eh.e_shnum;
+    shentsize = eh.e_shentsize;
+    shstrndx = eh.e_shstrndx;
+    if (shoff == 0u || shnum == 0u || shentsize < sizeof(Elf64_Shdr)
+        || (size_t)shnum > 4096u) {
+        fclose(f);
+        return NULL;
+    }
+
+    shdrs = (Elf64_Shdr*)malloc((size_t)shnum * sizeof(Elf64_Shdr));
+    if (shdrs == NULL) {
+        fclose(f);
+        return NULL;
+    }
+    if (fseek(f, (long)shoff, SEEK_SET) != 0
+        || fread(shdrs, sizeof(Elf64_Shdr), (size_t)shnum, f)
+           != (size_t)shnum) {
+        free(shdrs);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+
+    *out_num = (size_t)shnum;
+    *out_entsize = (size_t)shentsize;
+    *out_strndx = (size_t)shstrndx;
+    /* ⚠️ 文件里的 shdr 用的 `sh_offset` 是文件偏移（**正是我们需要的**），
+     * 而 `sh_addr` 是**链接期虚拟地址** -> 加 load_bias 得运行期地址。 */
+    return shdrs;
+}
+
+/* 读节名字符串表到缓冲（调用方 free）；成功写 *out_len。 */
+static char* lin_read_shstrtab(const Elf64_Shdr* shdrs, size_t shnum,
+                               size_t strndx, size_t* out_len)
+{
+    FILE* f;
+    Elf64_Shdr s;
+    char* buf;
+
+    *out_len = 0u;
+    if (shdrs == NULL || strndx >= shnum)
+        return NULL;
+    s = shdrs[strndx];
+    if (s.sh_offset == 0u || s.sh_size == 0u || s.sh_size > (1u << 20))
+        return NULL;
+
+    f = lin_open_self();
+    if (f == NULL)
+        return NULL;
+    buf = (char*)malloc((size_t)s.sh_size + 1u);
+    if (buf == NULL) {
+        fclose(f);
+        return NULL;
+    }
+    if (fseek(f, (long)s.sh_offset, SEEK_SET) != 0
+        || fread(buf, 1, (size_t)s.sh_size, f) != (size_t)s.sh_size) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    buf[s.sh_size] = '\0';
+    *out_len = (size_t)s.sh_size;
+    return buf;
 }
 
 static void lin_copy_name(char* dst, size_t cap, const char* src)
@@ -787,118 +961,134 @@ static void lin_copy_name(char* dst, size_t cap, const char* src)
     dst[i] = '\0';
 }
 
+
+/* 统一的"取节表 + 名字表"（各函数共用；返回 0 表示失败）。
+ * 成功后 shdrs/strtab 需由调用方释放。
+ */
+static int lin_get_sections(Elf64_Shdr** shdrs, size_t* shnum,
+                            size_t* entsize, char** strtab, uintptr_t* bias)
+{
+    size_t strndx = 0u, slen = 0u;
+    *shdrs = NULL;
+    *strtab = NULL;
+    *shnum = 0u;
+    *entsize = 0u;
+    *bias = lin_load_bias();
+    *shdrs = lin_read_shdrs_from_file(shnum, entsize, &strndx);
+    if (*shdrs == NULL)
+        return 0;
+    *strtab = lin_read_shstrtab(*shdrs, *shnum, strndx, &slen);
+    if (*strtab == NULL) {
+        free(*shdrs);
+        *shdrs = NULL;
+        *shnum = 0u;
+        return 0;
+    }
+    return 1;
+}
+
 size_t prot_plat_enum_sections(prot_section_view* out, size_t capacity)
 {
-    const Elf64_Ehdr* eh = lin_ehdr();
-    const Elf64_Shdr* sh = lin_shdr_table();
-    const char* strtab = lin_shstrtab();
-    size_t n = 0;
-    Elf64_Half i;
+    /* ## C 阶段修正（2026-09-25）: 节表**从文件读**
+     *
+     * 原实现假设"内存里有 ELF 头 + 节表" —— 实测 **nsec=0**
+     * （ELF 节表**不加载到内存**，且 PIE 的基址处未必是 ELF 头）。
+     * 见 lin_read_shdrs_from_file 的注释。
+     *
+     * `rva` 语义: `sh_addr + load_bias` = **运行期地址**
+     * （与 Windows 的 `VirtualAddress` 语义不同 —— 那边是 RVA，
+     *  此处调用方 `integrity.c` 用 `base + rva`... 而 base 即 load_bias，
+     *  故若此处返回"运行期地址"会**双重加**）。
+     *
+     * ### ⚠️ 因此这里返回 **RVA**（= `sh_addr`，不加 bias）
+     *   保持与 Windows **完全一致的语义**（调用方统一 `base + rva`）。
+     *   PIE 下 `sh_addr` 数值即 RVA（链接期地址，基址为 0）。
+     */
+    Elf64_Shdr* shdrs = NULL;
+    char* strtab = NULL;
+    size_t shnum = 0u, entsize = 0u, n = 0u, k;
+    uintptr_t bias = 0u;
 
-    if (eh == NULL || sh == NULL)
-        return 0;
+    (void)bias;
+    if (!lin_get_sections(&shdrs, &shnum, &entsize, &strtab, &bias))
+        return 0u;
 
-    for (i = 0; i < eh->e_shnum; i++) {
-        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
-                                                  + (size_t)i
-                                                  * eh->e_shentsize);
+    for (k = 0u; k < shnum; k++) {
+        const Elf64_Shdr* s = &shdrs[k];
         if (s->sh_type == SHT_NULL)
-            continue;   /* 索引 0 是空节 */
+            continue;
+        if (s->sh_name < (1u << 20)
+            && strtab[s->sh_name] != '\0') {
+            /* 有名节 —— 计入 */
+        }
         if (out != NULL && n < capacity) {
             lin_copy_name(out[n].name, PROT_SECTION_NAME_MAX,
-                          strtab ? (strtab + s->sh_name) : NULL);
-            out[n].rva = (size_t)s->sh_addr;      /* 运行期地址（已含基址）*/
+                          strtab + s->sh_name);
+            out[n].rva = (size_t)s->sh_addr;   /* RVA（与 Windows 同语义）*/
             out[n].size = (size_t)s->sh_size;
         }
         n++;
     }
+
+    free(strtab);
+    free(shdrs);
     return n;
 }
 
 size_t prot_plat_reloc_ranges(prot_range* out, size_t capacity)
 {
-    /* ## 枚举 `.rela.dyn` 的**目标区间**
-     *
-     * 每项 `Elf64_Rela` 描述一个需要修正的槽:
-     *   `r_offset`（运行期地址）+ 类型决定宽度。
-     *
-     * **只取会写入的类型**（与 Windows 只取 type 3/10 对应）:
-     *   R_X86_64_RELATIVE(8) / GLOB_DAT(6) / JUMP_SLOT(7) -> 8 字节
-     *
-     * **诚实边界**: 本实现按"节名 `.rela.dyn`"定位（简化）；
-     *   完整实现应解析 `.dynamic` 的 `DT_RELA`/`DT_RELASZ`。
-     *   => 对标准静态/动态链接的 ELF **足够**；对剥离节表的极端情况**会返回 0**
-     *      （那会导致 CRC 恒不匹配 -> **安全侧失败**，不会漏检）。
-     */
-    const Elf64_Ehdr* eh = lin_ehdr();
-    const Elf64_Shdr* sh = lin_shdr_table();
-    const char* strtab = lin_shstrtab();
-    size_t n = 0;
-    Elf64_Half i;
+    /* C 阶段修正: 节表**从文件读**（见 lin_read_shdrs_from_file）。 */
+    Elf64_Shdr* shdrs = NULL;
+    char* strtab = NULL;
+    size_t shnum = 0u, entsize = 0u, n = 0u, k, i;
+    uintptr_t bias = 0u;
 
-    if (eh == NULL || sh == NULL || strtab == NULL)
-        return 0;
+    if (!lin_get_sections(&shdrs, &shnum, &entsize, &strtab, &bias))
+        return 0u;
 
-    for (i = 0; i < eh->e_shnum; i++) {
-        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
-                                                  + (size_t)i
-                                                  * eh->e_shentsize);
+    for (i = 0u; i < shnum; i++) {
+        const Elf64_Shdr* s = &shdrs[i];
         const char* nm = strtab + s->sh_name;
+        size_t cnt, q;
         if (strcmp(nm, ".rela.dyn") != 0 && strcmp(nm, ".rela.plt") != 0)
             continue;
-        {
-            const Elf64_Rela* rel = (const Elf64_Rela*)((const uint8_t*)eh
-                                                        + s->sh_addr);
-            size_t cnt = (size_t)(s->sh_size / sizeof(Elf64_Rela));
-            size_t k;
-            for (k = 0; k < cnt; k++) {
-                uint32_t type = (uint32_t)ELF64_R_TYPE(rel[k].r_info);
-                if (type == R_X86_64_RELATIVE || type == R_X86_64_GLOB_DAT
-                    || type == R_X86_64_JUMP_SLOT) {
-                    if (out != NULL && n < capacity) {
-                        out[n].rva = (size_t)rel[k].r_offset;
-                        out[n].size = 8u;
-                    }
-                    n++;
+        /* ⚠️ 重定位表**在内存里**（PT_LOAD 会映射它）——
+         *   故从 `sh_addr + bias` 读，而非文件偏移。 */
+        if (s->sh_addr == 0u || s->sh_entsize == 0u)
+            continue;
+        cnt = (size_t)(s->sh_size / s->sh_entsize);
+        for (q = 0u; q < cnt; q++) {
+            const Elf64_Rela* rel =
+                (const Elf64_Rela*)(bias + s->sh_addr
+                                    + q * s->sh_entsize);
+            uint32_t type = (uint32_t)ELF64_R_TYPE(rel->r_info);
+            if (type == R_X86_64_RELATIVE || type == R_X86_64_GLOB_DAT
+                || type == R_X86_64_JUMP_SLOT) {
+                /* r_offset 是**运行期地址** -> 转 RVA（减 bias）*/
+                if (out != NULL && n < capacity) {
+                    out[n].rva = (size_t)(rel->r_offset - bias);
+                    out[n].size = 8u;
                 }
+                n++;
             }
         }
     }
+    free(strtab);
+    free(shdrs);
+    (void)k;
     return n;
 }
 
 int prot_plat_iat_range(prot_range* out)
 {
-    /* ## IAT/GOT 定位（简化但可靠）
-     *
-     * **为什么按节名而非解析 `.dynamic`**:
-     *   `DT_PLTGOT` 指向 GOT，但解析 `.dynamic` 需额外代码；
-     *   而 `.got.plt`（或 `.got`）**节名即语义**，且始终存在（有导入时）。
-     *
-     * **诚实边界**: 若二进制被 strip 掉节名 -> 返回 0 ->
-     *   `integrity` 的 IAT 校验会**跳过**（而非误报）。
-     *   这是**安全侧的保守选择**（跳过 < 误杀）。
-     */
-    const Elf64_Ehdr* eh = lin_ehdr();
-    const Elf64_Shdr* sh = lin_shdr_table();
-    const char* strtab = lin_shstrtab();
-    Elf64_Half i;
-
-    if (eh == NULL || sh == NULL || strtab == NULL || out == NULL)
+    /* 等价于"取 iat_ranges 的第一个"（保持向后兼容）。 */
+    prot_range all[8];
+    size_t n = prot_plat_iat_ranges(all, sizeof(all) / sizeof(all[0]));
+    if (n == 0u || out == NULL)
         return 0;
-
-    for (i = 0; i < eh->e_shnum; i++) {
-        const Elf64_Shdr* s = (const Elf64_Shdr*)((const uint8_t*)sh
-                                                  + (size_t)i
-                                                  * eh->e_shentsize);
-        const char* nm = strtab + s->sh_name;
-        if (strcmp(nm, ".got.plt") == 0 || strcmp(nm, ".got") == 0) {
-            out->rva = (size_t)s->sh_addr;
-            out->size = (size_t)s->sh_size;
-            return 1;
-        }
-    }
-    return 0;
+    out->rva = all[0].rva;
+    out->size = all[0].size;
+    return 1;
 }
 
 const char* prot_plat_crc_target_name(unsigned idx)
@@ -1447,6 +1637,40 @@ size_t prot_plat_page_size(void)
 prot_status prot_plat_console_utf8(void)
 {
     return PROT_OK;
+}
+
+/* 全部 GOT 类区间（C 阶段，2026-09-25）。
+ *
+ * ## 为什么必须两个都掩
+ *   `.got` 与 `.got.plt` **都会被 loader 填充**（前者全局偏移、
+ *   后者 PLT 延迟绑定）-> 两者都必须排除在 CRC 之外。
+ *   构建侧（hashpatch）已掩两者；本函数修正运行侧口径以**对齐**。
+ */
+size_t prot_plat_iat_ranges(prot_range* out, size_t capacity)
+{
+    /* C 阶段修正: 节表**从文件读**。返回 **RVA**（与 Windows 同语义）。 */
+    Elf64_Shdr* shdrs = NULL;
+    char* strtab = NULL;
+    size_t shnum = 0u, entsize = 0u, n = 0u, i;
+    uintptr_t bias = 0u;
+
+    if (!lin_get_sections(&shdrs, &shnum, &entsize, &strtab, &bias))
+        return 0u;
+
+    for (i = 0u; i < shnum; i++) {
+        const Elf64_Shdr* s = &shdrs[i];
+        const char* nm = strtab + s->sh_name;
+        if (strcmp(nm, ".got") == 0 || strcmp(nm, ".got.plt") == 0) {
+            if (out != NULL && n < capacity) {
+                out[n].rva = (size_t)s->sh_addr;   /* RVA */
+                out[n].size = (size_t)s->sh_size;
+            }
+            n++;
+        }
+    }
+    free(strtab);
+    free(shdrs);
+    return n;
 }
 
 #endif /* PROT_PLATFORM_LINUX */

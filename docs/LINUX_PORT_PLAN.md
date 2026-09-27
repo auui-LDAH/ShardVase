@@ -1635,3 +1635,100 @@ strgen / indirect）-> **Linux 侧自给自足**。
 ---
 
 *2026-09-25 · B2/B3 完成 + Linux 端到端产出可运行 ELF（4 节烧录 + 节名随机化验收）*
+
+---
+
+## 19. ✅ C 阶段：**Linux 完整运行链路打通**（2026-09-25）—— B 阶段收官
+
+### 19.1 最终结果（**实测输出**）
+
+```
+机器标识:0x183fb0e8a61eb2fa
+license: 1 (tier=1 expires=0)
+**校验通过，欢迎使用！**
+```
+
+**Linux 侧完整链路全部工作**：
+```
+反调试扫描: 通过          <- 12 Windows 对应维度 + Linux 独有（/proc 实现）
+  peb_being_debugged / debug_port / ... / ppid_blacklist / clock_drift_sec
+  dbi_inline_hooks / dbi_frida_agent / dbi_rxrw_regions / dbi_thread_count
+selfcrypt 解密 + II-1 CRC  <- SC_DBG 实测: 5 个函数 CRC 全匹配
+完整性 .text/.rodata/.eh_frame  <- IDBG 实测: 三者 got == want
+license 验签（DER + OpenSSL） <- license: 1（通过）
+VM 校验（4 个 VM 镜像）      <- 校验通过
+```
+
+### 19.2 本轮修复的 **8 个真实缺口**（全部由运行验证暴露）
+
+| # | 缺口 | 症状 | 根因 | 修法 |
+|---|------|------|------|------|
+| 1 | **`mprotect` 未页对齐** | `VP-FAIL` → selfcrypt 失败 | POSIX 要求页对齐；**Windows 的 VirtualProtect 自动对齐**（平台语义差异）| 平台层**自己扩展**到整页 |
+| 2 | **ELF 节表不在内存** | `nsec=0` → 完整性失败 | ① `dlpi_addr` 是加载偏移 ② **`e_shoff` 是文件偏移，节表不加载**（与 PE 不同）| 节表**从 `/proc/self/exe` 读** |
+| 3 | **GOT 掩码口径不一致** | 节 CRC 不符 | 构建侧掩 `.got`+`.got.plt`，运行侧只掩其一 | 新增 `prot_plat_iat_ranges`（**多区间**）|
+| 4 | **公钥格式平台错配** | VM blob 判 `CORRUPT(11)` | Linux 用 DER，但 `license.c` 传 BCRYPT blob | `license.h` 按平台选（**AG5 预言的兑现**）|
+| 5 | **`vmenc.py` hostid 无 Linux 分支** | 序列号永远无效 | `hostid()` 非 Windows 直接 `return 0` | 加 `hostid_linux()`（**逐字对齐 C 侧折叠**）|
+| 6 | **`expect_default.c` 未生成** | 序列号无效 | build.sh 缺 build.ps1 的 N5 步骤 | 补生成（**编译前**）|
+| 7 | **`machine_id` 未重置** | 期望值按他机算 | 版本库文件里是**别的机器**的值（非 0 → 视为显式覆盖）| 构建前置 0（=auto）|
+| 8 | 注释词法陷阱（**第 5 次**）| `-Wcomment` 失败 | 在"解释该陷阱"的注释里**又写了那个序列** | 改用中文表述；`comment_lint` 两次抓到 |
+
+> **缺口 1 与 2 是"平台语义差异"的教科书案例**:
+> 同一接口在两平台的**前置条件不同**（Windows 宽松、POSIX 严格），
+> **平台层的职责正是吸收这些差异**。
+>
+> **缺口 5 是 L5b 记录的"预言兑现"**: 当时如实标注"Linux 因子不同、
+> 指纹必然不同" —— 但**工具侧 `return 0`** 让构建期与运行期
+> **不自洽**，这是**缺陷**而非"预期差异"。
+
+### 19.3 建立的两个**诊断开关**（opt-in 纪律）
+
+| 开关 | 用途 | 为什么 opt-in |
+|------|------|--------------|
+| `-DPROT_SELFCRYPT_DEBUG`（已有）| selfcrypt 解密细节 | 泄漏函数 RVA/密钥/CRC |
+| **`-DPROT_INTEGRITY_DEBUG`（新增）** | 节 CRC 的 got/want | 泄漏期望值与定位信息 |
+
+> 两者都遵循同一纪律: **诊断输出默认关闭**，
+> 否则等于把"定位 + 验证"两个关键环节**免费交给攻击者**。
+
+### 19.4 build.sh 的完整步骤（**Linux 自给自足**）
+
+| 步骤 | 内容 |
+|------|------|
+| 1 | 组合（`compose --shuffle-seed --extra`）|
+| **1.5** | **生成链**: 随机节名 / RSA+DER / genserial / **expect_default** / strgen / indirect / **VM×4 + sign + pack** |
+| 2-3 | 平台层 + 生成文件 |
+| 4 | 编译 + 链接（`-Wl,-Map`）|
+| **4.2-4.4** | 节尺寸归一化（measure→merge→padding→**第二轮回编译**）+ **selfcrypt 加密** |
+| 4.5 | 烧录 CRC（含 selfcrypt 掩码）|
+| 5 | 冒烟 |
+
+### 19.5 诚实边界（**必读**）
+
+| 边界 | 说明 |
+|------|------|
+| **`normalize_tail` 未接线** | 文件尾精确填充（使大小统一）——Linux 侧未做 |
+| **GOT/重定位掩码是"按节名"的简化** | 剥离节表时返回 0 -> **安全侧失败**（不误报）|
+| **Linux 与 Windows 指纹必然不同** | 因子不同（设计预期，L5b 已记录）|
+| **`/etc/machine-id` 不可读时退化** | 只余 hostname 单因子（与 C 侧一致）|
+| **网络能力缺失** | `--blob-url`/`--check-url` 返回 UNSUPPORTED |
+| **数字签名不适用** | Linux 无 signtool 等价物 |
+| **RWX 短窗口** | selfcrypt 解密期页为 EXECUTE_READWRITE（见 §17.8）|
+
+### 19.6 B 阶段**完成度**
+
+| 项 | 状态 |
+|----|------|
+| B0 依赖 | ✅ |
+| B1 Linux 密码学（OpenSSL + DER）| ✅ |
+| B2 `hashpatch` ELF 分支 | ✅ |
+| B3 节名随机化 | ✅（实测无需改工具）|
+| B4 `build.sh`（生成链 + 两轮编译 + 加密 + 烧录）| ✅ |
+| demo 平台化 | ✅ |
+| **端到端产出可运行 ELF** | ✅ |
+| **Linux 完整运行链路（授权通过）** | ✅ |
+| `normalize_tail` 接线 | ⬜ 剩余 |
+| Linux 侧 e2e/attacks 测试套件移植 | ⬜ 剩余 |
+
+---
+
+*2026-09-25 · C 阶段完成: Linux 完整链路打通（授权通过）；修复 8 个真实缺口*

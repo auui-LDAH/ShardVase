@@ -499,6 +499,21 @@ size_t prot_plat_reloc_ranges(prot_range* out, size_t capacity);
  */
 int prot_plat_iat_range(prot_range* out);
 
+/* **全部** 导入地址表类区间（C 阶段，2026-09-25）。
+ *
+ * ## 为什么需要"多区间"
+ *   ELF 有**两个** GOT 类节: `.got`（全局偏移）与 `.got.plt`（PLT 延迟绑定）
+ *   —— **两者都会被 loader 填充**，故都必须掩码。
+ *   而 `prot_plat_iat_range` 只返回**一个**（首个命中）——
+ *   实测导致"完整性校验失败"（构建侧掩了 2 个、运行侧只掩 1 个）。
+ *
+ *   **口径一致性是硬要求**: 构建侧（hashpatch）与运行侧（本层）
+ *   若掩码范围不同 -> CRC 必然不匹配。
+ *
+ * 返回**区间个数**（0 = 无）。
+ */
+size_t prot_plat_iat_ranges(prot_range* out, size_t capacity);
+
 /* **该平台**第 idx 个 CRC 校验目标节的**实际节名**。
  *
  * ## 为什么需要（关键）

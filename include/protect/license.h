@@ -37,6 +37,33 @@ extern "C" {
 extern const uint8_t g_prot_license_pubblob[];
 extern const size_t g_prot_license_pubblob_len;
 
+/* ## 平台公钥选择（C 阶段，2026-09-25 —— AG5 发现的兑现）
+ *
+ * **问题**: `g_prot_license_pubblob` 是 **BCRYPT_RSAPUBLIC_BLOB**
+ *   （Windows 专有: 魔数 + BitLength + exp/mod），
+ *   而 Linux 密码学层用 **DER/SPKI**（`d2i_PUBKEY`）解析
+ *   -> 收到 BCRYPT 格式必然失败 -> 验签失败
+ *   -> 实测: VM blob 被判 **CORRUPT（code=11）**。
+ *
+ * **修法**: 按平台选公钥缓冲 —— 两者由 `vmenc.py keygen`
+ *   **从同一把私钥**同时导出（数学等价）。
+ *
+ * **为什么编译期选**: 两者都是编译期常量数组 -> **零开销、无歧义**。
+ *   密码学路径**不应有"试两种格式"的试探**（那会引入模糊语义）。
+ *
+ * **诚实边界**: 若只生成了一种（旧构建）-> 另一平台**链接失败**
+ *   （显式失败，而非静默用错格式）。
+ */
+#if defined(PROT_PLATFORM) && PROT_PLATFORM == PROT_PLATFORM_WINDOWS
+#  define PROT_LICENSE_PUB     g_prot_license_pubblob
+#  define PROT_LICENSE_PUB_LEN g_prot_license_pubblob_len
+#else
+extern const uint8_t g_prot_pubkey_der[];
+extern const size_t  g_prot_pubkey_der_len;
+#  define PROT_LICENSE_PUB     g_prot_pubkey_der
+#  define PROT_LICENSE_PUB_LEN g_prot_pubkey_der_len
+#endif
+
 /*
  * 构建签名载荷 = serial(ascii) || machine_id(LE64) || PRODUCT(ascii) || tier(1B)
  *             || expires(4B LE, unix; 0=永久)。

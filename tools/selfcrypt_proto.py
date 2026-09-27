@@ -26,6 +26,7 @@ tools/selfcrypt_proto.py — N1 阶段 0 原型 (方案 B: 原位加密)
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 import zlib
@@ -93,6 +94,134 @@ def pe_sections(data):
             'ptr_raw': struct.unpack_from('<I', data, off + 20)[0],
         })
     return secs
+
+
+# ===========================================================================
+# ELF 支持（C 阶段，2026-09-25）
+#
+# ## 三处平台差异（见文件头/提交说明）
+#   ① 节表: pe_sections -> elf_sections
+#   ② map : MSVC /MAP 格式 -> gcc -Wl,-Map 格式
+#   ③ 函数边界: PE .pdata(unwind) -> **ELF 符号表**（更直接）
+# ===========================================================================
+
+
+def is_elf(data):
+    return (len(data) >= 64 and data[0:4] == b'\x7fELF'
+            and data[4] == 2 and data[5] == 1)
+
+
+def elf_sections(data):
+    """ELF64-LE 节表 -> 与 `pe_sections` **同字段名**的 dict 列表。
+
+    `virtual_size` 用 `sh_size`（ELF 无 vsize/rawsize 之分）。
+    """
+    if not is_elf(data):
+        raise SelfcryptError('bad ELF signature')
+    e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', data, 0x3A)[0]
+    e_shnum = struct.unpack_from('<H', data, 0x3C)[0]
+    e_shstrndx = struct.unpack_from('<H', data, 0x3E)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise SelfcryptError('ELF has no section table')
+
+    def raw_sh(i):
+        o = e_shoff + i * e_shentsize
+        return struct.unpack_from('<IIQQQQIIQQ', data, o)
+
+    if e_shstrndx < e_shnum:
+        strtab_off = raw_sh(e_shstrndx)[4]
+    else:
+        strtab_off = 0
+
+    secs = []
+    for i in range(e_shnum):
+        (nameoff, stype, flags, addr, off, size, link, info,
+         align, entsize) = raw_sh(i)
+        if strtab_off:
+            end = data.index(b'\x00', strtab_off + nameoff)
+            name = data[strtab_off + nameoff:end].decode('ascii', 'replace')
+        else:
+            name = ''
+        secs.append({
+            'name': name,
+            'virtual_size': size,     # ELF: sh_size 即实际大小
+            'virtual_addr': addr,
+            'size_raw': size,
+            'ptr_raw': off,
+            'index': i,
+            'entsize': entsize,
+            'type': stype,
+        })
+    return secs
+
+
+def parse_elf_map(map_path):
+    """解析 gcc `-Wl,-Map=` 的输出 -> {符号: RVA}。
+
+    ## gcc map 的格式（实测）
+    ```
+    .text           0x0000000000003880     0x799a
+                    0x0000000000003880                prot_vm_run
+    ```
+    符号行: 缩进 + `0x<十六进制地址>` + 符号名。
+    （与 MSVC map 的 `0001:00000020 name 0000000140002000 f obj` **完全不同**）
+
+    ## 地址基准
+    gcc map 给出的是**链接期虚拟地址**（PIE 下从 0 开始），
+    需减去 `__executable_start` 或首节地址才是 RVA —— 但 selfcrypt
+    要的是"**与 PE 的 image_base 相减后一致的 RVA**"。
+    对 **PIE**，`sh_addr` 即 RVA（无固定基址）-> **直接用**。
+    """
+    out = {}
+    if not map_path or not os.path.exists(map_path):
+        return out
+    pat = re.compile(r'^\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$')
+    with open(map_path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            m = pat.match(line)
+            if m:
+                try:
+                    out[m.group(2)] = int(m.group(1), 16)
+                except ValueError:
+                    continue
+    return out
+
+
+def parse_elf_funcs(data, secs, names):
+    """用 **ELF 符号表**求目标函数的 (begin, size)。
+
+    ## 为什么不用 `.eh_frame`（**设计说明**）
+      PE 用 `.pdata`（unwind 三元组）确定函数边界；ELF 的等价物是
+      `.eh_frame`（FDE/CIE 编码）—— **解析复杂且脆弱**。
+      而 `.symtab` 直接给出 `STT_FUNC` 的 `st_value` + **`st_size`**
+      -> **更简单、更精确**（PE 的 .pdata 也需要靠 unwind 反推大小）。
+      => **"更优的等价手段"**，如实标注。
+
+    返回 {名: (begin, size)}（仅含 `names` 里要求的）。
+    """
+    sym = next((s for s in secs if s['name'] == '.symtab'), None)
+    strt = next((s for s in secs if s['name'] == '.strtab'), None)
+    if sym is None or strt is None:
+        raise SelfcryptError('no .symtab/.strtab (无法定位函数)')
+    entsize = sym['entsize'] or 24
+    cnt = sym['size_raw'] // entsize
+    strtab = data[strt['ptr_raw']:strt['ptr_raw'] + strt['size_raw']]
+    out = {}
+    for i in range(cnt):
+        o = sym['ptr_raw'] + i * entsize
+        if o + entsize > len(data):
+            break
+        st_name, st_info, st_other, st_shndx, st_value, st_size = \
+            struct.unpack_from('<IBBHQQ', data, o)
+        stype = st_info & 0xF
+        if stype != 2:      # STT_FUNC
+            continue
+        end = strtab.index(b'\x00', st_name)
+        nm = strtab[st_name:end].decode('ascii', 'replace')
+        if nm in names:
+            out[nm] = (st_value, st_size)
+    return out
 
 
 def parse_map_functions(map_path):
@@ -174,7 +303,9 @@ def main(argv=None):
     try:
         with open(args.exe, 'rb') as f:
             data = bytearray(f.read())
-        secs = pe_sections(data)
+        # ## C 阶段: 按文件类型分派（PE / ELF）
+        is_elf_file = is_elf(data)
+        secs = elf_sections(data) if is_elf_file else pe_sections(data)
         text = next((s for s in secs if s['name'] == '.text'), None)
         # 阶段1(第二支柱): 节名每构建随机。未提供 --sections-json 时回退旧名
         # （旧名含 .protcrypt: 源码写 10 字符，PE 截断为 8 字符 .protcry）。
@@ -186,8 +317,18 @@ def main(argv=None):
         if text is None or prot is None:
             raise SelfcryptError('.text or .protcrypt section missing')
 
-        funcs = parse_map_functions(args.map)
-        pdata = parse_pdata(data, secs)
+        # ## C 阶段: 函数地址与边界按平台取
+        #   PE  : MSVC /MAP 取 RVA + `.pdata`（unwind 三元组）取边界
+        #   ELF : gcc -Wl,-Map 取地址 + **`.symtab`**（STT_FUNC 的
+        #         `st_value`/`st_size`）取边界 —— **更简单更精确**
+        #         （见 parse_elf_funcs 的注释: 不解析 .eh_frame 的理由）
+        funcs = parse_elf_map(args.map) if is_elf_file \
+            else parse_map_functions(args.map)
+        pdata = None if is_elf_file else parse_pdata(data, secs)
+        elf_fninfo = (parse_elf_funcs(data, secs, set(DEFAULT_TARGETS)
+                                      | set(EXT_TARGETS)
+                                      | set(args.extra or []))
+                      if is_elf_file else {})
         seed = args.seed if args.seed is not None else 0x4E31504245474D21
 
         entries = []
@@ -208,12 +349,25 @@ def main(argv=None):
                 skipped_targets.append(name)
                 continue
             rva = funcs[name]
-            if rva not in pdata:
-                # .pdata 缺失通常是内联/ICF 导致, 与组合无关 -> 始终报错
-                # (保持 P0 严格性: 静默漏加密是不可接受的)
-                raise SelfcryptError('%s: no .pdata entry (rva=0x%x)' % (name, rva))
-            end, _ = pdata[rva]
-            size = end - rva
+            if is_elf_file:
+                # ELF: 边界来自符号表（st_value/st_size）—— 直接给出精确大小
+                info = elf_fninfo.get(name)
+                if info is None:
+                    raise SelfcryptError(
+                        '%s: no STT_FUNC symbol (rva=0x%x)' % (name, rva))
+                sym_rva, sym_size = info
+                if sym_rva != rva:
+                    # map 与符号表地址不一致 -> 以符号表为准（更权威）
+                    rva = sym_rva
+                size = sym_size
+            else:
+                if rva not in pdata:
+                    # .pdata 缺失通常是内联/ICF 导致, 与组合无关 -> 始终报错
+                    # (保持 P0 严格性: 静默漏加密是不可接受的)
+                    raise SelfcryptError(
+                        '%s: no .pdata entry (rva=0x%x)' % (name, rva))
+                end, _ = pdata[rva]
+                size = end - rva
             # 防御 (2026-08-29): pdata 大小不得跨越 .text 段尾 (跨界会写坏
             # 邻节数据 -> 间歇性 TAMPERED/崩溃). 裁剪到段尾并校验下限.
             text_end_rva = text['virtual_addr'] + text['size_raw']

@@ -1168,4 +1168,20 @@ prot_status prot_plat_console_utf8(void)
     return PROT_OK;
 }
 
+/* Windows 只有**一个** IAT 区间（数据目录 12）——
+ * 等价于 `prot_plat_iat_range`，此处仅为**接口对齐**。 */
+size_t prot_plat_iat_ranges(prot_range* out, size_t capacity)
+{
+    prot_range one;
+    if (capacity == 0u)
+        return prot_plat_iat_range(&one) ? 1u : 0u;
+    if (!prot_plat_iat_range(&one))
+        return 0u;
+    if (out != NULL) {
+        out[0].rva = one.rva;
+        out[0].size = one.size;
+    }
+    return 1u;
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

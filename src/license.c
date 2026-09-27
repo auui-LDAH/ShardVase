@@ -32,6 +32,7 @@
  * (BCRYPT_RSAPUBLIC_BLOB, 嵌入二进制)。
  */
 
+#include "protect/prot_platform.h"   /* C 阶段: 平台公钥选择 */
 #include "protect/license.h"
 #include "protect/prot_crypto.h"    /* L2: 密码学抽象层 */
 #include "protect/prot_noise.h"   /* W1.6 序言噪声 */
@@ -79,13 +80,14 @@ int prot_license_verify(const uint8_t* msg, size_t msg_len,
      *
      *   **正确判据是长度**（长度 0 才表示"无公钥"）。
      */
-    if (g_prot_license_pubblob_len == 0u)
+    /* C 阶段: 用**平台公钥**的长度（Windows: BCRYPT blob；Linux: DER）*/
+    if (PROT_LICENSE_PUB_LEN == 0u)
         return 0;
     if (msg == NULL || msg_len == 0u || sig == NULL || sig_len != PROT_SIG_LEN)
         return 0;
 
     return prot_crypto_rsa_verify_sha256(
-        (const void*)(uintptr_t)g_prot_license_pubblob,
-        (size_t)g_prot_license_pubblob_len,
+        (const void*)(uintptr_t)PROT_LICENSE_PUB,
+        (size_t)PROT_LICENSE_PUB_LEN,
         msg, msg_len, sig, sig_len);
 }
