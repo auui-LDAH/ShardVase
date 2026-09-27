@@ -127,6 +127,27 @@ def run_all(skip_build=False, quiet=False, readonly=False):
         if not quiet:
             print('  %s 授权链' % ('ok  ' if ok else 'FAIL'))
 
+    # ③b VM 合约测试（vmc 的 Linux 移植）—— 第 7 项
+    #
+    # ## 依据
+    #   `tools/vmc_linux.py` 复刻 `tests/vmc_tests.py` 的流程，
+    #   用例**直接复用**其 CASES（不重新解析源码 -> 不漂移）。
+    #   平台差异仅一处: runner 的 `sscanf_s` -> 自包含十六进制解析。
+    vmc_py = os.path.join(REPO, 'tools', 'vmc_linux.py')
+    if os.path.exists(vmc_py):
+        r3 = subprocess.run([sys.executable, '-X', 'utf8', vmc_py, '--quiet'],
+                            capture_output=True, timeout=1800, cwd=REPO)
+        o3 = (r3.stdout + r3.stderr).decode('utf-8', 'replace')
+        m3 = re.search(r'\[vmc_linux\] \w+: (\d+)/(\d+)', o3)
+        ok3 = (r3.returncode == 0)
+        results.append(('VM 合约测试 (vmc)',
+                        ok3,
+                        ('%s/%s' % m3.groups()) if m3 else '无法解析'))
+        if not quiet:
+            print('  %s VM 合约测试 (vmc) %s'
+                  % ('ok  ' if ok3 else 'FAIL',
+                     ('%s/%s' % m3.groups()) if m3 else ''))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）
@@ -274,6 +295,15 @@ def selftest():
     rc, o = wsl(cmd3, timeout=600)
     case('T4 **篡改产物被检出**（负向）',
          ('校验通过' not in o) or ('篡改' in o) or ('失败' in o))
+
+    # T5: vmc 的**负向自检**（假断言用例应被拒）
+    vmc_py = os.path.join(REPO, 'tools', 'vmc_linux.py')
+    if os.path.exists(vmc_py):
+        r5 = subprocess.run([sys.executable, '-X', 'utf8', vmc_py,
+                             '--selftest'],
+                            capture_output=True, timeout=1800, cwd=REPO)
+        o5 = (r5.stdout + r5.stderr).decode('utf-8', 'replace')
+        case('T5 vmc 假断言被拒（负向）', r5.returncode == 0)
 
     print()
     print('=' * 62)
