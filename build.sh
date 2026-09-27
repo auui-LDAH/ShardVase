@@ -79,18 +79,31 @@ LDFLAGS="-lcrypto -lpthread"
 say "步骤 1: 组合 '$COMPOSITION' -> 源文件清单"
 command -v "$PY" >/dev/null 2>&1 || die "找不到 $PY"
 
-# B 阶段（2026-09-25）: 构建盐 —— 用于**确定性打乱源文件链接顺序**。
-#   · 未设时: 每次构建随机生成（地址抖动）
-#   · 可复现构建: 需显式设 BUILD_SALT（同盐 -> 同顺序 -> 同产物）
-#   （与 build.ps1 的 $buildSalt 语义一致）
-BUILD_SALT="${BUILD_SALT:-0x$(od -An -N8 -tx8 /dev/urandom 2>/dev/null | tr -d ' \n')}"
-[ -n "$BUILD_SALT" ] && [ "$BUILD_SALT" != "0x" ] || BUILD_SALT="0x0"
-say "  构建盐: $BUILD_SALT（打乱源文件链接顺序）"
+# ## 顺序随机化: **默认关**（2026-09-25 实测教训）
+#   实测: 开启后**多数布局让程序崩溃**（`--version` 成功但完整启动崩
+#   0xC0000005，发生在 license 校验之后 —— selfcrypt 解密路径）。
+#   根因: selfcrypt 的**页分离保证（S1）是布局相关的** ——
+#   源文件顺序变化会移动 `.text` 内各贡献的相对位置，可能让启动路径
+#   与加密段同页 -> VirtualProtect(RW) 禁执行 -> 崩溃。
+#   => 默认关闭；需要时 `PROT_SHUFFLE_SEED=0x... bash build.sh`。
+SHUFFLE_ARGS=()
+if [ -n "${PROT_SHUFFLE_SEED:-}" ]; then
+  SHUFFLE_ARGS=(--shuffle-seed "$PROT_SHUFFLE_SEED")
+  say "  顺序随机化**已启用**（seed=$PROT_SHUFFLE_SEED）—— 实验特性"
+fi
+
+# 尾部文件并入统一清单（与原 build.ps1 的 cl 尾部**完全一致**）
+EXTRA_ARGS=()
+for ex in demo/main.c demo/gen/strings.c \
+          demo/gen/license_pubkey.c demo/gen/indirect_table.c \
+          demo/gen/expect_default.c; do
+  EXTRA_ARGS+=(--extra "$ex")
+done
 
 "$PY" tools/compose.py "$COMPOSITION" \
       --header-out demo/gen/prot_modconfig.h \
       --sources-out build/_composition_srcs.txt \
-      --shuffle-seed "$BUILD_SALT" \
+      "${SHUFFLE_ARGS[@]}" "${EXTRA_ARGS[@]}" \
   || die "compose.py 失败"
 
 # 读清单（**过滤空行**）

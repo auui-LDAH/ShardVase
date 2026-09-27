@@ -436,12 +436,30 @@ $compSrcList = 'build\_composition_srcs.txt'
 # 原实现在 $compSrcJoined 后**固定追加**这些文件 -> 尾部前缀恒定
 # -> 尾部符号（255 个字符串字面量 + main.c 等）**位置锁死**
 # -> M1 实测 16.9%。并入打乱后应显著下降。
+# ⚠️ 必须与**原 cl 尾部完全一致**（不含 prot_pubkey_der.c —— 那是
+#   Linux 侧用的 DER 公钥，原 Windows cl 命令从未链接它）。
 $compExtras = @('demo\main.c', 'demo\gen\strings.c',
-                'demo\gen\prot_pubkey_der.c', 'demo\gen\license_pubkey.c',
+                'demo\gen\license_pubkey.c',
                 'demo\gen\indirect_table.c', 'demo\gen\expect_default.c')
 $extraArgs = @()
 foreach ($ex in $compExtras) { $extraArgs += @('--extra', $ex) }
-& $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList --shuffle-seed $buildSalt @extraArgs
+# ## 顺序随机化: **默认关**（2026-09-25 实测教训）
+#
+# 实测: 开启后**多数布局让程序崩溃**（`--version` 成功但完整启动
+#   崩 0xC0000005，发生在 license 校验之后的 selfcrypt 解密路径）。
+#   根因: selfcrypt 的**页分离保证（S1）是布局相关的** ——
+#   源码顺序变化会移动 `.text` 内各贡献的相对位置，可能让**启动路径**
+#   与加密段同页 -> VirtualProtect(RW) 禁执行 -> 崩溃。
+#
+# => **默认不打乱**（恢复验证过的正确行为）；需要时显式设
+#    `$env:PROT_SHUFFLE_SEED` 启用（供 selfcrypt 改造后使用）。
+if ($env:PROT_SHUFFLE_SEED) {
+    $shuffleArgs = @('--shuffle-seed', $env:PROT_SHUFFLE_SEED)
+    Write-Host ("build: 顺序随机化**已启用**（seed={0}）—— 实验特性" -f $env:PROT_SHUFFLE_SEED)
+} else {
+    $shuffleArgs = @()
+}
+& $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList @shuffleArgs @extraArgs
 if ($LASTEXITCODE -ne 0) { throw "build FAILED: compose.py ($compName)" }
 $compSrcs = @(Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() } |
               ForEach-Object { $_.Trim() -replace '/', '\' })
