@@ -1432,4 +1432,11 @@ prot_status prot_plat_http_get_mem(const char* url, char* buf, size_t cap,
     return PROT_ERR_UNSUPPORTED;
 }
 
+/* 平台层: 页大小（C2 后续，2026-09-25）。 */
+size_t prot_plat_page_size(void)
+{
+    long p = sysconf(_SC_PAGESIZE);
+    return (p > 0) ? (size_t)p : (size_t)4096u;
+}
+
 #endif /* PROT_PLATFORM_LINUX */

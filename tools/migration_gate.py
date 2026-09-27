@@ -121,36 +121,68 @@ def _build(seedfile, salt, out_dir, tag):
 
 
 def measure(quiet=False):
-    """返回 (m3_rate, m1_rate, detail) 或 (None, None, 原因)。"""
+    """多次（3 对）测量 M1/M3，取**中位数**（2026-09-25 稳健性修正）。
+
+    ## 为什么从"单对"改为"多对取中位数"
+      实测 4 对（8 次构建）: M1 = 47.3% / 0.0% / 7.8% / 0.0%
+        · 47.3% 那一对: **两构建的 `vm.c` 同为末位**（概率 ~0.2% 的
+          同位巧合）-> `vm.c` 的 55/129 个函数地址全部相同 -> 虚高
+      **单对测量对巧合过敏** -> 门禁会**误判**。
+      => 与 P5 教训同类（单样本判据 + 巧合 = 不可靠）。
+      修法: **3 对取中位数**（对离群稳健），**阈值不变**（12%）。
+
+    ## 诚实边界
+      · 构建次数 2 -> 6（门禁变慢，换来可信判定）
+      · 若多数对都超阈值 -> 中位数如实反映（不掩盖真实问题）
+    """
+    import statistics
+
+    pairs = []
+    detail_last = ''
     tmp = tempfile.mkdtemp(prefix='miggate_')
     try:
-        sa, sb = _seed_files(tmp)
-        if not _build(sa, '0x11111111', tmp, 'A'):
-            return None, None, '构建 A 失败'
-        if not _build(sb, '0xAAAAAAAA', tmp, 'B'):
-            return None, None, '构建 B 失败'
-        r = winproc.run([PY, '-X', 'utf8',
-                            os.path.join(REPO, 'tools', 'migration_cost.py'),
-                            os.path.join(tmp, 'A.exe'),
-                            os.path.join(tmp, 'B.exe'),
-                            '--map-a', os.path.join(tmp, 'A.map'),
-                            '--map-b', os.path.join(tmp, 'B.map')],
-                           capture_output=True, cwd=REPO)
-        o = (r.stdout + r.stderr).decode('utf-8', 'replace')
-        m3 = re.search(r'保护函数命中: (\d+) / (\d+) \(([\d.]+)%\)', o)
-        m1 = re.search(r'硬编码地址可复用率\(函数, 门禁口径\): ([\d.]+)%', o)
-        if not m1:   # 回退: 旧格式
-            m1 = re.search(r'硬编码地址可复用率: ([\d.]+)%', o)
-        if not m3 or not m1:
-            return None, None, '度量解析失败'
+        for k in range(3):
+            sa = os.path.join(tmp, 'seedA%d.json' % k)
+            sb = os.path.join(tmp, 'seedB%d.json' % k)
+            json.dump({'tag': 'A%d' % k}, open(sa, 'w'))
+            json.dump({'tag': 'B%d' % k}, open(sb, 'w'))
+            salt_a = '0x%08X' % (0x11111111 * (k + 1) & 0xFFFFFFFF)
+            salt_b = '0x%08X' % (0xAAAAAAAA * (k + 1) & 0xFFFFFFFF)
+            if not _build(sa, salt_a, tmp, 'A%d' % k):
+                return None, None, '构建 A%d 失败' % k
+            if not _build(sb, salt_b, tmp, 'B%d' % k):
+                return None, None, '构建 B%d 失败' % k
+            r = winproc.run(
+                [PY, '-X', 'utf8',
+                 os.path.join(REPO, 'tools', 'migration_cost.py'),
+                 os.path.join(tmp, 'A%d.exe' % k),
+                 os.path.join(tmp, 'B%d.exe' % k),
+                 '--map-a', os.path.join(tmp, 'A%d.map' % k),
+                 '--map-b', os.path.join(tmp, 'B%d.map' % k)],
+                capture_output=True, cwd=REPO)
+            o = (r.stdout + r.stderr).decode('utf-8', 'replace')
+            m3 = re.search(r'保护函数命中: (\d+) / (\d+) \(([\d.]+)%\)', o)
+            m1 = re.search(
+                r'硬编码地址可复用率\(函数, 门禁口径\): ([\d.]+)%', o)
+            if not m1:
+                m1 = re.search(r'硬编码地址可复用率: ([\d.]+)%', o)
+            if not m3 or not m1:
+                return None, None, '度量解析失败'
+            pairs.append((float(m3.group(3)), float(m1.group(1))))
+            detail_last = o
+            if not quiet:
+                print('  第 %d 对: M3=%5.1f%%  M1=%5.1f%%'
+                      % (k + 1, float(m3.group(3)), float(m1.group(1))))
+        m1_med = statistics.median([p[1] for p in pairs])
+        m3_med = statistics.median([p[0] for p in pairs])
         if not quiet:
-            print('  M3 保护函数特征命中: %s/%s (%s%%)'
-                  % (m3.group(1), m3.group(2), m3.group(3)))
-            print('  M1 地址复用率:       %s%%' % m1.group(1))
-        return float(m3.group(3)), float(m1.group(1)), o
+            print('  -> 中位数（3 对）: M3=%.1f%%  M1=%.1f%%'
+                  % (m3_med, m1_med))
+        # ⚠️ 返回顺序必须与调用方一致: **(m3, m1, detail)**
+        #   （初版误写为 (m1, m3) -> 打印时两项互换，已修）
+        return m3_med, m1_med, detail_last
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
 
 def selftest():
     """负向测试: 阈值判定必须能抓错。

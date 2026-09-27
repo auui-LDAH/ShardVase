@@ -453,11 +453,21 @@ foreach ($ex in $compExtras) { $extraArgs += @('--extra', $ex) }
 #
 # => **默认不打乱**（恢复验证过的正确行为）；需要时显式设
 #    `$env:PROT_SHUFFLE_SEED` 启用（供 selfcrypt 改造后使用）。
-if ($env:PROT_SHUFFLE_SEED) {
-    $shuffleArgs = @('--shuffle-seed', $env:PROT_SHUFFLE_SEED)
-    Write-Host ("build: 顺序随机化**已启用**（seed={0}）—— 实验特性" -f $env:PROT_SHUFFLE_SEED)
-} else {
+# ## 2026-09-25 更新: **默认开启**（selfcrypt 页自伤已修复）
+#
+# 修复内容（src/selfcrypt.c）:
+#   ① 先恢复页为 RX **再** flush icache（消除"在 RW 页上执行"窗口）
+#   ② 解密窗口内**恒用 EXECUTE_READWRITE** -> 与谁同页都不会取指失败
+#   实测: 原崩溃盐修复；4 盐 × e2e + attacks = **0 失败**
+#         （修复前 3/4 盐崩溃、78 项失败）
+#
+# 显式设 `PROT_SHUFFLE_SEED=0` 可**关闭**（回归诊断用）。
+if ($env:PROT_SHUFFLE_SEED -eq '0') {
     $shuffleArgs = @()
+    Write-Host 'build: 顺序随机化**已关闭**（PROT_SHUFFLE_SEED=0）'
+} else {
+    $seed = if ($env:PROT_SHUFFLE_SEED) { $env:PROT_SHUFFLE_SEED } else { $buildSalt }
+    $shuffleArgs = @('--shuffle-seed', $seed)
 }
 & $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList @shuffleArgs @extraArgs
 if ($LASTEXITCODE -ne 0) { throw "build FAILED: compose.py ($compName)" }

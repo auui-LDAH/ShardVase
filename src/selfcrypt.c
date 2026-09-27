@@ -146,10 +146,47 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
     SC_DBG("[SCDBG]   rva=0x%x len=%u k=0x%llx crc=0x%x dst=%p\n",
            rva, len, (unsigned long long)k, crc, (void*)dst);
     SC_DBG("[SCDBG]   PRE-VP\n");
-    /* C2: VirtualProtect -> prot_plat_protect（Linux 用 mprotect） */
-    if (prot_plat_protect(dst, len, PROT_PAGE_READWRITE) != PROT_OK) {
-        SC_DBG("[SCDBG]   VP-FAIL\n");
-        return PROT_ERR_INTERNAL;
+    /* ## ② 同页兜底（2026-09-25）: 若**我们自己**与目标页同页 -> 用 RWX
+     *
+     * **为什么必须兜底**: 即使顺序修正后，`sc_xor_range`/CRC 循环
+     *   是**函数调用** —— 若它们的代码与 `dst` **落在同一 4KB 页**，
+     *   页被设为 RW（禁执行）期间执行它们 -> **仍然崩**。
+     *
+     * 判定: 目标页范围 = [dst 页起始, (dst+len-1) 页起始]；
+     *   若**本函数地址**在其中 -> 同页。
+     *
+     * 处置: 该次操作使用 `PROT_PAGE_EXECUTE_READWRITE`（保证可执行），
+     *   结束后**立即**恢复 RX（见函数末尾）。
+     *
+     * **诚实边界**: 短暂存在 RWX 页（该布局下）。彻底方案见文件头注释
+     *   的"后续工作"（逐页判断 / 解密桩独立分页）。
+     */
+    {
+        /* ## 恒用 RWX（2026-09-25 第二次修正 —— **布局无关**）
+         *
+         * ### 第一版为什么不够（实测）
+         *   初版只比较 `&sc_do_range` 是否与目标同页。但 RW 窗口内
+         *   还会执行: `sc_xor_range`、CRC 循环、`malloc/free`、
+         *   `prot_plat_safe_read` —— **任一与目标同页即崩**。
+         *   实测: 原崩溃盐修好，但 3/4 盐仍崩（崩溃点转移）。
+         *
+         * ### 本版: 窗口内**页保持可执行**
+         *   `EXECUTE_READWRITE` -> 无论谁与目标同页都不会取指失败；
+         *   窗口结束**立即**恢复 `EXECUTE_READ`（再 flush icache）。
+         *
+         * ### 诚实边界
+         *   · 窗口内存在**短暂 RWX 页**（理论上可被扫描检测）
+         *   · 窗口极小: 一次 XOR + CRC 遍历，随即恢复
+         *   · **原设计避免了 RWX，但依赖布局（S1 页分离）**——
+         *     而布局依赖已被证明不可靠。**两害相权**取其不崩。
+         *   · **彻底方案（后续）**: 逐页判定（整页纯加密段才用 RW），
+         *     或把解密桩固定在独立节并强制分页。
+         */
+        if (prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READWRITE)
+            != PROT_OK) {
+            SC_DBG("[SCDBG]   VP-FAIL\n");
+            return PROT_ERR_INTERNAL;
+        }
     }
     SC_DBG("[SCDBG]   VP-OK\n");
     sc_xor_range(dst, len, k);
@@ -206,12 +243,24 @@ static prot_status sc_do_range(uint32_t idx, int decrypt)
             }
         }
     }
-    /* C2: FlushInstructionCache -> prot_plat_flush_icache
-     * （Linux/x86 上是空操作 —— x86 指令/数据缓存一致） */
-    prot_plat_flush_icache(dst, len);
-    SC_DBG("[SCDBG]   FLUSH-OK\n");
-    (void)prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ);
-    SC_DBG("[SCDBG]   RX-OK\n");
+    /* ## ⚠️ 顺序修正（2026-09-25，S1 同类自伤）
+     *
+     * **原顺序**: `protect(RW) -> XOR -> CRC -> flush_icache -> protect(RX)`
+     *   -> `flush_icache` 在**页仍为 RW（禁执行）**时执行 ->
+     *      **取指失败 -> AV 0xC0000005**（调试器实测: 崩溃符号
+     *      = `prot_plat_flush_icache`，访问类型 = 执行）。
+     *
+     * **新顺序**: 先把页恢复为 RX，**再** flush：
+     *   -> "在 RW 页上执行代码"的窗口**消失**。
+     *
+     * 注: x86 上 `flush_icache` 本身是 no-op；但**调用它**这件事
+     *     需要该页可执行 —— 故顺序至关重要。
+     */
+    if (prot_plat_protect(dst, len, PROT_PAGE_EXECUTE_READ) == PROT_OK) {
+        SC_DBG("[SCDBG]   RX-OK\n");
+        prot_plat_flush_icache(dst, len);
+        SC_DBG("[SCDBG]   FLUSH-OK\n");
+    }
     return PROT_OK;
 }
 

@@ -86,10 +86,11 @@ command -v "$PY" >/dev/null 2>&1 || die "找不到 $PY"
 #   源文件顺序变化会移动 `.text` 内各贡献的相对位置，可能让启动路径
 #   与加密段同页 -> VirtualProtect(RW) 禁执行 -> 崩溃。
 #   => 默认关闭；需要时 `PROT_SHUFFLE_SEED=0x... bash build.sh`。
+# ## 2026-09-25: **默认开启**（selfcrypt 页自伤已修复，见 build.ps1 注释）
+#   `PROT_SHUFFLE_SEED=0` 可关闭（回归诊断）。
 SHUFFLE_ARGS=()
-if [ -n "${PROT_SHUFFLE_SEED:-}" ]; then
-  SHUFFLE_ARGS=(--shuffle-seed "$PROT_SHUFFLE_SEED")
-  say "  顺序随机化**已启用**（seed=$PROT_SHUFFLE_SEED）—— 实验特性"
+if [ "${PROT_SHUFFLE_SEED:-x}" != "0" ]; then
+  SHUFFLE_ARGS=(--shuffle-seed "${PROT_SHUFFLE_SEED:-$RANDOM}")
 fi
 
 # 尾部文件并入统一清单（与原 build.ps1 的 cl 尾部**完全一致**）

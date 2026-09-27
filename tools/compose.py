@@ -269,39 +269,25 @@ def shuffle_sources(srcs, seed_hex):
         state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
         return state
 
-    # ## 钉住"产出自定义节"的文件（2026-09-25 实测教训）
+    # ## ⚠️ 曾经的"钉住"已**撤掉**（2026-09-25）
     #
-    # **症状**: 某些随机布局下**连 `--version` 都崩溃**（0xC0000005）。
-    # **推断**: S1 的**页分离保证**（辅助函数 `.protxec` 与 `.text`
-    #   加密段**不同页**，见 `src/selfcrypt.c` 与 `src/prot_sections.h`）
-    #   是**布局相关**的 —— 原固定顺序恰好满足；打乱后可能被打破 ->
-    #   selfcrypt 把**含启动代码的页**设为 RW（禁执行）->
-    #   正在执行的代码立刻崩。
+    # 我曾把 3 个"产出自定义节"的文件（selfcrypt/integrity/antidebug）
+    # **固定在清单末尾**，试图缓解 selfcrypt 的页自伤崩溃。
     #
-    # **修法**: 这些文件的**相对顺序固定**（移到清单尾部），其余照常打乱。
-    #   => 节内容与 `.text` 的相对关系稳定 -> S1 前提不变；
-    #      同时大部分函数仍跨构建移动（抖动保留）。
+    # **实测证明它不足且有害**:
+    #   · 不足: 4 个布局仍崩 3 个
+    #   · **有害**: 钉住使它们的地址**必然不变** —— 实测 M1 残留
+    #     14.7%（19 个未变函数**全部来自这 3 个文件**）
     #
-    # **诚实边界**: 这是**缓解**而非根治 —— 彻底的做法是让 selfcrypt
-    #   **不依赖页分离**（逐页判断/不改变页保护），记为后续工作。
-    PINNED = (
-        'src/selfcrypt.c',    # `.protcry` 密文容器 + PROT_SEC_XEC
-        'src/integrity.c',    # `.protcrc` 烧录表
-        'src/antidebug.c',    # PROT_CODE_SEG(PROT_SEC_XEC)
-    )
-
-    pinned = [s for s in srcs
-              if s.replace('\\', '/') in PINNED]
-    shuffleable = [s for s in srcs
-                   if s.replace('\\', '/') not in PINNED]
-
-    out = list(shuffleable)
+    # **真正的修法**在 `src/selfcrypt.c`（先 RX 后 flush + RW 窗口
+    #   恒用 EXECUTE_READWRITE），已实测 4 盐 × e2e + attacks = **0 失败**。
+    # => 缓解手段撤掉，恢复**全量打乱**。
+    out = list(srcs)
     # Fisher-Yates（确定性版本）
     for i in range(len(out) - 1, 0, -1):
         j = nxt() % (i + 1)
         out[i], out[j] = out[j], out[i]
-    # 钉住的文件按**原相对顺序**附在末尾
-    out += pinned
+    return out
     return out
 
 

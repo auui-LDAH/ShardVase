@@ -91,6 +91,21 @@ typedef enum prot_page_prot {
 /* 分配内存页（返回 NULL 表示失败）。flags 见 PROT_PAGE_ALLOC_*。 */
 void* prot_plat_alloc(size_t size, prot_page_prot prot);
 
+/* 本平台的**页大小**（字节）。
+ *
+ * ## 为什么需要（2026-09-25，selfcrypt 页自伤修复）
+ *   `prot_plat_protect(addr, size, prot)` 的粒度是**整页** ——
+ *   故调用方需要知道页边界，才能判断"**自己的代码是否与目标同页**"
+ *   （若同页，把该页设为 RW/禁执行会**杀死正在执行的自己**）。
+ *   见 `src/selfcrypt.c` 的同页兜底逻辑。
+ *
+ * Windows: `GetSystemInfo().dwPageSize`（通常 4096）
+ * Linux  : `sysconf(_SC_PAGESIZE)`（通常 4096）
+ *
+ * 失败时返回 4096（保守默认）。
+ */
+size_t prot_plat_page_size(void);
+
 /* 改变已有页的保护属性。 */
 prot_status prot_plat_protect(void* addr, size_t size, prot_page_prot prot);
 

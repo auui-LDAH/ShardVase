@@ -1151,4 +1151,12 @@ done:
     return st;
 }
 
+/* 平台层: 页大小（C2 后续，2026-09-25）。 */
+size_t prot_plat_page_size(void)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (si.dwPageSize != 0u) ? (size_t)si.dwPageSize : (size_t)4096u;
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */
