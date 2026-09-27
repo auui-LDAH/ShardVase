@@ -207,6 +207,76 @@ def topo_order(names, reg):
     return out, cycle
 
 
+def shuffle_sources(srcs, seed_hex):
+    """按**构建种子**确定性地打乱源文件**链接顺序**（B 阶段，2026-09-25）。
+
+    ## 为什么需要（**设计冲突的解法**）
+      `gen_padding.py` 的填充把各节尺寸**归一化到统一 baseline**
+      （防"组合指纹" —— 攻击者据节大小判断开了哪些防护）。
+      但那让**函数地址跨构建固定** -> `migration_gate` 的 M1
+      （地址复用率）退化为 **100%**（攻击者硬编码的地址跨构建仍有效）。
+
+      **两个目标本质上看似互斥**:
+        · 防组合指纹 -> 需**节大小稳定**
+        · 防地址复用 -> 需**布局变化**
+
+      **实测发现（vm_unit 手工实验）**:
+    ```
+      源文件顺序 A: .text=94880
+      源文件顺序 B: .text=94880   <- **完全相同**
+      符号 RVA 不同: 963/2257 (42.7%)  <- **地址抖动**
+    ```
+      => **顺序变化不改节大小，但改函数布局** —— **两者兼得**。
+
+    ## 原理
+      · **节大小**由"代码总量"决定 -> 顺序**不影响**
+      · **函数地址**由"链接顺序"决定 -> 顺序**影响**
+      => 天然解耦。
+
+      ## 为什么比 `spread_ratio` 更优
+        `spread_ratio` 试图用"填充量随机"制造抖动 —— 但那**同时改变节大小**
+        （与归一化直接冲突）。顺序随机化**不动大小、只动布局**。
+
+    ## 确定性（**关键 —— 保证可复现构建**）
+      用种子派生的 PRNG（同种子 -> 同顺序）——
+      否则 `repro_check`（同种子必须产出相同字节）会失败。
+
+    ## 诚实边界
+      · 只影响**链接顺序**，**不改任何源码语义**
+      · 单源文件组合**无抖动**（如实：无可打乱的）
+      · `.rdata` 仍会有**小差异**（实测 40 字节）——
+       合并数据的布局连锁效应，量级远小于 `.text`
+    """
+    if not seed_hex or len(srcs) < 2:
+        return srcs
+
+    # 解析种子（接受 0x 前缀 / 纯 hex）
+    s = seed_hex.strip()
+    if s.lower().startswith('0x'):
+        s = s[2:]
+    try:
+        seed = int(s, 16)
+    except ValueError:
+        return srcs   # 非法种子 -> 不打乱（**不静默改变语义**）
+
+    # xorshift64* —— 与项目其它工具同族的确定性 PRNG
+    state = (seed ^ 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+
+    def nxt():
+        nonlocal state
+        state ^= (state << 13) & 0xFFFFFFFFFFFFFFFF
+        state ^= state >> 7
+        state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
+        return state
+
+    out = list(srcs)
+    # Fisher-Yates（确定性版本）
+    for i in range(len(out) - 1, 0, -1):
+        j = nxt() % (i + 1)
+        out[i], out[j] = out[j], out[i]
+    return out
+
+
 def ordered_sources(names, reg):
     """按**协议 ordering**（拓扑）排序源文件；无声明时回退 SOURCE_ORDER。
 
@@ -369,6 +439,21 @@ def main():
     ap.add_argument('--defines-out', help='输出 /D 定义列表 (空格分隔)')
     ap.add_argument('--list', action='store_true', help='列出全部拼装图')
     ap.add_argument('--show', action='store_true', help='打印解析结果')
+    # B 阶段（2026-09-25）: 按构建种子**确定性打乱**源文件链接顺序。
+    #
+    # 用途: 同时满足"节大小归一化"（防组合指纹）与"函数地址抖动"
+    #      （防破解迁移）。详见 shuffle_sources() 的注释。
+    ap.add_argument('--shuffle-seed', dest='shuffle_seed', default=None,
+                    help='按此种子确定性打乱源文件顺序（如 0x1234abcd）')
+    # ## 为什么需要 --extra（2026-09-25 实测根因）
+    #   build.ps1 原把 `demo/main.c`/`demo/gen/*.c` **固定追加**在
+    #   打乱清单之后 -> 尾部文件的前缀是"打乱区的**总和**"（恒定）->
+    #   **尾部符号位置必然锁死**（实测 255 个字符串字面量 + main.c
+    #   的符号全部不变）。
+    #   => 尾部文件也须**并入统一打乱**。
+    ap.add_argument('--extra', action='append', default=[],
+                    dest='extras',
+                    help='额外源文件（并入清单后**一起打乱**，可重复）')
     args = ap.parse_args()
 
     # W3.2: 策略驱动 —— 用户给**策略**，本工具求解出组合
@@ -417,6 +502,9 @@ def main():
                 _f.write(_hdr)
             print('compose: 条件编译头 -> %s' % args.header_out)
         if args.sources_out:
+            # B 阶段: 尾部文件并入后**统一打乱**（见 --extra 注释）
+            _srcs = _srcs + list(args.extras)
+            _srcs = shuffle_sources(_srcs, args.shuffle_seed)
             with open(args.sources_out, 'w', encoding='utf-8', newline='\n') as _f:
                 _f.write('\n'.join(_srcs) + '\n')
             print('compose: 源文件清单 -> %s (%d 个)' % (args.sources_out,
@@ -466,6 +554,9 @@ def main():
             f.write(gen_header(mods, args.composition, reg))
 
     if args.sources_out:
+        # B 阶段: 尾部文件并入后**统一打乱**（见 --extra 注释）
+        srcs = srcs + list(args.extras)
+        srcs = shuffle_sources(srcs, args.shuffle_seed)
         with open(args.sources_out, 'w', encoding='ascii', newline='\n') as f:
             for s in srcs:
                 f.write(s + '\n')

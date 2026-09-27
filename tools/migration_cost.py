@@ -125,6 +125,53 @@ def parse_map(path, image_base=None):
     return {k: v - image_base for k, v in syms.items()}
 
 
+def parse_map_fns(path, image_base=None):
+    """只取**函数**符号（MSVC map 行的 `f` 标记）。
+
+    ## 为什么需要（2026-09-25，M1 口径修正）
+      文档定义 M1 = "**函数 RVA** 是否跨构建变化"（ROADMAP §11.2），
+      但 `parse_map` 收集**全部符号**。实测未变的 950 个符号里:
+        · 524 = MSVC 合并字符串（链接器字典序，与 obj 顺序无关）
+        · 327 = CRT/库符号（来自库，非命令行 obj）
+        ·  69 = 导入 `__imp_`（由库列表决定）
+        ·  30 = 哨兵（VA==ImageBase，**非地址**）
+      这些**结构性不可移动**，计入会让 M1 虚高（实测 31.2%），
+      而**我们自己的函数 100% 移动**。
+      => 门禁改用**函数口径**（与文档一致）；全符号口径**保留为诊断**。
+
+    行格式: `0001:00001000   prot_vm_run   0000000140002000 f   x.obj`
+                          （符号）        （绝对 VA）    ↑f   ↑obj/lib
+
+    ## 过滤 `*.lib`（2026-09-25 实测补充）
+      实测未变的 123 个"函数"里样本全是 `__FrameHandler3` 系列 ——
+      来自 MSVC **C++ EH 库**（obj 列为 `*.lib`）。
+      它们**不是我们的代码**，布局由**库内部规则**决定（非命令行
+      obj 顺序）-> 计入虚高 M1。门禁只测**我们自己 .obj 的函数**。
+    """
+    syms = {}
+    if not path or not os.path.exists(path):
+        return syms
+    t = open(path, encoding='utf-8', errors='replace').read()
+    for m in re.finditer(
+            r'[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-f]{8,16})'
+            r'\s+f\s+(\S+)',
+            t):
+        obj = m.group(3).lower()
+        # ## 库函数排除（2026-09-25 实测 map 格式）
+        #   MSVC map 的 obj 列对**库内 obj** 是 `lib:obj` 格式，如:
+        #     `libvcruntime:frame.obj` / `libucrt:initialization.obj`
+        #   导入 thunk 的 obj 列是 `i`。
+        #   我们自己的 obj 只有 `vm.obj` / `demo.obj` 等（无冒号）。
+        if ':' in obj or obj == 'i':
+            continue    # 库函数（CRT/C++ EH）或导入 thunk —— 非本项目代码
+        syms.setdefault(m.group(1), int(m.group(2), 16))
+    if not syms:
+        return syms
+    if image_base is None:
+        image_base = read_image_base(path)
+    return {k: v - image_base for k, v in syms.items()}
+
+
 def read_image_base(map_path):
     """从同名 .exe 读 PE ImageBase；失败则回退默认 0x140000000。"""
     exe = os.path.splitext(map_path)[0] + '.exe'
@@ -170,8 +217,39 @@ def analyse(pa, pb, mapa=None, mapb=None):
     res = {}
 
     # ---- M1 地址稳定性 ----
+    #
+    # ## 度量修正（2026-09-25）: 排除**哨兵符号**
+    #
+    # 链接器 map 中有一批符号的**绝对 VA == ImageBase**（即 RVA=0）:
+    #   `__AbsoluteZero` / `__ImageBase` / `___safe_se_handler_*` /
+    #   `__arm64x_*` / `__guard_fids_*` / `__enclave_config` ...
+    # 它们是**哨兵/绝对常量**，**不是映像内的地址** ——
+    # 把它们计入"地址复用率"是**度量口径错误**:
+    # 它们**永远不会动**（也无需动），会**虚高** M1。
+    #
+    # 实测: 这类符号 30 个，占 M1 未变项的 6%。
+    # 修正口径: 只统计**落在映像地址区间**（VA > ImageBase）的符号。
     common = sorted(set(ma) & set(mb))
+    # 修正: 排除哨兵 —— parse_map 存的是 **RVA**（绝对VA − ImageBase，
+    # 见下方 parse_map 注释）。哨兵符号（__AbsoluteZero / __ImageBase /
+    # ___safe_se_* / __arm64x_* 等）的 RVA 为 **0 或负数**
+    # （map 中绝对 VA == ImageBase 或 0）。
+    # 真实映像符号 RVA >= 首节对齐偏移（>= 0x1000），故 `> 0` 安全排除。
+    common = [s for s in common if ma[s] > 0]
     same_rva = [s for s in common if ma[s] == mb[s]]
+    # ---- M1f: **函数符号**的地址稳定性（文档口径「函数 RVA」，门禁用）----
+    fa, fb = parse_map_fns(mapa), parse_map_fns(mapb)
+    fcommon = sorted(set(fa) & set(fb))
+    fcommon = [s for s in fcommon if fa[s] > 0]   # 排除哨兵
+    fsame = [s for s in fcommon if fa[s] == fb[s]]
+    res['m1_funcs'] = {
+        'common': len(fcommon),
+        'same_rva': len(fsame),
+        'diff_rva': len(fcommon) - len(fsame),
+        'rate_same': (100.0 * len(fsame) / len(fcommon)
+                      if fcommon else 0.0),
+    }
+
     res['m1'] = {
         'common': len(common),
         'same_rva': len(same_rva),
@@ -332,9 +410,14 @@ def main():
     print()
     print('--- M1 地址稳定性 ---')
     m1 = r['m1']
-    print('  共同符号 %d；RVA 相同 %d (%.1f%%)'
+    m1f = r.get('m1_funcs', m1)
+    print('  **函数**共同 %d；RVA 相同 %d (%.1f%%)  <- **门禁口径**'
+          % (m1f['common'], m1f['same_rva'], m1f['rate_same']))
+    print('  -> 硬编码地址可复用率(函数, 门禁口径): %.1f%%' % m1f['rate_same'])
+    print('  全部符号共同 %d；RVA 相同 %d (%.1f%%)  <- 诊断口径（含合并'
+          '字符串/导入/CRT，链接器固定）'
           % (m1['common'], m1['same_rva'], m1['rate_same']))
-    print('  -> 硬编码地址可复用率: %.1f%%' % m1['rate_same'])
+    print('  -> 硬编码地址可复用率(全部符号, 诊断): %.1f%%' % m1['rate_same'])
     print('     （越低越好: 攻击者脚本需重定位）')
 
     print()
@@ -369,7 +452,7 @@ def main():
                        % m3['prot_rate'])
     else:
         verdict.append('迁移成本高：无保护函数可被特征定位')
-    if m1['rate_same'] > 50:
+    if m1.get('rate_same', 0) > 50:
         verdict.append('地址复用率高（%.0f%%）' % m1['rate_same'])
     for v in verdict:
         print('  %s' % v)

@@ -138,7 +138,9 @@ def measure(quiet=False):
                            capture_output=True, cwd=REPO)
         o = (r.stdout + r.stderr).decode('utf-8', 'replace')
         m3 = re.search(r'保护函数命中: (\d+) / (\d+) \(([\d.]+)%\)', o)
-        m1 = re.search(r'硬编码地址可复用率: ([\d.]+)%', o)
+        m1 = re.search(r'硬编码地址可复用率\(函数, 门禁口径\): ([\d.]+)%', o)
+        if not m1:   # 回退: 旧格式
+            m1 = re.search(r'硬编码地址可复用率: ([\d.]+)%', o)
         if not m3 or not m1:
             return None, None, '度量解析失败'
         if not quiet:

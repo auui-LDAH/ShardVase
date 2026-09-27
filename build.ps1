@@ -419,7 +419,29 @@ $resObj = if ($isRelease) { ' demo\gen\version.res' } else { '' }
 
 $compName = if ($Composition) { $Composition } else { 'full' }
 $compSrcList = 'build\_composition_srcs.txt'
-& $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList
+# B 阶段（2026-09-25）: 用**构建盐**作为打乱种子 —— 源文件链接顺序按构建随机化。
+#
+# ## 为什么（两个防护目标兼得，实测验证）
+#   · **节大小归一化**（防组合指纹）: 顺序**不改**节大小（实测两次顺序
+#     .text 均 = 94880）-> 填充归一化的成果**保持**。
+#   · **函数地址抖动**（防破解迁移）: 顺序**改**函数布局（实测 RVA
+#     变化 42.7%）-> `migration_gate` 的 M1 恢复低值。
+#
+# ## 为什么用 $buildSalt
+#   · 普通构建: 随机（每构建不同 -> 地址变化）
+#   · `-SeedsFile` 可复现构建: 由种子派生（**同种子 -> 同顺序**）
+#   · `repro_check` 因此仍通过（确定性）。
+# ## --extra（2026-09-25）: 尾部文件**并入统一打乱**
+#
+# 原实现在 $compSrcJoined 后**固定追加**这些文件 -> 尾部前缀恒定
+# -> 尾部符号（255 个字符串字面量 + main.c 等）**位置锁死**
+# -> M1 实测 16.9%。并入打乱后应显著下降。
+$compExtras = @('demo\main.c', 'demo\gen\strings.c',
+                'demo\gen\prot_pubkey_der.c', 'demo\gen\license_pubkey.c',
+                'demo\gen\indirect_table.c', 'demo\gen\expect_default.c')
+$extraArgs = @()
+foreach ($ex in $compExtras) { $extraArgs += @('--extra', $ex) }
+& $py tools\compose.py $compName --header-out demo\gen\prot_modconfig.h --sources-out $compSrcList --shuffle-seed $buildSalt @extraArgs
 if ($LASTEXITCODE -ne 0) { throw "build FAILED: compose.py ($compName)" }
 $compSrcs = @(Get-Content -LiteralPath $compSrcList | Where-Object { $_.Trim() } |
               ForEach-Object { $_.Trim() -replace '/', '\' })
@@ -430,7 +452,7 @@ Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs
 # 阶段1(第二支柱): -DPROT_USE_GENERATED_SECTIONS 让 include/protect/
 # prot_sections.h 采用 demo\gen 下的**随机节名**（覆盖其默认值）。
 # 不定义该宏的独立构建（skeleton/examples/tests）沿用默认节名，不受影响。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -515,7 +537,7 @@ if (-not $NoPad) {
     if ($padBody -match '__declspec\(allocate') {
         Write-Host 'build: 应用节填充（二次编译）'
         Set-Content -LiteralPath build\_d9026_cmd.txt -Value $clCmd2 -Encoding UTF8
-        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined demo\main.c demo\gen\strings.c demo\gen\license_pubkey.c demo\gen\indirect_table.c demo\gen\expect_default.c $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I demo\gen /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
         if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (填充后重编译)' }
     } else {
         Write-Host 'build: 无需填充（当前组合已是最大尺寸）'

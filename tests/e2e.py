@@ -159,10 +159,49 @@ def pe_section_raw_offset(path, sec_name):
     raise RuntimeError('%s not found in %s' % (sec_name, path))
 
 
-def make_tampered_copy(sec_name='.text', rel_off=0):
+def make_tampered_copy(sec_name='.text', rel_off=0, from_end=0):
+    """复制 exe 并翻转指定节内某字节。
+
+    ## from_end（2026-09-25 新增）
+      `from_end=1` 表示翻转**该节最后一个字节**。
+      用途见 T4 注释: 布局随机化后 ".text 首字节" 不再是确定的
+      翻转目标（可能落在完整性检查自身的代码上 -> 翻转即崩溃）。
+    """
     dst = os.path.join(BUILD, 'demo_tampered.exe')
     shutil.copyfile(EXE, dst)
-    ro = pe_section_raw_offset(dst, sec_name) + rel_off
+    raw_off = pe_section_raw_offset(dst, sec_name)
+    if from_end:
+        # 从 PE 头读该节 SizeOfRawData -> 末字节
+        with open(dst, 'rb') as f:
+            f.seek(0x3C)
+            pe = struct.unpack('<I', f.read(4))[0]
+            f.seek(pe + 6)
+            nsec = struct.unpack('<H', f.read(2))[0]
+            f.seek(pe + 20)
+            optsz = struct.unpack('<H', f.read(2))[0]
+            tb = pe + 24 + optsz
+            last_off = None
+            for i in range(nsec):
+                f.seek(tb + i * 40)
+                nm = f.read(8).rstrip(b'\x00').decode('ascii', 'replace')
+                if nm == sec_name:
+                    buf = f.read(16)   # VirtualSize, VirtualAddress,
+                                       # SizeOfRawData, PointerToRawData
+                    vsize, _va, rsz, _pr = struct.unpack('<IIII', buf)
+                    # ## 关键: 用 **VirtualSize**（不是 SizeOfRawData）
+                    #
+                    # 完整性 CRC 的长度 = min(vsize, rawsize) = vsize。
+                    # raw 尾部多出的对齐字节（rawsize > vsize）**不在
+                    # CRC 覆盖内** -> 翻它检不出（实测 exit=0）。
+                    # `raw + vsize - 1` = **最后一个 CRC 覆盖的内容字节**
+                    # = 最后一个贡献者（g_pad_text）的尾部。
+                    last_off = raw_off + min(vsize, rsz) - 1
+                    break
+        if last_off is None:
+            raise RuntimeError('section %s not found' % sec_name)
+        ro = last_off
+    else:
+        ro = raw_off + rel_off
     with open(dst, 'r+b') as f:
         f.seek(ro)
         b = f.read(1)
@@ -311,7 +350,17 @@ def main():
     # 注: 托管环境若启用 WDAC (代码完整性策略), 新复制的篡改副本会因文件
     # 信誉被拦截 (winerror 4551) -> 记 SKIP (真机无 WDAC 时正常验证)。
     try:
-        tampered = make_tampered_copy('.text')
+        # ## 2026-09-25: 改翻 **.text 最后一字节**（填充区）
+        #
+        # 源文件顺序随机化（B 阶段）后，".text 首字节" 的归属**随构建变化**:
+        #   实测某次 = `build_reloc_mask`（完整性检查自身的函数）->
+        #   翻转 -> 检查器执行损坏代码 -> **崩溃 0xC0000005** ->
+        #   无法给出 MSG_TAMPER。
+        # （这不是防护漏洞: 攻击者得到的是崩溃/fail-closed。）
+        #
+        # 末字节 = `g_pad_text` 尾部（prot_padding.c 固定追加在清单之后 ->
+        # 位置确定）+ CRC 覆盖 + 不被执行 -> **检测必然发生**。
+        tampered = make_tampered_copy('.text', from_end=1)
         code, text, _ = run_demo(exe=tampered,
                                  args=['--license-file', LICENSE],
                                  stdin=(serial + '\n').encode('utf-8'))

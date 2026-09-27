@@ -78,9 +78,19 @@ LDFLAGS="-lcrypto -lpthread"
 # =============================================================================
 say "步骤 1: 组合 '$COMPOSITION' -> 源文件清单"
 command -v "$PY" >/dev/null 2>&1 || die "找不到 $PY"
+
+# B 阶段（2026-09-25）: 构建盐 —— 用于**确定性打乱源文件链接顺序**。
+#   · 未设时: 每次构建随机生成（地址抖动）
+#   · 可复现构建: 需显式设 BUILD_SALT（同盐 -> 同顺序 -> 同产物）
+#   （与 build.ps1 的 $buildSalt 语义一致）
+BUILD_SALT="${BUILD_SALT:-0x$(od -An -N8 -tx8 /dev/urandom 2>/dev/null | tr -d ' \n')}"
+[ -n "$BUILD_SALT" ] && [ "$BUILD_SALT" != "0x" ] || BUILD_SALT="0x0"
+say "  构建盐: $BUILD_SALT（打乱源文件链接顺序）"
+
 "$PY" tools/compose.py "$COMPOSITION" \
       --header-out demo/gen/prot_modconfig.h \
       --sources-out build/_composition_srcs.txt \
+      --shuffle-seed "$BUILD_SALT" \
   || die "compose.py 失败"
 
 # 读清单（**过滤空行**）
@@ -168,7 +178,16 @@ N_OBJ=$(ls -1 "$OBJDIR"/*.o 2>/dev/null | wc -l)
 say "  编译完成: $N_OBJ 个目标文件"
 
 say "  链接 -> $OUT"
-gcc "$OBJDIR"/*.o -o "$OUT" $LDFLAGS 2>&1 | head -40
+# ## 链接顺序 = ALL_SRCS 顺序（**必须保持输入顺序**，2026-09-25）
+#
+#   `gcc "$OBJDIR"/*.o` 的**通配符展开是字母序** ——
+#   会**丢掉** compose 的 --shuffle-seed 打乱（顺序随机化失效）。
+#   改为按 ALL_SRCS（含打乱后的清单顺序）拼对象列表 -> **打乱生效**。
+OBJ_LIST=()
+for _src in "${ALL_SRCS[@]}"; do
+  OBJ_LIST+=("$OBJDIR/$(echo "$_src" | tr '/' '_').o")
+done
+gcc "${OBJ_LIST[@]}" -o "$OUT" $LDFLAGS 2>&1 | head -40
 [ -f "$OUT" ] || die "链接失败"
 
 # =============================================================================
