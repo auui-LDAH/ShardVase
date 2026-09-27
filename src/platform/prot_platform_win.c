@@ -1159,4 +1159,13 @@ size_t prot_plat_page_size(void)
     return (si.dwPageSize != 0u) ? (size_t)si.dwPageSize : (size_t)4096u;
 }
 
+/* 控制台设为 UTF-8（B 阶段，2026-09-25）——
+   `demo/main.c` 原直接调用，现走平台层。 */
+prot_status prot_plat_console_utf8(void)
+{
+    (void)SetConsoleOutputCP(65001u);   /* CP_UTF8 */
+    (void)SetConsoleCP(65001u);
+    return PROT_OK;
+}
+
 #endif /* PROT_PLATFORM_WINDOWS */

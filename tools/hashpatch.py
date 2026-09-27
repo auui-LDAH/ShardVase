@@ -7,7 +7,8 @@
 tools/hashpatch.py — PE 段 CRC32 烧录工具  (Lane C, A3 扩展)
 
 Locates the dedicated `.protcrc` section (3 baked-crc markers) inside a PE
-file and writes the CRC32 of the .text/.rdata/.pdata sections (raw data,
+file and writes the CRC32 of the target sections (raw data,
+PE: .text/.rdata/.pdata; ELF: .text/.rodata/.eh_frame — B2). Original text:
 min(VirtualSize, SizeOfRawData) convention) into the corresponding 4-byte
 fields. If a non-zero CRC is already present, it is verified instead of
 overwritten.
@@ -128,6 +129,159 @@ def pe_sections(data):
     return secs
 
 
+# ===========================================================================
+# ELF 支持（B2，2026-09-25）
+#
+# ## 为什么需要
+#   `hashpatch.py` 原仅支持 PE（`struct` 硬编码 PE 头偏移）——
+#   Linux 产物是 **ELF**，需要等价的"解析节表 + 烧录 CRC"能力。
+#
+# ## 与 PE 的**结构对应**（实测 build/demo_linux）
+#   | PE | ELF |
+#   |----|-----|
+#   | `.text` | `.text` |
+#   | `.rdata` | **`.rodata`** |
+#   | `.pdata` | **`.eh_frame`**（最近的对应物）|
+#   | `.reloc` | **`.rela.dyn`** |
+#   | IAT（数据目录 12）| **`.got` / `.got.plt`** |
+#   | `.protcrc`（随机名）| 同名随机节（实测 `.dkwt8io`，0x30 = 3×16）|
+#
+# ## 关键差异（**简化**）
+#   · ELF 节头 `sh_size` 即**实际大小**（无 PE 的 VirtualSize/RawSize 之分）
+#     -> 不需要 `min(vsize, rawsize)` 逻辑，**更精确**
+#   · ELF 用 `sh_addr`/`sh_offset` 表达地址与文件偏移
+# ===========================================================================
+
+ELF_TARGET_NAMES = ('.text', '.rodata', '.eh_frame')
+ELF_MAGIC_CLASS64 = 2
+ELF_MAGIC_LSB = 1
+
+
+def is_elf(data):
+    """是否 ELF64 小端。"""
+    return (len(data) >= 64 and data[0:4] == b'\x7fELF'
+            and data[4] == ELF_MAGIC_CLASS64 and data[5] == ELF_MAGIC_LSB)
+
+
+def elf_sections(data):
+    """解析 ELF64 节表；返回 list of dicts（含名/地址/偏移/大小/属性）。
+
+    字段与 `pe_sections` **语义对应**，便于共用下游逻辑:
+      `virtual_addr` <- sh_addr, `size_raw` <- sh_size,
+      `ptr_raw` <- sh_offset, `virtual_size` <- sh_size（ELF 无区分）
+    """
+    if not is_elf(data):
+        raise HashpatchError('not an ELF64-LE file')
+    e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', data, 0x3A)[0]
+    e_shnum = struct.unpack_from('<H', data, 0x3C)[0]
+    e_shstrndx = struct.unpack_from('<H', data, 0x3E)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise HashpatchError('ELF has no section table')
+
+    def sh(i):
+        o = e_shoff + i * e_shentsize
+        (nameoff, stype, flags, addr, off, size, link, info,
+         align, entsize) = struct.unpack_from('<IIQQQQIIQQ', data, o)
+        return {'nameoff': nameoff, 'type': stype, 'flags': flags,
+                'addr': addr, 'off': off, 'size': size,
+                'align': align, 'entsize': entsize}
+
+    # 节名字符串表
+    strtab_off = sh(e_shstrndx)['off'] if e_shstrndx < e_shnum else 0
+
+    secs = []
+    for i in range(e_shnum):
+        s = sh(i)
+        if strtab_off:
+            end = data.index(b'\x00', strtab_off + s['nameoff'])
+            name = data[strtab_off + s['nameoff']:end].decode('ascii',
+                                                              'replace')
+        else:
+            name = ''
+        secs.append({
+            'name': name,
+            'virtual_size': s['size'],      # ELF: sh_size 即实际大小
+            'virtual_addr': s['addr'],
+            'size_raw': s['size'],
+            'ptr_raw': s['off'],
+            'flags': s['flags'],
+            'index': i,
+            # ⚠️ entsize 必须带出 —— `.rela.dyn` 的条目大小靠它
+            #   （实测漏传 -> `KeyError: 'entsize'`）
+            'entsize': s['entsize'],
+        })
+    return secs
+
+
+def elf_reloc_mask_bytes(data, secs, sec):
+    """ELF 的"会被 loader 改写"掩码（对应 PE 的 reloc_mask_bytes）。
+
+    ## 规则（与 PE 侧**同语义**）
+      ① `.rela.dyn` / `.rela.plt` 中**会写入**的重定位（R_X86_64_RELATIVE /
+         GLOB_DAT / JUMP_SLOT）—— 8 字节槽
+      ② `.got` / `.got.plt`（**loader 填充**，等价 PE 的 IAT）
+    """
+    crc_len = sec['size_raw']
+    mask = bytearray(crc_len)
+
+    # ① GOT（等价 IAT）—— loader 写导入地址
+    for gname in ('.got', '.got.plt'):
+        g = next((s for s in secs if s['name'] == gname), None)
+        if g is None or g['size_raw'] == 0:
+            continue
+        if (sec['virtual_addr'] <= g['virtual_addr'] and
+                g['virtual_addr'] + g['size_raw'] <=
+                sec['virtual_addr'] + crc_len):
+            o = g['virtual_addr'] - sec['virtual_addr']
+            mask[o:o + g['size_raw']] = b'\xff' * g['size_raw']
+
+    # ② 重定位表
+    for rname in ('.rela.dyn', '.rela.plt'):
+        rel = next((s for s in secs if s['name'] == rname), None)
+        if rel is None or rel['entsize'] == 0 or rel['size_raw'] == 0:
+            continue
+        cnt = rel['size_raw'] // rel['entsize']
+        for k in range(cnt):
+            o = rel['ptr_raw'] + k * rel['entsize']
+            if o + rel['entsize'] > len(data):
+                break
+            r_offset, r_info, _add = struct.unpack_from('<QQq', data, o)
+            rtype = r_info & 0xFFFFFFFF
+            # 只取**会写入**的类型（与 Windows 只取 type 3/10 对应）
+            if rtype in (8, 6, 7):      # RELATIVE / GLOB_DAT / JUMP_SLOT
+                w = 8
+                if (sec['virtual_addr'] <= r_offset and
+                        r_offset + w <= sec['virtual_addr'] + crc_len):
+                    oo = r_offset - sec['virtual_addr']
+                    mask[oo:oo + w] = b'\xff' * w
+    return mask
+
+
+def elf_compute_section_crc(data, secs, sec):
+    """ELF 侧 CRC（与 `compute_section_crc` 同语义）。
+
+    CRC 长度 = `sh_size`（**无** PE 的 vsize/rawsize 之分）。
+    掩码: `.rela.dyn` 重定位 + `.got`；再叠加 selfcrypt 排除区间。
+    """
+    crc_len = sec['size_raw']
+    ptr = sec['ptr_raw']
+    if ptr + crc_len > len(data):
+        raise HashpatchError('ELF section %s raw range exceeds file'
+                             % sec['name'])
+    mask = elf_reloc_mask_bytes(data, secs, sec)
+    raw = bytearray(data[ptr:ptr + crc_len])
+    for i, m in enumerate(mask):
+        if m:
+            raw[i] = 0
+    for (mrva, mlen) in EXCLUDE_MASKS:
+        if (sec['virtual_addr'] <= mrva and
+                mrva + mlen <= sec['virtual_addr'] + crc_len):
+            o = mrva - sec['virtual_addr']
+            raw[o:o + mlen] = b'\x00' * mlen
+    return zlib.crc32(bytes(raw)) & 0xFFFFFFFF, crc_len
+
+
 def pe_data_dirs(data, e_lfanew, size_opt):
     """PE32+/PE32 data directory entries: list of (rva, size)."""
     opt = e_lfanew + 24
@@ -237,7 +391,12 @@ def main(argv=None):
         with open(exe_path, 'rb') as f:
             data = f.read()
 
-        secs = pe_sections(data)
+        # ## B2（2026-09-25）: 按文件类型**分派**（PE / ELF）
+        #   两个路径的**下游逻辑完全相同**（找烧录表 -> 逐条算 CRC -> 烧录），
+        #   只有"节表解析 / 掩码规则 / 目标节名"三处按平台不同。
+        is_elf_file = is_elf(data)
+        secs = elf_sections(data) if is_elf_file else pe_sections(data)
+        target_names = ELF_TARGET_NAMES if is_elf_file else TARGET_NAMES
         # 阶段1(第二支柱): 节名每构建随机, 由 gen_sections.py 生成。
         # 未提供 --sections-json 时回退旧名 .protcrc (向后兼容)。
         section_names = load_section_names(sections_json)
@@ -251,8 +410,9 @@ def main(argv=None):
         prot = next((s for s in secs if s['name'] in cand), None)
         if prot is None:
             raise HashpatchError(
-                'no .protcrc section found in %s (integrity baked table missing)'
-                % exe_path)
+                'no baked-CRC section found in %s '
+                '(integrity table missing; expected random name from '
+                '--sections-json, or legacy .protcrc)' % exe_path)
         if prot['size_raw'] < ENTRY_SIZE * len(active_magics):
             raise HashpatchError('.protcrc section too small (%d bytes)' %
                                  prot['size_raw'])
@@ -266,12 +426,14 @@ def main(argv=None):
                     'marker %d magic mismatch at offset %d (want %r)'
                     % (i, off, magic))
 
-            target = next((s for s in secs if s['name'] == TARGET_NAMES[i]), None)
+            target = next((s for s in secs if s['name'] == target_names[i]), None)
             if target is None:
-                print('hashpatch: %s section absent — skip' % TARGET_NAMES[i])
+                print('hashpatch: %s section absent — skip' % target_names[i])
                 continue
 
-            crc, size_crc = compute_section_crc(data, secs, target)
+            crc, size_crc = (elf_compute_section_crc(data, secs, target)
+                             if is_elf_file else
+                             compute_section_crc(data, secs, target))
             field_off = off + 8
             current = struct.unpack_from('<I', data, field_off)[0]
 
@@ -282,16 +444,16 @@ def main(argv=None):
                     f.write(patched)
                 data = patched
                 print('hashpatch: patched %s crc=0x%08x at offset %d (magic at %d)'
-                      % (TARGET_NAMES[i], crc, field_off, off))
+                      % (target_names[i], crc, field_off, off))
             else:
                 if current != crc:
                     raise HashpatchError(
                         '%s crc mismatch: baked=0x%08x, computed=0x%08x (%s)'
-                        % (TARGET_NAMES[i], current, crc, exe_path))
+                        % (target_names[i], current, crc, exe_path))
                 print('hashpatch: verified %s crc=0x%08x at offset %d (already baked)'
-                      % (TARGET_NAMES[i], current, field_off))
+                      % (target_names[i], current, field_off))
             print('hashpatch: %s raw [%d, +%d) -> crc32 0x%08x'
-                  % (TARGET_NAMES[i], target['ptr_raw'], size_crc, crc))
+                  % (target_names[i], target['ptr_raw'], size_crc, crc))
     except (HashpatchError, OSError, struct.error) as e:
         print('hashpatch: error: %s' % e, file=sys.stderr)
         return 1

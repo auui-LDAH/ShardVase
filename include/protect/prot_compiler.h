@@ -228,6 +228,23 @@
  * **用法**:
  *   PROT_SNPRINTF(buf, sizeof(buf), fmt, ...);
  */
+/* ## 有界字符串复制（B 阶段端到端构建暴露）
+ *
+ * `demo/main.c` 用 MSVC 的 `strcpy_s(dst, n, src)` —— **MSVC 专有**。
+ *
+ * **语义**: "有界复制 + **保证 NUL 结尾**"。
+ *   POSIX 侧用 `snprintf(dst, n, "%s", src)` 实现 ——
+ *   同样有界、同样保证 NUL（**语义等价**）。
+ *
+ * **用法**: `PROT_STRCPY_S(dst, sizeof(dst), src);`
+ */
+#if defined(PROT_COMPILER_MSVC)
+#  define PROT_STRCPY_S(dst, n, src) strcpy_s((dst), (n), (src))
+#else
+#  define PROT_STRCPY_S(dst, n, src) \
+      do { snprintf((dst), (n), "%s", (src)); } while (0)
+#endif
+
 #if defined(PROT_COMPILER_MSVC)
 #  define PROT_SNPRINTF(buf, n, ...) _snprintf_s((buf), (n), _TRUNCATE, __VA_ARGS__)
 #else

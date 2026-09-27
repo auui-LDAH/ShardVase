@@ -1439,4 +1439,14 @@ size_t prot_plat_page_size(void)
     return (p > 0) ? (size_t)p : (size_t)4096u;
 }
 
+/* 控制台设为 UTF-8（Linux: **no-op**，语义等价 —— 见头文件说明）。
+ *
+ * POSIX 终端没有"代码页"概念，输出编码由 **locale** 决定；
+ * 本项目的输出以 UTF-8 字节写出，终端按 UTF-8 解释即可。
+ */
+prot_status prot_plat_console_utf8(void)
+{
+    return PROT_OK;
+}
+
 #endif /* PROT_PLATFORM_LINUX */

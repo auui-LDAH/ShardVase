@@ -1519,3 +1519,119 @@ pair 3: M1= 0.0%
 ---
 
 *2026-09-25 · selfcrypt 页自伤修复（两层，布局无关）+ 门禁 3 对中位数；M1 10.1% / M3 3.8% 双达标*
+
+---
+
+## 18. ✅ B2/B3 + Linux 端到端构建达成（2026-09-25）—— **B 阶段核心完成**
+
+### 18.1 端到端产出**真正的 ELF**
+
+```
+步骤 1.5: 构建期生成链  ① 随机节名 ② RSA+DER ③ 期望值 ④ strgen ⑤ indirect
+步骤 2-3:  平台层 + 生成文件
+步骤 4:    编译 24 个目标文件 -> 链接
+步骤 4.5:  烧录 CRC（含 8 个 selfcrypt 掩码区间）
+步骤 5:    prot-demo 1.1.0 / ELF ✅ / DONE
+
+产物: build/demo_linux (103200 字节)
+  file: ELF 64-bit LSB pie executable, x86-64, dynamically linked ✅
+  运行: prot-demo 1.1.0 ✅
+```
+
+### 18.2 B2: `hashpatch.py` 加 **ELF 分支** ✅
+
+**实测 ELF 结构（35 节）与 PE 的对应**：
+
+| PE | ELF | 实测 |
+|----|-----|------|
+| `.text` | `.text` | 0x799a |
+| `.rdata` | **`.rodata`** | 0x12d4 |
+| `.pdata` | **`.eh_frame`** | 0x1790 |
+| `.reloc` | **`.rela.dyn`** | 0xc48 |
+| IAT（目录 12）| **`.got` / `.plt`** | 0x250 |
+| `.protcrc`（随机名）| 同名随机节 | **0x30 = 3×16** ✅ |
+
+**关键差异（**简化**）**：ELF 的 `sh_size` 即**实际大小**，
+**无** PE 的 VirtualSize/RawSize 之分 -> 不需要 `min()` 逻辑，**更精确**。
+
+**验收（真实 ELF，带 selfcrypt 掩码）**：
+```
+第一次: patched   .text crc=0xafc229eb / .rodata 0xd52b9212 / .eh_frame 0x5895b2be
+第二次: verified  全部 already baked          <- **幂等** ✅
+```
+
+### 18.3 B3: 节名随机化 —— **实测发现无需改工具** ✅
+
+**原计划**: 给 `gen_sections.py` 加 ELF 分支。
+**实测结论**: **不需要** —— `gen_sections.py` 产出的**头文件宏**
+（`PROT_SEC_*`）由 C 侧的**跨平台宏**（`PROT_ALLOCATE` /
+`PROT_SECTION_BEGIN`，M3 已建）应用，gcc 侧展开为
+`__attribute__((section(...)))` -> **随机节名自动生效**。
+
+**验收（两次构建比对）**：
+```
+[A] .k7qmrhq .q83ghg7 .z10dw4u
+[B] .5l0odnq .gsw2oaj .t0xr17r
+两次相同: 0 个  -> ✅ 节名每构建随机
+```
+
+> **"实测优于假设"的又一例**：若照计划去改 `gen_sections.py`，
+> 会做**无用功**。
+
+### 18.4 端到端暴露的**真实缺口**（逐个修复）
+
+| # | 缺口 | 根因 | 修法 |
+|---|------|------|------|
+| 1 | `winhttp.h: No such file` | **我上一轮的疏漏**: 只条件化了 `windows.h`，漏了同属 SDK 的 `winhttp.h` | 一并条件化 |
+| 2 | `windows.h` 仍被包含 | **`#if PROT_PLATFORM` 在 `prot_platform.h` 之前** -> 宏未定义 -> `0 == 0` 为**真** | 把平台头**前移**到 `#if` 之前 |
+| 3 | `size_t` 未定义 ×2 | 生成物缺 `<stddef.h>`（`vmenc.py` **两处**） | 生成器补 include |
+| 4 | `SetConsoleOutputCP` / `SetConsoleCP` | Windows 控制台 API | 平台层 `prot_plat_console_utf8`（Linux **no-op**，语义等价）|
+| 5 | `fopen_s` / `strcpy_s` / `errno_t` | MSVC 安全函数 | `PROT_FOPEN_S`（已有）+ **新增 `PROT_STRCPY_S`** |
+| 6 | **`multiple definition`** | `ALL_SRCS` **重复追加**了已由 `--extra` 并入的文件 | `ALL_SRCS` **去重** |
+| 7 | `KeyError: 'entsize'` | `elf_sections` 未把 `entsize` 带出 | 带出 |
+
+> **教训（缺口 2）**: "已条件化"**不等于**条件生效 ——
+> `PROT_PLATFORM` 由 `prot_platform.h` 定义，**宏必须先于 `#if`**。
+> 表面合理的代码在真实构建下才暴露。
+>
+> **教训（缺口 6）**: 接入 `--extra` 后，下游的"追加"变成**重复** ——
+> **改动一处需检查其所有下游假设**。
+
+### 18.5 生成链自给（**重要**）
+
+初版 `build.sh` **未调用任何生成器** -> 直接用 Windows 侧遗留的
+`demo/gen/*` -> 节名固定（B3 实际未生效）。
+现补齐 **5 步生成链**（gen_sections / keygen+DER / genserial /
+strgen / indirect）-> **Linux 侧自给自足**。
+
+**参数核对的价值**: 我原以为 `gen_sections.py` 用 `--out`、
+`strgen.py` 用 `--strings/--out` —— **实际**是 `--out-dir` 与
+**位置参数**。**先核对签名再接线**避免了盲改。
+
+### 18.6 B 阶段总结
+
+| 项 | 状态 |
+|----|------|
+| **B0** 依赖（libssl-dev）| ✅ |
+| **B1** Linux 密码学（OpenSSL + DER）| ✅ |
+| **B2** `hashpatch.py` ELF 分支 | ✅ **烧录 + 幂等验证** |
+| **B3** 节名随机化 | ✅ **实测无需改工具** |
+| **B4** `build.sh`（gcc + 保序链接 + 去重）| ✅ |
+| **demo 平台化** | ✅（HTTP/Sleep/时钟/snprintf/控制台/安全函数）|
+| **端到端** | ✅ **产出可运行 ELF** |
+| `selfcrypt_proto` / `gen_padding` 接线 | ⬜ **剩余**（当前用 Windows 侧遗留产物）|
+| Linux 侧运行时验证 | ⬜ **剩余**（e2e/attacks 的 Linux 版）|
+
+### 18.7 诚实边界（**必读**）
+
+| 边界 | 说明 |
+|------|------|
+| **`selfcrypt`/`gen_padding` 尚未接线** | 仍用 Windows 侧遗留产物 —— Linux 的"加密函数原位加密"与"节填充归一化"**未在 Linux 侧重新生成** |
+| **Linux 运行时未验证** | 只验证 `--version` 冒烟；**未跑** license/VM/完整性 的完整链路 |
+| **网络能力缺失** | `--blob-url`/`--check-url` 返回 UNSUPPORTED（如实降级）|
+| **数字签名不适用** | 无 signtool 等价物 |
+| **`gen_sections` 的 seed 与 Windows 不同源** | Linux 用 `$RANDOM`；如需跨平台一致需显式传同一 seed |
+
+---
+
+*2026-09-25 · B2/B3 完成 + Linux 端到端产出可运行 ELF（4 节烧录 + 节名随机化验收）*

@@ -113,6 +113,51 @@ mapfile -t COMP_SRCS < <(grep -v '^[[:space:]]*$' build/_composition_srcs.txt)
 say "  组合含 ${#COMP_SRCS[@]} 个源文件"
 
 # =============================================================================
+# 步骤 1.5: **构建期生成链**（B 阶段，2026-09-25）
+#
+# ## 为什么需要
+#   初版 build.sh **未调用生成器** —— 直接用 Windows 侧遗留的 demo/gen/*，
+#   故节名固定（实测两次构建均为 `.derxeo4`）-> **B3 未真正生效**。
+#
+# ## 顺序（**关键**）
+#   gen_sections **最先**（其头文件被其它生成物与 C 侧引用）；
+#   keygen 在 license 相关之前。
+# =============================================================================
+say "步骤 1.5: 构建期生成链"
+
+# ① 随机节名（**B3 的落点**：头文件宏 -> C 侧 PROT_ALLOCATE 应用）
+SECT_SEED="0x$(od -An -N8 -tx8 /dev/urandom 2>/dev/null | tr -d ' \n')"
+"$PY" tools/gen_sections.py --out-dir demo/gen \
+      --json-out demo/gen/prot_sections.json --seed "$SECT_SEED" \
+  || die "gen_sections.py 失败"
+say "  ① 随机节名 seed=$SECT_SEED"
+
+# ② RSA 密钥（含 **DER** —— Linux 侧密码学层用它；BCRYPT blob 供 Windows）
+"$PY" tools/vmenc.py keygen \
+      --key-out build/keys/priv_linux.json \
+      --blob-out demo/gen/license_pubkey.c \
+      --blob-out-der demo/gen/prot_pubkey_der.c \
+  || die "vmenc keygen 失败"
+say "  ② RSA 密钥 + DER 公钥"
+
+# ③ 期望值（genserial -> vm_build.json -> expect_default.c）
+if [ ! -f demo/vm_build.json ]; then
+  printf '{"serial":"DEMO-2026-ABCDEFGH","machine_id":0}' > demo/vm_build.json
+fi
+"$PY" tools/vmenc.py genserial --json demo/vm_build.json --machine-id auto \
+  || die "vmenc genserial 失败"
+say "  ③ 期望值（genserial）"
+
+# ④ 字符串加密
+"$PY" tools/strgen.py demo/strings.txt demo/gen/strings.c \
+      --seed "$SECT_SEED" \
+  || warn "  ④ strgen 失败（沿用既有 demo/gen/strings.c）"
+
+# ⑤ 间接化表
+"$PY" tools/indirect.py --out demo/gen/indirect_table.c --seed "$SECT_SEED" \
+  || warn "  ⑤ indirect 失败（沿用既有 demo/gen/indirect_table.c）"
+
+# =============================================================================
 # 步骤 2: 平台层源文件（**按平台选择**）
 #
 # ## 为什么不能用 compose.py 的清单
@@ -162,8 +207,26 @@ say "步骤 4: 编译 (gcc, -j$JOBS)"
 OBJDIR="build/obj_linux"
 rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"
 
-ALL_SRCS=("${COMP_SRCS[@]}" "${PLATFORM_SRCS[@]}" "${GEN_SRCS[@]}" demo/main.c)
-say "  总源文件: ${#ALL_SRCS[@]}"
+# ## 源文件清单（2026-09-25 修正：**去重**）
+#
+# ⚠️ **踩过的坑**: `COMP_SRCS`（compose 输出）**已含** `--extra` 传入的
+#   `demo/main.c` / `license_pubkey.c` / `indirect_table.c` /
+#   `expect_default.c`（并入是为了支持顺序打乱）。
+#   初版又在此**追加**它们 -> 同一文件编译多次 ->
+#   **`multiple definition`** 链接失败。
+#   （接入 extras 之前追加是必需的；接入后变成重复 —— 端到端链接才暴露。）
+#
+# => 只追加**平台层**（按平台选，不在 compose 清单内），并**整体去重**。
+ALL_SRCS=()
+declare -A _seen=()
+for _s in "${COMP_SRCS[@]}" "${PLATFORM_SRCS[@]}"; do
+  if [ -z "${_seen[$_s]:-}" ]; then
+    _seen[$_s]=1
+    ALL_SRCS+=("$_s")
+  fi
+done
+unset _seen
+say "  总源文件: ${#ALL_SRCS[@]}（已去重）"
 
 # 并行编译（每个文件一个 .o，文件名用路径转义）
 compile_one() {
@@ -203,6 +266,39 @@ for _src in "${ALL_SRCS[@]}"; do
 done
 gcc "${OBJ_LIST[@]}" -o "$OUT" $LDFLAGS 2>&1 | head -40
 [ -f "$OUT" ] || die "链接失败"
+
+# =============================================================================
+# 步骤 4.5: 烧录 CRC 到**烧录表**（B2，2026-09-25）
+#
+# ## 为什么需要（与 build.ps1 步骤 6.1 对应）
+#   `integrity` 模块运行时校验 `.text`/`.rodata`/`.eh_frame` 的 CRC32，
+#   期望值**由本步骤烧录**（构建期写进专用节）。
+#
+# ## 与 Windows 的差异（**如实标注**）
+#   · 目标节名: PE `.text/.rdata/.pdata`；ELF **`.text/.rodata/.eh_frame`**
+#   · 掩码: PE 用 `.reloc` 块 + IAT；ELF 用 **`.rela.dyn` + `.got`**
+#   · 烧录表节名**两平台一致**（都从 prot_sections.json 读随机名）
+#
+# ## selfcrypt 掩码
+#   加密段在 CRC 中**被掩码**（明文/密文两侧一致）——
+#   掩码区间由 `selfcrypt_proto.py` 产出。**若该步骤未跑则无掩码** ->
+#   CRC 与运行期不一致 -> 运行时会报完整性失败。
+# =============================================================================
+MASK_FILE="build/selfcrypt_mask.txt"
+MASK_ARGS=()
+if [ -s "$MASK_FILE" ]; then
+  while IFS= read -r _ln; do
+    [ -n "$_ln" ] && MASK_ARGS+=(--mask "$_ln")
+  done < "$MASK_FILE"
+  say "步骤 4.5: 烧录 CRC（含 ${#MASK_ARGS[@]} 个 selfcrypt 掩码区间... 实为 $(( ${#MASK_ARGS[@]} / 2 )) 个）"
+else
+  warn "  未找到 $MASK_FILE —— **不带 selfcrypt 掩码**烧录"
+  warn "  （若组合含 selfcrypt，运行期完整性校验会失败；见 build.ps1 步骤 6）"
+fi
+
+"$PY" tools/hashpatch.py "$OUT" "${MASK_ARGS[@]}" \
+      --sections-json demo/gen/prot_sections.json \
+  || die "hashpatch 失败（ELF 烧录）"
 
 # =============================================================================
 # 步骤 5: 冒烟

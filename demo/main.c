@@ -7,18 +7,29 @@
  *   -> 杈撳叆搴忓垪鍙?-> VM 鏍￠獙 -> FAKE 浼粨鏋滅炕杞?-> 缁撴灉涓庨€€鍑虹爜銆? *
  * 閫€鍑虹爜 (濂戠害 搂9.3): 0 鎴愬姛 / 1 搴忓垪鍙锋棤鏁?/ 0xDB 璋冭瘯鐜 / 0xBAD 琚鏀广€? */
 #include <stdio.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+/* ## ⚠️ 顺序至关重要（2026-09-25 实测教训）
+ *
+ * `PROT_PLATFORM` / `PROT_PLATFORM_WINDOWS` **由 prot_platform.h 定义** ——
+ * 故该头**必须先于任何 `#if PROT_PLATFORM`**。
+ *
+ * **踩过的坑**: 初版把平台头放在下方、`#if` 放在上方 ->
+ *   两个宏都未定义 -> `0 == 0` 为 **真** -> `windows.h` **仍被包含** ->
+ *   Linux 构建照旧失败（表面看"已条件化"，实际没生效）。
+ */
+#include "protect/prot_platform.h"
+
 #if PROT_PLATFORM == PROT_PLATFORM_WINDOWS
 #include <windows.h>
+/* ⚠️ `winhttp.h` 也是 **Windows SDK 专有头**（与 windows.h 同属 SDK）——
+ * 必须一起条件化。HTTP 已改走平台层（`prot_plat_http_get*`），
+ * 本文件不再直接调用 WinHTTP。 */
 #endif
-#include <winhttp.h>
 
 #include "protect/antidebug.h"
-#include "protect/prot_platform.h"
 #include "protect/prot_compiler.h"   /* B4: PROT_SNPRINTF */   /* B4: 平台抽象（HTTP/Sleep/时钟）*/
 
 #include "protect/blob.h"
@@ -389,9 +400,9 @@ int load_and_verify_license(const char* path, demo_mem* mem)
     uint32_t expires = 0u;
     char f_serial[48] = {0};
     char f_prod[64] = {0};
-    errno_t err;
+    int err;
 
-    err = fopen_s(&f, path, "rb");
+    err = PROT_FOPEN_S(&f, path, "rb");
     if (err != 0 || f == NULL)
         return 0;
     memset(sig, 0, sizeof(sig));
@@ -409,12 +420,12 @@ int load_and_verify_license(const char* path, demo_mem* mem)
         }
         if (strcmp(line, "SERIAL") == 0) {
             if (strlen(eq) < sizeof(f_serial)) {
-                strcpy_s(f_serial, sizeof(f_serial), eq);
+                PROT_STRCPY_S(f_serial, sizeof(f_serial), eq);
                 have_serial = 1;
             }
         } else if (strcmp(line, "PRODUCT") == 0) {
             if (strlen(eq) < sizeof(f_prod)) {
-                strcpy_s(f_prod, sizeof(f_prod), eq);
+                PROT_STRCPY_S(f_prod, sizeof(f_prod), eq);
                 have_prod = 1;
             }
         } else if (strcmp(line, "TIER") == 0) {
@@ -481,8 +492,7 @@ int main(int argc, char** argv)
     prot_status st;
 
     /* 搂9.1-1: 鎺у埗鍙?UTF-8 杈撳嚭/杈撳叆 */
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
+    (void)prot_plat_console_utf8();
      /* 宕╂簝鐜板満鏃犵紦鍐?(S1 鎺掗殰绛? */
     
      /* S1 鎺掗殰: 宕╂簝鍦板潃钀界洏 */

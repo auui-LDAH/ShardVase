@@ -106,6 +106,21 @@ void* prot_plat_alloc(size_t size, prot_page_prot prot);
  */
 size_t prot_plat_page_size(void);
 
+/* 把**控制台**设为 UTF-8 输出/输入（B 阶段端到端构建暴露）。
+ *
+ * ## 为什么需要抽象
+ *   `demo/main.c` 调用 Windows 的 `SetConsoleOutputCP(65001)` /
+ *   `SetConsoleCP(65001)` 把控制台代码页设为 UTF-8。
+ *
+ * ## 平台语义
+ *   Windows: `SetConsoleOutputCP` + `SetConsoleCP`（CP_UTF8）
+ *   Linux  : **no-op** —— POSIX 终端**本就是 UTF-8**（由 locale 决定），
+ *            没有"代码页"概念 -> 无需设置即**语义等价**。
+ *
+ * 返回 `PROT_OK`（本操作不应使调用方失败）。
+ */
+prot_status prot_plat_console_utf8(void);
+
 /* 改变已有页的保护属性。 */
 prot_status prot_plat_protect(void* addr, size_t size, prot_page_prot prot);
 
