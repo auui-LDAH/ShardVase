@@ -1732,3 +1732,142 @@ VM 校验（4 个 VM 镜像）      <- 校验通过
 ---
 
 *2026-09-25 · C 阶段完成: Linux 完整链路打通（授权通过）；修复 8 个真实缺口*
+
+---
+
+## 20. ✅ D 阶段：`normalize_tail` 接线 + Linux 运行时验证工具 + **分层决策**（2026-09-25）
+
+### 20.1 `normalize_tail` 接线（**格式无关**，无需 ELF 分支）
+
+**核实结论**: `normalize_tail.py` 纯做**文件尾追加**（70 行、无平台代码）——
+**ELF 加载器同样忽略尾部多余字节**（与 PE 一致）-> **无需 ELF 分支**。
+
+**验收（三次构建）**：
+```
+第 1 次: 103424 字节
+第 2 次: 103424 字节
+第 3 次: 103424 字节
+=> ✅ **完全统一**（第二支柱的"文件大小信号"在 Linux 侧也消除了）
+```
+
+**target 策略**: `PROT_TAIL_TARGET` 显式指定 > 基线文件（**只增不减**，
+首次记录当前大小）—— 与 `merge_baseline` 同思路。
+
+### 20.2 `tools/verify_linux_runtime.py`（**固化**，非临时脚本）
+
+**为什么固化**: 本轮所有 Linux 验证都是 `%TEMP%` 里的临时脚本 ——
+**不可入库、不可进 CI、无自检**。与 M1 时固化 `linux_compile_check.py`
+**同一理由**。
+
+**6 项验证**：
+
+| # | 项 | 说明 |
+|---|----|------|
+| 1 | 构建（build.sh）| 生成链 + 两轮编译 + selfcrypt + 烧录 |
+| 2 | **vm_unit**（VM 指令集）| **实测 0 Windows 特征，一次编译运行成功** |
+| 3 | 平台层契约测试 | `platform_conformance` |
+| 4 | **端到端授权链** | license 验签 + VM 校验 -> **"校验通过"** |
+| 5 | **节名随机化** | 生成器名**已应用**且**确非固定名** |
+| 6 | 文件大小统一 | 第二支柱的另一半 |
+
+**负向自检 4/4**（**关键** —— 证明它能"抓错"）：
+```
+ok  T1 WSL 可用
+ok  T2 **错误序列号被拒绝**（负向）
+ok  T3 正确序列号**通过**
+ok  T4 **篡改产物被检出**（负向）   <- 完整性校验在 Linux 上真实生效
+```
+
+### 20.3 ⚠️ **分层决策**：Linux 运行时验证**移出门禁**
+
+**这是本轮最重要的结论**，且是**实测逼出来的**：
+
+门禁各检查项**共享可变状态**（`demo/gen/`、`build/`、`vm_build.json`）。
+Linux 完整验证**必须**跑 `build.sh`（否则 `demo/gen` 是 Windows 值 ->
+期望值/节名不一致 -> **必然失败**）。而跑 `build.sh` 会：
+
+| 选择 | 后果（**均实测**）|
+|------|------------------|
+| **跑 build.sh** | `demo/gen` 改为 Linux 值 -> **污染门禁其它项**（连带 `e2e`/`mutate_check`/`attackcheck` 失败）|
+| **不跑**（只读）| 与本项自身判据矛盾 -> **必然失败** |
+
+=> **两者不可兼得**。这不是"顺序/模式"能解决的，而是**分层问题**：
+
+| 层 | 内容 | 状态自洽性 |
+|----|------|-----------|
+| **门禁** `release_check.ps1` | Windows 侧快速回归（22 项）| ✅ 全程 Windows 值 |
+| **独立入口** `tools/ci_linux.ps1` | Linux 端到端（**自建 + 自验**）| ✅ 全程 Linux 值 |
+
+**与既有实践一致**:
+· `linux_compile_check`（**只编译**、不改 `demo/gen`）**留在**门禁 ✅
+· `verify_linux_runtime`（**要构建**、改 `demo/gen`）**移出** ✅
+
+**门禁项数**: 23(临时) -> **22**(恢复)。
+
+### 20.4 新增 `tools/ci_linux.ps1`（独立入口）
+
+```powershell
+powershell -File tools\ci_linux.ps1              # 完整（含 build.sh）
+powershell -File tools\ci_linux.ps1 -SkipBuild   # 只用已有产物
+powershell -File tools\ci_linux.ps1 -Selftest    # 只跑负向自检
+```
+
+**实测**: `[ci_linux] PASS`（6/6）。
+
+**Python 探测的坑**: 我的初版 `Get-Command python` 命中了
+**Windows Store 的别名存根**（`WindowsApps\python.exe`，0 字节转发器）
+-> 修法是**复用 `release_check.ps1` 的已验证逻辑**
+（排除 `*\WindowsApps\*` + 硬编码候选）。
+
+### 20.5 修复 `attackcheck.py` 自检的**数据损坏**风险（重要）
+
+**实测症状**: 自检跑完后 `attacks.json` 的 `evidence` 计数 **37 -> 57**，
+`drill_C1` 的 `evidence` **丢失** -> **自检把被测数据改坏**。
+
+**根因（两处）**:
+```python
+with open(bak, 'w') as f:
+    json.dump(base, f)      # ① 备份是"加载后重新序列化"，**不是原文件**
+finally:
+    os.replace(bak, p)      # ② 恢复的是①的产物
+```
+· 备份**不是原始字节**（格式/字段顺序/加载时机都可能不同）
+· **进程被中断**时 `finally` 未完整执行 -> 磁盘上留下**变异后**的数据
+  （实测: `drill_C1.targets = ["ghost_module"]` 残留）
+
+**修法**: `shutil.copy2`（**原始字节**）备份与恢复；`finally` 中**确保清理** `.atbak`。
+
+**验收**:
+```
+基线     rc=0  [attackcheck] PASS
+自检     rc=0  [attackcheck-selftest] PASS
+自检后: drill_C1.targets=['integrity'] evidence 完好，无 .atbak 残留  ✅
+```
+
+> **教训**: **自检/变异测试必须先保证"可完全恢复"** ——
+> 否则它**改变了被测对象**，使后续检查项失败
+> （本轮门禁 `attackcheck`/`e2e`/`mutate_check` **连带失败**的根源）。
+
+### 20.6 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| **门禁不含 Linux 端到端** | 分层决策的结果（见 20.3）；由 `ci_linux.ps1` / CI job 负责 |
+| **两平台共享 `demo/gen`** | 跑完 Linux 侧后**必须重建 Windows 状态**才能跑 Windows 门禁（实测踩到）|
+| `e2e`/`attacks` 的 Windows 专用项未移植 | 调试器附加、PE 篡改等**平台特有攻击面**：Linux 侧需另行设计（非本次范围）|
+| `verify_linux_runtime` 只覆盖 6 项 | 未覆盖: `protchain`（间接表）、`vmc`、字符串加密等 |
+
+### 20.7 D 阶段成果
+
+| 项 | 状态 |
+|----|------|
+| `normalize_tail` 接线（文件大小统一）| ✅ |
+| `verify_linux_runtime.py`（6 项 + 4 负向自检）| ✅ |
+| `ci_linux.ps1`（独立入口）| ✅ |
+| **分层决策**（门禁 22 项 + 独立 Linux CI）| ✅ |
+| `attackcheck` 自检数据损坏修复 | ✅ |
+| `attacks.json` 数据恢复 | ✅ |
+
+---
+
+*2026-09-25 · D 阶段: 大小统一 + Linux 验证固化 + 分层决策（实测逼出）+ 自检健壮性*

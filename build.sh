@@ -470,6 +470,50 @@ fi
   || die "hashpatch 失败（ELF 烧录）"
 
 # =============================================================================
+# 步骤 4.6: 文件尾精确填充（**统一文件大小**，W1 差异扩散收尾）
+#
+# ## 工具性质（已核实）
+#   `normalize_tail.py` 纯做**文件尾追加**（70 行、无平台代码）——
+#   **ELF 加载器同样忽略尾部多余字节** -> 无需 ELF 分支、格式无关。
+#
+# ## 为什么需要（build.ps1 的同类注释）
+#   节填充只能花在**节**上，且链接器按 0x200 对齐 ->
+#   各组合最终文件大小仍差 512~1024 字节 ->
+#   **攻击者可据文件大小推断组合**。尾部填充使其**完全一致**。
+#
+# ## 插入顺序（关键）
+#   节填充 -> selfcrypt -> hashpatch -> **本步骤** -> (签名)
+#   · 必须在 hashpatch **之后**（否则 CRC 与最终字节不符）
+#   · 必须在签名**之前** —— Linux 无签名，故为最后一步
+#
+# ## target 策略
+#   `PROT_TAIL_TARGET` 显式指定 > 基线文件（只增不减，首次记录当前大小）
+#   => 同一项目多次构建**大小统一**。
+# =============================================================================
+TAIL_BASE="build/tail_target.txt"
+CUR_SIZE=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
+if [ -n "${PROT_TAIL_TARGET:-}" ]; then
+  TAIL_TARGET="$PROT_TAIL_TARGET"
+elif [ -s "$TAIL_BASE" ]; then
+  TAIL_TARGET=$(cat "$TAIL_BASE")
+  # 只增不减: 当前更大则提升目标
+  if [ "$CUR_SIZE" -gt "$TAIL_TARGET" ]; then
+    TAIL_TARGET="$CUR_SIZE"
+    echo "$TAIL_TARGET" > "$TAIL_BASE"
+  fi
+else
+  TAIL_TARGET="$CUR_SIZE"
+  echo "$TAIL_TARGET" > "$TAIL_BASE"
+fi
+
+say "步骤 4.6: 文件尾填充（目标 $TAIL_TARGET 字节，当前 $CUR_SIZE）"
+"$PY" tools/normalize_tail.py "$OUT" --target "$TAIL_TARGET" \
+      --seed "$SECT_SEED" --quiet \
+  || warn "  normalize_tail 失败（大小可能不统一）"
+FINAL_SIZE=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
+say "  最终大小: $FINAL_SIZE 字节"
+
+# =============================================================================
 # 步骤 5: 冒烟
 # =============================================================================
 say "步骤 5: 冒烟自检"

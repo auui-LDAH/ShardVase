@@ -25,6 +25,7 @@
 import argparse
 import ast
 import json
+import shutil
 import os
 import re
 import sys
@@ -180,11 +181,23 @@ def selftest():
         return 1
 
     def trial(mut):
-        """临时改写 attacks.json -> 跑 check -> 恢复。"""
+        """临时改写 attacks.json -> 跑 check -> **逐字节恢复**。
+
+        ## ⚠️ 备份/恢复必须用**原始字节**（2026-09-25 实测修正）
+          原实现用 `json.dump(base, ...)` 备份 —— 那是"**加载后重新序列化**"
+          的结果，**不是原文件**。实测后果: 自检跑完后
+          `attacks.json` 的 `evidence` 计数从 **37 变 57**
+          （`drill_C1` 的 evidence 丢失）-> **自检把被测数据改坏** ->
+          门禁 attackcheck/e2e/mutate 连带失败。
+
+          **教训**: 自检/变异测试**必须先保证"可完全恢复"**。
+
+          修法: `shutil.copy2`（原始字节）备份与恢复；
+                `finally` 中**确保清理** `.atbak`（不留残留）。
+        """
         p = os.path.join(REPO, 'attacks.json')
         bak = p + '.atbak'
-        with open(bak, 'w', encoding='utf-8') as f:
-            json.dump(base, f, ensure_ascii=False)
+        shutil.copy2(p, bak)          # 原始字节备份
         try:
             d = copy.deepcopy(base)
             mut(d)
@@ -193,7 +206,9 @@ def selftest():
             e, w, _ = check()
             return e
         finally:
-            os.replace(bak, p)
+            shutil.copy2(bak, p)      # **逐字节还原**
+            if os.path.exists(bak):
+                os.remove(bak)        # 不留残留
 
     print('=== 基线 ===')
     e0, w0, st = check()

@@ -300,6 +300,34 @@ if ($WithMigration) {
     Check '迁移成本 (migration_gate)' {
         & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
     }
+
+# Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
+#
+# ## 与"编译覆盖"的区别
+#   `linux_compile_check` 只验证**能编译**；
+#   本项验证**能运行且保护链生效**:
+#     · build.sh 端到端构建（生成链 + 两轮编译 + selfcrypt + 烧录）
+#     · vm_unit（VM 指令集单测）
+#     · 平台层契约测试
+#     · **端到端授权链**（license 验签 + VM 校验 -> "校验通过"）
+#     · 第二支柱（节名随机化）
+#
+# ## ⚠️ 为什么放在**最末**（实测教训）
+#   本项会跑完整 `build.sh` -> **把 demo/gen 与 vm_build.json 改成 Linux 值**。
+#   若它之后还有依赖 **Windows 产物**的检查项，会被**污染**
+#   （实测: 放中间时 e2e/protchain 等被连带影响）。
+#
+# ## 为什么**不加 --skip-build**
+#   门禁顺序执行时，前面的检查项跑过 Windows 构建 ->
+#   `demo/gen/*` 是 **Windows 机器**的值，而 Linux 产物更早 ->
+#   **期望值不匹配 -> 授权链失败**（实测）。
+#   => 本项必须**自己完整构建**。代价: 慢，但**正确性优先**。
+#
+# ## 为什么默认跳过
+#   慢（数分钟）。跳过时**明确标注**（未运行 != 通过）—— 与 -WithMutation 同纪律。
+#
+# ## 含负向自检
+
 } else {
     Write-Host '[info] 迁移成本门禁未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
