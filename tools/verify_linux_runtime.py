@@ -148,6 +148,35 @@ def run_all(skip_build=False, quiet=False, readonly=False):
                   % ('ok  ' if ok3 else 'FAIL',
                      ('%s/%s' % m3.groups()) if m3 else ''))
 
+    # ③c 保护链静态断言（P1-P6）—— 第 8 项
+    #
+    # ## 依据
+    #   `protchain_check.py` 已加 **ELF 分支**（唯一平台相关处 = 节表解析；
+    #   P3/P4/P6 本就格式无关）。`--exe`/`--blob` 已参数化。
+    #
+    # ## 各项含义
+    #   P1 加密函数区无 x64 序言（密文生效）
+    #   P2 mask 文件与 meta 一致（**构建侧与运行侧口径一致**）
+    #   P3 blob v1 签名格式
+    #   P4 **纯 Python 复算 PKCS#1 v1.5** 验签（**独立实现下签名成立**）
+    #   P5 间接表槽位**不被直接 call**（N4 间接化）
+    #   P6 expect_default.c 与 vm_build.json 一致
+    pchain = os.path.join(REPO, 'tests', 'protchain_check.py')
+    if os.path.exists(pchain):
+        r4 = subprocess.run([sys.executable, '-X', 'utf8', pchain,
+                             '--exe', 'build/demo_linux',
+                             '--blob', 'build/vm.blob'],
+                            capture_output=True, timeout=900, cwd=REPO)
+        o4 = (r4.stdout + r4.stderr).decode('utf-8', 'replace')
+        n_p = len(re.findall(r'\bPASS\b', o4))
+        n_f = len(re.findall(r'\bFAIL\b', o4))
+        ok4 = (r4.returncode == 0 and n_p > 0 and n_f == 0)
+        results.append(('保护链静态断言 (protchain)',
+                        ok4, 'P1-P6: %d PASS / %d FAIL' % (n_p, n_f)))
+        if not quiet:
+            print('  %s 保护链静态断言 (P1-P6) %d PASS / %d FAIL'
+                  % ('ok  ' if ok4 else 'FAIL', n_p, n_f))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）

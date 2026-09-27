@@ -114,6 +114,72 @@ def selfcrypt_meta(data, secs, entries_only=False):
     return out
 
 
+# ===========================================================================
+# ELF 支持（F 阶段，2026-09-25）
+#
+# ## 为什么只需改节表
+#   实测各检查项的依赖分层:
+#     P1/P2 需 `.text` 节；P3/P4/P6 **纯格式无关**；P5 需 `.text` + map。
+#   => **唯一平台相关处就是节表解析**。
+#
+# ## 与 PE 的关键差异（**简化**）
+#   · `sh_size` 即**实际大小**（无 PE 的 VirtualSize/SizeOfRawData 之分）
+#   · `sh_addr` 对 **PIE** 数值即 RVA
+# ===========================================================================
+
+ELF_TARGET_SECTIONS = {
+    'text': '.text',
+    'rodata': '.rodata',
+    'pdata': '.eh_frame',      # ELF 的展开信息（PE 的 .pdata 对应物）
+}
+
+
+def is_elf(data):
+    """是否 ELF64 小端。"""
+    return (len(data) >= 64 and data[0:4] == b'\x7fELF'
+            and data[4] == 2 and data[5] == 1)
+
+
+def elf_sections(data):
+    """解析 ELF64 节表；字段名与 `pe_sections` **一致**（便于共用下游）。"""
+    if not is_elf(data):
+        raise RuntimeError('not an ELF64-LE file')
+    e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', data, 0x3A)[0]
+    e_shnum = struct.unpack_from('<H', data, 0x3C)[0]
+    e_shstrndx = struct.unpack_from('<H', data, 0x3E)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise RuntimeError('ELF has no section table')
+
+    def raw_sh(i):
+        return struct.unpack_from('<IIQQQQIIQQ', data,
+                                  e_shoff + i * e_shentsize)
+
+    strtab_off = raw_sh(e_shstrndx)[4] if e_shstrndx < e_shnum else 0
+    secs = []
+    for i in range(e_shnum):
+        (nameoff, _stype, _flags, addr, off, size, _link, _info,
+         _align, _ent) = raw_sh(i)
+        if strtab_off:
+            end = data.index(b'\x00', strtab_off + nameoff)
+            name = data[strtab_off + nameoff:end].decode('ascii', 'replace')
+        else:
+            name = ''
+        secs.append({
+            'name': name,
+            'virtual_size': size,     # ELF: sh_size 即实际大小
+            'virtual_addr': addr,
+            'size_raw': size,
+            'ptr_raw': off,
+        })
+    return secs
+
+
+def sections_of(data):
+    """**按文件类型分派**的节表解析（PE / ELF）。"""
+    return elf_sections(data) if is_elf(data) else pe_sections(data)
+
+
 def pe_sections(data):
     if len(data) < 0x40:
         raise RuntimeError('not a PE file')
@@ -432,7 +498,7 @@ def main():
     results = []
     try:
         data = open(args.exe, 'rb').read()
-        secs = pe_sections(data)
+        secs = sections_of(data)
 
         checks = [
             ('P1 selfcrypt-ciphertext', p1_selfcrypt_ciphertext, (data, secs)),

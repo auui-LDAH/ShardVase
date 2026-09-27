@@ -1982,3 +1982,108 @@ case('T5 vmc 假断言被拒（负向）', r5.returncode == 0)
 ---
 
 *2026-09-25 · E 阶段: vmc 移植（7/7）+ 复用数据源纪律 + 状态竞争教训*
+
+---
+
+## 22. ✅ F 阶段：`protchain` 移植（第 8 项）—— Linux 静态断言全覆盖（2026-09-25）
+
+### 22.1 依赖分层分析（**决定了移植成本很低**）
+
+移植前先做了**依赖分层**（这是本轮效率的关键）：
+
+| 检查项 | PE 依赖 | 移植成本 |
+|--------|---------|---------|
+| **P1** selfcrypt 密文 | 仅 `.text` 节 | 换节表即可 |
+| **P2** mask 一致性 | 同上 | 换节表即可 |
+| **P3** blob v1 格式 | **无**（纯 blob 字节）| **零** |
+| **P4** blob 验签 | **无**（纯 Python RSA）| **零** |
+| **P5** 间接表 | `.text` + map | map 已有 `parse_map_file` |
+| **P6** expect 一致性 | **无**（读 json + C 文件）| **零** |
+
+**结论**: **唯一平台相关处 = 节表解析**（`pe_sections`）。
+=> 加 `elf_sections` + `sections_of` 分派即可 —— 与 `hashpatch` **完全同法**。
+
+### 22.2 实施（**改动极小**）
+
+```python
+def sections_of(data):
+    """**按文件类型分派**的节表解析（PE / ELF）。"""
+    return elf_sections(data) if is_elf(data) else pe_sections(data)
+```
+
+`elf_sections` 的字段名与 `pe_sections` **刻意保持一致**
+（`virtual_size`/`virtual_addr`/`size_raw`/`ptr_raw`）-> 下游零改动。
+
+**ELF 的简化**（如实标注）: `sh_size` 即**实际大小** ——
+**无 PE 的 VirtualSize/SizeOfRawData 之分**。
+
+### 22.3 验收（Linux 产物，**6/6 PASS**）
+
+```
+P1 selfcrypt-ciphertext       PASS  (5 fns ciphertext (no x64 prologue))
+P2 selfcrypt-mask-crc         PASS  (mask file matches meta; .text CRC verified)
+P5 indirect-no-direct-call    PASS  (no direct call to 4 indirect slots)
+P6 expect-consistent          PASS  (expect_default.c matches vm_build.json)
+P3 blob-v1-signed             PASS  (PROTVMB1 v1 signed blob)
+P4 blob-signature-verify      PASS  (RSA-3072 verify ok)
+```
+
+> **P4 的价值最高**: **纯 Python 复算 PKCS#1 v1.5 SHA-256** 验签成功 ——
+> 证明 Linux 产物的 blob 签名在**独立实现**下也成立
+> （不是"同一份代码自证"）。
+
+**PE 侧回归**: 改动后 Windows 产物 6/6 仍 PASS（**零回归**）。
+
+### 22.4 第 8 项接入
+
+```
+--- 运行时验证（8 项）---
+  ok   构建 / vm_unit / 契约测试 / 授权链
+  ok   VM 合约测试 (vmc) 6/6
+  ok   **保护链静态断言 (P1-P6) 6 PASS / 0 FAIL**   <- 新增
+  ok   节名随机化 / 文件大小统一
+[verify_linux_runtime] PASS: 8/8
+[ci_linux] PASS
+```
+
+### 22.5 Linux 侧覆盖现状（**8 项**）
+
+| # | 项 | 覆盖的保护机制 |
+|---|----|--------------|
+| 1 | 构建（build.sh）| 全链路 |
+| 2 | vm_unit | VM 指令集 |
+| 3 | 平台层契约 | 平台抽象 |
+| 4 | **端到端授权链** | license 验签 + VM 校验 |
+| 5 | **vmc**（6/6）| VM 合约编译 |
+| 6 | **protchain P1-P6** | selfcrypt / 掩码 / blob 签名 / 间接化 / 期望值 |
+| 7 | 节名随机化 | 第二支柱（配置不可观测）|
+| 8 | 文件大小统一 | 第二支柱（防组合指纹）|
+
+**负向自检 5 项**（T1-T5）:
+```
+T1 WSL 可用 · T2 **错误序列号被拒** · T3 正确序列号通过
+T4 **篡改产物被检出** · T5 vmc 假断言被拒
+```
+
+### 22.6 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| `protchain` 的 **P4 读 BCRYPT 公钥**（**已核实**）| P4 从 `demo/gen/license_pubkey.c` 读 **BCRYPT** 格式公钥，验的是 `build/vm.blob`。<br>**为何在 Linux 侧仍成立**: blob 由 `pack --sign license_priv.json` 签，而 BCRYPT 与 DER **由同一把私钥导出** -> **数学等价**。<br>**边界**: P4 验证的是**构建期产物（blob）签名**；**运行期**（Linux 用 DER）验签那条路径由**第 4 项端到端授权链**覆盖 -> **两者互补而非重复** |
+| vmc **错误用例未移植** | 3 个"语法错误应被拒"用例 |
+| 产物未按平台隔离 | 已知泄漏点（`demo/gen/prot_pubkey_der.c`）|
+| **两平台共享 `demo/gen`** | 调试必须**串行**（§21.4 定性）|
+
+### 22.7 F 阶段成果
+
+| 项 | 状态 |
+|----|------|
+| `protchain_check.py` ELF 分支 | ✅ |
+| Linux 产物 P1-P6 | ✅ 6/6 PASS |
+| PE 侧零回归 | ✅ 6/6 PASS |
+| `verify_linux_runtime` 第 8 项 | ✅ 8/8 PASS |
+| 门禁（串行）| ✅ **21/22**（唯一失败=未提交）|
+
+---
+
+*2026-09-25 · F 阶段: protchain 移植（8/8）+ 依赖分层使移植成本极低*
