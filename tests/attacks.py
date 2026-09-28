@@ -557,8 +557,13 @@ def main():
         #   => 该项在 Linux 上**无法按原判据验证** -> 标记 `PLATFORM_NA`，
         #      **不伪装成 PASS**（"未验证 != 通过"）。
         #
-        #   诚实说明: 若把 HTTP 服务器也放进 WSL 内（用 WSL 的 127.0.0.1），
-        #   本项**可验证** —— 属**后续可做**（记为剩余工作）。
+        #   ## ⚠️ S1/S2 修正（2026-09-25）: 放进 WSL **也不可行**
+        #     原以为"若服务器进 WSL 本项可验证" —— **实测推翻**:
+        #     `prot_plat_http_get*` 在 Linux **如实返回
+        #     `PROT_ERR_UNSUPPORTED`**（设计决策: 不用 libcurl）——
+        #     demo **不会发起请求**，服务器放哪里都无用。
+        #     => 本项在 Linux 属"**设计上不可验证**"（非"待做"）。
+        #        要在 Linux 通过需**先实现 Linux HTTP**（产品特性决策）。
         if _PLATFORM != 'win':
             results.append(('A12 offline-fix-expect', 'PLATFORM_NA',
                             'Linux 无在线会话能力（服务器在 Windows 侧；'

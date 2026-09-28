@@ -179,7 +179,12 @@ def _norm_expect(expected):
 #:   T28 期望 11 拿到 11）—— **那是巧合，不是验证通过**。
 #:   标 NA + 注明原因（"未验证 != 通过"）。
 #: **剩余工作**: mock 服务器放进 WSL 内（或用 host IP）-> 这些用例可完整验证。
-ONLINE_LABELS = ('T22 ', 'T23 ', 'T24 ', 'T25 ', 'T26 ', 'T27 ', 'T28 ')
+#: ## ⚠️ T24 **不在**此列（S1 修正, 2026-09-25）
+#:   T24 的判据是"**不可达 -> 静默降级**" —— Linux 侧**同样走降级分支**
+#:   （原因不同: Linux 是 `PROT_ERR_UNSUPPORTED`，Windows 是网络不可达，
+#:    但**代码路径相同** = `prot_plat_http_*` 返回非 OK 的 else 分支）
+#:   => 可**真验证**（见 T24 处的说明）。
+ONLINE_LABELS = ('T22 ', 'T23 ', 'T25 ', 'T26 ', 'T27 ', 'T28 ')
 
 
 class _Results(list):
@@ -196,9 +201,20 @@ class _Results(list):
                 and isinstance(item[0], str)
                 and item[0].startswith(ONLINE_LABELS)):
             detail = item[2] if len(item) > 2 else ''
+            # ## 根因（S1/S2 实测修正, 2026-09-25）
+            #   **不是**"服务器位置"问题（WSL2 与 Windows loopback 独立
+            #   只是**表象**），而是 **Linux 侧没有 HTTP 能力**:
+            #   `prot_plat_http_get*` 如实返回 `PROT_ERR_UNSUPPORTED`
+            #   （源码决策: 不用 libcurl，①不引入新依赖 ②诚实 ③可扩展）
+            #   => demo **不会发起请求** -> 服务器放哪里都无用
+            #      （实测: 吊销 serial 时 demo 仍 license: 1）。
+            #
+            #   **为什么仍标 NA**: 这不是"待做"而是"**设计上不可验证**"
+            #   —— 把 mock 放进 WSL 也无效；要让这些用例在 Linux 通过，
+            #   需**先实现 Linux HTTP**（产品特性决策，非测试缺口）。
             super().append((item[0], 'PLATFORM_NA',
-                            'WSL2/Windows loopback 独立（curl rc=7）；'
-                            'mock 服务器在 Windows 侧不可达；'
+                            'Linux 无 HTTP 能力（prot_plat_http_get* 返回 '
+                            'PROT_ERR_UNSUPPORTED，设计决策）；'
                             '原 detail: %s' % detail))
         else:
             super().append(item)
@@ -923,6 +939,17 @@ def main():
 
     try:
         # 服务不可达 (未监听端口) -> 静默降级, 不锁死
+        #
+        # ## S1 修正: **Linux 侧可真验证**（2026-09-25）
+        #   判据"不可达 -> 降级"在 Linux **同样成立**，因为:
+        #     · Windows: 端口 59999 未监听 -> `prot_plat_http_get_mem`
+        #       返回网络失败 -> **走 else（降级）分支**
+        #     · Linux: `prot_plat_http_get_mem` 返回 `PROT_ERR_UNSUPPORTED`
+        #       -> **走同一个 else（降级）分支**
+        #   => **代码路径相同**（"HTTP 不成功就降级"），故 Linux 的结果
+        #      是对**同一分支**的真实验证（只是触发原因不同）。
+        #   **诚实标注**: 触发原因不同（未实现 vs 不可达）——
+        #      若将来 Linux 实现 HTTP，本用例需复查。
         code, out, _ = run_demo(
             args=['--license-file', LICENSE, '--vm-blob',
                   os.path.join(BUILD, 'vm.blob'),
