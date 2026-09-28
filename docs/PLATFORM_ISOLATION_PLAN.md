@@ -2169,3 +2169,67 @@ e2e Windows: PASS 27 / FAIL 0 / SKIP 1（T9/T10 加固后两布局稳定）
 ---
 
 *2026-09-25 · W3: Linux HTTP（POSIX socket）+ 12 项单测（含 8 负向）+ 顺带修掉 T9 既有脆弱性*
+
+---
+
+## 32. 🎯 W4 前置验证成功：Linux 在线路径**完全可用**（2026-09-25）
+
+### 32.1 验证结果（**决定性**）
+
+```
+吊销当前 serial -> rc=228 (0xB1E4 低 8 位)  demo 输出: **online check: revoked** ✅
+不吊销          -> rc=0                     demo 输出: **online check: ok**      ✅
+服务端收到: REQ /v1/check?serial=DEMO-2026-ABCDEFGH&mid=183fb0e8a61eb2fa&tier=1&build=1.1.0
+```
+**=> W3 的 POSIX socket HTTP 真的在工作**（demo 的在线块执行了、
+URL 构造正确、响应被解析、`revoked` 被识别）—— **7 项 NA 可以关**。
+
+### 32.2 ⚠️ 过程中的关键教训（**环境变量跨不过 WSL 边界**）
+
+**现象**：第一次验证时 demo 输出 `online check: **ok**`（服务端明明该吊销）。
+```
+服务端收到的路径: /v1/check?serial=DEMO-2026-ABCDEFGH&...   <- serial 就在路径里
+但服务端判定: revoked = ('serial=%s' % REVOKE) in path
+REVOKE 来自 **环境变量 W4_REVOKE** -> **没传进 WSL** -> None -> 永不吊销
+```
+**根因**：**Windows 的环境变量不会自动进入 WSL**（需 `WSLENV` 显式配置）
+—— 我把 `W4_REVOKE` 塞进 `subprocess.Popen(env=...)`，那只影响
+**`wsl.exe` 自己**，**不影响 WSL 内的进程**。
+
+**修法**：改用**命令行参数**（`--revoke-serial <serial>`）—— 立即生效。
+
+> ### 🎯 教训（**边界处要选最直接的通道**）
+> 跨边界传参有三种通道: **①命令行参数 ②环境变量 ③文件**。
+> · **命令行参数最可靠**（直接进 `wsl.exe` 的 argv -> WSL 内进程的 argv）
+> · 环境变量**需额外配置**（`WSLENV`），**容易静默丢失**（且失败时无声）
+> · 文件最通用但最重
+> **与本项目既有教训同类**:
+> · C-2/C-3「`bash -c` 会吞 stdin/退出码」-> **不经 shell 包装**
+> · S1「服务器就绪 ≠ 被测程序会用它」-> **先确认通道两端都通**
+> · **共同规律**: **边界处的通道选择是易错点，且失败往往静默** ——
+>   要用**最直接**的通道，并在失败时**先怀疑通道**（而非怀疑被测逻辑）。
+
+### 32.3 对 §29 计划的更新
+
+| 步 | 状态 |
+|----|------|
+| W1 | ✅ 完成（**证伪**，W2 取消）|
+| W2 | ❌ 取消（W1 证伪）|
+| **W3** | ✅ 完成（POSIX socket HTTP + 12 项单测 + 修 T9 既有脆弱性）|
+| **W4** | 🚧 **前置已验证成功，实施中**（复活 `mock_http.py` + 7 项去 NA）|
+| W5 | ⬜ 待做 |
+
+**W4 的确定方案**（基于本次验证）：
+```
+① `tools/mock_http.py` **复活**（WSL 内运行；**参数用命令行** —— 见 32.2）
+   支持三类 handler（语义逐字复刻 e2e 的 start_*）:
+     check / expect / blob
+② e2e 的在线用例在 **linux** 侧改为: 起 WSL 内服务器 -> 用其 PORT 构造 URL
+   -> demo（WSL 内）连接 -> 真验证
+③ 删掉 `ONLINE_LABELS` 的 NA 机制（**NA 7 -> 0**）
+④ attacks 的 A12 同法去 NA（**NA 1 -> 0**）
+```
+
+---
+
+*2026-09-25 · W4 前置验证成功（Linux 在线路径可用 + "环境变量跨不过 WSL"的教训）*
