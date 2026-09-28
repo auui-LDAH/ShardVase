@@ -322,6 +322,37 @@ def run_all(skip_build=False, quiet=False, readonly=False):
             print('  %s 端到端 e2e T1-T28 %s'
                   % ('ok  ' if ok7 else 'FAIL', det))
 
+    # ③g **HTTP 平台层单测**（W3, 2026-09-25）—— 第 12 项
+    #
+    # ## 为什么需要
+    #   W3 给 Linux 加了**新平台能力**（`prot_plat_http_get*` 用 POSIX
+    #   socket 实现）。新能力的**错误路径**最容易出错 ——
+    #   尤其"**失败却报成功**"（永久化单测已抓到一次: `get_mem` 在
+    #   体未到齐时误报 OK）。
+    #
+    # ## 覆盖（2 正向 + **8 负向**）
+    #   正向: 下载到内存 / 下载到文件
+    #   负向: https **如实 UNSUPPORTED** / 端口不可达 / 非法 scheme /
+    #         空 host / NULL 参数 x3 / 超 max_size（**文件须被删**）/
+    #         cap 过小
+    #
+    # ## 计划依据
+    #   §29.6: "W3 是平台层新功能 —— 必须含负向单测；**不得**为了
+    #   '让测试通过'而放宽 HTTP 语义"。
+    httpp = os.path.join(REPO, 'tests', 'http_platform_test.py')
+    if os.path.exists(httpp):
+        r8 = subprocess.run([sys.executable, '-X', 'utf8', httpp],
+                            capture_output=True, timeout=1800, cwd=REPO)
+        o8 = (r8.stdout + r8.stderr).decode('utf-8', 'replace')
+        m8 = re.search(r'(\d+) 正向 \+ (\d+) 负向', o8)
+        ok8 = (r8.returncode == 0)
+        det8 = (('%s 正向 + %s 负向' % m8.groups()) if m8
+                else ('rc=%d' % r8.returncode))
+        results.append(('HTTP 平台层单测 (W3)', ok8, det8))
+        if not quiet:
+            print('  %s HTTP 平台层单测 %s'
+                  % ('ok  ' if ok8 else 'FAIL', det8))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）

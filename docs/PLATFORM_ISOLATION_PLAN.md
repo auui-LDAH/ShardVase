@@ -2045,3 +2045,127 @@ stdout **0 字节** / stderr **0 字节**   <- 连启动横幅都没打印
 ---
 
 *2026-09-25 · W1 结案: 证伪（判据不成立，W2 取消；边界 2/3 定性为环境限制）*
+
+---
+
+## 31. ✅ W3 完成：Linux HTTP（POSIX socket）+ 单测 + **T9 既有脆弱性**（2026-09-25）
+
+### 31.1 交付：`prot_plat_http_get*` 的 **POSIX socket 实现**
+
+**决策依据（§29.3 的关键判断）**：
+```
+§22.5 原决策: "不用 libcurl（不引入新依赖）" —— **针对 libcurl 是对的**（第三方库）
+但 Windows 用 **WinHTTP**（**系统组件**）-> 对等做法 = Linux 用 **POSIX socket**
+  （<sys/socket.h>，**glibc 自带**）
+=> **不引入第三方依赖**（与原决策一致），且**与 Windows 对等**
+```
+
+**语义对齐（逐项对照 `prot_platform_win.c`）**：
+
+| 项 | Windows（WinHTTP）| Linux（POSIX socket）|
+|----|------------------|---------------------|
+| 参数预检 | NULL -> `INVALID_ARG` | **同** |
+| 大小上限 | `max_size` 或 **16 MiB** | **同** |
+| 超限 | **删文件** + `INTERNAL` | **同** |
+| 超时 | 3000ms | `SO_RCVTIMEO/SO_SNDTIMEO` **3s** |
+| `get_mem` 边界 | `avail < cap` 才 OK | **同**（`body_len >= cap` -> `INTERNAL`）|
+| https | 支持 | **`UNSUPPORTED`（如实，不假装成功）** |
+
+**范围最小化**：只支持 `http://host[:port]/path` 的 GET；
+**https / 重定向 / 分块 / 代理 -> 如实降级**（demo 的用途是内网 http）。
+
+### 31.2 单测：`tests/http_platform_test.py`（2 正向 + **8 负向**）
+
+```
+ok P1 get_mem 正常下载（233 字节 JSON）      ok P2 get 下载到文件（字节一致）
+ok N1/N1b https -> **如实 UNSUPPORTED**      ok N2 端口不可达 -> INTERNAL
+ok N3/N3b 非法 scheme / 空 host -> INVALID_ARG
+ok N4a-d NULL 参数 / cap=0 -> INVALID_ARG
+ok N5/N5b 超 max_size -> INTERNAL + **文件已删**
+ok N6 cap 过小 -> INTERNAL
+```
+**已接入 `ci_linux`（第 12 项）** —— 新能力必须有守护者。
+
+### 31.3 🎯 永化单测**当场抓到**一个真实缺陷（**这就是它的价值**）
+
+```
+N6 cap 过小 -> INTERNAL   **原实现 got=OK**（want=INTERNAL）
+```
+**根因**：`get_mem` 在"**头已完整但体还没到**"的那次 `recv` 会算出
+`body_len == 0`，而 `0 < cap` 成立 -> **报 OK 且内容为空**
+-> **误报成功**（最危险的错误类型：调用方以为拿到了数据）。
+
+**为什么临时脚本没抓到**：临时脚本的服务器把**头与体在同一次 TCP 段**发出
+（本地、小体量）-> 一次 `recv` 同时拿到 -> `body_len > 0` -> 正常。
+**永久化版本体更大（233B）且时序略不同** -> 分开到达 -> **暴露**。
+> ### 🎯 教训（**"永久化"本身就是质量手段**）
+> 临时脚本"跑过一次"**不等于**"被守护"。
+> **把一次性验证变成常驻测试**这件事本身，就会**逼出隐藏缺陷**。
+
+**修法（对齐 Windows 的 `avail < cap` 语义）**：`body_len == 0` **不算成功**，
+继续 `recv`；连接结束仍无体 -> `INTERNAL`。
+
+### 31.4 ⚠️ 顺带暴露并修掉 **T9 的既有脆弱性**（**非 W3 引入**）
+
+**现象**：门禁里 `e2e` 失败 ->
+```
+T9 tamper-rdata  FAIL (exit=0)
+```
+**逐项排查**：
+```
+① e2e 单独            : PASS 27/28
+② 门禁式构建后 e2e     : PASS（T9 exit=2989 = 0xBAD ✅）
+③ repro_check 之后 e2e : **T9 FAIL（exit=0）**  <- 精确复现
+④ 用 W3 **之前**的提交跑同一序列: **全绿** -> 一度判为"W3 引入"
+```
+**再查（关键数据）**：
+```
+门禁式构建 (-RecordSeeds): demo.exe **329080** 字节
+repro_check (-SeedsFile) : demo.exe **327680** 字节（**布局不同**）
+=> T9 的**固定偏移 +0x1000** 在布局 B 下落到了**未被 CRC 覆盖**的位置
+```
+**根因**：**T9 依赖固定经验偏移**（`+0x1000`）—— 而它与"CRC 覆盖范围"
+**无必然关系**。W3 只改 `src/platform/prot_platform_linux.c`（**不参与
+Windows 构建**），所以**不是 W3 的回归**，而是**既有脆弱性被暴露**
+（W3 树上的构建布局恰好触发了它）。
+
+> ### 🎯 教训（**"以前全绿"≠"现在没坏"**）
+> 我用 worktree 跑"W3 之前的提交"得到全绿，就推断"W3 引入" ——
+> **但那是单次采样的结论**。真正的原因是**布局敏感**:
+> 同一份代码在不同构建布局下结果不同。
+> **正确做法**: 判据**本身不能依赖布局**（见下）。
+
+**修法（**两次**，第一次方向错）**：
+| 尝试 | 做法 | 结果 |
+|------|------|------|
+| ① | 照搬 T4 的 `from_end=1`（翻 CRC 末字节）| ❌ **错**: `.rdata` CRC 末尾是 **IAT 名称表**（`"Heap"`/`"HeapSize"`/…**真实数据**）-> 翻转得 `0xC0000139`（**DLL 装载失败**）。T4 能用是因为 **`.text` 尾是 padding** |
+| ② | **数据驱动**: `tamper_candidates()` 从 CRC **中段**向外扩散逐个试探，直到 demo 给 `0xBAD`；全失败则**如实 FAIL** | ✅ 两种布局均 PASS |
+
+**验证（两种布局）**：
+```
+布局 A (-RecordSeeds): T9 PASS(2989)  T10 PASS(2989)
+布局 B (repro 重建)  : T9 PASS(2989)  T10 PASS(2989)   <- 原失败条件已解
+```
+> **为什么不"放宽判据"**：`tamper_candidates` 全失败时**如实 FAIL**
+> （暴露"该节无法被覆盖"的真问题），**不是**"改到过为止"。
+
+### 31.5 验收
+
+```
+Windows 门禁: **23/24**（唯一失败 = git 未提交；**e2e/attacks/protchain 全绿**）
+Linux ci_linux: **12/12**（新增第 12 项: HTTP 平台层单测）
+e2e Windows: PASS 27 / FAIL 0 / SKIP 1（T9/T10 加固后两布局稳定）
+```
+
+### 31.6 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| 只支持 `http://` | https 需 TLS 栈（**另一个量级**）-> 如实 `UNSUPPORTED` |
+| 不支持重定向/分块/代理 | demo 用途不需；**不是**通用 HTTP 客户端 |
+| `get_mem` 单次 `recv` 足够 | demo 的小 JSON 用途；大响应需扩展（**若 W4 需要再扩**）|
+| `tamper_candidates` 最多 8 个候选 | 若布局极端，可能全部失败 -> **如实 FAIL**（不是 bug）|
+
+---
+
+*2026-09-25 · W3: Linux HTTP（POSIX socket）+ 12 项单测（含 8 负向）+ 顺带修掉 T9 既有脆弱性*

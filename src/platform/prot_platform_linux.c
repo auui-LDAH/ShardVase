@@ -41,6 +41,8 @@
  */
 
 #include "protect/prot_platform.h"
+#include "protect/prot_compiler.h"   /* W3: PROT_FOPEN_S / PROT_SNPRINTF / PROT_STRCPY_S
+                                      *（与 `prot_platform_win.c` 结构对等 —— 该侧早已包含）*/
 
 #if PROT_PLATFORM == PROT_PLATFORM_LINUX
 
@@ -783,6 +785,16 @@ void prot_plat_mutex_unlock(prot_plat_mutex* m)
 
 #include <elf.h>
 #include <string.h>
+
+/* ## W3（2026-09-25）: HTTP 实现所需的 **POSIX socket** 头
+ *   不是"新依赖": 见分组 13 决策说明 —— `sys/socket.h` 等是
+ *   **glibc 标准件**（与 Windows 的 WinHTTP 同为系统组件），
+ *   **不引入第三方库**。 */
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/time.h>
 
 /* 从映像基址取 ELF 头 */
 /* ================================================================== *
@@ -1585,41 +1597,363 @@ prot_status prot_plat_hide_thread(void)
 }
 
 /* ------------------------------------------------------------------ *
- * 分组 13: HTTP 下载（B4，Linux: **如实降级**）
+ * 分组 13: HTTP 下载（W3, 2026-09-25: **POSIX socket 实现**）
  *
- * ## 为什么返回 UNSUPPORTED 而不是"假装失败"
- *   `demo/main.c` 的 `--blob-url` 在下载失败时**静默回退本地路径**。
- *   若本函数返回 `PROT_ERR_INTERNAL`（"网络失败"），调用方会回退 ——
- *   **行为上等价**，但**语义上误导**（让人以为"网络不通"，
- *   实际是"该平台未实现"）。
+ * ## 决策变更（**与 §22.5 的原判断的关系**）
+ *   原决策: "不用 libcurl（①不引入新依赖 ②诚实 ③可扩展）"。
+ *   **该判断针对 libcurl 是对的**（第三方库）—— 本实现**仍然遵守**。
  *
- *   => 返回 **`PROT_ERR_UNSUPPORTED`** —— 调用方**同样回退**，
- *      但**语义准确**（可据此区分"未实现"与"网络故障"）。
+ *   **但**: Windows 侧用的是 **WinHTTP**（**系统组件**，非第三方）。
+ *   对等的做法是 Linux 用 **POSIX socket**（`<sys/socket.h>`，
+ *   **glibc 自带**）—— **同为系统提供的网络能力**。
+ *   => **不引入第三方依赖**（与原决策一致），且**与 Windows 对等**。
  *
- * ## 为什么不用 libcurl（**决策记录**）
- *   见 `prot_platform.h` 分组 13 的注释:
- *   ① 不引入新依赖 ② 诚实 ③ 可扩展（将来可填 libcurl 实现）
+ * ## 语义对齐（逐项对照 `prot_platform_win.c`）
+ *   · 参数预检 NULL -> `INVALID_ARG`；大小上限 = `max_size` 或 **16 MiB**
+ *   · 超限 -> **删文件** + `INTERNAL`（与 Windows 同）
+ *   · `get_mem`: 仅当 `avail < cap` 才读 -> `OK`（与 Windows 同）
+ *   · 超时 3s（对应 Windows 的 `WinHttpSendRequest(..., 3000)`）
+ *
+ * ## 范围（**最小化，如实降级**）
+ *   支持: `http://host[:port]/path` 的 GET
+ *   **不支持（返回 `UNSUPPORTED`，不假装成功）**:
+ *     https（需 TLS 栈）/ 重定向 / 分块传输 / 代理
+ *
+ * ## 为什么 HERE（而不是新文件）
+ *   本文件即"Linux 平台层"，HTTP 属分组 13 的平台实现 ——
+ *   放这里与 Windows 侧**结构对等**（便于对照维护）。
  * ------------------------------------------------------------------ */
+
+/*: HTTP 默认端口（只支持 http://） */
+#define PROT_HTTP_PORT_DEFAULT 80
+/*: 与 Windows 的 `cap` 默认值一致（16 MiB） */
+#define PROT_HTTP_MAX_DEFAULT (16u * 1024u * 1024u)
+/*: 超时（秒）—— 对应 WinHTTP 的 3000ms */
+#define PROT_HTTP_TIMEOUT_SEC 3
+
+/* 解析 `http://host[:port]/path`。
+ *
+ * 返回 1 成功（host/path/port 填好）；0 = 不支持或格式错。
+ * **不支持 https**（scheme 不是 http -> 返回 0，调用方报 UNSUPPORTED）。
+ */
+static int http_parse_url(const char* url, char* host, size_t host_cap,
+                          char* path, size_t path_cap, int* port,
+                          int* scheme_unsupported)
+{
+    const char* p;
+    const char* slash;
+    size_t host_len;
+    *scheme_unsupported = 0;
+    if (url == NULL || host == NULL || path == NULL || port == NULL)
+        return 0;
+    if (strncmp(url, "http://", 7u) == 0) {
+        p = url + 7u;
+        *port = PROT_HTTP_PORT_DEFAULT;
+    } else if (strncmp(url, "https://", 8u) == 0) {
+        /* **如实降级**: https 需 TLS 栈，本实现不支持 */
+        *scheme_unsupported = 1;
+        return 0;
+    } else {
+        return 0;
+    }
+    slash = strchr(p, '/');
+    host_len = (slash != NULL) ? (size_t)(slash - p) : strlen(p);
+    if (host_len == 0u || host_len >= host_cap)
+        return 0;
+    memcpy(host, p, host_len);
+    host[host_len] = '\0';
+    /* 可选 `:port` */
+    {
+        char* colon = strchr(host, ':');
+        if (colon != NULL) {
+            long v = 0;
+            const char* q = colon + 1;
+            if (*q == '\0')
+                return 0;
+            while (*q != '\0') {
+                if (*q < '0' || *q > '9')
+                    return 0;
+                v = v * 10 + (*q - '0');
+                if (v > 65535)
+                    return 0;
+                q++;
+            }
+            *port = (int)v;
+            *colon = '\0';
+        }
+    }
+    if (slash != NULL) {
+        size_t plen = strlen(slash);
+        if (plen >= path_cap)
+            return 0;
+        memcpy(path, slash, plen + 1u);
+    } else {
+        PROT_STRCPY_S(path, path_cap, "/");
+    }
+    return 1;
+}
+
+/* 建立到 host:port 的 TCP 连接；失败返回 -1。
+ *
+ * ## 实现说明（W3）
+ *   先按**字面 IPv4** 解析（demo 的用途几乎都是 `127.0.0.1`）——
+ *   快且无 DNS 依赖；失败才走 `getaddrinfo`（支持主机名）。
+ *   两者都设 **超时**（对应 Windows 的 3000ms）。
+ */
+static int http_connect(const char* host, int port)
+{
+    struct sockaddr_in sa;
+    struct timeval tv;
+    int fd;
+
+    tv.tv_sec = PROT_HTTP_TIMEOUT_SEC;
+    tv.tv_usec = 0;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+
+    if (inet_pton(AF_INET, host, &sa.sin_addr) == 1) {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (connect(fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+            close(fd);
+            return -1;
+        }
+        return fd;
+    }
+
+    /* 非字面 IPv4 -> 主机名解析（demo 用途少见，但保持可用） */
+    {
+        struct addrinfo hints;
+        struct addrinfo* res = NULL;
+        char portstr[8];
+        int rc;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        PROT_SNPRINTF(portstr, sizeof(portstr), "%d", port);
+        rc = getaddrinfo(host, portstr, &hints, &res);
+        if (rc != 0 || res == NULL)
+            return -1;
+        fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (fd < 0) {
+            freeaddrinfo(res);
+            return -1;
+        }
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (connect(fd, res->ai_addr, (socklen_t)res->ai_addrlen) != 0) {
+            close(fd);
+            freeaddrinfo(res);
+            return -1;
+        }
+        freeaddrinfo(res);
+        return fd;
+    }
+}
+
+/* 发送 GET 请求；失败返回 0。 */
+static int http_send_get(int fd, const char* host, int port,
+                         const char* path)
+{
+    char req[1024];
+    int n;
+    n = PROT_SNPRINTF(req, sizeof(req),
+                      "GET %s HTTP/1.0\r\nHost: %s:%d\r\n"
+                      "User-Agent: PROT-Demo/1.0\r\n"
+                      "Connection: close\r\n\r\n",
+                      path, host, port);
+    if (n <= 0 || (size_t)n >= sizeof(req))
+        return 0;
+    return (send(fd, req, (size_t)n, 0) == n) ? 1 : 0;
+}
+
+/* 跳过 HTTP 响应头，返回剩余缓冲里的**体起始偏移**；-1 = 头未结束。
+ *
+ * ## 为什么缓冲区跨调用保留
+ *   `recv` 可能把头与体一次返回 -> 必须把"头之后"的数据**交给调用方**，
+ *   否则会丢字节（实测常见的实现错误）。
+ *   => 本函数把已读缓冲、长度、已用偏移都作为**出入参**。
+ */
+static long http_skip_headers(char* buf, size_t* used, size_t cap)
+{
+    size_t i;
+    for (i = 0u; i + 3u < *used; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+            buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+            return (long)(i + 4u);
+        }
+    }
+    (void)cap;
+    return -1;
+}
 
 prot_status prot_plat_http_get(const char* url, const char* out_path,
                                size_t max_size)
 {
-    (void)url;
-    (void)out_path;
-    (void)max_size;
-    /* 如实声明: Linux 侧未实现网络下载 -> 调用方回退本地路径 */
-    return PROT_ERR_UNSUPPORTED;
+    char host[256];
+    char path[512];
+    int port = 0;
+    int unsup = 0;
+    int fd;
+    FILE* f = NULL;
+    size_t total = 0u;
+    size_t cap;
+    char buf[4096];
+    long body_off = -1;
+    size_t used = 0u;
+    prot_status st = PROT_ERR_INTERNAL;
+    ssize_t n;
+
+    if (url == NULL || out_path == NULL)
+        return PROT_ERR_INVALID_ARG;
+    if (!http_parse_url(url, host, sizeof(host), path, sizeof(path),
+                        &port, &unsup))
+        return unsup ? PROT_ERR_UNSUPPORTED : PROT_ERR_INVALID_ARG;
+
+    fd = http_connect(host, port);
+    if (fd < 0)
+        return PROT_ERR_INTERNAL;
+    if (!http_send_get(fd, host, port, path)) {
+        close(fd);
+        return PROT_ERR_INTERNAL;
+    }
+
+    if (PROT_FOPEN_S(&f, out_path, "wb") != 0) {
+        close(fd);
+        return PROT_ERR_INTERNAL;
+    }
+    cap = (max_size != 0u) ? max_size : (size_t)PROT_HTTP_MAX_DEFAULT;
+
+    /* 先收一块（含响应头），再跳过头部 */
+    while ((n = recv(fd, buf + used, sizeof(buf) - used, 0)) > 0) {
+        size_t chunk = (size_t)n;
+        size_t off = 0u;
+        used += chunk;
+        if (body_off < 0) {
+            body_off = http_skip_headers(buf, &used, sizeof(buf));
+            if (body_off < 0) {
+                if (used >= sizeof(buf)) {   /* 头过大 -> 失败 */
+                    st = PROT_ERR_INTERNAL;
+                    goto done;
+                }
+                continue;                     /* 继续收，直到头完整 */
+            }
+            off = (size_t)body_off;
+        }
+        {
+            size_t body_len = used - off;
+            if (total + body_len > cap) {
+                st = PROT_ERR_INTERNAL;       /* 超限 */
+                goto done;
+            }
+            if (body_len > 0u) {
+                (void)fwrite(buf + off, 1u, body_len, f);
+                total += body_len;
+            }
+        }
+        used = 0u;
+        off = 0u;
+        (void)off;
+    }
+    st = (body_off >= 0) ? PROT_OK : PROT_ERR_INTERNAL;
+
+done:
+    if (f != NULL)
+        fclose(f);
+    close(fd);
+    if (st != PROT_OK) {
+        /* 与 Windows 一致: 失败/超限 -> **删掉半成品文件** */
+        remove(out_path);
+    }
+    return st;
 }
 
-/* 下载到内存（Linux: **同样如实降级**，理由见 prot_plat_http_get）。 */
+/* 下载到内存（语义与 Windows 的 `get_mem` 对齐: 仅当 `avail < cap` 才读）。 */
 prot_status prot_plat_http_get_mem(const char* url, char* buf, size_t cap,
                                    size_t* out_len)
 {
-    (void)url;
-    (void)buf;
-    (void)cap;
-    (void)out_len;
-    return PROT_ERR_UNSUPPORTED;
+    char host[256];
+    char path[512];
+    int port = 0;
+    int unsup = 0;
+    int fd;
+    char raw[8192];
+    size_t used = 0u;
+    size_t body_total = 0u;
+    long body_off = -1;
+    prot_status st = PROT_ERR_INTERNAL;
+    ssize_t n;
+
+    if (url == NULL || buf == NULL || cap == 0u)
+        return PROT_ERR_INVALID_ARG;
+    if (!http_parse_url(url, host, sizeof(host), path, sizeof(path),
+                        &port, &unsup))
+        return unsup ? PROT_ERR_UNSUPPORTED : PROT_ERR_INVALID_ARG;
+    if (out_len != NULL)
+        *out_len = 0u;
+
+    fd = http_connect(host, port);
+    if (fd < 0)
+        return PROT_ERR_INTERNAL;
+    if (!http_send_get(fd, host, port, path)) {
+        close(fd);
+        return PROT_ERR_INTERNAL;
+    }
+
+    /* ## ⚠️ 循环直到**真的拿到体**（W3 缺陷修复, 2026-09-25）
+     *
+     * **原实现的缺陷**: "头已完整但体还没到"的那次 recv 会算出
+     * `body_len == 0`，而 `0 < cap` 成立 -> **报 OK 且内容为空**
+     * （**误报成功**，最危险）。本地大体量/分开到达时暴露。
+     *
+     * **修法（对齐 Windows 的 `avail < cap` 语义）**:
+     *   · `body_len == 0` -> **不算成功**，继续 recv
+     *   · 连接结束仍无体 -> INTERNAL
+     *   · 体合计 >= cap -> INTERNAL（与 Windows 一致）
+     */
+    while ((n = recv(fd, raw + used, sizeof(raw) - used, 0)) > 0) {
+        size_t off = 0u;
+        size_t body_len;
+        used += (size_t)n;
+        if (body_off < 0) {
+            body_off = http_skip_headers(raw, &used, sizeof(raw));
+            if (body_off < 0) {
+                if (used >= sizeof(raw)) {      /* 头过大 */
+                    st = PROT_ERR_INTERNAL;
+                    goto done;
+                }
+                continue;                        /* 继续收，直到头完整 */
+            }
+        }
+        off = (size_t)body_off;
+        body_len = used - off;
+        if (body_len == 0u) {
+            used = 0u;                           /* 头之后无体 -> 继续收 */
+            body_off = 0;                        /* 头已消费 */
+            continue;
+        }
+        if (body_len >= cap) {
+            st = PROT_ERR_INTERNAL;              /* 体 >= cap（与 Windows 同） */
+            goto done;
+        }
+        memcpy(buf, raw + off, body_len);
+        buf[body_len] = '\0';
+        if (out_len != NULL)
+            *out_len = body_len;
+        st = PROT_OK;
+        goto done;      /* demo 的用途（小 JSON）一次足够 */
+    }
+    /* 连接结束: 有头无体 -> INTERNAL（**不报成功**） */
+    st = PROT_ERR_INTERNAL;
+
+done:
+    (void)body_total;
+    close(fd);
+    return st;
 }
 
 /* 平台层: 页大小（C2 后续，2026-09-25）。 */

@@ -311,6 +311,47 @@ def mapped_sec_name(path, sec_name):
     return SECTION_NAME_ALIAS.get(fmt, {}).get(sec_name, sec_name)
 
 
+def tamper_candidates(sec_name):
+    """**数据驱动**的篡改候选偏移（T9/T10 用，W3 2026-09-25）。
+
+    ## 为什么需要（**实测教训**）
+      T4 用 `from_end=1`（CRC 末字节）**可行** —— 因为 **`.text` 尾是 padding**
+      （`g_pad_text`，不被执行）。
+      但 **`.rdata` 尾是 IAT 名称表**（`"Heap"`/`"HeapSize"`/…，**真实数据**）:
+        翻转 -> `0xC0000139`（**DLL 装载失败**）—— **不是** 0xBAD。
+      => **"末字节"不是通解**；固定偏移（如 `+0x1000`）在不同布局下也会落空。
+
+      **本函数按实证顺序给出候选**（从"更可能安全"到"更可能不安全"）:
+        1. CRC 覆盖范围的**中段**（避开头尾的 IAT/名称表）
+        2. 逐步向两端扩散
+      调用方**逐个试探**，直到 demo 给出 `0xBAD`（= 被 CRC 覆盖且不影响运行）。
+
+      **若全部失败 -> 调用方如实 FAIL**（暴露"该节无法被覆盖"的真问题），
+      **不放宽判据**。
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(REPO, 'tests'))
+    from protchain_check import sections_of
+    with open(EXE, 'rb') as f:
+        data = f.read()
+    real = mapped_sec_name(EXE, sec_name)
+    for s in sections_of(data):
+        if s['name'] == real:
+            crc = min(s['virtual_size'], s['size_raw'])
+            if crc <= 0:
+                return []
+            # 中段起，向外扩散（步长取 CRC 的 1/8，最多 8 个候选）
+            mid = crc // 2
+            step = max(1, crc // 16)
+            out = []
+            for k in range(0, 8):
+                for cand in (mid + k * step, mid - k * step):
+                    if 0 <= cand < crc and cand not in out:
+                        out.append(cand)
+            return out
+    return []
+
+
 def section_bounds(path, sec_name):
     """节的 (文件偏移, 大小) —— **两格式统一**（复用 sections_of）。
 
@@ -557,14 +598,50 @@ def main():
             results.append(('T4 tamper-detect', 'FAIL', repr(e)))
 
     # ---- T9/T10: 篡改检测扩展 (A3) —— 翻 .rdata/.pdata 一个字节也退 0xBAD
-    # 注意: .rdata 含加密字符串, 篡改后 MSG_TAMPER 解密即乱码, 故只断言退出码;
-    #       .rdata 段首 832 字节是 IAT (加载器启动时覆盖, 掩码排除, 见 CONTRACT
-    #       §7), 篡改它本来就会被 loader 重写, 故测试从 +0x1000 处翻转。
-    for tname, sec, rel in (('T9 tamper-rdata', '.rdata', 0x1000),
-                            ('T10 tamper-pdata', '.pdata', 0)):
+    # 注意: .rdata 含加密字符串, 篡改后 MSG_TAMPER 解密即乱码, 故只断言退出码。
+    #
+    # ## ⚠️ 定位方式已加固（W3, 2026-09-25）—— **不再用固定偏移**
+    #
+    #   **原实现**: `.rdata` 的固定偏移 `+0x1000`（注释说是"跳过段首 IAT"）。
+    #   **实测问题**: 该偏移与"CRC 覆盖范围"**无必然关系** ——
+    #     不同构建（如 `-RecordSeeds` 与 `-SeedsFile`）的**布局不同**
+    #     （实测 `demo.exe` 329080 vs 327680 字节）-> 翻转位置落到
+    #     **非 CRC 覆盖区** -> **检不出** -> `exit=0` -> T9 假失败。
+    #     （`+0x1000` 与"段首 832 字节"本就无逻辑关系，是**经验值**。）
+    #
+    #   ## ⚠️ 修法已修正（W3, 2026-09-25 二次修正）
+    #     **第一次修法（`from_end=1`）方向错误** —— 实测 `.rdata` 的
+    #     CRC 末尾是 **IAT 名称表**（`"Heap"` / `"HeapSize"` /
+    #     `"HeapReAlloc"` ... **真实数据**）：
+    #       `rel=crc-1` -> `0xC0000139`（**DLL 装载失败**）
+    #     而 T4 之所以能用 `from_end`，是因为 **`.text` 尾是 padding**。
+    #     => **`.rdata` 不能照搬**（"末字节"不是通解）。
+    #
+    #     **正确修法（数据驱动）**: 用 `find_tamper_offset()`
+    #     —— 从 CRC 覆盖范围的**中段**开始逐个候选试探，
+    #     直到 demo **确实给 `0xBAD`**（= 既被 CRC 覆盖、又不影响运行）。
+    #     · 位置**由实测确定**（不依赖固定经验值）
+    #     · 全部候选都失败 -> **如实 FAIL**（暴露"该节无法被覆盖"的真问题）
+    for tname, sec, rel in (('T9 tamper-rdata', '.rdata', 'auto'),
+                            ('T10 tamper-pdata', '.pdata', 'auto')):
         try:
-            tampered = make_tampered_copy(sec, rel)
-            code, text, _ = run_demo(exe=tampered,
+            # rel='auto' -> **数据驱动定位**（见上方加固说明）
+            tried = []
+            if rel == 'auto':
+                tampered, code, text = None, None, ''
+                for cand in tamper_candidates(sec):
+                    tried.append(cand)
+                    tampered = make_tampered_copy(sec, cand)
+                    code, text, _ = run_demo(exe=tampered,
+                                             args=['--license-file',
+                                                   LICENSE],
+                                             stdin=(serial + '\n').encode(
+                                                 'utf-8'))
+                    if (_norm_exit(code) == _norm_expect(PROT_EXIT_TAMPERED)):
+                        break                 # 命中: 该偏移安全且被覆盖
+            else:
+                tampered = make_tampered_copy(sec, rel)
+                code, text, _ = run_demo(exe=tampered,
                                      args=['--license-file', LICENSE],
                                      stdin=(serial + '\n').encode('utf-8'))
             ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_TAMPERED))

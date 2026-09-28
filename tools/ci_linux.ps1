@@ -87,7 +87,7 @@ $args2 = @()
 if ($SkipBuild) { $args2 += '--skip-build' }
 
 Write-Host ''
-Write-Host '--- 运行时验证（11 项）---' -ForegroundColor Cyan
+Write-Host '--- 运行时验证（12 项）---' -ForegroundColor Cyan
 & $py tools\verify_linux_runtime.py @args2
 $rc = $LASTEXITCODE
 
