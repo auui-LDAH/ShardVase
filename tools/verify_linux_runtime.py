@@ -33,6 +33,20 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DISTRO = 'Ubuntu-24.04'
 
 
+def gen_dir():
+    """Linux 生成物目录（A-d: 由 genpaths 单点决定）。"""
+    sys.path.insert(0, os.path.join(REPO, 'tools'))
+    import genpaths
+    return genpaths.paths('linux').gen
+
+
+def vm_build_json():
+    """Linux 的 vm_build.json 路径（A-d）。"""
+    sys.path.insert(0, os.path.join(REPO, 'tools'))
+    import genpaths
+    return genpaths.paths('linux').vm_build_json
+
+
 def to_wsl(p):
     p = os.path.abspath(p)
     return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
@@ -109,13 +123,15 @@ def run_all(skip_build=False, quiet=False, readonly=False):
             return results
 
     # ① 单元测试: VM 指令集（0 Windows 特征）
+    # A-d: 生成物目录由 genpaths 单点决定（不再硬编码 demo/gen）
+    _gen_wsl = to_wsl(gen_dir())
     vmcmd = ('cd "%s" && gcc -O2 -Wall -Wextra -Werror -std=c11 '
-             '-D_GNU_SOURCE -I include -I demo/gen -o build/vm_unit_linux '
+             '-D_GNU_SOURCE -I include -I "%s" -o build/vm_unit_linux '
              'src/vm.c src/crc32.c src/platform/prot_platform_linux.c '
-             'src/platform/prot_crypto_linux.c demo/gen/vm_unit_blob.c '
-             'demo/gen/vm_unit_brk_blob.c tests/vm_unit.c '
+             'src/platform/prot_crypto_linux.c "%s"/vm_unit_blob.c '
+             '"%s"/vm_unit_brk_blob.c tests/vm_unit.c '
              '-lcrypto -lpthread 2>&1 | head -8 && ./build/vm_unit_linux'
-             % rp)
+             % (rp, _gen_wsl, _gen_wsl, _gen_wsl))
     rc, o = wsl(vmcmd, timeout=900)
     ok = ('vm_unit: PASS' in o)
     results.append(('vm_unit (VM 指令集)', ok, o.strip()[-120:]))
@@ -138,7 +154,7 @@ def run_all(skip_build=False, quiet=False, readonly=False):
     # ③ 端到端授权链
     serial = None
     try:
-        with open(os.path.join(REPO, 'demo/vm_build.json'),
+        with open(vm_build_json(),
                   encoding='ascii') as f:
             serial = json.load(f).get('serial')
     except (OSError, ValueError):
@@ -214,7 +230,7 @@ def run_all(skip_build=False, quiet=False, readonly=False):
     #        -> 证明"随机名从生成器一路应用到了产物"
     #     ③ 且这些名字**不是固定名**（`.protcry`/`.protcrc`）
     #        -> 证明"确实随机化了，而非回退默认"
-    jsonp = os.path.join(REPO, 'demo/gen/prot_sections.json')
+    jsonp = os.path.join(gen_dir(), 'prot_sections.json')
     gen_names = {}
     try:
         with open(jsonp, encoding='ascii') as f:
@@ -324,7 +340,7 @@ def selftest():
     # T3: 正确序列号必须**通过**
     serial = None
     try:
-        with open(os.path.join(REPO, 'demo/vm_build.json'),
+        with open(vm_build_json(),
                   encoding='ascii') as f:
             serial = json.load(f).get('serial')
     except (OSError, ValueError):

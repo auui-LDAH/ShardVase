@@ -47,6 +47,14 @@ _mapfile = _load_mapfile()
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 EXE = os.path.join(REPO, 'build', 'demo.exe')
+
+# ## 本次被测的产物路径（A-d，2026-09-25）
+#   `--exe` 参数化后，**辅助函数**（`load_section_names` / P6）必须
+#   按**实际被测产物**解析生成物目录 —— 否则命令行为 linux 时
+#   仍去 `demo/gen/win/` 找（实测 WARN 直指该点）。
+#   => 用模块级**可变变量**记录，命令行解析后立即赋值
+#      （最小改动，避免改所有函数签名）。
+_CURRENT_EXE = EXE
 BLOB = os.path.join(REPO, 'build', 'vm.blob')
 
 IMAGE_BASE = 0x140000000
@@ -75,15 +83,33 @@ def load_section_names(path=None):
     """
     import json as _json
     if path is None:
-        path = os.path.join(REPO, 'demo', 'gen', 'prot_sections.json')
+        # ## A-d（2026-09-25）: 生成物目录**按产物格式**解析
+        #   （Linux -> demo/gen/linux；不再硬编码 demo/gen）
+        #
+        #   ⚠️ 注意 `path = ...` 必须在 `if` **内部** ——
+        #   初版写在 `if` 外面，会**覆盖调用方显式传入的 path**
+        #   （且 path 非 None 时 `_gen` 未定义 -> NameError）。
+        _gen, _vmj = resolve_gen_paths(_CURRENT_EXE)
+        path = os.path.join(_gen, 'prot_sections.json')
+    # ## ⚠️ 编码必须是 **utf-8**（A-d 实测修正）
+    #   `prot_sections.json` 含**中文 `_comment` 字段** ——
+    #   原用 `encoding='ascii'` 读 -> `UnicodeDecodeError`
+    #   （`ValueError` 子类）-> 被 `except (OSError, ValueError)` **吞掉**
+    #   -> 返回 `{}` -> 调用方回退固定节名 `.protcry` -> **P1/P2 误报 FAIL**。
+    #   实测: 文件存在且内容正确（`protcry=".165460x"`），却读成空。
+    #
+    #   **教训**: "文件读不到"与"编码假设错"必须区分 ——
+    #   前者可回退，后者是**缺陷**（本该用正确编码重试）。
     try:
-        with open(path, encoding='ascii') as f:
+        with open(path, encoding='utf-8') as f:
             data = _json.load(f)
         secs = data.get('sections', {})
         if isinstance(secs, dict):
             return secs
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as _e:
+        # **不静默**: 打印以便诊断（调用方仍有回退逻辑，保持兼容）
+        sys.stderr.write('protchain: WARN 读取 %s 失败: %s\n'
+                         % (path, _e))
     return {}
 
 
@@ -147,6 +173,29 @@ ELF_TARGET_SECTIONS = {
     'rodata': '.rodata',
     'pdata': '.eh_frame',      # ELF 的展开信息（PE 的 .pdata 对应物）
 }
+
+
+# ## 平台感知的生成物路径（A-d，2026-09-25）
+#
+#   背景: A-b 把生成物按平台分目录（`demo/gen/win` + `demo/gen/linux`），
+#   本文件读到的是**哪个平台的生成物**取决于 `--exe` 指向的产物。
+#   => 按产物**格式**判定平台（本文件本来就知道自己在测什么）。
+def resolve_gen_paths(exe_path):
+    """按 `--exe` 的格式返回 (gen_dir, vm_build_json)。"""
+    import sys as _sys
+    import os as _os
+    _t = _os.path.join(REPO, 'tools')
+    if _t not in _sys.path:
+        _sys.path.insert(0, _t)
+    import genpaths
+    try:
+        with open(exe_path, 'rb') as _f:
+            _magic = _f.read(4)
+        plat = 'linux' if _magic == b'\x7fELF' else 'win'
+    except OSError:
+        plat = 'win'          # 读不到 -> 按默认（Windows）处理
+    p = genpaths.paths(plat)
+    return p.gen, p.vm_build_json
 
 
 def is_elf(data):
@@ -501,8 +550,14 @@ def p5_indirect_no_direct_call(data, secs, map_path=None):
                   '（已修正坐标系/密文噪声/函数集合）' % len(slots))
 def p6_expect_consistent():
     """P6: expect_default.c 与 vm_build.json 一致."""
-    exp_path = os.path.join(REPO, 'demo', 'gen', 'expect_default.c')
-    json_path = os.path.join(REPO, 'demo', 'vm_build.json')
+    # ## A-d: **两个**路径都必须按平台解析
+    #   `expect_default.c` 与 `vm_build.json` 都在**本次构建的生成物目录**
+    #   里 —— 原实现只把 json 参数化，`exp_path` 仍硬编码
+    #   `demo/gen/expect_default.c`（旧 flat 路径）
+    #   -> 读到 **Windows 遗留的旧值** -> 与 Linux 的 json **不一致** -> 误报。
+    #   （实测: 旧值 0x2d27… vs Linux 值 0x2e9f…）
+    _gen, json_path = resolve_gen_paths(_CURRENT_EXE)
+    exp_path = os.path.join(_gen, 'expect_default.c')
     if not os.path.isfile(exp_path) or not os.path.isfile(json_path):
         return False, 'expect_default.c or vm_build.json missing'
     src = open(exp_path, 'r', encoding='utf-8', errors='replace').read()
@@ -525,6 +580,10 @@ def main():
     parser.add_argument('--map', default=None,
                         help='链接 map（缺省按 --exe 推导）')
     args = parser.parse_args()
+
+    # ## 记录本次被测产物（A-d）—— 供辅助函数解析生成物目录
+    global _CURRENT_EXE
+    _CURRENT_EXE = args.exe
 
     results = []
     try:

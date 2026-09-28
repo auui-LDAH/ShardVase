@@ -159,6 +159,13 @@ def run_err_cases(quiet=False):
     return (n_ok, len(cases)), ('; '.join(details) if details else '全部被拒绝')
 
 
+def vm_build_json():
+    """Linux 的 vm_build.json（A-d）。"""
+    sys.path.insert(0, os.path.join(REPO, 'tools'))
+    import genpaths
+    return genpaths.paths('linux').vm_build_json
+
+
 def to_wsl(p):
     p = os.path.abspath(p)
     return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
@@ -233,10 +240,11 @@ def run_all(quiet=False):
             'build/vmc_linux/case.vasm build/vmc_linux/layout.json '
             '--seed 0x1234 --flatten >/dev/null 2>&1' % rp)
         wsl('cd "%s" && python3 tools/vmenc.py assemble '
-            'build/vmc_linux/case.vasm demo/vm_build.json '
+            'build/vmc_linux/case.vasm "%s" '
             'build/vmc_linux/vmc_case_runner_blob.c '
             'build/vmc_linux/vmc_case_runner_blob.h '
-            '--name g_vmc_case_runner >/dev/null 2>&1' % rp)
+            '--name g_vmc_case_runner >/dev/null 2>&1'
+            % (rp, to_wsl(vm_build_json())))
         rc, o = wsl('cd "%s" && gcc -O2 -Wall -Wextra -Werror -std=c11 '
                     '-D_GNU_SOURCE -I include -I build/vmc_linux '
                     '-o build/vmc_linux/runner '
@@ -285,10 +293,11 @@ def selftest():
         'build/vmc_linux/case.vasm build/vmc_linux/layout.json '
         '--seed 0x1234 --flatten >/dev/null 2>&1' % rp)
     wsl('cd "%s" && python3 tools/vmenc.py assemble '
-        'build/vmc_linux/case.vasm demo/vm_build.json '
+        'build/vmc_linux/case.vasm "%s" '
         'build/vmc_linux/vmc_case_runner_blob.c '
         'build/vmc_linux/vmc_case_runner_blob.h '
-        '--name g_vmc_case_runner >/dev/null 2>&1' % rp)
+        '--name g_vmc_case_runner >/dev/null 2>&1'
+        % (rp, to_wsl(vm_build_json())))
     rc, o = wsl('cd "%s" && gcc -O2 -Wall -Wextra -Werror -std=c11 '
                 '-D_GNU_SOURCE -I include -I build/vmc_linux '
                 '-o build/vmc_linux/runner '

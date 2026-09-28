@@ -215,6 +215,12 @@ def main():
     #   提供两个"只打印一个路径"的模式（**单一来源不变**）。
     ap.add_argument('--print-gen', action='store_true',
                     help='只打印生成物目录（供 shell 变量赋值）')
+    # ## 相对形态（A-c，2026-09-25）
+    #   构建脚本在**仓库根**执行 -> 相对路径**无空格**
+    #   （本仓库路径含空格 -> 绝对路径会在 cmd/shell 里被拆）。
+    #   => 编译期路径一律用相对形态（**从根上消除引号问题**）。
+    ap.add_argument('--print-gen-rel', action='store_true',
+                    help='只打印**相对仓库根**的生成物目录（无空格）')
     ap.add_argument('--print-vm-json', action='store_true',
                     help='只打印 vm_build.json 路径')
     args = ap.parse_args()
@@ -225,6 +231,9 @@ def main():
     p = paths(args.platform, args.layout)
     if args.print_gen:
         print(p.gen)
+        return 0
+    if args.print_gen_rel:
+        print(os.path.relpath(p.gen, p.repo).replace('\\', '/'))
         return 0
     if args.print_vm_json:
         print(p.vm_build_json)
