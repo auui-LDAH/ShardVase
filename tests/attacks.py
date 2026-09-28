@@ -71,16 +71,16 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 #
 #   **为什么默认仍是 Windows**: 保持既有行为（门禁里 attacks 项跑 Windows），
 #   Linux 侧由 `--platform linux` 显式选择（与 genpaths 的"显式平台"原则一致）。
-_PLATFORM = 'win'
-if '--platform' in sys.argv:
-    _i = sys.argv.index('--platform')
-    if _i + 1 < len(sys.argv):
-        _PLATFORM = sys.argv[_i + 1]
-        del sys.argv[_i:_i + 2]      # 不传给下游（无关参数）
+# ## 平台适配公共层（S5, 2026-09-25）
+#   平台解析 / 归一化 / WSL 直执 全部来自 `tests/_platform.py`
+#   （**单一来源** —— 原先 e2e 与 attacks 各写一遍，实测已漂移）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _platform as _plat          # noqa: E402
 
-import sys as _sys_path
-_sys_path.path.insert(0, os.path.join(REPO, 'tools'))
-import genpaths as _gp
+_PLATFORM = _plat.parse_platform(sys.argv)
+
+sys.path.insert(0, os.path.join(REPO, 'tools'))
+import genpaths as _gp             # noqa: E402
 
 _P = _gp.paths(_PLATFORM)
 EXE = (os.path.join(REPO, 'build', 'demo.exe') if _PLATFORM == 'win'
@@ -115,38 +115,16 @@ def _msg(name):
     return name
 
 
-def to_wsl(p):
-    """Windows 路径 -> WSL 路径。"""
-    p = os.path.abspath(p)
-    return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
+# `to_wsl` 来自公共层（S5）；保留同名别名以免改多处调用点。
+to_wsl = _plat.to_wsl
 
 
 def _norm_exit(code, platform=None):
-    """**平台语义归一化**的退出码（C-2, 2026-09-25）。
-
-    ## 为什么需要（实测）
-      · Windows: `ExitProcess(0xB10B)` -> 退出码 **0xB10B**（完整 32 位）
-      · Linux  : `exit(0xB10B)`        -> 只保留**低 8 位** = **0x0B = 11**
-        （POSIX 语义: 父子进程间只传 8 位状态）
-
-      => 同一语义（`PROT_EXIT_BLOB_MISSING`）在两平台**数值不同**。
-         判据需归一化，否则 Linux 侧**必然失败**（而功能完全正常）。
-
-      ## 这不是"放宽判据"
-        归一化后**仍然是精确比较**（低 8 位 vs 低 8 位）——
-        只是承认"进程退出码的**可观测宽度**在两个平台不同"。
-    """
-    plat = platform or _PLATFORM
-    c = code & 0xFF if plat != 'win' else code & 0xFFFFFFFF
-    return c
-
-
+    """平台语义归一化（S5: 委托公共层 `_platform.norm_exit`）。"""
+    return _plat.norm_exit(code, platform or _PLATFORM)
 def _norm_expect(expected, platform=None):
-    """把**期望值**按平台归一化（与 `_norm_exit` 配对使用）。"""
-    plat = platform or _PLATFORM
-    return expected & 0xFF if plat != 'win' else expected & 0xFFFFFFFF
-
-
+    """期望值归一化（S5: 委托公共层 `_platform.norm_expect`）。"""
+    return _plat.norm_expect(expected, platform or _PLATFORM)
 def run_demo(args=None, stdin=None):
     """运行 demo，返回 (returncode, stdout)。
 

@@ -74,15 +74,15 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 #   与 `attacks.py`（C-2）同法: `--platform linux` 切换。
 #   **默认 win**（门禁里 e2e 项跑 Windows），Linux 侧由 `--platform linux`
 #   显式选择（与 genpaths 的"显式平台"原则一致）。
-_PLATFORM = 'win'
-if '--platform' in sys.argv:
-    _i = sys.argv.index('--platform')
-    if _i + 1 < len(sys.argv):
-        _PLATFORM = sys.argv[_i + 1]
-        del sys.argv[_i:_i + 2]      # 不传给下游
+# ## 平台适配公共层（S5, 2026-09-25）
+#   平台解析 / 归一化 / WSL 直执 来自 `tests/_platform.py`（**单一来源**）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _platform as _plat          # noqa: E402
+
+_PLATFORM = _plat.parse_platform(sys.argv)
 
 sys.path.insert(0, os.path.join(REPO, 'tools'))
-import genpaths as _gp
+import genpaths as _gp             # noqa: E402
 _P = _gp.paths(_PLATFORM)
 
 EXE = (os.path.join(REPO, 'build', 'demo.exe') if _PLATFORM == 'win'
@@ -143,26 +143,14 @@ def load_strings(path):
     return out
 
 
-def _norm_exit(code):
-    """**平台语义归一化**的退出码（C-3, 复用 C-2 结论）。
+def _norm_exit(code, platform=None):
+    """平台语义归一化（S5: 委托公共层）。"""
+    return _plat.norm_exit(code, platform or _PLATFORM)
 
-    · Windows: `ExitProcess(0xB10B)` -> **0xB10B**（完整 32 位）
-    · Linux  : `exit(0xB10B)` -> 只保留**低 8 位** = **0x0B = 11**
-      （POSIX: 退出状态只传 8 位给父进程）
+def _norm_expect(expected, platform=None):
+    """期望值归一化（S5: 委托公共层）。"""
+    return _plat.norm_expect(expected, platform or _PLATFORM)
 
-    **不是放宽判据** —— 归一化后仍**精确比较**（低 8 位 vs 低 8 位），
-    只是承认"可观测宽度在两平台不同"。
-    """
-    if _PLATFORM == 'win':
-        return code & 0xFFFFFFFF
-    return code & 0xFF
-
-
-def _norm_expect(expected):
-    """把期望退出码按平台归一化（与 _norm_exit 配对）。"""
-    if _PLATFORM == 'win':
-        return expected & 0xFFFFFFFF
-    return expected & 0xFF
 
 
 #: ## 在线类用例标签（C-3）—— Linux 侧**一律 PLATFORM_NA**
@@ -219,13 +207,6 @@ class _Results(list):
         else:
             super().append(item)
 
-
-def to_wsl(p):
-    """Windows 路径 -> WSL 路径。"""
-    p = os.path.abspath(p)
-    return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
-
-
 def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
     """运行 demo；返回 (exitcode, stdout, stderr)。
 
@@ -254,31 +235,19 @@ def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
 
 
 def _run_demo_wsl(args, stdin, exe, timeout):
-    """经 WSL 直执（**复用 C-2 已验证的形态**）。"""
-    args = list(args or [])
+    """经 WSL **直执**（S5: 委托公共层 `_platform.run_demo_via_wsl`）。
 
-    def _fix(a):
-        # 路径型参数转 WSL 形态（Windows 盘符开头 -> /mnt/<d>）
-        if isinstance(a, str) and len(a) > 2 and a[1] == ':' \
-                and a[2] in ('\\', '/'):
-            return to_wsl(a)
-        return a
+    ## 契约核对（替换前逐项对照，**等价**）
+      · 不经 bash（`bash -c` 会吞 stdin/退出码）
+      · 路径型参数转 WSL 形态
+      · 自动补 `--vm-blob`（Linux 侧 blob 在 `build/linux/`）
+      · stdin/stdout/stderr 全 PIPE
+    => 委托公共层，**消除**"两处各写一遍"的漂移源。
+    """
+    return _plat.run_demo_via_wsl(
+        exe, args=args, stdin=stdin, timeout=timeout,
+        vm_blob_path=_P.b('vm.blob'))
 
-    args = [_fix(a) for a in args]
-    # Linux 侧产物按平台（A 阶段隔离）
-    if '--vm-blob' not in args:
-        args += ['--vm-blob', to_wsl(_P.b('vm.blob'))]
-    env = dict(os.environ)
-    env['WSL_UTF8'] = '1'
-    cmd = ['wsl.exe', '-d', 'Ubuntu-24.04', '--cd',
-           to_wsl(os.path.dirname(exe)), '--', to_wsl(exe)] + args
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, env=env)
-    out, err = p.communicate(stdin, timeout=timeout)
-    return (p.returncode,
-            (out or b'').decode('utf-8', 'replace'),
-            (err or b'').decode('utf-8', 'replace'))
 
 
 def pump_and_read(proc, timeout=30):

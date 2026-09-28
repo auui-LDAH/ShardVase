@@ -1660,3 +1660,93 @@ Linux ci_linux: **PASS**（9/9 with -SkipBuild）
 ---
 
 *2026-09-25 · S4: 原计划被推翻（不能清理 flat 目录 —— 有活跃依赖）+ 修 2 处工具默认值*
+
+---
+
+## 27. ✅ S5 完成：抽公共层 `tests/_platform.py`（2026-09-25）
+
+### 27.1 为什么抽（**"复制即漂移"的实证**）
+
+`e2e.py` 与 `attacks.py` 各自实现了**同一批**平台适配。**漂移证据**：
+```
+_run_demo_wsl:  e2e 28 行  vs  attacks 55 行
+```
+同一契约（"经 WSL 直执，stdin/退出码直达"）实现了两遍 ——
+C-2 修好的细节（**不经 bash** / 路径转形态 / 自动补 `--vm-blob`）
+在 C-3 里**又踩了一遍**才补上。
+=> 抽为**单一来源**（与 §24.2 的 P5 修复同一动机）。
+
+### 27.2 交付 `tests/_platform.py`
+
+| 函数 | 契约 |
+|------|------|
+| `parse_platform(argv)` | 解析 `--platform` 并**移除**（不移除会让下游 argparse 退出 2，**实测踩到**）|
+| `to_wsl(p)` | `D:\x` -> `/mnt/d/x` |
+| `norm_exit` / `norm_expect` | **平台语义归一化**（Linux 低 8 位；**不是放宽判据**）|
+| `fix_path_args(args)` | Windows 绝对路径参数 -> WSL 形态（**实测**: 不转则 demo 打不开 license -> 误判"验签失效"）|
+| `run_demo_via_wsl(...)` | **不经 bash** 直 exec + 可选自动补 `--vm-blob` |
+
+**自检（`--selftest`，9 项含 3 负向）**：
+```
+ok T1 norm_exit(0xB10B, linux) == 0x0B
+ok T2 norm_exit(0xB10B, win) == 0xB10B
+ok T3 **负向**: 两平台归一化结果**不同**      <- 若相同则归一化无意义
+ok T4 norm_expect 与 norm_exit 配对一致
+ok T5 to_wsl 处理盘符与空格
+ok T6 fix_path_args 只转路径型
+ok T7 **负向**: WSL 路径不被二次转换
+ok T8 parse_platform 解析并移除
+ok T9 **负向**: 缺参数时用默认 win
+[_platform-selftest] PASS: 9 项（含 3 负向）
+```
+
+**抽取原则（**只搬不改良**）**：
+· 只放**两处都用**的；单处用的（`_Results` / `section_bounds` /
+  `mapped_sec_name`）**留在原处**
+· `run_demo` 等**保留原签名**（薄包装委托），避免改几十个调用点
+
+### 27.3 验收（**逐行 diff 对照**）
+
+```
+attacks linux ✅ 逐行一致     attacks win ✅ 逐行一致
+e2e     linux ✅ 逐行一致     e2e     win ✅ 逐行一致
+Windows 门禁: **22/23**（唯一失败 = git 未提交，**零回归**）
+Linux ci_linux: **PASS**（9/9）
+```
+> **为什么要逐行 diff**：重构的验收标准不是"测试通过"（可能通过但行为已变），
+> 而是"**输出逐行一致**" —— 这才证明**行为零变化**。
+
+### 27.4 ⚠️ 过程中的**一次事故与教训**（**记名**）
+
+**事故**：
+```
+我用 re.search(r'^def _norm_expect\(.*?\n(?=\ndef )', t, re.S) 替换 _norm_expect
+-> re.S 让 `.` 匹配换行，而 (?=\ndef ) 只保证"下一个 def 之前"
+-> **贪婪吞掉**中间的 `ONLINE_LABELS` 与 `class _Results`（它们不是 def）
+-> NameError: name '_Results' is not defined
+```
+
+**修复**：从 `git show HEAD:tests/e2e.py` **逐字取回**两个块，按**行号区间**
+插回（不凭记忆重写 —— 否则无法证明"行为零变化"）。
+
+> ### 🎯 教训（**本项目第二次"通用替换"事故**）
+> | 事故 | 操作 | 后果 |
+> |------|------|------|
+> | 先前（A-c）| `re.sub(r'  +', ' ', body)` | **毁掉 770 行缩进** |
+> | 本次（S5）| `re.S` + `(?=\ndef )` | **吞掉非 def 的块** |
+> **规律**: **跨行正则替换代码块 = 高风险**。
+> 正确做法: 用**精确起止锚**（明确结束标记）或 **AST / 行号区间**，
+> 而不是"点号贪婪 + 下一个关键字"。
+> **推论**: 凡是"改代码结构"的操作，**优先按行号区间切片**（本次修复即用此法）。
+
+### 27.5 遗留
+
+| 遗留 | 说明 |
+|------|------|
+| `_platform` 未入门禁自检 | 其 `--selftest` 目前**手工跑**；建议接入（低成本，但会增门禁项数）|
+| `DISTRO` 固定 `Ubuntu-24.04` | 换发行版需改公共层一处（已集中，优于原先两处）|
+| e2e/attacks 仍在**同一文件**含平台分支 | 只抽了**公共层**；拆文件仍是 §22.5 的"不做" |
+
+---
+
+*2026-09-25 · S5: 抽公共层 tests/_platform.py（9 项自检含 3 负向；双平台逐行 diff 一致；含一次跨行正则事故的教训）*
