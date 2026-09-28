@@ -301,6 +301,32 @@ if ($WithMigration) {
         & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
     }
 
+# 构建状态自检（A-d，2026-09-25）
+#
+# ## 查什么（**跨平台错配**）
+#   `demo/gen/<plat>/prot_sections.json` 的**必需三节**
+#   （protcrc/protcry/protpad —— 两平台功能必需）必须出现在对应产物里。
+#   错配（win json + linux 产物 / 反之）-> FAIL。
+#   + expect_default.c 与 vm_build.json 的 expect 一致性。
+#
+# ## 为什么放门禁
+#   **只读**（不改任何状态），且双向检查（win 与 linux 各自目录内自洽）——
+#   不依赖"最新是哪个平台"。
+#
+# ## 判据按**事实**分层（源码 + map + readelf 三处确证）
+#   · protxec: PROT_CODE_SEG 在 gcc = **文档化 no-op** -> Linux 设计上不存在
+#   · fptable 随机名: PROT_SEC_FPT **全库无使用者** -> 两平台都不存在
+#   => 这两个缺失 = **info 提示，不判 FAIL**；必需三节 = 硬判据。
+#
+# ## 自检: 正向 + 4 负向（每个负向**断言失败原因**，防"因错误原因通过"）
+Check '构建状态自检 (check_state_platform)' {
+    & $py tools\check_state_platform.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\check_state_platform.py
+    $LASTEXITCODE -eq 0
+}
+
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

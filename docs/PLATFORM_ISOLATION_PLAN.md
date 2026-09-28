@@ -1204,3 +1204,88 @@ Python urllib      -> 同样失败
 ---
 
 *2026-09-25 · C-3: e2e 全量移植（20 PASS/1 SKIP/7 NA/0 FAIL；依赖分层 4 个改动点；含假通过处置）—— **C 阶段完成***
+
+---
+
+## 21. ✅ A-d 补完：**状态自检** `tools/check_state_platform.py`（2026-09-25）
+
+### 21.1 背景（**目标清单的补漏**）
+
+目标 §2.3 写明 A-d 含"状态自检（**含负向**）" —— A-d 的路径适配完成后
+此项遗漏，本次补齐。
+
+**工具查什么（跨平台错配）**：
+```
+demo/gen/<plat>/prot_sections.json 的**必需三节**必须出现在对应产物里
++ expect_default.c 与 vm_build.json 的 expect 一致性
+```
+错配（win json + linux 产物 / 反之）-> **FAIL**（而非静默降级）。
+
+### 21.2 判据的**事实核查**（读源码 + map + readelf 三处确证）
+
+初版判据"json 全部节名 ⊆ 产物"导致 **T1 正向失败** ——
+实测发现 `protxec`/`fptable` 在 ELF **不存在**。**逐处核查**后：
+
+| 节 | Windows | Linux | **性质（核查结论）** |
+|----|---------|-------|------------------|
+| `protxec` | ✅ 有 | **缺** | `PROT_CODE_SEG` 在 gcc = **文档化 no-op**（`prot_compiler.h`: "无对应：PE 段布局是平台概念"）-> **设计使然** |
+| `fptable` 随机名 | **缺**（仅字面 `.fptable`）| **缺** | `PROT_SEC_FPT` **全库无使用者**（只有定义与随机化）-> 随机名**两平台都无效** |
+| `protcrc`/`protcry`/`protpad` | ✅ | ✅ | **功能必需**（selfcrypt meta / CRC 烧录 / 填充）-> **可靠判据** |
+
+**据此修正判据**（**按事实，不按假设**）：
+· 必需三节缺一个 = **跨平台错配**（FAIL）
+· `protxec`/`fptable` 缺失 = **已知设计差异**（info 提示，**不 FAIL**）
+
+> ### 🎯 观察结论（如实记录）
+> `fptable` 的**随机化是无效的** —— `gen_sections` 给它生成随机名，
+> 但 `PROT_SEC_FPT` **无人使用** -> 产物里只有字面 `.fptable`
+> （来源待查，可能来自链接期）。**不影响功能**，但"第二支柱"在该节上
+> **未实际生效** —— 记为**待查小项**。
+
+### 21.3 自检（**6/6**：1 前置 + 1 正向 + **4 负向**）
+
+```
+ok  T0 前置: 两平台产物与生成物存在
+ok  T1 **正向**: linux 产物 + linux 生成物 -> PASS
+ok  T2 **负向**: linux 产物 + win 生成物 -> **必须 FAIL**
+      detail: REQUIRED section protcrc=.62yxrna not in artifact
+              **(cross-platform mismatch? ...)**        <- 失败原因正确
+ok  T3 **负向**: win 产物 + linux 生成物 -> **必须 FAIL**
+      detail: REQUIRED section protcrc=.mkpisv7 not in artifact
+ok  T4 **负向**: 文件缺失 -> **必须 FAIL**（不崩溃）
+      detail: missing .../prot_sections.json
+ok  T5 **负向**: expect 不一致 -> **FAIL 且因 expect**
+      detail: expect mismatch: default=0x.../0xaaaa vs vm_build.json=...
+[check_state_platform-selftest] PASS
+```
+
+> **T5 的断言特意包含"失败原因"**（`'expect mismatch' in detail`）——
+> 防止"**因错误原因通过**"（若因节名错配先失败，expect 检查就测不到）。
+> 与 mutate_check 的"检查器必须能抓错"**同一精神**。
+
+### 21.4 接入门禁（第 23 项）
+
+```
+Check '构建状态自检 (check_state_platform)'
+  ① --selftest（6 项，含 4 负向）
+  ② 双平台实跑（win 与 linux 各自目录内自洽）
+```
+
+**为什么适合放门禁**：**只读**（不改状态）、**双向**（不依赖"最新是哪个平台"）——
+与 §20.3 的分层原则一致（重的/改状态的在 `ci_linux`，轻的/只读的在门禁）。
+
+### 21.5 门禁项数变更
+
+**22 -> 23 项**（`doccheck` 强制对外文档数字一致 —— 已同步 `publish/`）。
+
+### 21.6 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| `fptable` 来源待查 | 字面 `.fptable`(0x100) 在 Windows 产物里的**发射方未定位**（全库源码无引用）—— 记为小项 |
+| 未验 `--platform both` 下的**中间态** | 若只有单平台构建过，另一平台的失败是合理的（T0 前置已覆盖） |
+| 判据覆盖 3+2 节 | 未来若新增随机节（gen_sections 扩展），REQUIRED 集需同步 |
+
+---
+
+*2026-09-25 · A-d 补完: 状态自检（6/6，含 4 负向断言失败原因）+ 两处事实核查*
