@@ -38,6 +38,32 @@ def to_wsl(p):
     return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
 
 
+# ## ⚠️ 取退出码的纪律（2026-09-25 实测教训，**通用**）
+#
+#   **要读被测进程的退出码，就用 `wsl.exe -- <cmd>` 直执**。
+#
+#   **反例（错法）**: `bash -c "cmd; echo RC=$?"`
+#     读到的是 **shell 最后一句话**的退出码，不是被测进程的 ——
+#     实测把 `vmc.py` 的 `return 1`（**正确报错**）读成 **0**，
+#     差点把"测量假象"记录成"vmc 有缺陷"。
+#
+#   **与既有教训同族**: `release_check.ps1` 的 `Check` 曾因"取错值"
+#     而**谎报通过**（见该文件"严重教训"注释）—— 同一类错误的另一表现。
+#
+#   => 本文件中**凡需判成败**的调用，一律用 `wsl_direct()`（见下）。
+def wsl_direct(argv, timeout=1800):
+    """**直接执行**（不套 shell）—— 返回 (returncode, 输出)。
+
+    用于**必须判成败**的场景（被测进程的退出码直达，不经 shell 改写）。
+    """
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    r = subprocess.run(['wsl.exe', '-d', DISTRO, '--'] + list(argv),
+                       capture_output=True, timeout=timeout, env=env,
+                       cwd=REPO)
+    return r.returncode, (r.stdout + r.stderr).decode('utf-8', 'replace')
+
+
 def wsl(cmd, timeout=2400):
     env = dict(os.environ)
     env['WSL_UTF8'] = '1'
@@ -138,15 +164,14 @@ def run_all(skip_build=False, quiet=False, readonly=False):
         r3 = subprocess.run([sys.executable, '-X', 'utf8', vmc_py, '--quiet'],
                             capture_output=True, timeout=1800, cwd=REPO)
         o3 = (r3.stdout + r3.stderr).decode('utf-8', 'replace')
-        m3 = re.search(r'\[vmc_linux\] \w+: (\d+)/(\d+)', o3)
+        # 输出格式: `[vmc_linux] PASS: 功能 6/6, 错误 3/3`
+        m3 = re.search(r'功能 (\d+)/(\d+), 错误 (\d+)/(\d+)', o3)
         ok3 = (r3.returncode == 0)
-        results.append(('VM 合约测试 (vmc)',
-                        ok3,
-                        ('%s/%s' % m3.groups()) if m3 else '无法解析'))
+        det3 = ('功能 %s/%s + 错误 %s/%s' % m3.groups()) if m3 else '无法解析'
+        results.append(('VM 合约测试 (vmc)', ok3, det3))
         if not quiet:
             print('  %s VM 合约测试 (vmc) %s'
-                  % ('ok  ' if ok3 else 'FAIL',
-                     ('%s/%s' % m3.groups()) if m3 else ''))
+                  % ('ok  ' if ok3 else 'FAIL', det3))
 
     # ③c 保护链静态断言（P1-P6）—— 第 8 项
     #

@@ -96,9 +96,94 @@ int main(void)
 '''
 
 
+def load_err_cases():
+    """从 `tests/vmc_tests.py` 提取**错误用例**（应被编译器拒绝）。
+
+    ## 为什么用"正则提取源码"而非 exec
+      这些用例是 `main()` 内的**局部变量** `err_cases` ——
+      无法通过 exec 模块取值（函数体不执行）。
+      => 正则提取**是该数据源的唯一可行方式**。
+
+      ## 防漂移措施（**关键**）
+        · **断言数量**（预期 3 个）—— 数量变化 -> 显式失败而非静默漏测
+        · 打印提取内容，便于人工核对
+    """
+    p = os.path.join(REPO, 'tests', 'vmc_tests.py')
+    src = open(p, encoding='utf-8', errors='replace').read()
+    m = re.search(r'err_cases\s*=\s*\[(.*?)\]', src, re.S)
+    if not m:
+        return None, '未找到 err_cases 列表'
+    body = m.group(1)
+    # 提取每个 '...' 字面量（含 \n 转义）
+    items = re.findall(r"'((?:[^'\\]|\\.)*)'", body)
+    cases = []
+    for it in items:
+        try:
+            cases.append(it.encode('utf-8').decode('unicode_escape'))
+        except Exception:                       # noqa: BLE001
+            cases.append(it.replace('\\n', '\n'))
+    if len(cases) != 3:
+        return None, ('err_cases 数量异常: 期望 3，实得 %d '
+                      '（数据源可能已变，需人工核对）' % len(cases))
+    return cases, None
+
+
+def run_err_cases(quiet=False):
+    """错误用例: **应被 vmc.py 拒绝**（返回码非 0）。"""
+    cases, err = load_err_cases()
+    if cases is None:
+        return None, err
+    rp = to_wsl(REPO)
+    out_dir = os.path.join(REPO, 'build', 'vmc_linux')
+    os.makedirs(out_dir, exist_ok=True)
+    n_ok, details = 0, []
+    # vmc.py 的错误输出通常走 stderr；捕获以便诊断
+    src_path = os.path.join(out_dir, 'err.vmc')
+    for i, src in enumerate(cases):
+        with open(src_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(src)
+        # **直执**取真实退出码（不套 shell —— 见 wsl_direct 的教训）
+        code, o = wsl_direct(['python3', 'tools/vmc.py',
+                              'build/vmc_linux/err.vmc',
+                              'build/vmc_linux/err.vasm',
+                              'build/vmc_linux/err.layout.json'],
+                             timeout=300)
+        # **负向判据**: 非 0 = 正确拒绝
+        if code != 0:
+            n_ok += 1
+        else:
+            details.append('err%d 未被拒绝（RC=0）' % (i + 1))
+        if not quiet:
+            print('  err%-7d %s   (vmc RC=%d)'
+                  % (i + 1, 'PASS' if code != 0 else 'FAIL', code))
+    return (n_ok, len(cases)), ('; '.join(details) if details else '全部被拒绝')
+
+
 def to_wsl(p):
     p = os.path.abspath(p)
     return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
+
+
+def wsl_direct(argv, timeout=1800):
+    """**直接执行**（不套 shell）—— 返回 (returncode, 输出)。
+
+    ## ⚠️ 为什么必须直执（2026-09-25 实测教训）
+      `bash -c "cmd; echo RC=$?"` 读到的是 **shell 最后一句话**的退出码，
+      不是被测进程的 —— 实测把 `vmc.py` 的 `return 1`（**正确报错**）
+      读成了 **0**，导致**误判"vmc 不报错"**（差点记录成假缺陷）。
+
+      => **要读被测进程退出码，就用 `wsl.exe -- <cmd>` 直执**。
+
+      ## 与既有教训同类
+        `release_check.ps1` 的 `Check` 也曾因"取错值"而**谎报通过**
+        （见该文件的"严重教训"注释）。
+    """
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    r = subprocess.run(['wsl.exe', '-d', DISTRO, '--'] + list(argv),
+                       capture_output=True, timeout=timeout, env=env,
+                       cwd=REPO)
+    return r.returncode, (r.stdout + r.stderr).decode('utf-8', 'replace')
 
 
 def wsl(cmd, timeout=1800):
@@ -242,11 +327,27 @@ def main():
         print('[vmc_linux] FAIL: %s' % detail)
         return 1
     n, total = res
+
+    # **错误用例**（负向契约: 坏输入必须被拒绝）
+    if not args.quiet:
+        print()
+        print('--- 错误用例（应被拒绝）---')
+    eres, edetail = run_err_cases(args.quiet)
+    if eres is None:
+        print()
+        print('[vmc_linux] FAIL: 错误用例: %s' % edetail)
+        return 1
+    en, etotal = eres
+
     print()
-    print('[vmc_linux] %s: %d/%d' % ('PASS' if n == total else 'FAIL', n, total))
+    print('[vmc_linux] %s: 功能 %d/%d, 错误 %d/%d'
+          % ('PASS' if (n == total and en == etotal) else 'FAIL',
+             n, total, en, etotal))
     if n != total:
-        print('  详情: %s' % detail)
-    return 0 if n == total else 1
+        print('  功能详情: %s' % detail)
+    if en != etotal:
+        print('  错误用例详情: %s' % edetail)
+    return 0 if (n == total and en == etotal) else 1
 
 
 if __name__ == '__main__':

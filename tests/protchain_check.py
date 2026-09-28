@@ -355,12 +355,28 @@ def hashlib_sha256(b):
 
 
 def parse_map_file(path):
-    """MSVC .map -> {符号: 映像RVA}（用**第 4 列绝对 VA** - ImageBase）。
+    """链接 map -> {符号: 映像RVA}。**支持两种格式**（MSVC / gcc）。
 
-    ## 解析陷阱（2026-09-23 实测教训，勿重蹈）
+    ## MSVC 格式（**解析陷阱，2026-09-23 实测教训**）
       map 行: `0001:00000020  probe_fn  0000000140001020 f  a.obj`
         第 2 列是**节内偏移**，**不是**映像 RVA。
         误用第 2 列 -> RVA 落在节外 -> 度量全部失真。
+      => 用**第 4 列绝对 VA** - `IMAGE_BASE`(0x140000000)。
+
+    ## gcc 格式（`-Wl,-Map`，2026-09-25 新增）
+```
+.text           0x0000000000003880     0x799a
+                0x0000000000003880                prot_vm_run
+```
+      符号行 = **缩进 + `0x<addr>` + 符号名**。
+      PIE 下该地址**即 RVA**（无固定基址）-> **不减去任何基址**。
+
+      ## 为什么必须加（实测）
+        缺 gcc 支持 -> 对 ELF 返回**空字典** ->
+        P5 报 `empty .map` -> **无法判定**（而非误报）。
+        这与 `tools/selfcrypt_proto.py` 的 `parse_elf_map()` 是**同一需求**
+        （C 阶段已写过一份）—— 两处**格式规则必须一致**，
+        若将来改动请**同时改两处**（或抽公共模块）。
     """
     out = {}
     if not os.path.isfile(path):
@@ -370,9 +386,23 @@ def parse_map_file(path):
         txt = open(path, encoding='utf-8', errors='replace').read()
     except Exception:
         return out
+
+    # ---- MSVC 格式 ----
+    n_msvc = 0
     for m in _re.finditer(
             r'[0-9a-f]{4}:([0-9a-f]{8})\s+(\S+)\s+([0-9a-f]{16})', txt):
-        out[m.group(2)] = int(m.group(3), 16) - 0x140000000
+        out[m.group(2)] = int(m.group(3), 16) - IMAGE_BASE
+        n_msvc += 1
+    if n_msvc:
+        return out
+
+    # ---- gcc 格式（PIE: 地址即 RVA）----
+    for m in _re.finditer(r'^\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$', txt,
+                          _re.M):
+        try:
+            out[m.group(2)] = int(m.group(1), 16)
+        except ValueError:
+            continue
     return out
 
 
@@ -401,7 +431,7 @@ def indirect_slot_symbols():
     return out
 
 
-def p5_indirect_no_direct_call(data, secs):
+def p5_indirect_no_direct_call(data, secs, map_path=None):
     """P5: **间接表的槽位函数**不被直接 call（N4 间接化）。
 
     ## ⚠️ M4 实测重写（2026-09-25）—— 原实现有**四个缺陷**
@@ -446,9 +476,26 @@ def p5_indirect_no_direct_call(data, secs):
         return False, 'no indirect_slots in modules.json'
 
     # 槽位符号 -> RVA（用 map 反查；无 map 则跳过该项）
-    ma = parse_map_file(os.path.join(REPO, 'build', 'demo.map'))
+    # ## ⚠️ map 路径**必须随被测产物**（2026-09-25 实测修正）
+    #
+    # **根因**: 原实现**硬编码** `build/demo.map`（Windows 的 map）。
+    #   被测产物换成 ELF 后，map 仍是 PE 的 -> **符号 RVA 不匹配**
+    #   -> 坐标系错配 -> **误报 `prot_revoke_check` 被直接调用**。
+    #
+    #   （实测对照: Windows 产物 P5 **PASS** / Linux 产物 P5 **FAIL**
+    #     —— 差别只在被测节，map 两边都是同一份 PE map。）
+    #
+    # **与历史缺陷同类**: P5 曾在 M4 修过"坐标系错配"
+    #   （`scan_e8_calls` 的偏移基准）；本次是**同一类错误的另一处**。
+    #   **教训**: 修坐标系问题时须**穷尽所有坐标系来源**
+    #   （节偏移 / 映像基址 / **map 文件**），不能只修显式报错那处。
+    if map_path is None:
+        map_path = os.path.join(REPO, 'build', 'demo.map')
+    if not os.path.exists(map_path):
+        return False, 'no .map at %s (无法定位槽位符号)' % map_path
+    ma = parse_map_file(map_path)
     if not ma:
-        return False, 'no .map (无法定位槽位符号)'
+        return False, 'empty .map (%s)' % map_path
 
     # 密文区间（排除噪声）
     meta = selfcrypt_meta(data, secs)
@@ -493,6 +540,8 @@ def main():
                                      description='protection chain static asserts')
     parser.add_argument('--exe', default=EXE)
     parser.add_argument('--blob', default=BLOB)
+    parser.add_argument('--map', default=None,
+                        help='链接 map（缺省按 --exe 推导）')
     args = parser.parse_args()
 
     results = []
@@ -500,10 +549,24 @@ def main():
         data = open(args.exe, 'rb').read()
         secs = sections_of(data)
 
+        # ## map 路径按 `--exe` 推导（平台一致）
+        #   build/demo_linux -> build/demo_linux.map
+        #   build/demo.exe   -> build/demo.map（向后兼容）
+        map_path = args.map
+        if map_path is None:
+            stem = os.path.splitext(args.exe)[0]
+            cand = stem + '.map'
+            if not os.path.exists(cand):
+                # PE 的 map 名是 `demo.map`（不是 `demo.exe.map`）
+                cand2 = os.path.join(os.path.dirname(args.exe), 'demo.map')
+                cand = cand2 if os.path.exists(cand2) else cand
+            map_path = cand
+
         checks = [
             ('P1 selfcrypt-ciphertext', p1_selfcrypt_ciphertext, (data, secs)),
             ('P2 selfcrypt-mask-crc', p2_mask_consistent, (data, secs)),
-            ('P5 indirect-no-direct-call', p5_indirect_no_direct_call, (data, secs)),
+            ('P5 indirect-no-direct-call', p5_indirect_no_direct_call,
+             (data, secs, map_path)),
             ('P6 expect-consistent', p6_expect_consistent, ()),
         ]
         for name, fn, args2 in checks:
