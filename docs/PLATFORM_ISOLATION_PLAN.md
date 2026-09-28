@@ -533,3 +533,95 @@ m[2].startswith('0000000140')      # **硬编码映像基址前缀**
 ---
 
 *2026-09-25 · B 阶段: map 解析 4 处 -> 1 处（含脆弱点修复 + 重名判定 + 3 个过程教训）*
+
+---
+
+## 14. ✅ A-a 完成记录：路径抽象 `tools/genpaths.py`（2026-09-25）
+
+### 14.1 设计依据（**先盘点，再设计**）
+
+动手前先盘点了"**路径抽象到底要回答哪些问题**"（避免设计出"整洁但没人用"的模块）：
+
+**① `demo/gen` 的路径形态**（build.ps1 + build.sh 合计）：
+```
+<目录>           14 次
+expect_default.c  7 次     indirect_table.c  7 次
+strings.c         6 次     license_pubkey.c  4 次
+prot_sections.json 4 次    prot_modconfig.h  4 次
+prot_padding.c    4 次     prot_pubkey_der.c 4 次
+vm_*_blob.bin     各 3 次  vm_*_blob.c/.h    各 1 次
+version.res       2 次
+```
+
+**② 按用途分类**：
+| 类别 | 引用数 |
+|------|-------|
+| C 源（编译输入）| **42** |
+| BIN（打包输入）| 12 |
+| 头文件（`-I` 包含）| 10 |
+| JSON（工具间数据）| 4 |
+| 资源 | 2 |
+
+**③ `build/` 下的形态**（关键发现）：
+```
+build/vmc_linux  25 次    build/demo.exe      14 次
+build/keys       13 次    build/vm.blob       12 次
+build/demo_linux 10 次    build/license.txt    8 次
+...
+```
+
+> ### 🎯 关键洞察（**决定了设计范围**）
+> `build/` 下的东西**本来就已按平台区分文件名**
+> （`build/demo.exe` vs `build/demo_linux`）—— **不冲突**。
+> **真正冲突的只有 `demo/gen/`（共享目录）** + 状态文件 `vm_build.json`。
+> => `genpaths.py` **只负责这两类**，**不做大包大揽**
+>    （过度抽象会引入无谓的间接层）。
+
+### 14.2 交付: `tools/genpaths.py`
+
+**接口**：
+```python
+paths(platform=None, layout=None, repo=None) -> GenPaths
+```
+| 成员 | 说明 |
+|------|------|
+| `.gen` | 生成物目录（`demo/gen/win` 或 `demo/gen/linux`）|
+| `.vm_build_json` | 状态文件（Windows: `demo/vm_build.json`；Linux: `build/linux/vm_build.json`）|
+| `.g('strings.c')` | 便捷拼路径（**避免调用方各自拼**）|
+| `.as_dict()` | 供构建脚本诊断输出 |
+
+**两种布局**（迁移期兼容）：
+| 布局 | `gen` | 用途 |
+|------|-------|------|
+| `split`（默认）| `demo/gen/<platform>` | **目标形态** |
+| `flat` | `demo/gen` | **迁移期回退**（`PROT_GEN_LAYOUT=flat`）|
+
+**设计原则**：
+① **显式平台参数**（不依赖环境猜测）—— 构建脚本**必须**明确自己在为哪个平台构建（否则"猜错平台"这类 bug 无法定位）
+② `default_platform()` **仅作兜底**（已注明：推断会掩盖"在错误平台构建"）
+③ 返回**不可变结构**（便于打印/比对/自检）
+
+**自检 13/13 PASS**（含 **2 项负向**：
+非法平台 / 非法布局 -> **抛异常**而非静默用错误路径）。
+
+### 14.3 验收
+
+```
+□ genpaths.py --selftest **13/13 PASS**（含 2 负向）      ✅
+□ 实际路径查询正确（win/linux/flat 三种）                ✅
+□ **门禁 21/22**（唯一失败=未提交）—— **零影响**         ✅
+   （A-a 只新增文件，不改变任何既有行为）
+```
+
+### 14.4 为什么 A-a 只做"抽象"而不改调用方
+
+**分阶段的价值**: A-a **纯新增、零行为改变** ->
+· 门禁全绿，证明"抽象层本身正确"
+· 下一步 A-b（`build.sh` 切到 linux 目录）若出问题，
+  **可以确定是 A-b 引入的**，而非抽象层
+
+> 这遵循计划 §9.2 的纪律: **每次只动一个变量**。
+
+---
+
+*2026-09-25 · A-a: 路径抽象（盘点驱动设计，只覆盖真冲突的两类路径）*
