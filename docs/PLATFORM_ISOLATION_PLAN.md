@@ -1107,3 +1107,100 @@ demo 连不上 -> 走**离线降级** -> `code=0`。
 ---
 
 *2026-09-25 · C-2: attacks.py 移植（11 PASS / 1 NA；含 2 个测试侧缺陷查明 + 1 次误报避免）*
+
+---
+
+## 20. ✅ C-3 完成记录：`e2e.py` 全量移植 —— **C 阶段收官**（2026-09-25）
+
+### 20.1 验收
+
+```
+Linux  : [e2e] 平台=linux  总计 28: **PASS 20 / FAIL 0 / SKIP 1 / NA 7**
+Windows: [e2e] 平台=win    总计 28: **PASS 27 / FAIL 0 / SKIP 1 / NA 0**（零回归）
+ci_linux: **11/11 PASS**
+```
+
+### 20.2 依赖分层（**计划 §10.2 的纪律，先分层再动手**）
+
+| 类别 | 用例 | 处置 |
+|------|------|------|
+| 平台无关（跑 demo+解析）| T1/T2/T5/T6/T7/T8/T11/T12/T13/T14/T15-T21 | 路径 + run_demo 分派 |
+| **PE 篡改** | T4/T9/T10（`make_tampered_copy`）| **ELF 适配**（复用 `sections_of`）|
+| 调试器附加 | T3 | 原设计 preflight -> **SKIP**（环境不支持）|
+| **在线会话** | T22-T28（7 项）| **PLATFORM_NA**（网络边界，见 20.3）|
+
+**分层的价值**：866 行、23 处 ctypes 实测中，真正需改的只有
+**4 个点**（import 条件化 / run_demo / 篡改函数 / 路径）。
+
+### 20.3 🎯 决定性探测：**WSL2 与 Windows loopback 独立**
+
+```
+curl 127.0.0.1:PORT -> **Connection refused**（rc=7）
+Python urllib      -> 同样失败
+=> mock HTTP 服务器跑在 Windows Python -> WSL 内**不可达**
+```
+
+**诚实处置（含"假通过"）**：7 项在线用例全部标 `PLATFORM_NA` ——
+**包括那些判据上"通过"的**：
+| 用例 | 表面 | 实情 |
+|------|------|------|
+| T23 online-ok | exit=0 符合判据 | **巧合**（离线路径恰好 0）|
+| T24 online-degrade | "降级"符合判据 | **巧合**（不可达即降级，但原因是宿主差异）|
+| T25 session accepted | 符合判据 | **巧合** |
+| T28 tampered rejected | exit=11 符合判据 | **巧合**（实为连不上 → blob missing）|
+| T22/T26/T27 | FAIL | 平台网络差异（非缺陷）|
+
+> **这是"未验证 != 通过"纪律的一次完整实践**：
+> 假通过比假失败**更危险**（掩盖了未验证状态）。
+> **剩余工作**：mock 服务器放进 WSL（或 host IP）→ 7 项可完整验证。
+
+### 20.4 移植中修的 6 处（**逐个实测驱动**）
+
+| # | 用例 | 根因 | 修法 |
+|---|------|------|------|
+| 1 | T4 `unpack requires a buffer` | `make_tampered_copy(from_end)` **内嵌 PE 头解析** | 改用 `section_bounds`（复用 `sections_of`，含 CRC 长度语义）|
+| 2 | T9/T10 `.rdata/.pdata not found` | Linux 是 `.rodata/.eh_frame` | **按文件格式**做节名映射（`SECTION_NAME_ALIAS`）|
+| 3 | T5 `exit=127` | `vm_unit` 指向 `vm_unit.exe` | 平台分派（`build/vm_unit_linux`）|
+| 4 | T8 篡改无效 | `b[mid] = 'B'` **可能本来就相等**（与 C-2 A5 同因）| 改为"**保证改变**" |
+| 5 | T13/T14/T27 `exit=11` 等 | `0xB10B & 0xFF`（**POSIX 低 8 位**）| `_norm_exit` / `_norm_expect`（**8 处判据**）|
+| 6 | **T15 revoke-hit** | `privkey = BUILD/keys/...` 平台化后**不存在** -> revoke 未签名（v0）-> 按无效不阻断 | 密钥改**共享路径** |
+
+> ### 🎯 第 6 处是**重要边界认知**（A 阶段隔离的适用范围）
+> `build/` 下不是所有东西都该按平台分：
+> · **平台产物**（vm.blob/license/mask/baseline…）-> 分 ✅
+> · **密钥材料**（`build/keys/`）-> **两平台同一把私钥**（B 阶段已证实
+>   BCRYPT 与 DER 同源）-> **共享，不参与隔离**
+> 我曾把"路径抽象"**用过了头**（全局套 `BUILD`）——
+> **隔离的边界 = 平台产物**，不是"build/ 下所有东西"。
+
+### 20.5 复用的既有资产（**避免重复实现**）
+
+| 资产 | 来源阶段 | C-3 的用法 |
+|------|---------|-----------|
+| `protchain_check.sections_of` | F 阶段 | 节表 + 篡改位置（**自动分派**）|
+| `attacks.py` 的 WSL 直执形态 | C-2 | `run_demo` 分派（**不经 bash** —— 它会吞 stdin/退出码）|
+| `_norm_exit` 思路 | C-2 | 8 处退出码判据 |
+| `genpaths` | A 阶段 | 路径 + `build_dir` |
+
+### 20.6 交付与验收
+
+| 项 | 状态 |
+|----|------|
+| C-1 Linux 独有攻击面 | ✅ 7/7（9/9 集成）|
+| C-2 attacks.py | ✅ 11 PASS / 1 NA（10/10 集成）|
+| **C-3 e2e 全量** | ✅ **20 PASS / 1 SKIP / 7 NA / 0 FAIL**（11/11 集成）|
+| **Windows 零回归** | ✅ e2e 27/28 PASS + 门禁 21/22 |
+| **ci_linux** | ✅ **11/11** |
+
+### 20.7 诚实边界（C-3）
+
+| 边界 | 说明 |
+|------|------|
+| 7 项在线用例未验证 | WSL2/Windows loopback 独立；**需 mock 服务器进 WSL**（可做）|
+| T3 SKIP | 原设计（self-preflight 环境自检）—— **非本轮引入**；Linux 可用 ptrace 实现真实附加（C-1 已有基础，**剩余工作**）|
+| 节名映射按格式 | `SECTION_NAME_ALIAS` 仅映射 3 个标准节（够用；新节需补映射）|
+| e2e 在**同一文件**分派 | 与 C-2 同；若继续增长建议拆平台模块 |
+
+---
+
+*2026-09-25 · C-3: e2e 全量移植（20 PASS/1 SKIP/7 NA/0 FAIL；依赖分层 4 个改动点；含假通过处置）—— **C 阶段完成***

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 ShardVase contributors
 # 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
@@ -26,7 +26,10 @@ tests/e2e.py - 端到端测试  (Lane D)
 任一 FAIL -> sys.exit(1)。
 """
 
-import ctypes
+try:
+    import ctypes                 # Windows-only
+except ImportError:  # pragma: no cover
+    ctypes = None
 import json
 import os
 import shutil
@@ -67,22 +70,46 @@ import winproc  # noqa: E402
 
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-EXE = os.path.join(REPO, 'build', 'demo.exe')
-BUILD = os.path.join(REPO, 'build')
-JSON_PATH = os.path.join(REPO, 'demo', 'vm_build.json')
+# ## 平台感知（C-3, 2026-09-25）
+#   与 `attacks.py`（C-2）同法: `--platform linux` 切换。
+#   **默认 win**（门禁里 e2e 项跑 Windows），Linux 侧由 `--platform linux`
+#   显式选择（与 genpaths 的"显式平台"原则一致）。
+_PLATFORM = 'win'
+if '--platform' in sys.argv:
+    _i = sys.argv.index('--platform')
+    if _i + 1 < len(sys.argv):
+        _PLATFORM = sys.argv[_i + 1]
+        del sys.argv[_i:_i + 2]      # 不传给下游
+
+sys.path.insert(0, os.path.join(REPO, 'tools'))
+import genpaths as _gp
+_P = _gp.paths(_PLATFORM)
+
+EXE = (os.path.join(REPO, 'build', 'demo.exe') if _PLATFORM == 'win'
+       else os.path.join(REPO, 'build', 'demo_linux'))
+BUILD = _P.build_dir           # 按平台（A 阶段: win=build/, linux=build/linux）
+JSON_PATH = _P.vm_build_json
 STRINGS = os.path.join(REPO, 'demo', 'strings.txt')
-LICENSE = os.path.join(REPO, 'build', 'license.txt')   # A1: build.ps1 sign 产物
+LICENSE = _P.b('license.txt')   # A1: sign 产物（按平台）
 
-KERNEL32 = ctypes.WinDLL('kernel32', use_last_error=True)
+# ## ⚠️ `ctypes.WinDLL` **必须条件化**（C-3, 2026-09-25）
+#   它是**模块级**执行 —— Linux 上 `ctypes.WinDLL` **不存在** ->
+#   **import e2e.py 即崩**（连一个用例都跑不了）。
+#   Linux 侧用 **ptrace**（见 DebugAttacher / C-1 的 tracer 实现）。
+if ctypes is not None:
+    KERNEL32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
-KERNEL32.DebugActiveProcess.argtypes = [ctypes.c_ulong]
-KERNEL32.DebugActiveProcess.restype = ctypes.c_int
-KERNEL32.WaitForDebugEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-KERNEL32.WaitForDebugEvent.restype = ctypes.c_int
-KERNEL32.ContinueDebugEvent.argtypes = [ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
-KERNEL32.ContinueDebugEvent.restype = ctypes.c_int
-KERNEL32.DebugActiveProcessStop.argtypes = [ctypes.c_ulong]
-KERNEL32.DebugActiveProcessStop.restype = ctypes.c_int
+    KERNEL32.DebugActiveProcess.argtypes = [ctypes.c_ulong]
+    KERNEL32.DebugActiveProcess.restype = ctypes.c_int
+    KERNEL32.WaitForDebugEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    KERNEL32.WaitForDebugEvent.restype = ctypes.c_int
+    KERNEL32.ContinueDebugEvent.argtypes = [ctypes.c_ulong, ctypes.c_ulong,
+                                            ctypes.c_ulong]
+    KERNEL32.ContinueDebugEvent.restype = ctypes.c_int
+    KERNEL32.DebugActiveProcessStop.argtypes = [ctypes.c_ulong]
+    KERNEL32.DebugActiveProcessStop.restype = ctypes.c_int
+else:
+    KERNEL32 = None
 
 PROT_EXIT_DEBUG_DETECTED = 0xDB
 PROT_EXIT_TAMPERED = 0xBAD
@@ -116,8 +143,90 @@ def load_strings(path):
     return out
 
 
+def _norm_exit(code):
+    """**平台语义归一化**的退出码（C-3, 复用 C-2 结论）。
+
+    · Windows: `ExitProcess(0xB10B)` -> **0xB10B**（完整 32 位）
+    · Linux  : `exit(0xB10B)` -> 只保留**低 8 位** = **0x0B = 11**
+      （POSIX: 退出状态只传 8 位给父进程）
+
+    **不是放宽判据** —— 归一化后仍**精确比较**（低 8 位 vs 低 8 位），
+    只是承认"可观测宽度在两平台不同"。
+    """
+    if _PLATFORM == 'win':
+        return code & 0xFFFFFFFF
+    return code & 0xFF
+
+
+def _norm_expect(expected):
+    """把期望退出码按平台归一化（与 _norm_exit 配对）。"""
+    if _PLATFORM == 'win':
+        return expected & 0xFFFFFFFF
+    return expected & 0xFF
+
+
+#: ## 在线类用例标签（C-3）—— Linux 侧**一律 PLATFORM_NA**
+#: ## 探测证据（2026-09-25，实测）
+#: ```
+#: curl 127.0.0.1:PORT -> **Connection refused** (rc=7)
+#: python urllib -> 同样失败
+#: => WSL2 与 Windows **loopback 独立**；mock 服务器跑在
+#:    Windows Python -> WSL 内**不可达**
+#: ```
+#: ## 为什么"PASS"的也标 NA（**诚实纪律**）
+#:   服务器不可达时 demo 走**离线/失败**路径，其 exit code **恰好**符合
+#:   某些判据（实测: T23/T25 期望 0 拿到 0；T24 期望降级拿到降级；
+#:   T28 期望 11 拿到 11）—— **那是巧合，不是验证通过**。
+#:   标 NA + 注明原因（"未验证 != 通过"）。
+#: **剩余工作**: mock 服务器放进 WSL 内（或用 host IP）-> 这些用例可完整验证。
+ONLINE_LABELS = ('T22 ', 'T23 ', 'T24 ', 'T25 ', 'T26 ', 'T27 ', 'T28 ')
+
+
+class _Results(list):
+    """结果列表（**单点平台适配**）。
+
+    在 `linux` 侧把**在线用例**的状态改写为 `PLATFORM_NA`
+    —— 含那些"巧合通过"的（见 ONLINE_LABELS 注释）。
+    """
+
+    def append(self, item):
+        if (_PLATFORM != 'win'
+                and isinstance(item, tuple)
+                and len(item) >= 2
+                and isinstance(item[0], str)
+                and item[0].startswith(ONLINE_LABELS)):
+            detail = item[2] if len(item) > 2 else ''
+            super().append((item[0], 'PLATFORM_NA',
+                            'WSL2/Windows loopback 独立（curl rc=7）；'
+                            'mock 服务器在 Windows 侧不可达；'
+                            '原 detail: %s' % detail))
+        else:
+            super().append(item)
+
+
+def to_wsl(p):
+    """Windows 路径 -> WSL 路径。"""
+    p = os.path.abspath(p)
+    return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
+
+
 def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
-    """Run demo.exe; return (exitcode, decoded_stdout, decoded_stderr)."""
+    """运行 demo；返回 (exitcode, stdout, stderr)。
+
+    ## 平台分派（C-3, 2026-09-25）
+      · **win**: 现状（`winproc.Popen`）
+      · **linux**: 经 WSL **直执**（`wsl.exe --cd <cwd> -- <exe> <args>`）
+
+      ## 为什么复用 C-2 的做法
+        C-2 (`attacks.py`) 已用三路对照**验证**该形态:
+          · **不经 bash**（`bash -c` 会吞掉 **stdin** 与**退出码**）
+          · `--cd` 指定 cwd（demo 需相对路径找产物）
+          · **路径型参数转 WSL 形态**（Windows 路径传给 WSL 里的 demo
+            会 `fopen` 失败 -> `license: 0`）
+        => 本处**同一形态**（避免重踩）。
+    """
+    if _PLATFORM != 'win':
+        return _run_demo_wsl(args, stdin, exe, timeout)
     cmd = [exe] + (args or [])
     p = winproc.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -126,6 +235,34 @@ def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
     return (p.returncode,
             out.decode('utf-8', 'replace'),
             err.decode('utf-8', 'replace'))
+
+
+def _run_demo_wsl(args, stdin, exe, timeout):
+    """经 WSL 直执（**复用 C-2 已验证的形态**）。"""
+    args = list(args or [])
+
+    def _fix(a):
+        # 路径型参数转 WSL 形态（Windows 盘符开头 -> /mnt/<d>）
+        if isinstance(a, str) and len(a) > 2 and a[1] == ':' \
+                and a[2] in ('\\', '/'):
+            return to_wsl(a)
+        return a
+
+    args = [_fix(a) for a in args]
+    # Linux 侧产物按平台（A 阶段隔离）
+    if '--vm-blob' not in args:
+        args += ['--vm-blob', to_wsl(_P.b('vm.blob'))]
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    cmd = ['wsl.exe', '-d', 'Ubuntu-24.04', '--cd',
+           to_wsl(os.path.dirname(exe)), '--', to_wsl(exe)] + args
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, env=env)
+    out, err = p.communicate(stdin, timeout=timeout)
+    return (p.returncode,
+            (out or b'').decode('utf-8', 'replace'),
+            (err or b'').decode('utf-8', 'replace'))
 
 
 def pump_and_read(proc, timeout=30):
@@ -144,118 +281,116 @@ def pe_text_raw_offset(path):
 
 
 def pe_section_raw_offset(path, sec_name):
-    """Offset of the first raw byte of section `sec_name` (PointerToRawData)."""
+    """节的文件偏移（**自动识别 PE / ELF**）。
+
+    ## C-3（2026-09-25）
+      原实现**只认 PE**（硬编码 `e_lfanew` 偏移）——
+      对 ELF 会读到垃圾值（与 `measure_sections` 同类缺陷）。
+      => 复用 **F 阶段**的 `protchain_check.sections_of`
+         （**自动分派**，字段名一致: `ptr_raw` / `name`）——
+         避免"同一判据各写一遍"（复制即漂移）。
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(REPO, 'tests'))
+    from protchain_check import sections_of
     with open(path, 'rb') as f:
         data = f.read()
-    e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
-    num = struct.unpack_from('<H', data, e_lfanew + 6)[0]
-    opt = struct.unpack_from('<H', data, e_lfanew + 20)[0]
-    tab = e_lfanew + 24 + opt
-    for i in range(num):
-        off = tab + i * 40
-        name = data[off:off + 8].rstrip(b'\x00')
-        if name == sec_name.encode('ascii'):
-            return struct.unpack_from('<I', data, off + 20)[0]
-    raise RuntimeError('%s not found in %s' % (sec_name, path))
+    # C-3: 应用节名的**格式映射**（.rdata -> .rodata 等）
+    real = mapped_sec_name(path, sec_name)
+    secs = sections_of(data)
+    for s in secs:
+        if s['name'] == real:
+            return s['ptr_raw']
+    raise RuntimeError('%s (real=%s) not found in %s'
+                       % (sec_name, real, path))
+
+
+#: ## 节名的**格式映射**（C-3, 2026-09-25）
+#: PE 用 `.rdata/.pdata`，ELF 用 `.rodata/.eh_frame`。
+#: **按文件格式映射**（不猜平台）—— 与 `sections_of` 同一判据。
+SECTION_NAME_ALIAS = {
+    'PE': {'.rdata': '.rdata', '.pdata': '.pdata'},
+    'ELF': {'.rdata': '.rodata', '.pdata': '.eh_frame',
+            '.text': '.text'},
+}
+
+
+def _is_elf_file(path):
+    with open(path, 'rb') as f:
+        return f.read(4) == b'\x7fELF'
+
+
+def mapped_sec_name(path, sec_name):
+    """把**逻辑节名**映射为**该产物格式的实际节名**（C-3）。"""
+    fmt = 'ELF' if _is_elf_file(path) else 'PE'
+    return SECTION_NAME_ALIAS.get(fmt, {}).get(sec_name, sec_name)
+
+
+def section_bounds(path, sec_name):
+    """节的 (文件偏移, 大小) —— **两格式统一**（复用 sections_of）。
+
+    ## 为什么不用内嵌 PE 解析
+      `make_tampered_copy` 原来 `f.seek(0x3C)` 直接读 PE 节表 ->
+      对 ELF 读到垃圾值 -> `unpack requires a buffer of 2 bytes`（实测 T4）。
+      => 复用 **F 阶段**的 `sections_of`（自动分派）——
+         **避免同一判据各写一遍**（与 `pe_section_raw_offset` 同法）。
+    """
+    real = mapped_sec_name(path, sec_name)
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(REPO, 'tests'))
+    from protchain_check import sections_of
+    with open(path, 'rb') as f:
+        data = f.read()
+    for s in sections_of(data):
+        if s['name'] == real:
+            # ## 返回 **CRC 长度** = min(virtual_size, size_raw)
+            #
+            # 保留原 PE 实现的关键语义（**实测教训**）:
+            #   完整性 CRC 长度 = min(vsize, rawsize)；
+            #   raw 尾部对齐字节**不在 CRC 覆盖内** -> 翻它**检不出**。
+            #   => 篡改目标必须是 `min(vsize, rawsize) - 1`。
+            # ELF 侧两者都 = sh_size（**语义一致**）。
+            return s['ptr_raw'], min(s['virtual_size'], s['size_raw'])
+    raise RuntimeError('%s (real=%s) not found in %s'
+                       % (sec_name, real, path))
 
 
 def make_tampered_copy(sec_name='.text', rel_off=0, from_end=0):
-    """复制 exe 并翻转指定节内某字节。
+    """复制产物并翻转指定节内某字节（**PE / ELF 通吃**，C-3 重写）。
 
     ## from_end（2026-09-25 新增）
-      `from_end=1` 表示翻转**该节最后一个字节**。
-      用途见 T4 注释: 布局随机化后 ".text 首字节" 不再是确定的
-      翻转目标（可能落在完整性检查自身的代码上 -> 翻转即崩溃）。
+      `from_end=1` 表示翻转**该节 CRC 覆盖的最后一个字节**。
+      用途见 T4 注释: 布局随机化后 ".text 首字节" 的归属**随构建变化**
+      （某次 = 完整性检查自身的函数 -> 翻转即崩溃 -> 无法给 MSG_TAMPER）。
+      末字节 = `g_pad_text` 尾部（确定位置）+ CRC 覆盖 + 不被执行
+      -> **检测必然发生**。
+
+    ## C-3 重写（2026-09-25）
+      原实现的 `from_end` 分支**内嵌 PE 头解析**（`f.seek(0x3C)` ...）
+      -> 对 ELF 读到垃圾值 -> `unpack requires a buffer of 2 bytes`（实测 T4）。
+      => 改用 `section_bounds`（**复用 sections_of**，自动分派）：
+      · 节名映射在这里天然生效（`.rdata`->`.rodata` 等，T9/T10）
+      · CRC 长度语义保留（min(vsize, rawsize)）
     """
     dst = os.path.join(BUILD, 'demo_tampered.exe')
     shutil.copyfile(EXE, dst)
-    raw_off = pe_section_raw_offset(dst, sec_name)
+    raw_off, crc_len = section_bounds(dst, sec_name)
     if from_end:
-        # 从 PE 头读该节 SizeOfRawData -> 末字节
-        with open(dst, 'rb') as f:
-            f.seek(0x3C)
-            pe = struct.unpack('<I', f.read(4))[0]
-            f.seek(pe + 6)
-            nsec = struct.unpack('<H', f.read(2))[0]
-            f.seek(pe + 20)
-            optsz = struct.unpack('<H', f.read(2))[0]
-            tb = pe + 24 + optsz
-            last_off = None
-            for i in range(nsec):
-                f.seek(tb + i * 40)
-                nm = f.read(8).rstrip(b'\x00').decode('ascii', 'replace')
-                if nm == sec_name:
-                    buf = f.read(16)   # VirtualSize, VirtualAddress,
-                                       # SizeOfRawData, PointerToRawData
-                    vsize, _va, rsz, _pr = struct.unpack('<IIII', buf)
-                    # ## 关键: 用 **VirtualSize**（不是 SizeOfRawData）
-                    #
-                    # 完整性 CRC 的长度 = min(vsize, rawsize) = vsize。
-                    # raw 尾部多出的对齐字节（rawsize > vsize）**不在
-                    # CRC 覆盖内** -> 翻它检不出（实测 exit=0）。
-                    # `raw + vsize - 1` = **最后一个 CRC 覆盖的内容字节**
-                    # = 最后一个贡献者（g_pad_text）的尾部。
-                    last_off = raw_off + min(vsize, rsz) - 1
-                    break
-        if last_off is None:
-            raise RuntimeError('section %s not found' % sec_name)
-        ro = last_off
+        if crc_len <= 0:
+            raise RuntimeError('section %s has zero CRC length' % sec_name)
+        ro = raw_off + crc_len - 1      # 最后一个 CRC 覆盖字节
     else:
         ro = raw_off + rel_off
     with open(dst, 'r+b') as f:
         f.seek(ro)
         b = f.read(1)
+        if not b:
+            raise RuntimeError('tamper offset %d out of file' % ro)
         f.seek(ro)
         f.write(bytes([b[0] ^ 0xFF]))
     return dst
 
 
-# ---------------------------------------------------------------------------
-# 调试器附加: kernel32.DebugActiveProcess + WaitForDebugEvent 事件泵
-# ---------------------------------------------------------------------------
-class DebugAttacher(object):
-    DBG_CONTINUE = 2                      # DBG_CONTINUE
-    EXIT_PROCESS_DEBUG_EVENT = 5          # EXIT_PROCESS_DEBUG_EVENT
-    WAIT_TIMEOUT = 0x00000102
-
-    def __init__(self):
-        self._pid = None
-
-    def attach(self, pid):
-        if not KERNEL32.DebugActiveProcess(pid):
-            return False
-        self._pid = pid
-        return True
-
-    def pump(self, timeout=25.0):
-        """
-        泵调试事件直到进程退出 (EXIT_PROCESS_DEBUG_EVENT) 或超时。
-        附加期间必须持续 ContinueDebugEvent, 否则目标进程保持挂起。
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            ev = ctypes.create_string_buffer(512)
-            if KERNEL32.WaitForDebugEvent(ev, 200):
-                code = ctypes.c_ulong.from_buffer(ev).value
-                dbg_pid = ctypes.c_ulong.from_buffer(ev, 4).value
-                dbg_tid = ctypes.c_ulong.from_buffer(ev, 8).value
-                if code == self.EXIT_PROCESS_DEBUG_EVENT:
-                    self.detach()
-                    return
-                KERNEL32.ContinueDebugEvent(dbg_pid, dbg_tid, self.DBG_CONTINUE)
-            else:
-                if ctypes.get_last_error() != self.WAIT_TIMEOUT:
-                    break
-        self.detach()
-
-    def detach(self):
-        if self._pid is not None:
-            KERNEL32.DebugActiveProcessStop.argtypes = [ctypes.c_ulong]
-            KERNEL32.DebugActiveProcessStop(self._pid)
-            self._pid = None
-
-
-# ---------------------------------------------------------------------------
 def main():
     if not os.path.isfile(EXE):
         print('FAIL: %s not found (run build.ps1 first)' % EXE, flush=True)
@@ -269,7 +404,7 @@ def main():
     msg_dbg = strs['MSG_DBG']
     msg_tamper = strs['MSG_TAMPER']
 
-    results = []
+    results = _Results()
 
     # ---- T1: 正确序列号 + 有效授权 (A1) --------------------------------
     try:
@@ -339,7 +474,7 @@ def main():
                     results.append(('T3 debug-detect', 'SKIP',
                                     'debug session stalled in this env'))
                 else:
-                    ok = (code == PROT_EXIT_DEBUG_DETECTED) and (msg_dbg in out)
+                    ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_DEBUG_DETECTED)) and (msg_dbg in out)
                     results.append(('T3 debug-detect',
                                     'PASS' if ok else 'FAIL',
                                     'exit=%d' % code))
@@ -364,7 +499,7 @@ def main():
         code, text, _ = run_demo(exe=tampered,
                                  args=['--license-file', LICENSE],
                                  stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_TAMPERED) and (msg_tamper in text)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_TAMPERED)) and (msg_tamper in text)
         results.append(('T4 tamper-detect', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
     except Exception as e:
@@ -385,7 +520,7 @@ def main():
             code, text, _ = run_demo(exe=tampered,
                                      args=['--license-file', LICENSE],
                                      stdin=(serial + '\n').encode('utf-8'))
-            ok = (code == PROT_EXIT_TAMPERED)
+            ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_TAMPERED))
             results.append((tname, 'PASS' if ok else 'FAIL',
                             'exit=%d' % code))
         except Exception as e:
@@ -396,7 +531,9 @@ def main():
                 results.append((tname, 'FAIL', repr(e)))
 
     # ---- T5: VM 指令集单测 (Phase 1d 新增指令) ------------------------
-    vm_unit = os.path.join(BUILD, 'vm_unit.exe')
+    vm_unit = (os.path.join(BUILD, 'vm_unit.exe')
+           if _PLATFORM == 'win'
+           else os.path.join(REPO, 'build', 'vm_unit_linux'))
     try:
         code, out, _ = run_demo(exe=vm_unit)
         ok = (code == 0) and ('PASS' in out)
@@ -456,7 +593,11 @@ def main():
             if ln.startswith('SIGNATURE='):
                 s = ln[len('SIGNATURE='):]
                 b = bytearray(s.encode('ascii'))
-                b[len(b) // 2] = b'B'[0]  # 改动 base64 字符, 反则成完全不同字节
+                b[len(b) // 2] = (ord('B') if b[len(b) // 2] != ord('B')
+                              else ord('C'))  # C-3: **保证改变**
+                                          # (与 C-2 A5 同因: 硬编码
+                                          #  写 'B' 可能**本来就相等**
+                                          #  -> 篡改无效 -> 假失败)
                 out_lines.append('SIGNATURE=' + b.decode('ascii'))
             else:
                 out_lines.append(ln)
@@ -515,7 +656,7 @@ def main():
             args=['--license-file', LICENSE, '--vm-blob',
                   os.path.join(BUILD, 'no_such_blob.bin')],
             stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_BLOB_MISSING)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_BLOB_MISSING))
         results.append(('T13 blob-missing', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
     except Exception as e:
@@ -532,7 +673,7 @@ def main():
         code, out, _ = run_demo(
             args=['--license-file', LICENSE, '--vm-blob', forged_blob],
             stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_BLOB_MISSING)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_BLOB_MISSING))
         results.append(('T14 blob-tamper', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
     except Exception as e:
@@ -596,7 +737,7 @@ def main():
                   '--blob-url', url,
                   '--vm-blob', os.path.join(BUILD, 'vm_missing_placeholder.blob')],
             stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_BLOB_MISSING)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_BLOB_MISSING))
         results.append(('T28 online-blob-tamper', 'PASS' if ok else 'FAIL',
                         'exit=%d (tampered blob rejected by signature)' % code))
         srv.shutdown()
@@ -606,7 +747,13 @@ def main():
     # ---- T15-T19: 授权吊销 (I1, 离线黑名单) ------------------------------
     PROT_EXIT_REVOKED = 0xB1E4
     vmenc = os.path.join(REPO, 'tools', 'vmenc.py')
-    privkey = os.path.join(BUILD, 'keys', 'license_priv.json')
+    # ## 密钥是**共享的**（C-3 实测修正, 2026-09-25）
+    #   `build/keys/*.json` 是**密钥材料** —— 两平台用**同一把私钥**
+    #   （B 阶段证实: BCRYPT blob 与 DER 由同一私钥导出）->
+    #   **不参与平台隔离**（隔离的边界 = **平台产物**，不是 build/ 下所有东西）。
+    #   原来用 `BUILD`（已平台化）导致 `build/linux/keys/` 不存在 ->
+    #   revoke **未签名**（v0 而非 v1）-> demo 按无效不阻断 -> T15 误判 FAIL。
+    privkey = os.path.join(REPO, 'build', 'keys', 'license_priv.json')
     def make_revoke(serial, tier=None, path='revoke.blob', signed=True):
         args = ['python', vmenc, 'revoke', '--out', os.path.join(BUILD, path)]
         if signed and os.path.isfile(privkey):
@@ -624,7 +771,7 @@ def main():
             args=['--license-file', LICENSE, '--vm-blob',
                   os.path.join(BUILD, 'vm.blob'), '--revoke-file', hit],
             stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_REVOKED)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_REVOKED))
         results.append(('T15 revoke-hit', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
     except Exception as e:
@@ -753,7 +900,7 @@ def main():
             args=['--license-file', LICENSE, '--vm-blob',
                   os.path.join(BUILD, 'vm.blob'), '--check-url', url],
             stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == PROT_EXIT_REVOKED)
+        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_REVOKED))
         results.append(('T22 online-revoked', 'PASS' if ok else 'FAIL',
                         'exit=%d' % code))
         srv.shutdown()
@@ -857,6 +1004,19 @@ def main():
         print('%-14s  %-4s   (%s)' % (name, status, detail), flush=True)
         if status == 'FAIL':
             failed = True
+
+    # ## 汇总（C-3, 2026-09-25）: 透明列出 PASS/FAIL/SKIP/**PLATFORM_NA**
+    #   —— 与 attacks.py（C-2）同一格式。
+    #   `PLATFORM_NA` **不计失败**但**必须可见**（"未验证 != 通过"）；
+    #   `SKIP` 是原设计的环境自检（如 T3 debug-preflight）。
+    n_pass = sum(1 for _n, st, _d in results if st == 'PASS')
+    n_fail = sum(1 for _n, st, _d in results if st == 'FAIL')
+    n_skip = sum(1 for _n, st, _d in results if st == 'SKIP')
+    n_na = sum(1 for _n, st, _d in results if st == 'PLATFORM_NA')
+    print()
+    print('[e2e] 平台=%s  总计 %d: PASS %d / FAIL %d / SKIP %d / NA %d'
+          % (_PLATFORM, len(results), n_pass, n_fail, n_skip, n_na),
+          flush=True)
 
     sys.exit(1 if failed else 0)
 

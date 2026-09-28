@@ -290,6 +290,38 @@ def run_all(skip_build=False, quiet=False, readonly=False):
                      ('PASS %s / FAIL %s / NA %s' % m6.groups()[1:])
                      if m6 else ''))
 
+    # ③f **端到端用例 e2e T1-T28**（C-3）—— 第 11 项
+    #
+    # ## 与前几项的区别
+    #   e2e 是**最全的端到端套件**（28 项: 正常流程 / 篡改检测 / 吊销 /
+    #   授权到期 / 在线验证 …）—— C-3 移植后在 Linux 跑。
+    #
+    # ## 平台差异（**如实标注**，见 e2e 的 PLATFORM_NA 逻辑）
+    #   · **7 项在线用例 = PLATFORM_NA**（实测: WSL2/Windows loopback
+    #     独立，curl rc=7；mock 服务器在 Windows 侧不可达）
+    #     —— 含**假通过**的 T23/T24/T25/T28（"未验证 != 通过"）
+    #   · T3 SKIP = 原设计的 debug 自检（环境不支持则跳过）
+    e2ep = os.path.join(REPO, 'tests', 'e2e.py')
+    if os.path.exists(e2ep):
+        r7 = subprocess.run([sys.executable, '-X', 'utf8', e2ep,
+                             '--platform', 'linux'],
+                            capture_output=True, timeout=3000, cwd=REPO)
+        o7 = (r7.stdout + r7.stderr).decode('utf-8', 'replace')
+        m7 = re.search(r'\[e2e\] 平台=\w+\s+总计 (\d+): '
+                       r'PASS (\d+) / FAIL (\d+) / SKIP (\d+) / NA (\d+)',
+                       o7)
+        ok7 = (r7.returncode == 0)
+        if m7:
+            tot, np_, nf, ns, nna = m7.groups()
+            det = ('总计 %s: PASS %s / FAIL %s / SKIP %s / NA %s'
+                   % (tot, np_, nf, ns, nna))
+        else:
+            det = '无法解析（尾部: %s）' % o7.strip()[-60:]
+        results.append(('端到端 e2e T1-T28', ok7, det))
+        if not quiet:
+            print('  %s 端到端 e2e T1-T28 %s'
+                  % ('ok  ' if ok7 else 'FAIL', det))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）
