@@ -903,3 +903,106 @@ build/demo.exe        build/demo_linux
 ---
 
 *2026-09-25 · A 阶段完成: 隔离判据通过（快照法定位泄漏 + measure_sections 真实缺口）*
+
+---
+
+## 18. ✅ C-1 完成记录：Linux 独有攻击面（2026-09-25）—— **9/9**
+
+### 18.1 目标与依据（**从源码实测得出**）
+
+`src/platform/prot_platform_linux.c` 的 `prot_plat_extra_debug_flags()`
+实现**三个 Windows 没有**的检测（Windows 侧实测 0 处）：
+
+| # | 检测 | 触发条件 | 读什么 |
+|---|------|---------|--------|
+| ① | **LD_PRELOAD** | `/proc/self/environ` 有非空 `LD_PRELOAD=` | 内核提供，**用户态不可伪造** |
+| ② | **可疑 .so** | `/proc/self/maps` 有 `/tmp/`、`/dev/shm/`、`/var/tmp/` 下的 `.so` | frida-gadget 等的常见位置 |
+| ③ | **ptrace 已被跟踪** | `ptrace(PTRACE_TRACEME)` 失败 | 内核调试状态 |
+
+**汇总路径**（`src/antidebug.c` L489-496）：
+```
+PRELOAD | SUSP_SO  -> report.ppid_blacklist = 1
+PTRACED            -> report.debug_object   = 1
+```
+=> demo 的 `--selftest` 打印这两个字段 -> **可作验证判据**。
+
+> **为什么复用既有字段而不加新字段**（源码注释已说明）：
+> `prot_antidebug_report` 是**对外契约**，加字段会**破坏 ABI**；
+> 用既有字段 + 注释记录语义扩展（**最小侵入**）。
+
+### 18.2 交付: `tests/attacks_linux.py`（7 项）
+
+**正向 4 项**（**不误报**）：
+```
+ok  demo 输出反调试字段（18 个字段）
+ok  正向①: 干净环境无 LD_PRELOAD/.so（ppid_blacklist=0）
+ok  正向②: 干净环境无 ptrace（debug_object=0）
+ok  正向③: 其余反调试字段**全为 0**（不误报）
+```
+
+**负向 3 项**（**真发起攻击 -> 必须被检出**）：
+```
+ok  负向①: LD_PRELOAD 注入 -> ppid_blacklist=1
+ok  负向②: 可疑 /tmp/.so   -> ppid_blacklist=1
+ok  负向③: ptrace ATTACH   -> debug_object=1
+```
+
+> ### 🎯 本项的**核心价值**
+> 前几项验证"代码能跑 / 契约满足"；
+> **本项真的发起攻击**（`LD_PRELOAD` 注入库 / 父进程 `PTRACE_ATTACH`）
+> 并断言**被检出** -> 证明防护**有效**，而非只证明"能编译"。
+
+### 18.3 ⚠️ 两处"**差点误报缺陷**"（都是我的测试问题）
+
+**诊断证据（决定性）**：
+```
+[tracer] attached to 412
+反调试扫描: **发现可疑**
+  debug_object: **1**            <- ptrace 被检出（检测完全正常）
+检测到调试环境，程序即将退出。       <- 防护**主动阻止**（比"检出"更强）
+```
+
+| # | 我的 bug | 根因 | 修法 |
+|---|---------|------|------|
+| 1 | **环境变量位置错** | `LD_PRELOAD=x printf ... \| ./demo` —— shell 里 `VAR=x cmd1 \| cmd2` 的 VAR **只作用于 cmd1**（管道左侧）| 环境变量放到**管道右侧**（demo 命令前）|
+| 2 | **tracer 缺 `PTRACE_CONT`** | attach 后子进程**停在 SIGSTOP**，直到 tracer 退出才恢复 -> 输出被截断 -> 判为"检测失效" | 补 `waitpid` + `PTRACE_CONT` |
+
+> ### 🎯 教训（**第三次"测量问题而非缺陷"**）
+> 负向测试失败时，**先验证"攻击是否真的生效"**。
+> 本次靠"打印完整输出"才发现 demo **确实报了** `debug_object: 1` ——
+> 若直接判"检测失效"，就会**误报缺陷**。
+> （前两次: G 阶段的 vmc 退出码、C-1 的这个 —— **同类方法论**。）
+
+### 18.4 第 9 项接入
+
+```
+--- 运行时验证（9 项）---
+  ok   构建 / vm_unit / 契约测试 / 授权链
+  ok   VM 合约测试 (vmc) 功能 6/6 + 错误 3/3
+  ok   保护链静态断言 (P1-P6) 6 PASS / 0 FAIL
+  ok   **Linux 独有攻击面 7/7**        <- 新增
+  ok   节名随机化 / 文件大小统一
+[verify_linux_runtime] PASS: 9/9
+[ci_linux] PASS
+```
+
+### 18.5 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| 攻击**改变进程环境**（LD_PRELOAD / ptrace）| 都在**临时目录**做 + **必清理**（`rm -rf`）；但**同一进程内**无法完全隔离 |
+| ptrace 在 WSL 内可用 | 实测**可用**（已成功 attach）；其他环境（受限容器）可能不可用 -> 应视为**环境依赖** |
+| 可疑 .so 的检测**与 LD_PRELOAD 同字段** | 负向②实际也走 LD_PRELOAD（因两者都会命中）—— **未单独验证**"/tmp 下的 .so 但不用 LD_PRELOAD"的路径 |
+| 其余 Linux 独有项未覆盖 | 如 `dbi_rxrw_regions` / `dbi_thread_count` 的 Linux 实现（同为 DBI 面）|
+
+### 18.6 C 阶段进度
+
+| 部分 | 状态 |
+|------|------|
+| **C-1** Linux 独有攻击面 | ✅ **7/7**（9/9 集成）|
+| C-2 `attacks.py` 移植 | ⬜ |
+| C-3 `e2e.py` 全量移植 | ⬜ |
+
+---
+
+*2026-09-25 · C-1: Linux 独有攻击面（真攻击被检出 + 两处测试 bug 修正）*

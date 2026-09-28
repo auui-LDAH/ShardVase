@@ -236,6 +236,32 @@ def run_all(skip_build=False, quiet=False, readonly=False):
             print('  %s 保护链静态断言 (P1-P6) %d PASS / %d FAIL'
                   % ('ok  ' if ok4 else 'FAIL', n_p, n_f))
 
+    # ③d **Linux 独有攻击面**（C-1）—— 第 9 项
+    #
+    # ## 为什么独立成项
+    #   这三项检测（LD_PRELOAD / 可疑 .so / ptrace）是
+    #   **Linux 独有**（Windows 侧 0 处）—— 是"Linux 专用攻击面"的标的。
+    #
+    # ## 与前几项的区别（**价值所在**）
+    #   前几项验证"代码能跑 / 契约满足"；
+    #   本项**真的发起攻击**（注入库 / ptrace attach）并断言**被检出**
+    #   -> 证明防护**有效**，而非只证明"能编译"。
+    #
+    # ## 含正向（不误报）+ 负向（真攻击被检出）共 7 项
+    atk = os.path.join(REPO, 'tests', 'attacks_linux.py')
+    if os.path.exists(atk):
+        r5 = subprocess.run([sys.executable, '-X', 'utf8', atk],
+                            capture_output=True, timeout=1800, cwd=REPO)
+        o5 = (r5.stdout + r5.stderr).decode('utf-8', 'replace')
+        m5 = re.search(r'\[attacks_linux\] \w+: (\d+)/(\d+)', o5)
+        ok5 = (r5.returncode == 0)
+        results.append(('Linux 独有攻击面 (attacks_linux)', ok5,
+                        ('%s/%s' % m5.groups()) if m5 else '无法解析'))
+        if not quiet:
+            print('  %s Linux 独有攻击面 %s'
+                  % ('ok  ' if ok5 else 'FAIL',
+                     ('%s/%s' % m5.groups()) if m5 else ''))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）
