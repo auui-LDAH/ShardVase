@@ -210,12 +210,25 @@ def main():
     ap.add_argument('--layout', default=None)
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--json', action='store_true')
+    # ## shell 友好的专用输出（A-b，2026-09-25）
+    #   构建脚本（build.sh）需要**直接取路径**，解析 JSON 麻烦 ->
+    #   提供两个"只打印一个路径"的模式（**单一来源不变**）。
+    ap.add_argument('--print-gen', action='store_true',
+                    help='只打印生成物目录（供 shell 变量赋值）')
+    ap.add_argument('--print-vm-json', action='store_true',
+                    help='只打印 vm_build.json 路径')
     args = ap.parse_args()
 
     if args.selftest:
         return selftest()
 
     p = paths(args.platform, args.layout)
+    if args.print_gen:
+        print(p.gen)
+        return 0
+    if args.print_vm_json:
+        print(p.vm_build_json)
+        return 0
     if args.json:
         import json
         print(json.dumps(p.as_dict(), ensure_ascii=False, indent=2))

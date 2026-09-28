@@ -625,3 +625,65 @@ paths(platform=None, layout=None, repo=None) -> GenPaths
 ---
 
 *2026-09-25 · A-a: 路径抽象（盘点驱动设计，只覆盖真冲突的两类路径）*
+
+---
+
+## 15. ✅ A-b 完成记录：`build.sh` 切到 `demo/gen/linux/`（2026-09-25）
+
+### 15.1 交付
+
+| 项 | 内容 |
+|----|------|
+| **新增** | `build.sh` 顶部 `GEN` / `VM_JSON` / `VM_JSON_PATH` / `GEN_PATH`（值由 `tools/genpaths.py` 给出）|
+| **路径统一** | 33 处 `demo/gen` 引用 -> `"$GEN"`（含 `-I` 包含路径、生成/读取、mkdir）|
+| **状态文件** | 9 处 `demo/vm_build.json` -> `"$VM_JSON"`（Linux: `build/linux/vm_build.json`）|
+| **布局回退** | `PROT_GEN_LAYOUT=flat` -> genpaths 返回旧 `demo/gen`，**本脚本零改动回退** |
+
+**核心设计**：路径**只在一处决定**（`genpaths.py`）—— 将来改布局只改一处。
+
+### 15.2 验收
+
+```
+端到端构建: **DONE**（8 步生成链 + 24 文件编译 + selfcrypt + 烧录 + 填充）
+产物: build/demo_linux 103424 字节 / ELF ✅
+生成物落点: demo/gen/linux/  ✅（实测输出路径确认）
+```
+
+### 15.3 ⚠️ 六个**实测踩坑**（都是 shell/路径的真实陷阱）
+
+| # | 坑 | 根因 | 修法 |
+|---|----|------|------|
+| 1 | `bad escape (end of pattern)` | 用 `re.subn` 时**替换串以 `\` 结尾** -> 被当转义序列 | 改 `str.replace`（**字面替换**）|
+| 2 | `NameError: VM_JSON_PATH` | **quoted heredoc**（`<<'PYEOF'`）**不展开** shell 变量 -> 需 env 传递 | `export` + `os.environ[...]` |
+| 3 | **引号嵌套**（`open('_g('x')', 'w')`）| 在**带引号的表达式**上做字符串替换 -> 引号层级被破坏 | **整体重写**该 heredoc（不再零敲碎打）|
+| 4 | **顺序矛盾**：`prot_padding.c` 缺失 | 它由**步骤 4.2 生成**，却在**步骤 3 被要求存在** | 移出前置必需列表；生成后强校验 |
+| 5 | 路径被**词分割**（`-I /mnt/d/specifically` + `for` + …）| `CFLAGS="$CFLAGS -I $GEN"` **字符串拼接** -> 展开时词分割（**路径含空格**）| `CFLAGS` 改**数组** |
+| 6 | 子 shell 拿不到 `CFLAGS` | **bash 数组无法 export** 给 `bash -c` | **函数内字面参数** + `export` 标量 |
+
+> ### 🎯 本次核心教训：**路径含空格 + quoted heredoc 是本项目的双重陷阱**
+> 本仓库路径是 `…/Reverse Engineering`（**含空格**）——
+> · shell 里**引号必须包住完整路径**（`"$GEN/x"` 而非 `"$GEN"/x`）
+> · 需要传参的场景用**数组**或**函数内字面量**，不能依赖字符串变量
+> · **quoted heredoc 内不能出现任何 shell 变量**（改用 env）
+
+> ### 🎯 副产物：**平台隔离暴露了一个隐式依赖缺陷**
+> 坑 4（`prot_padding.c` 顺序矛盾）在**旧 flat 布局下无法暴露** ——
+> 因为那时它是 **Windows 侧遗留文件**，"恰好"通过检查。
+> 切到全新空目录 `demo/gen/linux/` 后**立刻暴露**。
+> => **这正是平台隔离的价值**: 让"依赖旧产物"的隐式假设浮出水面。
+
+### 15.4 遗留（**A-d 的内容，已实测确认**）
+
+ci_linux 从 8/8 变为 **6/8**，两处失败**根因相同**：
+
+| 失败项 | 根因 |
+|--------|------|
+| `protchain` P1-P6（4 PASS / 2 FAIL）| `protchain_check.py` 读 `demo/gen/prot_sections.json`（**旧 flat 路径**）|
+| 节名随机化 | `verify_linux_runtime.py` 读 `demo/gen/prot_sections.json`（**同上**）|
+
+**这正是 A-d 的工作内容**（4 个共享调用方适配）——
+A-b 完成"生产侧"，A-d 完成"消费侧"，**中途验收必然失败**（属预期）。
+
+---
+
+*2026-09-25 · A-b: build.sh 切到 demo/gen/linux（33 处路径统一 + 6 个 shell 陷阱）*

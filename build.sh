@@ -58,7 +58,7 @@ warn() { printf '\033[33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 
 say "ShardVase Linux 构建 (composition=$COMPOSITION, config=$CONFIG)"
-mkdir -p build demo/gen
+mkdir -p build
 
 # 与 Windows 侧一致的编译选项（**语义对应**）
 #
@@ -69,9 +69,37 @@ mkdir -p build demo/gen
 # | /O2 | -O2 | 优化 |
 # | /utf-8 | -finput-charset=UTF-8 | 源文件编码 |
 # | /DPROT_USE_GENERATED_SECTIONS=1 | 同 | 用随机节名 |
-CFLAGS="-c -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE"
-CFLAGS="$CFLAGS -I include -I demo/gen -DPROT_USE_GENERATED_SECTIONS=1"
-LDFLAGS="-lcrypto -lpthread"
+# =============================================================================
+# 生成物路径（A-b，2026-09-25）—— **单一来源**: tools/genpaths.py
+#
+# ## 为什么用变量而非把 `demo/gen` 直接换成 `demo/gen/linux`
+#   直接替换是**一次性**的: 将来再改布局还得再改 33 处。
+#   用变量 -> **路径只在一处决定**，且布局切换零改动。
+#
+# ## 布局回退（迁移期安全网）
+#   `PROT_GEN_LAYOUT=flat` -> genpaths 返回旧的 `demo/gen`
+#   -> 本脚本**无需改动即可回退**。
+# =============================================================================
+GEN="$("$PY" tools/genpaths.py --platform linux --print-gen 2>/dev/null)"
+VM_JSON="$("$PY" tools/genpaths.py --platform linux --print-vm-json 2>/dev/null)"
+if [ -z "$GEN" ] || [ -z "$VM_JSON" ]; then
+  echo "build: FAIL 无法取得生成物路径（tools/genpaths.py 异常）" >&2
+  exit 1
+fi
+mkdir -p "$GEN" "$(dirname "$VM_JSON")"
+# heredoc（<<'PYEOF'，quoted）内无法展开 shell 变量 -> 用环境变量传递
+export VM_JSON_PATH="$VM_JSON"
+export GEN_PATH="$GEN"
+
+# ## ⚠️ CFLAGS 用**数组**（A-b 实测修正）
+#   本仓库路径含空格（`Reverse Engineering`）——
+#   字符串拼接的 `CFLAGS="$CFLAGS -I $GEN"` 在展开时会被**词分割**
+#   -> `-I /mnt/d/specifically` + `for` + `development` ... 全被当独立参数。
+#   **数组**让每个参数独立元素，展开时天然保形（`"${CFLAGS[@]}"`）。
+#   （与本脚本既有的 `PLATFORM_SRCS=()` / `GEN_SRCS=()` 风格一致。）
+CFLAGS=(-c -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE)
+CFLAGS+=(-I include -I "$GEN" -DPROT_USE_GENERATED_SECTIONS=1)
+LDFLAGS=(-lcrypto -lpthread)
 
 # =============================================================================
 # 步骤 1: 组合（源文件清单）—— **注册表驱动**（不硬编码）
@@ -95,14 +123,14 @@ fi
 
 # 尾部文件并入统一清单（与原 build.ps1 的 cl 尾部**完全一致**）
 EXTRA_ARGS=()
-for ex in demo/main.c demo/gen/strings.c \
-          demo/gen/license_pubkey.c demo/gen/indirect_table.c \
-          demo/gen/expect_default.c; do
+for ex in demo/main.c "$GEN/strings.c" \
+          "$GEN/license_pubkey.c" "$GEN/indirect_table.c" \
+          "$GEN/expect_default.c"; do
   EXTRA_ARGS+=(--extra "$ex")
 done
 
 "$PY" tools/compose.py "$COMPOSITION" \
-      --header-out demo/gen/prot_modconfig.h \
+      --header-out "$GEN/prot_modconfig.h" \
       --sources-out build/_composition_srcs.txt \
       "${SHUFFLE_ARGS[@]}" "${EXTRA_ARGS[@]}" \
   || die "compose.py 失败"
@@ -127,8 +155,8 @@ say "步骤 1.5: 构建期生成链"
 
 # ① 随机节名（**B3 的落点**：头文件宏 -> C 侧 PROT_ALLOCATE 应用）
 SECT_SEED="0x$(od -An -N8 -tx8 /dev/urandom 2>/dev/null | tr -d ' \n')"
-"$PY" tools/gen_sections.py --out-dir demo/gen \
-      --json-out demo/gen/prot_sections.json --seed "$SECT_SEED" \
+"$PY" tools/gen_sections.py --out-dir "$GEN" \
+      --json-out "$GEN/prot_sections.json" --seed "$SECT_SEED" \
   || die "gen_sections.py 失败"
 say "  ① 随机节名 seed=$SECT_SEED"
 
@@ -136,14 +164,14 @@ say "  ① 随机节名 seed=$SECT_SEED"
 # ⚠️ 私钥路径必须与下方 sign/pack **一致**（build.ps1 用 license_priv.json）
 "$PY" tools/vmenc.py keygen \
       --key-out build/keys/license_priv.json \
-      --blob-out demo/gen/license_pubkey.c \
-      --blob-out-der demo/gen/prot_pubkey_der.c \
+      --blob-out "$GEN/license_pubkey.c" \
+      --blob-out-der "$GEN/prot_pubkey_der.c" \
   || die "vmenc keygen 失败"
 say "  ② RSA 密钥 + DER 公钥"
 
 # ③ 期望值（genserial -> vm_build.json -> expect_default.c）
-if [ ! -f demo/vm_build.json ]; then
-  printf '{"serial":"DEMO-2026-ABCDEFGH","machine_id":0}' > demo/vm_build.json
+if [ ! -f "$VM_JSON" ]; then
+  printf '{"serial":"DEMO-2026-ABCDEFGH","machine_id":0}' > "$VM_JSON"
 fi
 # ## ⚠️ 先重置 machine_id = 0（触发 auto 重算）
 #
@@ -157,13 +185,16 @@ fi
 #        build.ps1 在 json 不存在时正是写 machine_id=0。）
 "$PY" - <<'PYEOF'
 import json
-d = json.load(open('demo/vm_build.json'))
+import os
+
+vm_json = os.environ['VM_JSON_PATH']
+d = json.load(open(vm_json, encoding='ascii'))
 d['machine_id'] = 0            # 0 = auto（本机）
-json.dump(d, open('demo/vm_build.json', 'w'), indent=2)
+json.dump(d, open(vm_json, 'w', encoding='ascii'), indent=2)
 print('  (machine_id 重置为 0 = auto)')
 PYEOF
 
-"$PY" tools/vmenc.py genserial --json demo/vm_build.json --machine-id auto \
+"$PY" tools/vmenc.py genserial --json "$VM_JSON" --machine-id auto \
   || die "vmenc genserial 失败"
 say "  ③ 期望值（genserial）"
 
@@ -179,42 +210,50 @@ say "  ③ 期望值（genserial）"
 #   **必须在编译前**生成 —— 它是被编译进产物的 **C 源**。
 "$PY" - <<'PYEOF'
 import json
+import os
 import sys
-d = json.load(open('demo/vm_build.json'))
+
+gen_dir = os.environ['GEN_PATH']
+vm_json = os.environ['VM_JSON_PATH']
+
+d = json.load(open(vm_json, encoding='ascii'))
 e1 = d.get('expect1') or ''
 e2 = d.get('expect2') or ''
 if not e1 or not e2:
     sys.stderr.write('expect_default: vm_build.json 缺 expect1/expect2\n')
     sys.exit(1)
+
 e1 = e1[2:] if e1.startswith('0x') else e1
 e2 = e2[2:] if e2.startswith('0x') else e2
+
 txt = (
-    '/* generated by build.sh from demo/vm_build.json - do not edit */\n'
+    '/* generated by build.sh from vm_build.json - do not edit */\n'
     '#include <stdint.h>\n'
     '#include "protect/protdef.h"\n'
     '\n'
     '/* N5: VM#3 build-time default expects '
     '(overridden by server session values) */\n'
-    'const uint64_t g_prot_expect_default[2] = { 0x%sULL, 0x%sULL };\n'
-    % (e1, e2)
+    'const uint64_t g_prot_expect_default[2] = '
+    '{ 0x%sULL, 0x%sULL };\n' % (e1, e2)
 )
-open('demo/gen/expect_default.c', 'w', encoding='ascii', newline='\n').write(txt)
-print('  ③b expect_default.c 已生成 (expect1=0x%s...)' % e1[:12])
+out = os.path.join(gen_dir, 'expect_default.c')
+open(out, 'w', encoding='ascii', newline='\n').write(txt)
+print('  3b expect_default.c 已生成 (expect1=0x%s...)' % e1[:12])
 PYEOF
-[ -f demo/gen/expect_default.c ] || die "expect_default.c 生成失败"
+[ -f "$GEN/expect_default.c" ] || die "expect_default.c 生成失败"
 
 # ④ 字符串加密
-"$PY" tools/strgen.py demo/strings.txt demo/gen/strings.c \
+"$PY" tools/strgen.py demo/strings.txt "$GEN/strings.c" \
       --seed "$SECT_SEED" \
-  || warn "  ④ strgen 失败（沿用既有 demo/gen/strings.c）"
+  || warn "  ④ strgen 失败（沿用既有 demo/gen 下的 strings.c）"
 
 # ⑤ 间接化表
-"$PY" tools/indirect.py --out demo/gen/indirect_table.c --seed "$SECT_SEED" \
-  || warn "  ⑤ indirect 失败（沿用既有 demo/gen/indirect_table.c）"
+"$PY" tools/indirect.py --out "$GEN/indirect_table.c" --seed "$SECT_SEED" \
+  || warn "  ⑤ indirect 失败（沿用既有 demo/gen 下的 indirect_table.c）"
 
 # ⑥ RSA 签发授权（A1）—— 对该 json 的 serial/machine_id 签发
 "$PY" tools/vmenc.py sign --key build/keys/license_priv.json \
-      --json demo/vm_build.json --out build/license.txt \
+      --json "$VM_JSON" --out build/license.txt \
   || warn "  ⑥ sign 失败（无 license.txt）"
 
 # ⑦ VM 镜像汇编 + 加密（**4 个独立小 VM**）
@@ -227,10 +266,10 @@ PYEOF
 #   `--bin-out` 产出 pack 的输入（`.bin`）；
 #   `--name` 是 C 侧符号名（须与 main.c 引用一致）。
 for _vm in hash mix verify gate; do
-  "$PY" tools/vmenc.py assemble "demo/license_${_vm}.vasm" demo/vm_build.json \
-        "demo/gen/vm_${_vm}_blob.c" "demo/gen/vm_${_vm}_blob.h" \
+  "$PY" tools/vmenc.py assemble "demo/license_${_vm}.vasm" "$VM_JSON" \
+        "$GEN/vm_${_vm}_blob.c" "$GEN/vm_${_vm}_blob.h" \
         --name "g_vm_${_vm}_image" \
-        --bin-out "demo/gen/vm_${_vm}_blob.bin" --bin-name "${_vm}" \
+        --bin-out "$GEN/vm_${_vm}_blob.bin" --bin-name "${_vm}" \
     || die "vmenc assemble 失败（${_vm}）"
 done
 say "  ⑦ VM 镜像 ×4 已汇编加密"
@@ -238,8 +277,8 @@ say "  ⑦ VM 镜像 ×4 已汇编加密"
 # ⑧ 打包 vm.blob（**签名版**，防伪造）
 "$PY" tools/vmenc.py pack --sign build/keys/license_priv.json \
       --out build/vm.blob \
-      demo/gen/vm_hash_blob.bin demo/gen/vm_mix_blob.bin \
-      demo/gen/vm_verify_blob.bin demo/gen/vm_gate_blob.bin \
+      "$GEN/vm_hash_blob.bin" "$GEN/vm_mix_blob.bin" \
+      "$GEN/vm_verify_blob.bin" "$GEN/vm_gate_blob.bin" \
   || die "vmenc pack 失败（**VM 校验链不会运行**）"
 say "  ⑧ build/vm.blob 已生成"
 
@@ -269,15 +308,21 @@ say "步骤 2: 平台层 ${#PLATFORM_SRCS[@]} 个源文件"
 #   **完整实现**应由本脚本自己调用 12 个 Python 工具重新生成 ——
 #   那是 B2/B3 的接线工作。
 # =============================================================================
+# ## ⚠️ `prot_padding.c` **不在**此列表（A-b 实测修正）
+#   它由**步骤 4.2**（measure -> merge -> gen_padding）生成，
+#   而步骤 3 在**它之前** —— 若在此要求存在就构成**顺序矛盾**。
+#   实测证据: 切到 `demo/gen/linux/`（全新空目录）时立刻报
+#   "生成文件缺失: .../prot_padding.c"。
+#   （旧 flat 布局下它是 **Windows 侧遗留文件**，检查恰好通过 ->
+#     平台隔离让这个隐式依赖浮出水面。）
 GEN_SRCS=(
-  demo/gen/strings.c
-  demo/gen/prot_pubkey_der.c
-  demo/gen/indirect_table.c
-  demo/gen/expect_default.c
-  demo/gen/prot_padding.c
+  "$GEN/strings.c"
+  "$GEN/prot_pubkey_der.c"
+  "$GEN/indirect_table.c"
+  "$GEN/expect_default.c"
 )
 for f in "${GEN_SRCS[@]}"; do
-  [ -f "$f" ] || die "生成文件缺失: $f （请先在 Windows 上构建一次，或运行 tools/ 生成）"
+  [ -f "$f" ] || die "生成文件缺失: $f （生成链未跑通 -> 见步骤 1.5）"
 done
 say "步骤 3: 生成文件 ${#GEN_SRCS[@]} 个"
 
@@ -311,8 +356,8 @@ rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"
 #     否则 `undefined reference to g_prot_pubkey_der`。
 # => **按平台区分**，而非全局增删。
 LINUX_ONLY_SRCS=()
-[ -f demo/gen/prot_pubkey_der.c ] && \
-  LINUX_ONLY_SRCS+=(demo/gen/prot_pubkey_der.c)
+[ -f "$GEN/prot_pubkey_der.c" ] && \
+  LINUX_ONLY_SRCS+=("$GEN/prot_pubkey_der.c")
 
 ALL_SRCS=()
 declare -A _seen=()
@@ -326,10 +371,18 @@ unset _seen
 say "  总源文件: ${#ALL_SRCS[@]}（已去重）"
 
 # 并行编译（每个文件一个 .o，文件名用路径转义）
+# ## ⚠️ 并行编译的参数传递（A-b 实测修正）
+#   `export CFLAGS OBJDIR` 之后 `bash -c 'compile_one ...'` 在**子 shell** 执行 ——
+#   但 **bash 数组无法通过 export 传递**（子 shell 里 ${CFLAGS[@]} 拿不到）。
+#   而用未加引号的字符串 `$CFLAGS` 又会因**路径含空格**被词分割。
+#   => **在函数内部直接写字面参数**（重复一次定义，但绝对安全）；
+#      只需 export 两个**标量**（GEN / OBJDIR）。
 compile_one() {
   local src="$1"
   local obj="$OBJDIR/$(echo "$src" | tr '/' '_').o"
-  if ! gcc $CFLAGS "$src" -o "$obj" 2>"$obj.log"; then
+  if ! gcc -c -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE \
+        -I include -I "$GEN" -DPROT_USE_GENERATED_SECTIONS=1 \
+        "$src" -o "$obj" 2>"$obj.log"; then
     printf '\033[31m[FAIL]\033[0m %s\n' "$src"
     cat "$obj.log" >&2
     return 1
@@ -338,7 +391,7 @@ compile_one() {
   return 0
 }
 export -f compile_one
-export CFLAGS OBJDIR
+export GEN OBJDIR
 
 FAILED=0
 # 用 xargs 并行（**注意**: 需要 -I{} 传参）
@@ -361,7 +414,7 @@ OBJ_LIST=()
 for _src in "${ALL_SRCS[@]}"; do
   OBJ_LIST+=("$OBJDIR/$(echo "$_src" | tr '/' '_').o")
 done
-gcc "${OBJ_LIST[@]}" -o "$OUT" $LDFLAGS 2>&1 | head -40
+gcc "${OBJ_LIST[@]}" -o "$OUT" "${LDFLAGS[@]}" 2>&1 | head -40
 [ -f "$OUT" ] || die "链接失败"
 
 # =============================================================================
@@ -394,9 +447,10 @@ ACT_JSON="build/section_actual.json"
 "$PY" tools/merge_baseline.py --baseline "$BASE_JSON" --actual "$ACT_JSON" \
   || warn "  merge_baseline 失败"
 "$PY" tools/gen_padding.py --baseline "$BASE_JSON" --actual "$ACT_JSON" \
-      --out demo/gen/prot_padding.c \
+      --out "$GEN/prot_padding.c" \
       --seed "$SECT_SEED" --spread-ratio 0.35 --min-spread 512 \
-  || warn "  gen_padding 失败（无填充）"
+  || die "gen_padding 失败（填充是第二支柱的一部分，不可跳过）"
+[ -f "$GEN/prot_padding.c" ] || die "gen_padding 未产出 $GEN/prot_padding.c"
 say "  ② measure / ③ merge / ④ gen_padding 完成"
 
 # ⑤ 第二轮编译（让填充进入产物）
@@ -413,7 +467,7 @@ OBJ_LIST=()
 for _src in "${ALL_SRCS[@]}"; do
   OBJ_LIST+=("$OBJDIR/$(echo "$_src" | tr '/' '_').o")
 done
-gcc "${OBJ_LIST[@]}" -o "$OUT" $LDFLAGS \
+gcc "${OBJ_LIST[@]}" -o "$OUT" "${LDFLAGS[@]}" \
     -Wl,-Map=build/demo_linux.map 2>&1 | head -30
 [ -f "$OUT" ] || die "第二轮链接失败"
 say "  第二轮完成: $(stat -c%s "$OUT") 字节"
@@ -433,7 +487,7 @@ say "  第二轮完成: $(stat -c%s "$OUT") 字节"
 say "步骤 4.4: selfcrypt 原位加密"
 "$PY" tools/selfcrypt_proto.py "$OUT" build/demo_linux.map \
       --mask-out build/selfcrypt_mask.txt \
-      --sections-json demo/gen/prot_sections.json \
+      --sections-json "$GEN/prot_sections.json" \
   || warn "  selfcrypt_proto 失败（**.text 未加密** —— 无自变形）"
 
 # =============================================================================
@@ -466,7 +520,7 @@ else
 fi
 
 "$PY" tools/hashpatch.py "$OUT" "${MASK_ARGS[@]}" \
-      --sections-json demo/gen/prot_sections.json \
+      --sections-json "$GEN/prot_sections.json" \
   || die "hashpatch 失败（ELF 烧录）"
 
 # =============================================================================
