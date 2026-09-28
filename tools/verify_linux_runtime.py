@@ -47,6 +47,22 @@ def vm_build_json():
     return genpaths.paths('linux').vm_build_json
 
 
+def build_dir():
+    """Linux 的平台专属 build 目录（A-d）: build/linux。"""
+    sys.path.insert(0, os.path.join(REPO, 'tools'))
+    import genpaths
+    return genpaths.paths('linux').build_dir
+
+
+def build_dir_wsl():
+    """`build_dir()` 的 WSL 路径形态（供 shell 命令用）。
+
+    实测: `build/vm.blob` / `build/license.txt` 被**两平台都写** ->
+    跑完 Linux 后 Windows 的 e2e 读到 Linux 产物 -> 失败。
+    => 这些**状态文件**也按平台分（Linux: `build/linux/`）。
+    """
+    return to_wsl(build_dir())
+
 def to_wsl(p):
     p = os.path.abspath(p)
     return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
@@ -88,6 +104,8 @@ def wsl(cmd, timeout=2400):
 
 def run_all(skip_build=False, quiet=False, readonly=False):
     rp = to_wsl(REPO)
+    # A-d 补完: 平台专属 build 目录（状态文件隔离）
+    _bd = build_dir_wsl()
     results = []
     tail_sizes = []   # 记录构建产物大小（用于"大小统一"判据）
 
@@ -98,7 +116,7 @@ def run_all(skip_build=False, quiet=False, readonly=False):
         # 改成 **Linux 值** -> 污染门禁中其它检查项（实测: 连带
         # e2e/mutate 失败）。=> 门禁内只做**只读**验证。
         rc, o = wsl('cd "%s" && test -x build/demo_linux && '
-                    'test -f build/vm.blob && echo READY' % rp)
+                    'test -f "%s"/vm.blob && echo READY' % (rp, _bd))
         if 'READY' not in o:
             results.append(('Linux 产物就绪', False,
                             '需先跑 build.sh（门禁内不构建）'))
@@ -161,8 +179,8 @@ def run_all(skip_build=False, quiet=False, readonly=False):
         pass
     if serial:
         ecmd = ('cd "%s" && printf "%%s\\n" "%s" | ./build/demo_linux '
-                '--vm-blob build/vm.blob --license-file build/license.txt '
-                '2>&1 | tail -4' % (rp, serial))
+                '--vm-blob "%s"/vm.blob --license-file "%s"/license.txt '
+                '2>&1 | tail -4' % (rp, serial, _bd, _bd))
         rc, o = wsl(ecmd, timeout=600)
         ok = ('校验通过' in o)
         results.append(('端到端授权链', ok, o.strip()[-140:]))
@@ -206,7 +224,7 @@ def run_all(skip_build=False, quiet=False, readonly=False):
     if os.path.exists(pchain):
         r4 = subprocess.run([sys.executable, '-X', 'utf8', pchain,
                              '--exe', 'build/demo_linux',
-                             '--blob', 'build/vm.blob'],
+                             '--blob', os.path.join(build_dir(), 'vm.blob')],
                             capture_output=True, timeout=900, cwd=REPO)
         o4 = (r4.stdout + r4.stderr).decode('utf-8', 'replace')
         n_p = len(re.findall(r'\bPASS\b', o4))
@@ -331,9 +349,11 @@ def selftest():
 
     # T2: **负向** —— 故意用错误序列号，端到端必须**失败**
     rp = to_wsl(REPO)
+    _bd = build_dir_wsl()
     cmd = ('cd "%s" && printf "%%s\\n" "WRONG-SERIAL-XYZ" | '
-           './build/demo_linux --vm-blob build/vm.blob '
-           '--license-file build/license.txt 2>&1 | tail -2' % rp)
+           './build/demo_linux --vm-blob "%s"/vm.blob '
+           '--license-file "%s"/license.txt 2>&1 | tail -2'
+           % (rp, _bd, _bd))
     rc, o = wsl(cmd, timeout=600)
     case('T2 **错误序列号被拒绝**（负向）', '校验通过' not in o)
 
@@ -347,8 +367,8 @@ def selftest():
         pass
     if serial:
         cmd2 = ('cd "%s" && printf "%%s\\n" "%s" | ./build/demo_linux '
-                '--vm-blob build/vm.blob --license-file build/license.txt '
-                '2>&1 | tail -2' % (rp, serial))
+                '--vm-blob "%s"/vm.blob --license-file "%s"/license.txt '
+                '2>&1 | tail -2' % (rp, serial, _bd, _bd))
         rc, o = wsl(cmd2, timeout=600)
         case('T3 正确序列号**通过**', '校验通过' in o)
 
@@ -360,8 +380,8 @@ def selftest():
             'open("/tmp/t.bin","wb").write(bytes(d))\n'
             'PYEOF\n'
             'chmod +x /tmp/t.bin && printf "%%s\\n" "%s" | /tmp/t.bin '
-            '--vm-blob build/vm.blob --license-file build/license.txt '
-            '2>&1 | tail -2' % (rp, serial or ''))
+            '--vm-blob "%s"/vm.blob --license-file "%s"/license.txt '
+            '2>&1 | tail -2' % (rp, serial or '', _bd, _bd))
     rc, o = wsl(cmd3, timeout=600)
     case('T4 **篡改产物被检出**（负向）',
          ('校验通过' not in o) or ('篡改' in o) or ('失败' in o))

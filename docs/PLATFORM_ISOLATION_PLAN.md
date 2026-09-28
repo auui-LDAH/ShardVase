@@ -782,3 +782,124 @@ demo/gen/linux/    <- Linux 生成物（build.sh 写）
 ---
 
 *2026-09-25 · A-c/A-d: 平台隔离落地（相对路径从根上消除引号问题 + 7 个踩坑记录）*
+
+---
+
+## 17. ✅ A 阶段**最终完成**（2026-09-25）—— 隔离判据通过
+
+### 17.1 核心判据（**A 阶段存在的唯一理由**）
+
+计划文档 §2.4 / §9.4 定义：
+> 「跑完 Linux 构建后，Windows 门禁**无需重建**即可直接通过」
+
+**实测结果**：
+```
+① Windows 构建: DONE
+② Linux 构建:   DONE（改 demo/gen/linux + build/linux）
+③ **不重建**直接跑 Windows 门禁:
+   失败项（除 git）: **0**  ✅
+   → **平台隔离生效**
+```
+
+### 17.2 🎯 方法突破：**快照法**定位泄漏（而不是逐项猜）
+
+**问题**：隔离判据第一轮仍失败 2 项（`e2e` / `mutate_check`），
+但"逐项读代码找残留依赖"效率低且**不完整**。
+
+**改用快照法**（决定性）：
+```python
+① 跑 Windows 构建  -> 快照所有 build/ 与 demo/ 文件的 (mtime, size)
+② 跑 Linux 构建
+③ 再快照 -> **diff** 出被改动的文件
+   => 过滤掉 build/linux 与 demo/gen/linux 内的（预期内）
+   => 剩下的就是**泄漏清单**
+```
+
+**首次结果（4 个泄漏）**：
+```
+build/_composition_srcs.txt     666 B   <- 两平台都写
+build/section_baseline.json    1419 B   <- 两平台都写（归一化基线）
+build/demo_linux / .map                 <- 平台专属产物（预期）
+```
+
+**修复后**：
+```
+非 linux 目录的改动: **2 个**（仅 build/demo_linux 与 .map —— **预期内**）
+```
+
+> ### 🎯 教训（**通用方法**）
+> 找"状态泄漏 / 跨模块污染"时，**快照 diff 比读代码可靠** ——
+> 它**不依赖"我是否想到了某个路径"**（读代码只能发现我已经想到的）。
+> 这与 B 阶段的"穷举"、G 阶段的"四路交叉验证"是**同一类方法论改进**。
+
+### 17.3 ⚠️ 顺带发现的**真实缺口**：`measure_sections.py` 是 PE-only
+
+**现象**：修完泄漏后 Linux 构建**失败**：
+```
+FileNotFoundError: build/linux/section_actual.json
+```
+
+**根因**：
+```
+measure_sections.py 的 read() 只认 PE —— 对 ELF 按 PE 头解析
+-> struct.unpack_from('<H', d, e+6) 越界
+```
+
+**关键洞察（**这是个长期潜伏的真实缺陷**）**：
+> `build.sh` 里该步骤用 `|| warn`（**吞掉失败**）——
+> 所以 **A-b 接线以来它一直失败**，而 `section_actual.json` 从未生成
+> -> `merge_baseline` / `gen_padding` 连锁失败
+> -> **填充（第二支柱）在 Linux 上从未生效**。
+>
+> => **"被 warn 吞掉的失败"会长期潜伏** —— 与"静默降级"同类。
+> 本次因"泄漏修复后 die 变严格"才暴露（顺序矛盾的修复把它顶到前台）。
+
+**修法**: 加 ELF 分支（`--- 识别 magic -> _read_elf / _read_pe`）。
+
+**验收**：
+```
+measure_sections: build/demo_linux -> build/linux/section_actual.json
+                  （103392 字节, **35 节**）
+```
+=> **Linux 侧填充第一次真正生效**。
+
+### 17.4 本轮完整改动（A-d 补完部分）
+
+| 项 | 内容 |
+|----|------|
+| `genpaths` | + `build_dir`（win: `build/`；linux: `build/linux/`）+ `b()` + `--print-build-dir` + T14-T17 自检（**17/17**）|
+| `build.sh` | + `$BDIR`；`vm.blob`/`license.txt`/`selfcrypt_mask.txt`/`_composition_srcs.txt`/`section_baseline.json`/`section_actual.json` 全部按平台分 |
+| `build.ps1` | + `$buildDir`；同上（源清单/基线/实际） |
+| `verify_linux_runtime` | + `build_dir()`/`build_dir_wsl()`；7 处路径 + 格式化参数 |
+| `protchain_check` | + `_platform()`；`--blob` 与 **mask 路径**按平台分 |
+| `measure_sections` | **+ ELF 分支**（真实缺口修复） |
+
+### 17.5 A 阶段总完成度
+
+| 子阶段 | 状态 | 验收 |
+|--------|------|------|
+| A-a 路径抽象 | ✅ | 17/17 自检 |
+| A-b `build.sh` | ✅ | 端到端 DONE |
+| A-c `build.ps1` | ✅ | 构建 DONE |
+| A-d 消费侧 + 状态文件隔离 | ✅ | ci_linux **8/8** |
+| **隔离判据** | ✅ | **跑完 Linux 后 Windows 门禁 0 失败** |
+
+**最终产物布局**：
+```
+demo/gen/win/         demo/gen/linux/
+build/（win 状态）     build/linux/（linux 状态）
+build/demo.exe        build/demo_linux
+```
+
+### 17.6 诚实边界
+
+| 边界 | 说明 |
+|------|------|
+| `build.sh` 仍用绝对路径 | bash 无此问题（已验证 DONE）；未改相对（可后续统一）|
+| `demo/gen/` 旧文件残留 | 不影响正确性 |
+| `examples/` 与 `prot_sdk/` 的 13 处 | **未适配**（独立发布需求，另一范畴）|
+| **`measure_sections` 的 warn** | 已修为 die（严格），但**其他 `\|\| warn` 处未全部审查** —— 建议后续统一（"warn 吞掉失败"是**系统性风险**）|
+
+---
+
+*2026-09-25 · A 阶段完成: 隔离判据通过（快照法定位泄漏 + measure_sections 真实缺口）*

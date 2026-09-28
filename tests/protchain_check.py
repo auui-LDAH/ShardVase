@@ -66,6 +66,16 @@ SC_ENTRY_SIZE = 24
 SC_ENTRY_GROUP_OFF = 20
 
 
+def _platform():
+    """本次被测产物所属平台（'win' / 'linux'，A-d）。
+
+    与 `resolve_gen_paths` 用**同一判据**（产物 magic）——
+    避免"两处判定不一致"（本项目已踩过同类坑）。
+    """
+    _gen, _ = resolve_gen_paths(_CURRENT_EXE)
+    return 'linux' if _gen.replace('\\', '/').endswith('/linux') else 'win'
+
+
 def load_section_names(path=None):
     """读取阶段1 生成的随机节名映射（**逻辑名 -> 实际名**）。
 
@@ -336,7 +346,14 @@ def p2_mask_consistent(data, secs):
     """P2: mask 文件与 meta 一致."""
     prot = next((s for s in secs if s['name'] in cry_section_names()), None)
     text = next((s for s in secs if s['name'] == '.text'), None)
-    mask_path = os.path.join(REPO, 'build', 'selfcrypt_mask.txt')
+    # ## A-d 补完: 平台专属 build 目录（状态文件隔离）
+    #   实测: `build/selfcrypt_mask.txt` 被**两平台都写** ->
+    #   跑完 Linux 后此处读到 **Windows 的 mask**（8 项）而 meta 是
+    #   Linux 的（5 项）-> P2 误报 FAIL。
+    #   => 第 3 个需隔离的状态文件（前两个: vm.blob / license.txt）。
+    _bd = os.path.join(REPO, 'build') if _platform() == 'win' \
+        else os.path.join(REPO, 'build', 'linux')
+    mask_path = os.path.join(_bd, 'selfcrypt_mask.txt')
     if not os.path.isfile(mask_path):
         return False, 'build/selfcrypt_mask.txt missing'
     if prot is None or text is None:

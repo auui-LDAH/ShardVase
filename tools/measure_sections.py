@@ -44,7 +44,63 @@ def load_name_map(path):
 
 
 def read(path, name_map=None):
+    """读产物节尺寸 -> {file, sections}。**自动识别 PE / ELF**。
+
+    ## ELF 分支（2026-09-25 实测补）
+      原实现**只认 PE** —— 对 ELF 会按 PE 头解析
+      （`e_lfanew` 位置读到垃圾值 -> `struct.error: 越界`）。
+      实测后果: `measure_sections` 在 Linux 上**一直失败**（被 `warn` 吞掉）
+      -> `section_actual.json` 从未生成 -> `merge_baseline`/`gen_padding`
+      连锁失败 -> **填充（第二支柱）在 Linux 上从未生效**。
+      => **"被 warn 吞掉的失败"会长期潜伏**（与"静默降级"同类）。
+
+      ## 与 PE 的差异
+        · ELF 的 `sh_size` 即**实际大小**（无 vsize/rawsize 之分）
+        · 对归一化而言，`vsize/rawsize` 都取 `sh_size`（语义等价）
+    """
     d = open(path, 'rb').read()
+    if len(d) >= 4 and d[0:4] == b'\x7fELF':
+        return _read_elf(d, name_map)
+    return _read_pe(d, name_map)
+
+
+def _read_elf(d, name_map=None):
+    """ELF64-LE 的节尺寸读取（字段名与 PE 分支**一致**）。"""
+    e_shoff = struct.unpack_from('<Q', d, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', d, 0x3A)[0]
+    e_shnum = struct.unpack_from('<H', d, 0x3C)[0]
+    e_shstrndx = struct.unpack_from('<H', d, 0x3E)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise ValueError('ELF has no section table')
+
+    def raw_sh(i):
+        return struct.unpack_from('<IIQQQQIIQQ', d,
+                                  e_shoff + i * e_shentsize)
+
+    strtab_off = raw_sh(e_shstrndx)[4] if e_shstrndx < e_shnum else 0
+    out = {}
+    idx = 0
+    for i in range(e_shnum):
+        (nameoff, _stype, _flags, _addr, _off, size, _link, _info,
+         _align, _entsize) = raw_sh(i)
+        if strtab_off:
+            end = d.index(b'\x00', strtab_off + nameoff)
+            nm = d[strtab_off + nameoff:end].decode('ascii', 'replace')
+        else:
+            nm = ''
+        if nm in STD:
+            key = nm
+        elif name_map and nm in name_map:
+            key = name_map[nm]
+        else:
+            key = 'custom%d' % idx
+            idx += 1
+        # ELF 无 vsize/rawsize 之分 -> 都用 sh_size（语义等价）
+        out[key] = {'vsize': size, 'rawsize': size, 'name': nm}
+    return {'file': len(d), 'sections': out}
+
+
+def _read_pe(d, name_map=None):
     e = struct.unpack_from('<I', d, 0x3C)[0]
     n = struct.unpack_from('<H', d, e + 6)[0]
     osz = struct.unpack_from('<H', d, e + 20)[0]

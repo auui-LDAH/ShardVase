@@ -274,6 +274,13 @@ if (-not $genDir -or -not $vmJson) {
     throw 'build FAILED: 无法取得生成物路径（tools/genpaths.py 异常）'
 }
 $genDir = $genDir.Trim()
+# ## 平台专属 build 目录（A-d 补完，2026-09-25）
+#   快照比对实测: `build/_composition_srcs.txt` 与
+#   `build/section_baseline.json` 被**两平台都写** -> 泄漏
+#   （前者会让 Windows 用错源清单；后者会互相抬高归一化基线）。
+$buildDir = (& $py tools\genpaths.py --platform win --print-build-dir 2>$null | Select-Object -First 1)
+if (-not $buildDir) { throw 'build FAILED: 无法取得 build 目录' }
+$buildDir = $buildDir.Trim()
 $vmJson = $vmJson.Trim()
 
 # 状态文件路径（A-c）: 由 genpaths 决定（win: demo\vm_build.json；linux: build/linux/vm_build.json）
@@ -443,7 +450,7 @@ $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { 
 $resObj = if ($isRelease) {  ' ' + (Join-Path $genDir 'version.res')  } else { '' }
 
 $compName = if ($Composition) { $Composition } else { 'full' }
-$compSrcList = 'build\_composition_srcs.txt'
+$compSrcList = Join-Path $buildDir '_composition_srcs.txt'
 # B 阶段（2026-09-25）: 用**构建盐**作为打乱种子 —— 源文件链接顺序按构建随机化。
 #
 # ## 为什么（两个防护目标兼得，实测验证）
@@ -550,7 +557,7 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 #
 # **不填充时为默认行为**（-NoPad 可显式关闭）。
 if (-not $NoPad) {
-    $baselineFile = 'build\section_baseline.json'
+    $baselineFile = (Join-Path $buildDir 'section_baseline.json')
     $padSrc = (Join-Path $genDir 'prot_padding.c')
     # 本脚本用相对路径（无 $REPO 变量）
 
@@ -581,7 +588,7 @@ if (-not $NoPad) {
         $env:PROT_SPREAD_RATIO } else { '0.35' }
     $padSeed = if ($sectionsSeed) { $sectionsSeed } else { '' }
     $padArgs = @('tools\gen_padding.py', '--baseline', $baselineFile,
-                 '--actual', 'build\section_actual.json',
+                 '--actual', (Join-Path $buildDir 'section_actual.json'),
                  '--out', $padSrc,
                  '--spread-ratio', $spreadRatio,
                  '--min-spread', '512')

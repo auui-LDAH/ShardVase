@@ -81,12 +81,17 @@ mkdir -p build
 #   -> 本脚本**无需改动即可回退**。
 # =============================================================================
 GEN="$("$PY" tools/genpaths.py --platform linux --print-gen 2>/dev/null)"
+# ## 平台专属 build 目录（A-d，2026-09-25）
+#   实测: `build/vm.blob` / `build/license.txt` / `build/selfcrypt_mask.txt`
+#   被**两平台都写** -> 跑完 Linux 后 Windows 的 e2e 读到 Linux 产物 -> 失败。
+#   => 这些**状态文件**也按平台分（Linux: `build/linux/`）。
+BDIR="$("$PY" tools/genpaths.py --platform linux --print-build-dir 2>/dev/null)"
 VM_JSON="$("$PY" tools/genpaths.py --platform linux --print-vm-json 2>/dev/null)"
 if [ -z "$GEN" ] || [ -z "$VM_JSON" ]; then
   echo "build: FAIL 无法取得生成物路径（tools/genpaths.py 异常）" >&2
   exit 1
 fi
-mkdir -p "$GEN" "$(dirname "$VM_JSON")"
+mkdir -p "$GEN" "$BDIR" "$(dirname "$VM_JSON")"
 # heredoc（<<'PYEOF'，quoted）内无法展开 shell 变量 -> 用环境变量传递
 export VM_JSON_PATH="$VM_JSON"
 export GEN_PATH="$GEN"
@@ -131,12 +136,12 @@ done
 
 "$PY" tools/compose.py "$COMPOSITION" \
       --header-out "$GEN/prot_modconfig.h" \
-      --sources-out build/_composition_srcs.txt \
+      --sources-out "$BDIR/_composition_srcs.txt" \
       "${SHUFFLE_ARGS[@]}" "${EXTRA_ARGS[@]}" \
   || die "compose.py 失败"
 
 # 读清单（**过滤空行**）
-mapfile -t COMP_SRCS < <(grep -v '^[[:space:]]*$' build/_composition_srcs.txt)
+mapfile -t COMP_SRCS < <(grep -v '^[[:space:]]*$' "$BDIR/_composition_srcs.txt")
 [ "${#COMP_SRCS[@]}" -gt 0 ] || die "组合 '$COMPOSITION' 无源文件"
 say "  组合含 ${#COMP_SRCS[@]} 个源文件"
 
@@ -253,7 +258,7 @@ PYEOF
 
 # ⑥ RSA 签发授权（A1）—— 对该 json 的 serial/machine_id 签发
 "$PY" tools/vmenc.py sign --key build/keys/license_priv.json \
-      --json "$VM_JSON" --out build/license.txt \
+      --json "$VM_JSON" --out "$BDIR/license.txt" \
   || warn "  ⑥ sign 失败（无 license.txt）"
 
 # ⑦ VM 镜像汇编 + 加密（**4 个独立小 VM**）
@@ -276,11 +281,11 @@ say "  ⑦ VM 镜像 ×4 已汇编加密"
 
 # ⑧ 打包 vm.blob（**签名版**，防伪造）
 "$PY" tools/vmenc.py pack --sign build/keys/license_priv.json \
-      --out build/vm.blob \
+      --out "$BDIR/vm.blob" \
       "$GEN/vm_hash_blob.bin" "$GEN/vm_mix_blob.bin" \
       "$GEN/vm_verify_blob.bin" "$GEN/vm_gate_blob.bin" \
   || die "vmenc pack 失败（**VM 校验链不会运行**）"
-say "  ⑧ build/vm.blob 已生成"
+say "  ⑧ $BDIR/vm.blob 已生成"
 
 # =============================================================================
 # 步骤 2: 平台层源文件（**按平台选择**）
@@ -438,8 +443,8 @@ gcc "${OBJ_LIST[@]}" -o "$OUT" "${LDFLAGS[@]}" 2>&1 | head -40
 # =============================================================================
 say "步骤 4.2: 节尺寸归一化（measure -> merge -> padding -> 重编）"
 
-BASE_JSON="build/section_baseline.json"
-ACT_JSON="build/section_actual.json"
+BASE_JSON="$BDIR/section_baseline.json"
+ACT_JSON="$BDIR/section_actual.json"
 [ -f "$BASE_JSON" ] || echo '{"file":0,"sections":{}}' > "$BASE_JSON"
 
 "$PY" tools/measure_sections.py "$OUT" --out-json "$ACT_JSON" \
@@ -486,7 +491,7 @@ say "  第二轮完成: $(stat -c%s "$OUT") 字节"
 # =============================================================================
 say "步骤 4.4: selfcrypt 原位加密"
 "$PY" tools/selfcrypt_proto.py "$OUT" build/demo_linux.map \
-      --mask-out build/selfcrypt_mask.txt \
+      --mask-out "$BDIR/selfcrypt_mask.txt" \
       --sections-json "$GEN/prot_sections.json" \
   || warn "  selfcrypt_proto 失败（**.text 未加密** —— 无自变形）"
 
@@ -507,7 +512,7 @@ say "步骤 4.4: selfcrypt 原位加密"
 #   掩码区间由 `selfcrypt_proto.py` 产出。**若该步骤未跑则无掩码** ->
 #   CRC 与运行期不一致 -> 运行时会报完整性失败。
 # =============================================================================
-MASK_FILE="build/selfcrypt_mask.txt"
+MASK_FILE="$BDIR/selfcrypt_mask.txt"
 MASK_ARGS=()
 if [ -s "$MASK_FILE" ]; then
   while IFS= read -r _ln; do

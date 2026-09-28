@@ -53,12 +53,23 @@ LAYOUT_FLAT = 'flat'
 class GenPaths:
     """生成物路径集合（**不可变**，仅承载路径）。"""
 
-    __slots__ = ('repo', 'platform', 'layout', 'gen', 'vm_build_json')
+    __slots__ = ('repo', 'platform', 'layout', 'gen', 'vm_build_json', 'build_dir')
 
     def __init__(self, repo, platform, layout):
         self.repo = repo
         self.platform = platform
         self.layout = layout
+        # ## 平台专属 build 目录（A-d 补完，2026-09-25）
+        #   实测: `build/vm.blob` / `build/license.txt` /
+        #   `build/selfcrypt_mask.txt` 被**两平台都写** ->
+        #   跑完 Linux 后 Windows 的 e2e 读到 Linux 的产物 -> 失败。
+        #   => 这些**状态文件**也必须按平台分。
+        #
+        #   Windows 保持 `build/`（主平台，避免改动过大）；
+        #   Linux 用 `build/linux/`。
+        self.build_dir = (os.path.join(repo, 'build') if platform == 'win'
+                          else os.path.join(repo, 'build', 'linux'))
+
         if layout == LAYOUT_FLAT:
             self.gen = os.path.join(repo, 'demo', 'gen')
             self.vm_build_json = os.path.join(repo, 'demo', 'vm_build.json')
@@ -73,6 +84,14 @@ class GenPaths:
                                                   'vm_build.json')
 
     # ---- 常用派生子路径（**避免调用方各自拼**）----
+    def b(self, *parts):
+        """**平台专属 build 目录**下的文件路径（A-d）。
+
+        用于 `vm.blob` / `license.txt` / `selfcrypt_mask.txt` 等
+        **两平台都会写、内容不同**的状态文件。
+        """
+        return os.path.join(self.build_dir, *parts)
+
     def g(self, *parts):
         """生成物目录下的文件路径（**推荐用法**）。"""
         return os.path.join(self.gen, *parts)
@@ -87,6 +106,7 @@ class GenPaths:
             'platform': self.platform,
             'layout': self.layout,
             'gen': self.gen,
+            'build_dir': self.build_dir,
             'vm_build_json': self.vm_build_json,
         }
 
@@ -194,6 +214,16 @@ def selftest():
          all(k in d for k in ('platform', 'layout', 'gen',
                               'vm_build_json')))
 
+    # T14-T16 **build 目录也按平台分**（A-d 补完）
+    case('T14 win 的 build_dir = build',
+         w.build_dir.replace('\\', '/') == '/R/build')
+    case('T15 linux 的 build_dir = build/linux',
+         l.build_dir.replace('\\', '/') == '/R/build/linux')
+    case('T16 两平台 build_dir **不同**（状态文件隔离）',
+         w.build_dir != l.build_dir)
+    case('T17 b() 拼出 build 下文件',
+         l.b('vm.blob').replace('\\', '/') == '/R/build/linux/vm.blob')
+
     print()
     print('=' * 66)
     if fails:
@@ -219,6 +249,8 @@ def main():
     #   构建脚本在**仓库根**执行 -> 相对路径**无空格**
     #   （本仓库路径含空格 -> 绝对路径会在 cmd/shell 里被拆）。
     #   => 编译期路径一律用相对形态（**从根上消除引号问题**）。
+    ap.add_argument('--print-build-dir', action='store_true',
+                    help='只打印平台专属 build 目录（A-d）')
     ap.add_argument('--print-gen-rel', action='store_true',
                     help='只打印**相对仓库根**的生成物目录（无空格）')
     ap.add_argument('--print-vm-json', action='store_true',
@@ -231,6 +263,9 @@ def main():
     p = paths(args.platform, args.layout)
     if args.print_gen:
         print(p.gen)
+        return 0
+    if args.print_build_dir:
+        print(p.build_dir)
         return 0
     if args.print_gen_rel:
         print(os.path.relpath(p.gen, p.repo).replace('\\', '/'))
