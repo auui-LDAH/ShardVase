@@ -118,7 +118,13 @@ def check(gen_dir, artifact):
                 % (k, v, os.path.basename(gen_dir),
                    os.path.basename(artifact)))
 
-    for k in ('protxec', 'fptable'):
+    # ## optional 只剩 protxec（S3 修正）
+    #   · `protxec`: **Windows 有 / Linux 设计上无**
+    #     （PROT_CODE_SEG 在 gcc = 文档化 no-op）-> 属**平台设计差异**
+    #   · `fptable`: **已从 gen_sections 移除**（S3）—— 我们
+    #     **根本不生成**这个映射（产物里的 .fptable 是 CRT 的），
+    #     故它不再属于"设计差异"，而是"不存在"
+    for k in ('protxec',):
         v = secs.get(k)
         if isinstance(v, str) and v not in real:
             optional_missing.append('%s=%s' % (k, v))

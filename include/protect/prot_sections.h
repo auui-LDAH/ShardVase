@@ -42,9 +42,17 @@
 #ifndef PROT_SEC_PAD
 #define PROT_SEC_PAD  ".protpad"
 #endif
-#ifndef PROT_SEC_FPT
-#define PROT_SEC_FPT  ".fptable"
-#endif
+/* ## `PROT_SEC_FPT` 已移除（S3, 2026-09-25）—— 不要加回来
+ *
+ *   它曾有默认值 `.fptable`，但**全库无任何使用者**（死宏）。
+ *   产物里那个 `.fptable` 段的**生产者是 CRT**
+ *   （`?function_pointers` @ `libucrt:winapi_thunks.obj`，
+ *   见 `build/demo.map`）—— **不是本项目代码**。
+ *
+ *   本项目的随机化自定义节只有四个:
+ *     `PROT_SEC_XEC` / `PROT_SEC_CRC` / `PROT_SEC_CRY` / `PROT_SEC_PAD`
+ *   详见 `tools/gen_sections.py` 的 NAMES 表注释。
+ */
 
 /* 默认 magic（历史值；见 tools/hashpatch.py 的 marker 布局） */
 #ifndef PROT_MAGIC_TEXT

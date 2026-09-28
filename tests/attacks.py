@@ -566,8 +566,8 @@ def main():
         #        要在 Linux 通过需**先实现 Linux HTTP**（产品特性决策）。
         if _PLATFORM != 'win':
             results.append(('A12 offline-fix-expect', 'PLATFORM_NA',
-                            'Linux 无在线会话能力（服务器在 Windows 侧；'
-                            'WSL 的 127.0.0.1 不同）'))
+                            'Linux 无 HTTP 能力（prot_plat_http_get* 返回 '
+                            'PROT_ERR_UNSUPPORTED，设计决策）'))
         else:
             results.append(('A12 offline-fix-expect',
                             'PASS' if ok else 'FAIL',

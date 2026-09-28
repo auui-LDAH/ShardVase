@@ -34,7 +34,19 @@ SECTION_SPECS = {
     'protcrc': ('read',),             # src/integrity.c, tools/hashpatch.py
     'protcry': ('read', 'write'),     # src/selfcrypt.c, tools/selfcrypt_proto.py
     'protpad': ('read',),             # src/selfcrypt.c
-    'fptable': ('read', 'write'),     # 函数指针表
+    # ## ⚠️ `fptable` 已**移除**（S3, 2026-09-25）—— **不要再加回来**
+    #
+    #   核查结论（三处证实是死的）:
+    #     ① 本表曾生成 `PROT_SEC_FPT` 宏 -> **全库无任何源文件使用它**
+    #     ② `gen_padding` 的对应条目从未产出变量（实测生成的
+    #        prot_padding.c 只有 g_pad_crc/cry/pad/rdata/text/xec）
+    #     ③ 产物里那个 `.fptable` 段的**生产者是 CRT**:
+    #        `?function_pointers` @ `libucrt:winapi_thunks.obj`
+    #        （build/demo.map 可见）—— **不是本项目代码**
+    #
+    #   => 结果为它生成随机名 = "**为不存在之物做映射**"（随机化当然无效）。
+    #      这**不是防护缺口**（那节本来就不归我们管），
+    #      而是**误导性的死映射** -> 移除 + 留证（本注释）。
 }
 
 # 节名首字符必须是 '.'，长度 <= 8（PE 限制）
@@ -130,8 +142,11 @@ def main():
         f.write('#define PROT_SEC_CRY  "%s"  /* 原 .protcry */\n' % names['protcry'])
         f.write('#undef PROT_SEC_PAD\n')
         f.write('#define PROT_SEC_PAD  "%s"  /* 原 .protpad */\n' % names['protpad'])
-        f.write('#undef PROT_SEC_FPT\n')
-        f.write('#define PROT_SEC_FPT  "%s"  /* 原 .fptable */\n' % names['fptable'])
+        # ## PROT_SEC_FPT 已移除（S3, 2026-09-25）
+        #   原先此处生成 `PROT_SEC_FPT` -> **全库无使用者**（死宏）。
+        #   产物里的 `.fptable` 是 **CRT 的**（`?function_pointers` @
+        #   `libucrt:winapi_thunks.obj`），**本项目不生成该节**。
+        #   详见 NAMES 表的注释。
         f.write('\n/* 随机 magic（替代 PROTCRCP/D/P）*/\n')
         f.write('#undef PROT_MAGIC_TEXT\n')
         f.write('#define PROT_MAGIC_TEXT   "%s"\n' % magics['text'])

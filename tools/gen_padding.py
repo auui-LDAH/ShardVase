@@ -60,7 +60,11 @@ PADDABLE = {
     'protcrc':  ('section', 'read', 'g_pad_crc'),
     'protcry':  ('section', 'read, write', 'g_pad_cry'),
     'protpad':  ('section', 'read', 'g_pad_pad'),
-    'fptable':  ('section', 'read, write', 'g_pad_fpt'),
+    # ## `fptable` 已移除（S3, 2026-09-25）
+    #   原条目从未产出变量（实测 prot_padding.c 无 g_pad_fpt）——
+    #   因为产物里那个 `.fptable` 是 **CRT 的**（`?function_pointers`
+    #   @ libucrt:winapi_thunks.obj），**本项目不生成该节**。
+    #   详见 tools/gen_sections.py 的 NAMES 注释。
 }
 
 # 明确排除（工具链管理，填充会破坏产物）—— 列出以便诊断时可见，

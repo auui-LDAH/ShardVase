@@ -538,7 +538,26 @@ def p5_indirect_no_direct_call(data, secs, map_path=None):
     #   **教训**: 修坐标系问题时须**穷尽所有坐标系来源**
     #   （节偏移 / 映像基址 / **map 文件**），不能只修显式报错那处。
     if map_path is None:
-        map_path = os.path.join(REPO, 'build', 'demo.map')
+        # ## ⚠️ **按被测产物平台自动定位 map**（S3 实测修正, 2026-09-25）
+        #
+        # **根因**: 原默认值是**硬编码的 Windows map**（`build/demo.map`）。
+        #   调用方漏传 `map_path` 时（`tests/attacks.py` 的 A10 就是），
+        #   Linux 产物会配上 Windows map -> **坐标系错配** ->
+        #   误报"`prot_hostid_get` 被直接调用"。
+        #
+        # **为什么在判据内部修而不在调用方修**:
+        #   本函数注释已记载过**两次**同类缺陷（`scan_e8_calls` 偏移基准、
+        #   map 硬编码），教训是"**穷尽所有坐标系来源**"。
+        #   但"靠调用方记得传参"**必然再犯**（第三个调用方就会出现）。
+        #   => 让判据**自己**从被测产物判定平台（**消除参数依赖**，
+        #      单一来源）。`map_path` 参数**保留**供显式覆盖。
+        #
+        # 判定依据: 产物 magic（PE=`MZ` / ELF=`\x7fELF`）——
+        #   与 `sections_of` 的分派**同一依据**（不重复造判据）。
+        if data[:4] == b'\x7fELF':
+            map_path = os.path.join(REPO, 'build', 'demo_linux.map')
+        else:
+            map_path = os.path.join(REPO, 'build', 'demo.map')
     if not os.path.exists(map_path):
         return False, 'no .map at %s (无法定位槽位符号)' % map_path
     ma = parse_map_file(map_path)

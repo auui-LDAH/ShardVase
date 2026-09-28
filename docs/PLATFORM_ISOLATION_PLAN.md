@@ -1449,3 +1449,104 @@ Windows: [e2e] 总计 28: **PASS 27 / FAIL 0 / SKIP 1 / NA 0**   （零回归）
 ---
 
 *2026-09-25 · S1+S2: 在线用例诚实处置（方案被实测推翻 + T24 转真验证；NA 8->6）*
+
+---
+
+## 24. ✅ S3 完成：`fptable` 澄清落地 + **A10 真实缺陷修复**（2026-09-25）
+
+### 24.1 S3: fptable 的三处核查与清理
+
+**核查结论（三处证实"都是死的"）**：
+| # | 位置 | 事实 |
+|---|------|------|
+| ① | `gen_sections` L37（`'fptable': ('read','write')`）| 生成 `PROT_SEC_FPT` 宏 -> **全库无使用者** |
+| ② | `gen_padding` L63（`'fptable': (...) -> g_pad_fpt`）| 实测生成的 `prot_padding.c` **无 `g_pad_fpt`**（条目已死）|
+| ③ | 产物里的 `.fptable` 段 | 生产者 = **CRT**（`?function_pointers` @ `libucrt:winapi_thunks.obj`，`build/demo.map` 可见）—— **非本项目代码** |
+| ④ | `observability` 的 `STD_SECTIONS` | **保留**（`.fptable` 确为外来/标准节 —— 与该结论一致 ✅）|
+
+**清理（4 文件，含"防重加"留证）**：
+```
+· tools/gen_sections.py      移除 NAMES 条目 + PROT_SEC_FPT 宏生成（+ CRT 结论注释）
+· tools/gen_padding.py       移除死条目（+ 说明）
+· include/.../prot_sections.h 移除 PROT_SEC_FPT 默认定义（+ 说明）
+· check_state_platform.py    optional 列表只留 protxec（fptable 不再是"设计差异"）
+· tools/observability.py     加"为何在标准节表里"的留证注释
+```
+
+**验收**：
+```
+check_state_platform selftest: **6/6**
+[win]  **4/4** section names applied（原 4/5 —— fptable 映射已消失）
+[linux] 4/5（protxec = 平台设计差异）
+Windows 重建: **DONE**
+```
+> **为什么"移除"而非"留着"**: 留着 = **误导性的死映射**
+> （为不存在之物生成随机名，后人会以为"防护覆盖了 5 个节，实际 4 个"）。
+> 且 `PROT_SEC_FPT` 宏是**死代码**（无人使用）。
+
+### 24.2 ⚠️ A10 的**真实缺陷**（S3 重建后暴露）
+
+**现象**：
+```
+ci_linux: attacks **PASS 10 / FAIL 1**
+A10 static-trace FAIL: direct calls to indirect slots: ['prot_hostid_get']
+但 protchain 的 **P5 同一函数 PASS**（"P1-P6 6 PASS"）
+```
+
+**根因（调用差异）**：
+```
+protchain L627: ('P5 ...', p5_indirect_no_direct_call, (data, secs, **map_path**))
+attacks   L487: p5_indirect_no_direct_call(exe_data, secs)     <- **未传 map_path**
+=> 默认值 = **硬编码的 Windows map**（build/demo.map）
+=> Linux 产物 + Windows map -> **坐标系错配** -> 误报
+```
+
+**为什么现在才暴露**：S3 改动 `gen_sections` -> Windows 重建 ->
+`build/demo.map` 的符号 RVA 变化 -> 错配从"偶然对上"变成"明显不符"。
+（**这不是 S3 引入的缺陷，是 S3 让它显形** —— 与 `measure_sections`
+被"warn 吞掉"同类：**潜伏缺陷需要一个契机才暴露**。）
+
+**修法（关键判断：修在判据内部，而非调用方）**：
+```python
+# p5_indirect_no_direct_call 内按产物 magic 自动定位平台 map
+if data[:4] == b'\x7fELF':  map_path = build/demo_linux.map
+else:                        map_path = build/demo.map
+```
+**为什么不在调用方修（attacks 传参）**：
+> P5 源码注释已记载**两次同类缺陷**（`scan_e8_calls` 偏移基准、map 硬编码），
+> 教训是"**穷尽所有坐标系来源**"。但"靠调用方记得传参"**必然再犯** ——
+> 第三个调用方出现时就是第三次缺陷。
+> => 让判据**自己**判定平台（**消除参数依赖 = 单一来源**），
+>    `map_path` 参数保留供显式覆盖。
+> **这是"复制即漂移"教训的又一次应用**（与 §15 的"同一判据不写两遍"同源）。
+
+**验收**：
+```
+attacks Linux:   **PASS 11 / FAIL 0 / NA 1** ✅
+attacks Windows: **PASS 12 / FAIL 0 / NA 0** ✅（零回归）
+ci_linux:        **PASS**（9/9 with -SkipBuild）
+```
+
+### 24.3 附带修正：A12 的 detail 文案
+
+S1 修正 A12 时只改了**注释**，**detail 字符串**仍是旧原因
+（"服务器在 Windows 侧"）-> 本次改为根因（"Linux 无 HTTP 能力"）。
+> **教训**: 改"原因说明"时要**同时改注释与输出串** ——
+> 只改一处会让**对外可见的信息**与注释不一致。
+
+### 24.4 门禁状态（**待查项**）
+
+```
+Windows 门禁（23 项完整）: **21/23**（失败 2）
+  · git 工作区干净（未提交 —— 预期）
+  · **mutate_check** ← 需查
+但 mutate_check **单独跑 PASS**（6 健康 / 0 盲）
+=> 疑似**门禁顺序/状态**问题（与 §21.4 的 `--quiet` 那次同类）
+```
+
+**下一步（S4 前）**：查明门禁内 `mutate_check` 失败的**真实原因**
+（不改判据、不放宽标准）。
+
+---
+
+*2026-09-25 · S3: fptable 澄清（4 文件清理）+ A10 真实缺陷修复（P5 map 自动定位）*

@@ -69,6 +69,12 @@ WIN = 1024            # 熵窗口
 ENT_HI = 7.75         # 判"均匀随机"
 ENT_LO = 5.0          # 判"典型代码/数据"
 
+# ## `.fptable` 为何在**标准节**表里（S3 核查, 2026-09-25）
+#   它的生产者是 **CRT**（`?function_pointers` @
+#   `libucrt:winapi_thunks.obj`，见 build/demo.map）——
+#   **不是本项目代码**。故它**不是**「我们随机化的自定义节」，
+#   归入标准节是正确的（本项目的随机化节只有 protxec/protcrc/
+#   protcry/protpad 四个）。
 STD_SECTIONS = {'.text', '.rdata', '.data', '.pdata', '.rsrc', '.reloc',
                 '.fptable'}
 
