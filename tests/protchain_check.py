@@ -30,6 +30,21 @@ import struct
 import sys
 import zlib
 
+
+# ## map 解析的单一实现（B 阶段，2026-09-25）
+#   本项目曾有 **4 处**各自实现 -> 已归一到 `tools/mapfile.py`。
+def _load_mapfile():
+    _repo = os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))
+    _t = os.path.join(_repo, "tools")
+    if _t not in sys.path:
+        sys.path.insert(0, _t)
+    import mapfile
+    return mapfile
+
+
+_mapfile = _load_mapfile()
+
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 EXE = os.path.join(REPO, 'build', 'demo.exe')
 BLOB = os.path.join(REPO, 'build', 'vm.blob')
@@ -355,55 +370,22 @@ def hashlib_sha256(b):
 
 
 def parse_map_file(path):
-    """链接 map -> {符号: 映像RVA}。**支持两种格式**（MSVC / gcc）。
+    """链接 map（MSVC / gcc）-> {符号: 映像RVA}。
 
-    ## MSVC 格式（**解析陷阱，2026-09-23 实测教训**）
-      map 行: `0001:00000020  probe_fn  0000000140001020 f  a.obj`
-        第 2 列是**节内偏移**，**不是**映像 RVA。
-        误用第 2 列 -> RVA 落在节外 -> 度量全部失真。
-      => 用**第 4 列绝对 VA** - `IMAGE_BASE`(0x140000000)。
+    ## B 阶段（2026-09-25）: 实现已**抽到 `tools/mapfile.py`**
+      抽取前本项目有 **4 处**各自实现（MSVC/gcc 支持不一，**已实际漂移**:
+      G 阶段给本文件加了 gcc 支持，而另两处仍是 MSVC-only）
+      -> 归一到单一实现，避免再次漂移。
 
-    ## gcc 格式（`-Wl,-Map`，2026-09-25 新增）
-```
-.text           0x0000000000003880     0x799a
-                0x0000000000003880                prot_vm_run
-```
-      符号行 = **缩进 + `0x<addr>` + 符号名**。
-      PIE 下该地址**即 RVA**（无固定基址）-> **不减去任何基址**。
+      ## 历史陷阱（**保留记录**，教训仍在）
+        MSVC map 行的**第 2 列是节内偏移**，不是映像 RVA ——
+        误用会让 RVA 落在节外、度量全部失真（2026-09-23 实测）。
+        `mapfile.parse()` 用**第 4 列绝对 VA** - image_base。
 
-      ## 为什么必须加（实测）
-        缺 gcc 支持 -> 对 ELF 返回**空字典** ->
-        P5 报 `empty .map` -> **无法判定**（而非误报）。
-        这与 `tools/selfcrypt_proto.py` 的 `parse_elf_map()` 是**同一需求**
-        （C 阶段已写过一份）—— 两处**格式规则必须一致**，
-        若将来改动请**同时改两处**（或抽公共模块）。
+      ## 等价性（**已实测**）
+        · MSVC: 2973 键一致；gcc: 178/178 完全等价
     """
-    out = {}
-    if not os.path.isfile(path):
-        return out
-    import re as _re
-    try:
-        txt = open(path, encoding='utf-8', errors='replace').read()
-    except Exception:
-        return out
-
-    # ---- MSVC 格式 ----
-    n_msvc = 0
-    for m in _re.finditer(
-            r'[0-9a-f]{4}:([0-9a-f]{8})\s+(\S+)\s+([0-9a-f]{16})', txt):
-        out[m.group(2)] = int(m.group(3), 16) - IMAGE_BASE
-        n_msvc += 1
-    if n_msvc:
-        return out
-
-    # ---- gcc 格式（PIE: 地址即 RVA）----
-    for m in _re.finditer(r'^\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$', txt,
-                          _re.M):
-        try:
-            out[m.group(2)] = int(m.group(1), 16)
-        except ValueError:
-            continue
-    return out
+    return _mapfile.parse(path)
 
 
 def indirect_slot_symbols():

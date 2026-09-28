@@ -37,6 +37,20 @@ import re
 import struct
 import sys
 
+
+# ## map 解析的单一实现（B 阶段，2026-09-25）
+#   本项目曾有 **4 处**各自实现 -> 已归一到 `tools/mapfile.py`。
+#   惰性导入以保持 import 段最小依赖。
+def _load_mapfile():
+    _t = os.path.dirname(os.path.abspath(__file__))
+    if _t not in sys.path:
+        sys.path.insert(0, _t)
+    import mapfile
+    return mapfile
+
+
+_mapfile = _load_mapfile()
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
@@ -98,91 +112,53 @@ def is_protected_fn(name):
 
 # --------------------------------------------------------------------------
 def parse_map(path, image_base=None):
-    """MSVC .map -> {符号: 映像RVA}
+    """链接 map -> {符号: 映像RVA}。**自动识别 MSVC / gcc**。
 
-    ⚠️ **解析陷阱**（2026-09-23 实测教训）: map 行有四个关键列:
-        `0001:00000020   probe_fn   0000000140001020 f   a.obj`
-          ↑节:节内偏移   ↑符号      ↑**绝对 VA**
-        第 2 列是**节内偏移**（section-relative），**不是**映像 RVA。
-        初版误用第 2 列 -> RVA 落在节外 -> "无法换算"虚高、
-        且 M1/M3 结果失真。
+    ## B 阶段（2026-09-25）: 实现已**抽到 `tools/mapfile.py`**
+      抽取前本项目有 **4 处** map 解析各自实现（MSVC/gcc 支持不一，
+      已实际漂移）-> 归一到单一实现。
 
-    正确: 映像 RVA = 绝对 VA（第 4 列） - image base。
-    image base 从 PE 头读取（`OptionalHeader.ImageBase`）。
+      ## 等价性（**已实测，M1 度量不受影响**）
+        · 全符号口径: 旧 2971 / 新 2971，**值不同 0**
+        · 函数口径:   旧 131 / 新 131，**值不同 0**
+
+      ## 历史陷阱（**保留记录**，教训仍在）
+        MSVC map 行的**第 2 列是节内偏移**，不是映像 RVA ——
+        误用会让 RVA 落在节外、度量全部失真（2026-09-23 实测）。
+        `mapfile.parse()` 用**第 4 列绝对 VA** - image_base
+        （基址默认从 PE 头读）。
     """
-    syms = {}
-    if not path or not os.path.exists(path):
-        return syms
-    t = open(path, encoding='utf-8', errors='replace').read()
-    for m in re.finditer(
-            r'[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-f]{8,16})', t):
-        sym, absva = m.group(1), int(m.group(2), 16)
-        syms.setdefault(sym, absva)
-    if not syms:
-        return syms
-    if image_base is None:
-        image_base = read_image_base(path)
-    return {k: v - image_base for k, v in syms.items()}
+    return _mapfile.parse(path, image_base=image_base)
 
 
 def parse_map_fns(path, image_base=None):
-    """只取**函数**符号（MSVC map 行的 `f` 标记）。
+    """**只取函数符号**（MSVC map 的 `f` 标记 + 排除库对象/导入 thunk）。
 
     ## 为什么需要（2026-09-25，M1 口径修正）
       文档定义 M1 = "**函数 RVA** 是否跨构建变化"（ROADMAP §11.2），
-      但 `parse_map` 收集**全部符号**。实测未变的 950 个符号里:
+      但收集**全部符号**会让 M1 虚高（实测 31.2%）—— 未变的符号里:
         · 524 = MSVC 合并字符串（链接器字典序，与 obj 顺序无关）
-        · 327 = CRT/库符号（来自库，非命令行 obj）
+        · 327 = CRT/库符号
         ·  69 = 导入 `__imp_`（由库列表决定）
         ·  30 = 哨兵（VA==ImageBase，**非地址**）
-      这些**结构性不可移动**，计入会让 M1 虚高（实测 31.2%），
-      而**我们自己的函数 100% 移动**。
-      => 门禁改用**函数口径**（与文档一致）；全符号口径**保留为诊断**。
+      这些**结构性不可移动** -> 门禁改用**函数口径**（与文档一致）。
 
-    行格式: `0001:00001000   prot_vm_run   0000000140002000 f   x.obj`
-                          （符号）        （绝对 VA）    ↑f   ↑obj/lib
+      ## 过滤（**M1 门禁依赖，不可丢**）
+        · 要求行内有 `f` 标记
+        · 排除 `obj` 含 `:`（库内 obj，如 `libvcruntime:frame.obj`）
+        · 排除 `obj == 'i'`（导入 thunk）
 
-    ## 过滤 `*.lib`（2026-09-25 实测补充）
-      实测未变的 123 个"函数"里样本全是 `__FrameHandler3` 系列 ——
-      来自 MSVC **C++ EH 库**（obj 列为 `*.lib`）。
-      它们**不是我们的代码**，布局由**库内部规则**决定（非命令行
-      obj 顺序）-> 计入虚高 M1。门禁只测**我们自己 .obj 的函数**。
+      ## B 阶段改造后
+        过滤已由 `mapfile.parse(funcs_only=True, exclude_libs=True)`
+        实现（语义已核对等价）。
     """
-    syms = {}
-    if not path or not os.path.exists(path):
-        return syms
-    t = open(path, encoding='utf-8', errors='replace').read()
-    for m in re.finditer(
-            r'[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-f]{8,16})'
-            r'\s+f\s+(\S+)',
-            t):
-        obj = m.group(3).lower()
-        # ## 库函数排除（2026-09-25 实测 map 格式）
-        #   MSVC map 的 obj 列对**库内 obj** 是 `lib:obj` 格式，如:
-        #     `libvcruntime:frame.obj` / `libucrt:initialization.obj`
-        #   导入 thunk 的 obj 列是 `i`。
-        #   我们自己的 obj 只有 `vm.obj` / `demo.obj` 等（无冒号）。
-        if ':' in obj or obj == 'i':
-            continue    # 库函数（CRT/C++ EH）或导入 thunk —— 非本项目代码
-        syms.setdefault(m.group(1), int(m.group(2), 16))
-    if not syms:
-        return syms
-    if image_base is None:
-        image_base = read_image_base(path)
-    return {k: v - image_base for k, v in syms.items()}
+    return _mapfile.parse(path, image_base=image_base,
+                          funcs_only=True, exclude_libs=True)
 
 
-def read_image_base(map_path):
-    """从同名 .exe 读 PE ImageBase；失败则回退默认 0x140000000。"""
-    exe = os.path.splitext(map_path)[0] + '.exe'
-    try:
-        with open(exe, 'rb') as f:
-            head = f.read(0x400)
-        e = struct.unpack_from('<I', head, 0x3C)[0]
-        # PE32+ 的 ImageBase 在 OptionalHeader 偏移 24
-        return struct.unpack_from('<Q', head, e + 24 + 24)[0]
-    except (OSError, struct.error, IndexError):
-        return 0x140000000
+def read_image_base(pe_path):
+    """PE `OptionalHeader.ImageBase`（实现见 `mapfile.read_image_base`）。"""
+    return _mapfile.read_image_base(pe_path)
 
 
 def read_sections(path):

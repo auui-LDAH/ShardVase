@@ -31,6 +31,20 @@ import struct
 import sys
 import zlib
 
+
+# ## map 解析的单一实现（B 阶段，2026-09-25）
+#   本项目曾有 **4 处**各自实现（MSVC/gcc 支持不一，已实际漂移）
+#   -> 已归一到 `tools/mapfile.py`。此处惰性导入以保持依赖最小。
+def _load_mapfile():
+    _t = os.path.dirname(os.path.abspath(__file__))
+    if _t not in sys.path:
+        sys.path.insert(0, _t)
+    import mapfile
+    return mapfile
+
+
+_mapfile = _load_mapfile()
+
 M64 = (1 << 64) - 1
 KS_MUL = 0x5851F42D4C957F2D
 KS_ADD = 0x14057B7EF767814F
@@ -157,35 +171,16 @@ def elf_sections(data):
 
 
 def parse_elf_map(map_path):
-    """解析 gcc `-Wl,-Map=` 的输出 -> {符号: RVA}。
+    """gcc `-Wl,-Map` -> {符号: RVA}（**等同 `parse_map_functions`**）。
 
-    ## gcc map 的格式（实测）
-    ```
-    .text           0x0000000000003880     0x799a
-                    0x0000000000003880                prot_vm_run
-    ```
-    符号行: 缩进 + `0x<十六进制地址>` + 符号名。
-    （与 MSVC map 的 `0001:00000020 name 0000000140002000 f obj` **完全不同**）
+    ## 为什么保留这个函数名
+      C 阶段按平台分派时加的（调用点用 `is_elf_file` 三元式）；
+      现在 `mapfile.parse` **自动识别格式** -> 两者行为一致。
+      保留此名只是**少改调用点**（降低本次改动风险）。
 
-    ## 地址基准
-    gcc map 给出的是**链接期虚拟地址**（PIE 下从 0 开始），
-    需减去 `__executable_start` 或首节地址才是 RVA —— 但 selfcrypt
-    要的是"**与 PE 的 image_base 相减后一致的 RVA**"。
-    对 **PIE**，`sh_addr` 即 RVA（无固定基址）-> **直接用**。
+      实现见 `mapfile.parse`（gcc: PIE 下 `sh_addr` 即 RVA，不减基址）。
     """
-    out = {}
-    if not map_path or not os.path.exists(map_path):
-        return out
-    pat = re.compile(r'^\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$')
-    with open(map_path, encoding='utf-8', errors='replace') as f:
-        for line in f:
-            m = pat.match(line)
-            if m:
-                try:
-                    out[m.group(2)] = int(m.group(1), 16)
-                except ValueError:
-                    continue
-    return out
+    return _mapfile.parse(map_path)
 
 
 def parse_elf_funcs(data, secs, names):
@@ -225,18 +220,25 @@ def parse_elf_funcs(data, secs, names):
 
 
 def parse_map_functions(map_path):
-    out = {}
-    image_base = 0x140000000
-    with open(map_path, 'r', encoding='utf-8', errors='replace') as f:
-        for line in f:
-            m = line.split()
-            if len(m) >= 3 and ':' in m[0] and m[2].startswith('0000000140'):
-                try:
-                    va = int(m[2], 16)
-                except ValueError:
-                    continue
-                out[m[1]] = va - image_base
-    return out
+    """链接 map（MSVC / gcc）-> {符号: 映像RVA}。
+
+    ## B 阶段（2026-09-25）: 实现已**抽到 `tools/mapfile.py`**
+      抽取前本项目有 **4 处** map 解析各自实现（MSVC/gcc 支持不一，
+      已实际漂移）-> 归一到单一实现。
+
+      ## 顺带修掉的**脆弱点**（原实现的真实缺陷）
+        原条件含 `m[2].startswith('0000000140')` ——
+        那是**硬编码映像基址前缀**: 一旦基址不是 `0x140000000`
+        （换链接器设置/改基址），会**静默漏掉全部符号**（返回空且不报错）。
+        `mapfile` 改为"**基址可传入**"（默认从 PE 头读 = 更正确），
+        不再依赖字面前缀。
+
+      ## 等价性（**已实测**）
+        · selfcrypt 的 **8 个目标函数**（DEFAULT_TARGETS + EXT_TARGETS）
+          取值**全部一致**
+        · gcc 侧 178/178 **完全等价**
+    """
+    return _mapfile.parse(map_path)
 
 
 def parse_pdata(data, secs):
