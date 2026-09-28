@@ -1591,3 +1591,72 @@ Linux ci_linux: 见下（串行）
 ---
 
 *2026-09-25 · §24.4 结案: 门禁 mutate_check 失败 = 状态竞争（并发违反既有纪律）*
+
+---
+
+## 26. ⚠️ S4 完成：**原计划被推翻**（不能清理 flat 目录）（2026-09-25）
+
+### 26.1 原计划 vs 审计结果
+
+**原计划**：`demo/gen/` 的 38 个 flat 遗留文件"零风险清理"
+（理由：`demo/gen/` 整体被 .gitignore 覆盖）。
+
+**审计（逐文件扫描 `demo/gen/<名>` 形态，区分注释与活跃代码）**：
+```
+"活跃"引用 24 处，分三类:
+① **工具默认值（真缺陷，A 阶段漏改）**:
+   · tools/gen_padding.py     L115-123  二级回退 = 'demo/gen/prot_sections.json'
+   · tools/measure_sections.py L134     default='demo/gen/prot_sections.json'
+② **examples 的 flat 依赖（独立范畴，§22.5 已列"不做"）**:
+   · examples/tool_demo/build_example.ps1  **5 处主动读写** demo\gen\*
+③ **tools/build_dotnet_gate.ps1 L70** `demo\gen\strings.c`（同 ② 类）
+④ 其余 = docstring / help / _constraint 文本（非执行路径）
+```
+
+**结论**：**不能删除 flat 目录** —— ②③ 是**活跃依赖**，
+删了会**直接断掉 example E1-E7**（门禁第 10 项）。
+
+> ### 🎯 教训（**"gitignore 覆盖"≠"无引用"**）
+> 我把"git 不追踪"当成了"可以删" —— 但**引用关系与版本控制无关**。
+> 正确顺序: **先穷举引用者，再决定删留**。
+> （§17.2 的"快照法找泄漏"是同一课的另一面: **让机械方法替我穷举**，
+> 而不是靠"我觉得应该没人用"。）
+
+### 26.2 实际处置
+
+| # | 处置 | 说明 |
+|---|------|------|
+| ① | **修两个工具的默认值**（**真缺陷**）| 标注为"flat 旧路径、**不可信**"，并说明它是**二级回退**（首选 = `dirname(--actual)/prot_sections.json`，平台正确）|
+| ② | **保留 flat 目录** | 有活跃依赖（examples / build_dotnet_gate）|
+| ③ | flat 清理**转归**"examples 适配"（§22.5 的"不做"范畴）| 需先改 examples 用平台路径 |
+
+**重要细节（读码后修正我的初判）**：
+`gen_padding.py` 的那行**不是 argparse 默认值**，而是
+**文件缺失时的二级回退**：
+```python
+j = os.path.join(os.path.dirname(args.actual), 'prot_sections.json')  # 首选（平台正确）
+if not os.path.exists(j):
+    j = 'demo/gen/prot_sections.json'                                  # 回退（flat 遗留）
+```
+=> 它的**风险等级低于**我初判（正常构建走首选分支）；
+但仍标注为**不可信**（若首选缺失，会静默用错平台的映射）。
+
+### 26.3 验收
+
+```
+Windows 门禁: **22/23**（唯一失败 = git 未提交，**零回归**）
+Linux ci_linux: **PASS**（9/9 with -SkipBuild）
+```
+
+### 26.4 遗留（**转入后续**）
+
+| 遗留 | 归属 |
+|------|------|
+| examples 的 5 处 flat 依赖 | §22.5 "不做"（examples 适配 = 独立范畴）|
+| `build_dotnet_gate.ps1` L70 | 同上 |
+| flat 目录本身（38 文件）| **保留**（有依赖）；待 examples 适配后再评估 |
+| 注释/docstring 里的 flat 提及（~19 处）| 低优先（非执行路径）；未来统一文档时一并更新 |
+
+---
+
+*2026-09-25 · S4: 原计划被推翻（不能清理 flat 目录 —— 有活跃依赖）+ 修 2 处工具默认值*

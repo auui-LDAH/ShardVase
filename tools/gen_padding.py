@@ -114,6 +114,13 @@ def main():
     name_map = {}
     j = os.path.join(os.path.dirname(args.actual), 'prot_sections.json')
     if not os.path.exists(j):
+        # ## ⚠️ 第二级回退 = **flat 旧路径**（S4 审计, 2026-09-25）
+        #   A 阶段按平台分目录后这里**未跟着改** —— 它是"兜底"分支:
+        #   首选 `os.path.dirname(args.actual)/prot_sections.json`（**平台正确**），
+        #   只有该文件缺失时才回退到 `demo/gen/prot_sections.json`（**flat 遗留**，
+        #   内容可能是**另一平台**的 -> 节名映射错配）。
+        #   => 回退值保留（不破坏既有调用），但**记录为不可信**；
+        #      调用方应保证首选路径存在（build.sh/build.ps1 都传平台 actual）。
         j = 'demo/gen/prot_sections.json'
     if os.path.exists(j):
         try:

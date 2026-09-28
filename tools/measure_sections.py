@@ -131,6 +131,9 @@ def main():
     ap.add_argument('--compare', nargs='*', default=None)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--sections-json', dest='sections_json',
+                    # ## ⚠️ 默认值是 **flat 旧路径**（S4 审计, 2026-09-25）
+                    #   A 阶段按平台分目录后**漏改**；调用方须显式传
+                    #   `--sections-json`（build.sh/build.ps1 都已传）。
                     default='demo/gen/prot_sections.json',
                     help='gen_sections.py 的节名映射（用于按语义对齐）')
     args = ap.parse_args()
