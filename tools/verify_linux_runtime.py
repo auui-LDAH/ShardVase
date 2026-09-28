@@ -262,6 +262,34 @@ def run_all(skip_build=False, quiet=False, readonly=False):
                   % ('ok  ' if ok5 else 'FAIL',
                      ('%s/%s' % m5.groups()) if m5 else ''))
 
+    # ③e **攻击模拟**（attacks A1-A12，C-2）—— 第 10 项
+    #
+    # ## 与前几项的区别
+    #   本项跑的是 **12 个"攻击者视角"用例**（伪造 license / 篡改 VM blob /
+    #   静态 trace / dump 扫描 …）—— 验证保护在多种旁路下**仍有效**。
+    #
+    # ## 平台差异（**如实标注**）
+    #   · 11 项在 Linux 可验证
+    #   · A12（在线会话）标记 `PLATFORM_NA` —— 它依赖 HTTP 服务器，
+    #     而服务器在 **Windows 侧**（WSL 的 127.0.0.1 不同）
+    #   => 输出格式: `PASS n / FAIL m / NA k`，**NA 不计入失败**但**透明列出**。
+    atkp = os.path.join(REPO, 'tests', 'attacks.py')
+    if os.path.exists(atkp):
+        r6 = subprocess.run([sys.executable, '-X', 'utf8', atkp,
+                             '--platform', 'linux'],
+                            capture_output=True, timeout=2400, cwd=REPO)
+        o6 = (r6.stdout + r6.stderr).decode('utf-8', 'replace')
+        m6 = re.search(r'总计 (\d+): PASS (\d+) / FAIL (\d+) / NA (\d+)', o6)
+        ok6 = (r6.returncode == 0)
+        results.append(('攻击模拟 (attacks A1-A12)', ok6,
+                        ('PASS %s / FAIL %s / NA %s' % m6.groups()[1:])
+                        if m6 else '无法解析'))
+        if not quiet:
+            print('  %s 攻击模拟 (attacks) %s'
+                  % ('ok  ' if ok6 else 'FAIL',
+                     ('PASS %s / FAIL %s / NA %s' % m6.groups()[1:])
+                     if m6 else ''))
+
     # ④ 第二支柱: 节名随机化 + 文件大小统一
     #
     # ## ⚠️ 判据修正（2026-09-25 实测教训）

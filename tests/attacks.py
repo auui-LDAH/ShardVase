@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 ShardVase contributors
 # 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
@@ -65,16 +65,43 @@ import winproc  # noqa: E402
 
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-EXE = os.path.join(REPO, 'build', 'demo.exe')
-JSON_PATH = os.path.join(REPO, 'demo', 'vm_build.json')
+# ## 平台感知路径（C-2, 2026-09-25）
+#   `--platform linux` -> 用 `build/demo_linux` + `build/linux/...`
+#   （A 阶段已把状态文件按平台隔离）。
+#
+#   **为什么默认仍是 Windows**: 保持既有行为（门禁里 attacks 项跑 Windows），
+#   Linux 侧由 `--platform linux` 显式选择（与 genpaths 的"显式平台"原则一致）。
+_PLATFORM = 'win'
+if '--platform' in sys.argv:
+    _i = sys.argv.index('--platform')
+    if _i + 1 < len(sys.argv):
+        _PLATFORM = sys.argv[_i + 1]
+        del sys.argv[_i:_i + 2]      # 不传给下游（无关参数）
+
+import sys as _sys_path
+_sys_path.path.insert(0, os.path.join(REPO, 'tools'))
+import genpaths as _gp
+
+_P = _gp.paths(_PLATFORM)
+EXE = (os.path.join(REPO, 'build', 'demo.exe') if _PLATFORM == 'win'
+       else os.path.join(REPO, 'build', 'demo_linux'))
+JSON_PATH = _P.vm_build_json
 STRINGS = os.path.join(REPO, 'demo', 'strings.txt')
-LICENSE = os.path.join(REPO, 'build', 'license.txt')   # A1: build.ps1 sign 产物
+LICENSE = _P.b('license.txt')          # A1: sign 产物（按平台）
 VMENC = os.path.join(REPO, 'tools', 'vmenc.py')
 
+# ## 干净环境应全 0 的字段（C-2: 按平台）
+#   ⚠️ Linux/WSL **本身就是虚拟机** -> `vm_hypervisor` / `vm_vendor`
+#   会被**正确报出**（源码标注为"**咨询项, 不影响运行**"）——
+#   那是"检测有效"而非"环境脏"。
+#   => Linux 侧排除这两个字段（**平台语义**，非放宽）。
 CLEAN_FIELDS = ('peb_being_debugged', 'peb_nt_global_flag', 'debug_port',
                 'debug_flags', 'debug_object', 'hardware_breakpoints',
                 'timing_suspicious', 'kernel_debugger', 'debug_heap_flags',
                 'int3_honey')
+#: Linux 侧额外排除的"咨询项"字段
+CLEAN_FIELDS_LINUX = CLEAN_FIELDS + ('vm_hypervisor', 'vm_vendor',
+                                     'vm_processes')
 
 
 def _msg(name):
@@ -88,7 +115,52 @@ def _msg(name):
     return name
 
 
+def to_wsl(p):
+    """Windows 路径 -> WSL 路径。"""
+    p = os.path.abspath(p)
+    return '/mnt/%s%s' % (p[0].lower(), p[2:].replace('\\', '/'))
+
+
+def _norm_exit(code, platform=None):
+    """**平台语义归一化**的退出码（C-2, 2026-09-25）。
+
+    ## 为什么需要（实测）
+      · Windows: `ExitProcess(0xB10B)` -> 退出码 **0xB10B**（完整 32 位）
+      · Linux  : `exit(0xB10B)`        -> 只保留**低 8 位** = **0x0B = 11**
+        （POSIX 语义: 父子进程间只传 8 位状态）
+
+      => 同一语义（`PROT_EXIT_BLOB_MISSING`）在两平台**数值不同**。
+         判据需归一化，否则 Linux 侧**必然失败**（而功能完全正常）。
+
+      ## 这不是"放宽判据"
+        归一化后**仍然是精确比较**（低 8 位 vs 低 8 位）——
+        只是承认"进程退出码的**可观测宽度**在两个平台不同"。
+    """
+    plat = platform or _PLATFORM
+    c = code & 0xFF if plat != 'win' else code & 0xFFFFFFFF
+    return c
+
+
+def _norm_expect(expected, platform=None):
+    """把**期望值**按平台归一化（与 `_norm_exit` 配对使用）。"""
+    plat = platform or _PLATFORM
+    return expected & 0xFF if plat != 'win' else expected & 0xFFFFFFFF
+
+
 def run_demo(args=None, stdin=None):
+    """运行 demo，返回 (returncode, stdout)。
+
+    ## 平台分派（C-2, 2026-09-25）
+      · **win**: 本地 `Popen`（现状，行为不变）
+      · **linux**: 经 `wsl.exe` 执行 —— ELF **不能在 Windows 上直接跑**
+        （实测: `OSError 8 / 193 不是有效的 Win32 应用程序`）
+
+      ## 为什么只改这一处
+        12 个用例里 **10 个**只依赖本函数的**返回值契约** ->
+        改这里即可全部生效（**单点适配**，避免逐用例改）。
+    """
+    if _PLATFORM != 'win':
+        return _run_demo_wsl(args, stdin)
     cmd = [EXE] + (args or [])
     p = winproc.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
@@ -96,14 +168,71 @@ def run_demo(args=None, stdin=None):
     return p.returncode, out.decode('utf-8', 'replace')
 
 
+def _run_demo_wsl(args, stdin):
+    """经 WSL 运行 Linux 产物（返回码/输出契约与 `run_demo` 一致）。
+
+    ## ⚠️ 自动补 `--vm-blob`（C-2 实测）
+      Windows 侧 `run_demo` 的 cwd 是 `build/`，`vm.blob` 就在旁边 ->
+      demo 默认能找到；**Linux 侧 blob 在 `build/linux/`** ->
+      不传 `--vm-blob` 就报 **"VM 镜像装载失败 (code=10)"** ->
+      A1/A4/A9/A12 全部失败（**实测输出直指此项**）。
+
+      => 由本适配层**自动追加**（调用方未显式传时）——
+         **平台差异在适配层吸收**，10 个用例无需改动。
+    """
+    args = list(args or [])
+    # ## ⚠️ **所有路径型参数都要转 WSL 形态**（C-2 决定性实测）
+    #   实测: `--license-file` 传的是 Windows 绝对路径
+    #   （`D:\...\build\linux\license.txt`）-> demo 在 WSL 里**打不开**
+    #   -> `license: 0`（验签失败）-> A1/A4 误报失败。
+    #
+    #   => 逐个把"看起来是 Windows 绝对路径"的参数转成 WSL 形式。
+    #      （与 A 阶段"路径的来源与形态要同时考虑"同一教训。）
+    def _fix_arg(a):
+        if isinstance(a, str) and len(a) > 2 and a[1] == ':' \
+                and a[2] in ('\\', '/'):
+            return to_wsl(a)
+        return a
+
+    args = [_fix_arg(a) for a in args]
+    if '--vm-blob' not in args:
+        args += ['--vm-blob', to_wsl(_P.b('vm.blob'))]
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    # ## ⚠️ **不经 bash**（C-2 决定性实测）
+    #   `bash -c "cd ... && exec demo ..."` 会**消费/重定向 stdin**
+    #   -> demo 读到空 -> `license: 0`（验签失败）-> A1/A4 误报失败。
+    #
+    #   实测对比（**唯一差异 = stdin 方式**）:
+    #     手工 `run(..., input=serial+chr(10))`      -> rc=0, license: 1 ✅
+    #     测试 `Popen(..., stdin=PIPE)+communicate`  -> rc=1, license: 0 ❌
+    #   两条命令逐字符一致。
+    #
+    #   => **用 `wsl.exe -- <exe> <args>` 直执**（不经 shell）：
+    #      · stdin 直达 demo
+    #      · 退出码直达（与 G 阶段 vmc 的教训同源 —— **凡需精确控制
+    #        子进程 IO/状态，就不经 shell 包装**）
+    #
+    #   `cwd` 由 `wsl --cd` 指定（demo 需要 cwd 找 vm.blob 等相对路径）。
+    cmd = ['wsl.exe', '-d', 'Ubuntu-24.04', '--cd',
+           to_wsl(os.path.dirname(EXE)), '--', to_wsl(EXE)] + args
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, env=env)
+    out, _ = p.communicate(stdin, timeout=60)
+    return p.returncode, (out or b'').decode('utf-8', 'replace')
+
+
 def blob_bytes():
     """从 demo/gen/vm_*_blob.c 提取 s_code 字节数组. 返回 {name: bytes}.
     只处理 vm_*_blob.c (排除 expect_default.c 等其他生成物)。"""
     out = {}
-    for fn in sorted(os.listdir(os.path.join(REPO, 'demo', 'gen'))):
+    # C-2: 生成物目录**按平台**（A 阶段已隔离）
+    _gen = _P.gen
+    for fn in sorted(os.listdir(_gen)):
         if not fn.startswith('vm_') or not fn.endswith('_blob.c'):
             continue
-        with open(os.path.join(REPO, 'demo', 'gen', fn), 'r', encoding='utf-8') as f:
+        with open(os.path.join(_gen, fn), 'r', encoding='utf-8') as f:
             text = f.read()
         # s_code[] = { 0x12, ... }; 找第一个 '{' 与对应 '}'
         start = text.find('{')
@@ -210,7 +339,11 @@ def main():
                     vm_notes.append('%s=%s' % (fname, fval))
             elif fname in CLEAN_FIELDS and fval != '0':
                 nonzero.append('%s=%s' % (fname, fval))
-        ok = (code == 0) and (not nonzero)
+        # C-2: **平台语义归一化**（Linux 的 exit 只保留低 8 位）
+        #   ⚠️ 注意 `vm_*` / `dbi_*` 已在上面归入 `vm_notes`（**咨询项**，
+        #   不算 nonzero）—— WSL 本身是虚拟机，`vm_hypervisor=1` 是
+        #   "检测有效"而非"环境脏"（源码标注: 咨询项, 不影响运行）。
+        ok = (_norm_exit(code) == 0) and (not nonzero)
         results.append(('A4 selftest-clean', 'PASS' if ok else 'FAIL',
                         'code=%d nonzero=%s vm=%s' %
                         (code, nonzero or 'none', vm_notes or 'none')))
@@ -228,7 +361,7 @@ def main():
             if ln.startswith('SIGNATURE='):
                 s = ln[len('SIGNATURE='):]
                 b = bytearray(s.encode('ascii'))
-                b[len(b) // 2] = b'B'[0]
+                b[len(b) // 2] = ord('B') if b[len(b) // 2] != ord('B') else ord('C') if b[len(b) // 2] != ord('B') else ord('C')
                 out_lines.append('SIGNATURE=' + b.decode('ascii'))
             else:
                 out_lines.append(ln)
@@ -301,7 +434,8 @@ def main():
         code, out = run_demo(args=['--license-file', LICENSE,
                                    '--vm-blob', forged_path],
                              stdin=(serial + '\n').encode('utf-8'))
-        ok = (code == 0xB10B)  # PROT_EXIT_BLOB_MISSING
+        # C-2: **平台语义归一化**（Linux 的 exit 只保留低 8 位 -> 11）
+        ok = (_norm_exit(code) == _norm_expect(0xB10B))  # BLOB_MISSING
         results.append(('A8 blob-forge', 'PASS' if ok else 'FAIL',
                         'code=%d (v0 forged blob rejected)' % code))
     except Exception as e:
@@ -345,10 +479,11 @@ def main():
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.join(REPO, 'tests'))
-        from protchain_check import (pe_sections,
+        # C-2: 用 `sections_of`（**自动分派 PE/ELF**）而非 `pe_sections`
+        from protchain_check import (sections_of,
                                      p5_indirect_no_direct_call)
         exe_data = open(EXE, 'rb').read()
-        secs = pe_sections(exe_data)
+        secs = sections_of(exe_data)
         ok, why = p5_indirect_no_direct_call(exe_data, secs)
         results.append(('A10 static-trace', 'PASS' if ok else 'FAIL',
                         'N4 indirect: %s' % why))
@@ -361,7 +496,8 @@ def main():
     try:
         import sys as _sys2
         _sys2.path.insert(0, os.path.join(REPO, 'tests'))
-        from protchain_check import pe_sections as _ps
+        # C-2: 同上 —— 用自动分派版本
+        from protchain_check import sections_of as _ps
         from protchain_check import selfcrypt_meta as _sc_meta2
         exe_data = open(EXE, 'rb').read()
         secs = _ps(exe_data)
@@ -411,16 +547,46 @@ def main():
                              stdin=(serial + '\n').encode('utf-8'))
         srv.shutdown()
         ok = (code == 1) and (msg_fail in out)
-        results.append(('A12 offline-fix-expect', 'PASS' if ok else 'FAIL',
-                        'code=%d (online session value overrides local fix)' % code))
+        # ## C-2: Linux 侧**平台不适用**（在线会话能力缺失）
+        #   A12 依赖在线会话（HTTP 服务器 + `--check-url`），而服务器跑在
+        #   **Windows 侧** -> **WSL 的 127.0.0.1 != Windows 的 127.0.0.1**
+        #   -> demo 连不上 -> 走**离线降级**（`code=0`）。
+        #
+        #   **这是预期的平台行为**（C 阶段已记录: Linux 侧网络能力如实降级，
+        #   `prot_plat_http_get*` 返回 `PROT_ERR_UNSUPPORTED`）。
+        #   => 该项在 Linux 上**无法按原判据验证** -> 标记 `PLATFORM_NA`，
+        #      **不伪装成 PASS**（"未验证 != 通过"）。
+        #
+        #   诚实说明: 若把 HTTP 服务器也放进 WSL 内（用 WSL 的 127.0.0.1），
+        #   本项**可验证** —— 属**后续可做**（记为剩余工作）。
+        if _PLATFORM != 'win':
+            results.append(('A12 offline-fix-expect', 'PLATFORM_NA',
+                            'Linux 无在线会话能力（服务器在 Windows 侧；'
+                            'WSL 的 127.0.0.1 不同）'))
+        else:
+            results.append(('A12 offline-fix-expect',
+                            'PASS' if ok else 'FAIL',
+                            'code=%d (online session value overrides '
+                            'local fix)' % code))
     except Exception as e:
         results.append(('A12 offline-fix-expect', 'FAIL', repr(e)))
 
+    # ## 统计: `PLATFORM_NA` **不计入失败**（C-2）
+    #   但**单独列出**（透明），不混入 PASS。
+    n_na = sum(1 for _n, st, _d in results if st == 'PLATFORM_NA')
     failed = False
     for name, status, detail in results:
         print('%-20s  %-4s   (%s)' % (name, status, detail), flush=True)
         if status == 'FAIL':
             failed = True
+    # ## 汇总（C-2）: 透明列出 PASS / FAIL / **平台不适用**
+    #   —— `PLATFORM_NA` 单独计数（**不混入 PASS**），符合
+    #      "未验证 != 通过"的纪律。
+    n_pass = sum(1 for _n, st, _d in results if st == 'PASS')
+    n_fail = sum(1 for _n, st, _d in results if st == 'FAIL')
+    print()
+    print('[attacks] 平台=%s  总计 %d: PASS %d / FAIL %d / NA %d'
+          % (_PLATFORM, len(results), n_pass, n_fail, n_na), flush=True)
     sys.exit(1 if failed else 0)
 
 
