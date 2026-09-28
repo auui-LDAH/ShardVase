@@ -326,6 +326,23 @@ Check '构建状态自检 (check_state_platform)' {
     $LASTEXITCODE -eq 0
 }
 
+# 平台适配公共层自检（S6, 2026-09-25）
+#
+# ## 为什么入门禁
+#   `tests/_platform.py` 是 **e2e 与 attacks 的共同基础**
+#   （平台解析 / 归一化 / WSL 直执）。它若有缺陷 -> **两套测试同时失效**。
+#   => 其自检（9 项含 **3 负向**）随门禁常跑（只读、快）。
+#
+# ## 自检含的负向（**为什么重要**）
+#   · T3: 两平台归一化结果**必须不同**（若相同 -> 归一化无意义）
+#   · T7: WSL 路径**不得**被二次转换
+#   · T9: 缺 `--platform` 时**必须**用默认
+Check '平台层自检 (_platform)' {
+    & $py tests\_platform.py --selftest
+    $LASTEXITCODE -eq 0
+}
+
+
 
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #

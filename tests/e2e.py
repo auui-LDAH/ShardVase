@@ -420,51 +420,113 @@ def main():
     # 挂起进程。先对自身做一次 1 秒 preflight (零子进程, 无泄漏):
     #   DebugActiveProcess(getpid()) -> WaitForDebugEvent 有事件则环境可用;
     # 不可用则整项 SKIP, 不做真实附加。
-    try:
-        debug_ok = False
-        if KERNEL32.DebugActiveProcess(os.getpid()):
-            ev = ctypes.create_string_buffer(512)
-            if KERNEL32.WaitForDebugEvent(ev, 1200):
-                debug_ok = True
-                KERNEL32.ContinueDebugEvent(
-                    ctypes.c_ulong.from_buffer(ev, 4).value,
-                    ctypes.c_ulong.from_buffer(ev, 8).value, 2)
-            KERNEL32.DebugActiveProcessStop(os.getpid())
-
-        if not debug_ok:
-            results.append(('T3 debug-detect', 'SKIP',
-                            'no debug session support in this env'))
-        else:
-            proc = winproc.Popen(
-                [EXE, '--wait-ms', '4000'],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
-            time.sleep(1.0)
-            dbg = DebugAttacher()
-            if not dbg.attach(proc.pid):
-                results.append(('T3 debug-detect', 'SKIP',
-                                'DebugActiveProcess failed (err=0x%x)' %
-                                ctypes.get_last_error()))
-            else:
-                import threading
-                t = threading.Thread(target=dbg.pump, kwargs={'timeout': 25.0})
-                t.daemon = True
-                t.start()
-                code, out, _err = pump_and_read(proc, timeout=30)
-                t.join(timeout=1)
-                if code is None:
-                    if proc.poll() is None:
-                        proc.kill()
-                        proc.wait()
-                    results.append(('T3 debug-detect', 'SKIP',
-                                    'debug session stalled in this env'))
+    # ## ⚠️ Linux 侧 = **平台不适用**（S6, 2026-09-25）
+    #   T3 整块是 **Windows 调试会话**逻辑（`DebugActiveProcess` + `cmd /c`
+    #   探针），Linux **无等价物** —— 若不设守卫，Linux 侧会跑 Windows
+    #   路径并报出 `winerror 5`（**语义错位**: 把 Windows 错误码当作
+    #   Linux 侧的原因）。
+    #
+    #   **Linux 侧的实际覆盖已存在**: `tests/attacks_linux.py` 的**负向③**
+    #   （`ptrace` 附加 -> `debug_object=1` + demo 主动退出）——
+    #   那才是 Linux 的正确验证入口。**指向它，不伪装成"跳过"**。
+    if _PLATFORM != 'win':
+        results.append(('T3 debug-detect', 'PLATFORM_NA',
+                        'T3 是 Windows 调试会话用例（DebugActiveProcess '
+                        '无 Linux 等价物）；Linux 覆盖见 attacks_linux '
+                        '负向③（ptrace 附加 -> debug_object=1）'))
+    else:
+        try:
+            debug_ok = False
+            _probe = None
+            probe_err = 0
+            # ## preflight 已修（S6, 2026-09-25）—— 原实现**必然 SKIP**
+            #
+            #   **原实现的问题**: 探针是 `DebugActiveProcess(os.getpid())`
+            #   —— **对自身附加**。而 **Windows 禁止进程调试自身**
+            #   -> 探针**必然失败** -> `debug_ok=False` -> **T3 永远 SKIP**
+            #   （实测: Windows 27P/1S，那个 SKIP 就是 T3）。
+            #
+            #   **后果（真缺口）**: T3 是 e2e 里**唯一**验证"被附加调试器
+            #   能否检出（MSG_DBG + exit 0xDB）"的用例 -> **从未被验证**。
+            #
+            #   **修法（保留原意，换探针对象）**: 原意是"先确认本环境能
+            #   驱动调试会话，再决定测/跳过"（避免留下挂起进程）。改为
+            #   **对派生的无害子进程附加** —— 语义**更准**（真实附加能力
+            #   = 能附加**别的**进程），且零泄漏（探针必杀，见 finally）。
+            try:
+                _probe = winproc.Popen(
+                    ['cmd', '/c', 'timeout', '/t', '3', '/nobreak'],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+                time.sleep(0.4)              # 等它起来
+                ctypes.set_last_error(0)
+                if KERNEL32.DebugActiveProcess(_probe.pid):
+                    ev = ctypes.create_string_buffer(512)
+                    if KERNEL32.WaitForDebugEvent(ev, 1200):
+                        debug_ok = True
+                        KERNEL32.ContinueDebugEvent(
+                            ctypes.c_ulong.from_buffer(ev, 4).value,
+                            ctypes.c_ulong.from_buffer(ev, 8).value, 2)
+                    KERNEL32.DebugActiveProcessStop(_probe.pid)
                 else:
-                    ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_DEBUG_DETECTED)) and (msg_dbg in out)
-                    results.append(('T3 debug-detect',
-                                    'PASS' if ok else 'FAIL',
-                                    'exit=%d' % code))
-    except Exception as e:
-        results.append(('T3 debug-detect', 'FAIL', repr(e)))
+                    # ## 记录**具体错误码**（S6 实测, 2026-09-25）
+                    #   实测本环境 = **5 (ERROR_ACCESS_DENIED / 拒绝访问)**
+                    #   —— 自动化壳/沙箱**不允许调试其他进程**。
+                    #   带上错误码，后人无需重跑诊断即可区分
+                    #   "**环境限制**"与"**代码写错**"。
+                    probe_err = ctypes.get_last_error()
+            finally:
+                # **零泄漏**: 无论成败都杀掉探针（原实现的承诺）
+                if _probe is not None:
+                    try:
+                        if _probe.poll() is None:
+                            _probe.kill()
+                        _probe.wait(timeout=5)
+                    except Exception:        # noqa: BLE001
+                        pass
+
+            if not debug_ok:
+                # ## SKIP 原因**写准**（S6, 2026-09-25）
+                #   原串太笼统（无法区分"环境限制"与"探针写错"）。
+                #   实测: DebugActiveProcess -> **winerror 5（拒绝访问）**
+                #   => **环境不允许调试其他进程**（自动化壳/沙箱）。
+                #   **诚实**: 这是**环境能力限制**，不是"未做"；
+                #   在有调试权限的交互式会话下本项会**真的执行**。
+                results.append(('T3 debug-detect', 'SKIP',
+                                'env denies process debugging '
+                                '(winerror %d/0x%x); 保留 SKIP（环境限制，'
+                                '非未做）' % (probe_err, probe_err)))
+            else:
+                proc = winproc.Popen(
+                    [EXE, '--wait-ms', '4000'],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
+                time.sleep(1.0)
+                dbg = DebugAttacher()
+                if not dbg.attach(proc.pid):
+                    results.append(('T3 debug-detect', 'SKIP',
+                                    'DebugActiveProcess failed (err=0x%x)' %
+                                    ctypes.get_last_error()))
+                else:
+                    import threading
+                    t = threading.Thread(target=dbg.pump, kwargs={'timeout': 25.0})
+                    t.daemon = True
+                    t.start()
+                    code, out, _err = pump_and_read(proc, timeout=30)
+                    t.join(timeout=1)
+                    if code is None:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.wait()
+                        results.append(('T3 debug-detect', 'SKIP',
+                                        'debug session stalled in this env'))
+                    else:
+                        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_DEBUG_DETECTED)) and (msg_dbg in out)
+                        results.append(('T3 debug-detect',
+                                        'PASS' if ok else 'FAIL',
+                                        'exit=%d' % code))
+        except Exception as e:
+            results.append(('T3 debug-detect', 'FAIL', repr(e)))
 
     # ---- T4: 篡改检测 (.text) -------------------------------------------
     # 注: 托管环境若启用 WDAC (代码完整性策略), 新复制的篡改副本会因文件
