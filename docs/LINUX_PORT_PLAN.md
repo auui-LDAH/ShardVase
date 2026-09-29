@@ -1129,7 +1129,7 @@ Windows 的 `NtSetInformationThread(ThreadHideFromDebugger)` 让
 |------|-------------------|
 | 组合（源文件清单）| ✅ 保留（`compose.py`，**注册表驱动**）|
 | 平台层选择 | 🆕 按平台选 `_win.c` / `_linux.c` |
-| 生成文件 | ⚠️ 暂用 Windows 侧产物（B2/B3 接线待补）|
+| 生成文件 | ⚠️ 暂用 Windows 侧产物（B2/B3 接线待补） -> ✅ **已于本文件 §18 完成** |
 | **编译 + 链接** | ⚠️ **gcc 替代 MSVC** |
 | 数字签名 | ❌ **跳过**（Linux 无 signtool 等价物）|
 
@@ -1201,7 +1201,7 @@ Windows 的 `NtSetInformationThread(ThreadHideFromDebugger)` 让
 
 | 边界 | 说明 |
 |------|------|
-| **`build.sh` 未完成端到端** | 尚在用 Windows 侧生成的 `demo/gen/*`；B2/B3 待接线 |
+| **`build.sh` 未完成端到端** | 尚在用 Windows 侧生成的 `demo/gen/*`；B2/B3 待接线 -> ✅ **已于本文件 §18 完成** |
 | **Linux 网络能力缺失** | `--blob-url` / `--check-url` 返回 UNSUPPORTED（**如实降级**）|
 | **数字签名不适用** | Linux 无 signtool 等价物；ELF 签名机制不同 |
 | **标准节的 Linux 填充不生效** | gcc 不能用 `section` 属性追加标准节 -> **已知限制** |
@@ -1626,9 +1626,9 @@ strgen / indirect）-> **Linux 侧自给自足**。
 
 | 边界 | 说明 |
 |------|------|
-| **`selfcrypt`/`gen_padding` 尚未接线** | 仍用 Windows 侧遗留产物 —— Linux 的"加密函数原位加密"与"节填充归一化"**未在 Linux 侧重新生成** |
+| **`selfcrypt`/`gen_padding` 尚未接线** | 仍用 Windows 侧遗留产物 —— Linux 的"加密函数原位加密"与"节填充归一化"**未在 Linux 侧重新生成** -> ✅ **已于后续阶段完成**（Linux 构建已生成；`--sections-json` 平台化见 PLATFORM_ISOLATION §34）|
 | **Linux 运行时未验证** | 只验证 `--version` 冒烟；**未跑** license/VM/完整性 的完整链路 |
-| **网络能力缺失** | `--blob-url`/`--check-url` 返回 UNSUPPORTED（如实降级）|
+| **网络能力缺失** | `--blob-url`/`--check-url` 返回 UNSUPPORTED（如实降级） -> ✅ **已于 §31/W3 完成**（POSIX socket HTTP 实现，`W4` 在线用例真跑）|
 | **数字签名不适用** | 无 signtool 等价物 |
 | **`gen_sections` 的 seed 与 Windows 不同源** | Linux 用 `$RANDOM`；如需跨平台一致需显式传同一 seed |
 
@@ -1706,7 +1706,7 @@ VM 校验（4 个 VM 镜像）      <- 校验通过
 
 | 边界 | 说明 |
 |------|------|
-| **`normalize_tail` 未接线** | 文件尾精确填充（使大小统一）——Linux 侧未做 |
+| **`normalize_tail` 未接线** | 文件尾精确填充（使大小统一）——Linux 侧未做 -> ✅ **已于本文件 §20（D 阶段）完成** |
 | **GOT/重定位掩码是"按节名"的简化** | 剥离节表时返回 0 -> **安全侧失败**（不误报）|
 | **Linux 与 Windows 指纹必然不同** | 因子不同（设计预期，L5b 已记录）|
 | **`/etc/machine-id` 不可读时退化** | 只余 hostname 单因子（与 C 侧一致）|
