@@ -396,7 +396,14 @@ def p3_blob_v1(data):
 def p4_blob_signature(data):
     """P4: 用内嵌公钥 RSA 验签 blob (纯 Python 复算 PKCS#1 v1.5 SHA-256)."""
     # 从 license_pubkey.c 读公钥 BCRYPT blob (BCRYPT_RSAPUBLIC_BLOB)
-    pub_path = os.path.join(REPO, 'demo', 'gen', 'license_pubkey.c')
+    # ## W5 清理后修正（2026-09-29）: 用**平台目录**
+    #   原为 `join(REPO, 'demo', 'gen', 'license_pubkey.c')`（**flat**）——
+    #   该形态**未被我的审计正则捕捉**（正则要求 `demo/gen/` **相邻**，
+    #   而 join 是**分段**）-> 清理 flat 后 P4 立刻失败。
+    #   **教训**: 审计同一问题可能有**多种书写形态**，正则只覆盖已知形态
+    #   —— **必须靠验证（门禁）兜底**（本次正是它抓住的）。
+    _gen4, _vmj4 = resolve_gen_paths(_CURRENT_EXE)
+    pub_path = os.path.join(_gen4, 'license_pubkey.c')
     if not os.path.isfile(pub_path):
         return False, 'license_pubkey.c missing'
     src = open(pub_path, 'r', encoding='utf-8').read()
