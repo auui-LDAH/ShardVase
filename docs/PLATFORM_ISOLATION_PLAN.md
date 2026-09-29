@@ -2409,7 +2409,22 @@ Windows 构建 / Linux 构建: DONE（padding 用平台节名）
 结果: demo/gen/ = ["linux", "win"]（**仅平台目录**）
 ```
 
-**门禁抓到的唯一依赖**（**验证救了它**）：
+**本轮共暴露 **2 处依赖**（**都是验证/运行抓住的，不是审计**）：
+
+| # | 位置 | 现象 | 根因 |
+|---|------|------|------|
+| 1 | `tests/protchain_check.py` P4 | 门禁 `protchain P1-P6 [X]` | `join(REPO,'demo','gen','license_pubkey.c')` —— **分段拼接**（见下）|
+| 2 | `tests/vmc_tests.py` | 清理后 flat **反复复活 2 个文件** | `GEN = join(REPO,'demo','gen')` 且 blob **唯一**写进它（其余 vmc 产物全在 BUILD）|
+
+**修复**：
+- P4 -> `resolve_gen_paths(_CURRENT_EXE)`（平台目录）
+- vmc_tests: `GEN` -> 平台目录；blob_c/h -> **BUILD**（自包含）；
+  编译补 `/I BUILD`（**MSVC 本会搜源文件目录所以测试本就过** ——
+  补上是让**依赖显式**，防将来把 runner 挪走后静默失败）；顺带修 4 处
+  `text=True` 的 `UnicodeDecodeError`（`cl` 中文输出 -> 读者线程崩溃；
+  **既有问题**，改路径时首次看见 -> 修掉不留隐患）
+
+**门禁抓到的依赖（验证救了它）**：
 ```
 protchain P4 FAIL: license_pubkey.c missing
 根因: os.path.join(REPO, 'demo', 'gen', 'license_pubkey.c')  <- **flat**

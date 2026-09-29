@@ -46,12 +46,17 @@ import winproc  # noqa: E402
 
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+# W5: 用平台目录（flat 已清理）
+sys.path.insert(0, os.path.join(REPO, 'tools'))
+import genpaths as _gp  # noqa: E402
 PY = sys.executable
 VMC = os.path.join(REPO, 'tools', 'vmc.py')
 VMENC = os.path.join(REPO, 'tools', 'vmenc.py')
 JSON = os.path.join(REPO, 'demo', 'vm_build.json')
 BUILD = os.path.join(REPO, 'build')
-GEN = os.path.join(REPO, 'demo', 'gen')
+GEN = _gp.paths('win').gen   # W5: **平台目录**（flat 已清理）
+#   原为 join(REPO, 'demo', 'gen') = **flat** -> 该目录已被清理；
+#   且 blob_c/h 曾写在这里，导致**每次跑测试就复活 2 个 flat 文件**。
 
 CASES = []
 
@@ -152,8 +157,10 @@ int main(void)
 def run_case(name, src, host_hex):
     vmc_src = os.path.join(BUILD, 'vmc_case.vmc')
     vmc_vasm = os.path.join(BUILD, 'vmc_case.vasm')
-    blob_c = os.path.join(GEN, 'vmc_case_runner_blob.c')
-    blob_h = os.path.join(GEN, 'vmc_case_runner_blob.h')
+    # W5: blob 写 **BUILD**（与其余 vmc 产物一致，自包含）
+    #   原写 GEN（flat）-> **每次跑测试就复活 flat 文件**（清理无效）
+    blob_c = os.path.join(BUILD, 'vmc_case_runner_blob.c')
+    blob_h = os.path.join(BUILD, 'vmc_case_runner_blob.h')
     runner_c = os.path.join(BUILD, 'vmc_case_runner.c')
     exe = os.path.join(BUILD, 'vmc_case_runner.exe')
 
@@ -161,12 +168,14 @@ def run_case(name, src, host_hex):
         f.write(src)
     r = winproc.run([PY, VMC, vmc_src, vmc_vasm,
                         os.path.join(BUILD, 'vmc_case.layout.json'), '--seed', '0x1234', '--flatten'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                        encoding='utf-8', errors='replace')   # W5: 防 cl 中文输出解码崩溃
     if r.returncode != 0:
         return 'COMPILE FAIL: ' + r.stderr.strip()
     r = winproc.run([PY, VMENC, 'assemble', vmc_vasm, JSON, blob_c, blob_h,
                         '--name', 'g_vmc_case_runner'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                        encoding='utf-8', errors='replace')   # W5: 防 cl 中文输出解码崩溃
     if r.returncode != 0:
         return 'ASSEMBLE FAIL: ' + r.stderr.strip()
     with open(runner_c, 'w', encoding='utf-8') as f:
@@ -195,6 +204,7 @@ def run_case(name, src, host_hex):
     plat_src = os.path.join(REPO, 'src', 'platform', 'prot_platform_win.c')
     clcmd = ('cl /nologo /O2 /W4 /WX /std:c11 /utf-8 '
              '/I "' + os.path.join(REPO, 'include') + '" /I "' + GEN + '" '
+             '/I "' + BUILD + '" '   # W5: blob 头在 BUILD
              '/Fe:"' + exe + '" '
              '"' + os.path.join(REPO, 'src', 'vm.c') + '" '
              '"' + os.path.join(REPO, 'src', 'crc32.c') + '" '
@@ -204,7 +214,8 @@ def run_case(name, src, host_hex):
     bat = os.path.join(BUILD, 'vmc_cl.bat')
     with open(bat, 'w', encoding='ascii') as f:
         f.write('@echo off\r\ncall "%s" >nul 2>&1\r\n%s\r\n' % (vcvars, clcmd))
-    r = winproc.run([bat], capture_output=True, text=True)
+    r = winproc.run([bat], capture_output=True, text=True,
+                        encoding='utf-8', errors='replace')   # W5: 防 cl 中文输出解码崩溃
     if r.returncode != 0:
         return 'CL FAIL: ' + (r.stderr or r.stdout or '')[-400:]
     env = dict(os.environ)
@@ -238,7 +249,8 @@ def main():
         r = winproc.run([PY, VMC, vmc_src,
                             os.path.join(BUILD, 'vmc_err.vasm'),
                             os.path.join(BUILD, 'vmc_err.layout.json')],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                        encoding='utf-8', errors='replace')   # W5: 防 cl 中文输出解码崩溃
         ok = r.returncode != 0
         print('%-12s  %s' % ('err%d' % (i + 1), 'PASS' if ok else 'FAIL'))
         if not ok:
