@@ -64,6 +64,70 @@ def artifact_section_names(path):
         return {s['name'] for s in sections_of(f.read())}
 
 
+#: ## gen_padding 会填充的**标准节**（与 tools/gen_padding.py 的 PADDABLE 一致）
+#:   填充引用允许 = 本平台 json 的生成名 **∪** 这几个标准节。
+STD_PAD_SECTIONS = {'.text', '.rdata'}
+
+
+def check_padding_names(gen_dir):
+    """**检查 ①**: `prot_padding.c` 引用的节名 ⊆ 本平台 json。
+
+    ## 为什么需要（§34.2 的判据盲区）
+      实测: Linux 的 padding 引用 **Windows 的节名**（`.gk9o791` 等）——
+      既有两道检查**同时放行**:
+        · `节名随机化` 查**产物**（由 C 源 `PROT_SEC_*` 宏产生，与填充无关）
+        · `文件大小统一` 只比 3 次构建**彼此**一致（**同样错 -> 同样一致**）
+      => "**自洽 ≠ 正确**" —— 需要**独立参照**（本检查即那个参照）。
+
+    返回 (ok, detail)。padding 未生成 -> **info 不判失败**（可能是组合差异）。
+    """
+    pad = os.path.join(gen_dir, 'prot_padding.c')
+    sj = os.path.join(gen_dir, 'prot_sections.json')
+    if not os.path.isfile(pad):
+        return True, 'padding not generated (info)'
+    if not os.path.isfile(sj):
+        return False, 'missing %s' % sj
+    try:
+        secs = json.load(open(sj, encoding='utf-8')).get('sections', {})
+    except (OSError, ValueError) as e:
+        return False, 'cannot parse %s: %s' % (sj, e)
+
+    src = open(pad, encoding='utf-8', errors='replace').read()
+    refs = set(re.findall(r'"(\.[A-Za-z0-9_]+)"', src))
+    if not refs:
+        return True, 'padding has no section literals (info)'
+    allowed = set(secs.values()) | STD_PAD_SECTIONS
+    foreign = sorted(refs - allowed)
+    if foreign:
+        # ## 这正是 §34.2 的缺陷形态（**实测发生过**）
+        return False, ('padding 引用**非本平台**节名: %s '
+                       '(gen_dir=%s; allowed=本平台 json + 标准节)'
+                       % (foreign, os.path.basename(gen_dir)))
+    return True, ('padding %d 节名 ⊆ json(%d 生成名) + 标准节'
+                  % (len(refs), len(secs)))
+
+
+def check_flat_clean(gen_root):
+    """**检查 ②**: `demo/gen/` 根下**无文件**（flat 已清理，防复活）。
+
+    ## 为什么需要（§34.6 的回归风险）
+      flat 清理后**曾被 `vmc_tests` 复活**（根因已修 -> blob 改写 BUILD）
+      —— 但**无守护** -> 将来谁再写 flat 都会静默出现，
+      而且其中若有**旧平台的 json**（如 `prot_sections.json`），
+      会成为**下一次 §34.2 缺陷的诱饵**。
+
+    返回 (ok, detail)。
+    """
+    if not os.path.isdir(gen_root):
+        return False, 'missing dir %s' % gen_root
+    flat = sorted(f for f in os.listdir(gen_root)
+                  if os.path.isfile(os.path.join(gen_root, f)))
+    if flat:
+        return False, ('flat 文件复活（本应只有 win/ 与 linux/ 子目录）: '
+                       '%s' % flat)
+    return True, 'flat clean (0 files, only win/ linux/)'
+
+
 def check(gen_dir, artifact):
     """核心判据: **生成物节名 ⊆ 产物节名** + expect 一致性。
 
@@ -129,6 +193,16 @@ def check(gen_dir, artifact):
         if isinstance(v, str) and v not in real:
             optional_missing.append('%s=%s' % (k, v))
 
+    # ## D3（2026-09-29）: 两个判据盲区检查
+    #   ① padding 节名 ⊆ 本平台 json（§34.2 "自洽 != 正确"的守护）
+    #   ② flat 目录无残留（§34.6 防"复活"回归）
+    ok_pad, det_pad = check_padding_names(gen_dir)
+    if not ok_pad:
+        problems.append('PAD: %s' % det_pad)
+    ok_flat, det_flat = check_flat_clean(os.path.dirname(gen_dir))
+    if not ok_flat:
+        problems.append('FLAT: %s' % det_flat)
+
     # ② expect_default.c 与 vm_build.json 一致性（同 P6）
     exp = os.path.join(gen_dir, EXPECT_DEFAULT['linux'])
     vj = VM_BUILD_JSON['linux'] if 'linux' in gen_dir.replace('\\', '/') \
@@ -161,8 +235,11 @@ def check(gen_dir, artifact):
         # 已知设计差异（见 REQUIRED 注释）—— **提示，不判失败**
         note = ('; info: optional sections absent by design: %s'
                 % ','.join(optional_missing))
-    return True, ('%d/%d section names applied; expect consistent%s'
-                  % (len(secs) - len(optional_missing), len(secs), note))
+    return True, ('%d/%d section names applied; expect consistent; '
+                  'pad=%s; flat=%s%s'
+                  % (len(secs) - len(optional_missing), len(secs),
+                     'ok' if ok_pad else det_pad,
+                     'ok' if ok_flat else det_flat, note))
 
 
 def main():
@@ -281,6 +358,37 @@ def selftest():
         case('T5 **负向**: expect 不一致 -> **FAIL 且因 expect**',
              (not ok5) and ('expect mismatch' in det5))
         print('      detail: %s' % det5[:90])
+
+        # ## T6 **负向**: padding 节名错配（**正是 §34.2 的缺陷形态**）
+        #
+        # 构造: 临时目录放 **win 的 json + linux 的 padding** ->
+        # padding 引用的名字都不在该 json 里 -> **必须 FAIL**。
+        tmp6 = tempfile.mkdtemp(prefix='csp_pad_')
+        try:
+            shutil.copyfile(os.path.join(PLATFORMS['win'][0],
+                                         'prot_sections.json'),
+                            os.path.join(tmp6, 'prot_sections.json'))
+            shutil.copyfile(os.path.join(PLATFORMS['linux'][0],
+                                         'prot_padding.c'),
+                            os.path.join(tmp6, 'prot_padding.c'))
+            ok6, det6 = check_padding_names(tmp6)
+            case('T6 **负向**: padding(win) + json(win 配 linux) -> 必须 FAIL',
+                 not ok6)
+            print('      detail: %s' % det6[:90])
+        finally:
+            shutil.rmtree(tmp6, ignore_errors=True)
+
+        # ## T7 **负向**: flat 文件复活 -> 必须 FAIL
+        #
+        # 在**临时目录**造（**不碰真 demo/gen** —— 否则失败/中断会留污染）。
+        tmp7 = tempfile.mkdtemp(prefix='csp_flat_')
+        try:
+            open(os.path.join(tmp7, 'stray.c'), 'w').close()
+            ok7, det7 = check_flat_clean(tmp7)
+            case('T7 **负向**: flat 出现文件 -> 必须 FAIL', not ok7)
+            print('      detail: %s' % det7[:90])
+        finally:
+            shutil.rmtree(tmp7, ignore_errors=True)
     finally:
         shutil.rmtree(tmp2, ignore_errors=True)
 
@@ -289,7 +397,7 @@ def selftest():
     if fails:
         print('[check_state_platform-selftest] FAIL: %s' % '; '.join(fails))
         return 1
-    print('[check_state_platform-selftest] PASS: 正向 + 4 负向均可自证')
+    print('[check_state_platform-selftest] PASS: 1 前置 + 1 正向 + **6 负向**均可自证')
     return 0
 
 

@@ -2670,3 +2670,74 @@ selftest:        **6 项（含 3 负向）PASS**，且**不动真锁**
 ---
 
 *2026-09-29 · D2: 并发状态锁（自检 6/6 含 3 负向；真实并发互斥实测；finally 释放；门禁 25 项）*
+
+---
+
+## 37. ✅ D3 完成：判据盲区固化为检查（2026-09-29）
+
+### 37.1 解决的问题（**§34.2 的守护**）
+
+§34.2 实测: Linux 的 `prot_padding.c` 引用 **Windows 的节名** ——
+两道既有检查**同时放行**:
+```
+节名随机化  -> 查**产物**（由 C 源 PROT_SEC_* 宏产生，**与填充无关**）
+文件大小统一 -> 只比 3 次构建**彼此**一致（**同样错 -> 同样一致**）
+=> "**自洽 ≠ 正确**"（根因已修，但**无守护** -> 将来可静默复发）
+```
+
+### 37.2 交付（进 `tools/check_state_platform.py`）
+
+| # | 检查 | 判据 |
+|---|------|------|
+| ① | **`check_padding_names`** | `prot_padding.c` 引用的节名 ⊆ **本平台 json ∪ 标准节**（`.text`/`.rdata`，与 `gen_padding.PADDABLE` 一致）|
+| ② | **`check_flat_clean`** | `demo/gen/` 根下**无文件**（只有 `win/`、`linux/` 子目录）—— 防 §34.6 的"复活"回归 |
+
+两者都 **抽成独立函数** -> 自检可直接喂任意路径（**不依赖仓库状态、不污染真目录**）。
+
+**实跑输出**：
+```
+[win]   ok  4/4 section names applied; expect consistent; pad=ok; flat=ok
+[linux] ok  3/4 section names applied; expect consistent; pad=ok; flat=ok;
+          info: optional sections absent by design: protxec=.by9vyzs
+[check_state_platform] PASS (2/2)
+```
+
+### 37.3 自检 **6 -> 8**（1 前置 + 1 正向 + **6 负向**）
+
+```
+T1 正向  linux 产物 + linux 生成物 -> PASS
+T2 负向  linux 产物 + **win json**  -> FAIL（cross-platform mismatch）
+T3 负向  win 产物 + linux json       -> FAIL
+T4 负向  文件缺失                    -> FAIL（不崩溃）
+T5 负向  expect 不一致               -> FAIL **且因 expect**（防"因错原因通过"）
+T6 负向  **padding(win) + json(win)** -> FAIL
+         detail: padding 引用**非本平台**节名: ['.9onmfzm', '.f3ha352', '.wwn4fl6']
+T7 负向  **flat 出现文件**            -> FAIL
+         detail: flat 文件复活... ['stray.c']
+[check_state_platform-selftest] PASS: 1 前置 + 1 正向 + **6 负向**均可自证
+```
+
+> **T6 的构造刻意复刻 §34.2 的缺陷形态**（win 的 json + linux 的 padding）
+> —— 这是"**用真实发生过的缺陷形态做负向**"，比造一个抽象错配更有力。
+>
+> **T7 在临时目录造**（**不碰真 demo/gen**）—— 否则自检中断会留污染。
+> 这与 §34.6 清理时"先备份再删"是同一条纪律。
+
+### 37.4 验收
+
+```
+selftest:   **8 项**（1 前置 + 1 正向 + 6 负向）
+实跑:       PASS (2/2)，新输出含 `pad=ok; flat=ok`
+门禁:       **25 项**（构建状态自检 ok；唯一失败 = git 未提交）
+```
+
+### 37.5 遗留
+
+| 遗留 | 说明 |
+|------|------|
+| `check_state_platform` 只在**门禁**跑 | ci_linux 未含（其内容跨平台、门禁已覆盖双平台目录）—— **有意**，避免 ci 变长 |
+| 标准节白名单 `STD_PAD_SECTIONS` | 若将来 `gen_padding.PADDABLE` 加新标准节，此处需同步（**不改会 FAIL-loud**，不会静默漏）|
+
+---
+
+*2026-09-29 · D3: 判据盲区固化（padding ⊆ json + flat 无残留；selftest 6->8 含 6 负向）*
