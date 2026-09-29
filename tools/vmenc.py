@@ -612,6 +612,35 @@ def _csv_safe(v, what, maxlen):
     return v
 
 
+
+def _expires_safe(v):
+    """**D4 续（2026-09-29）: expires 范围校验**（drill6.V2 的真实残余）。
+
+    ## 实测的缺陷
+```
+      vmenc issue --expires -1 / 10^30 / 4294967296  -> 全部 rc=0 写盘
+      license_message: struct.pack('<I', expires & 0xFFFFFFFF)
+```
+      -> **静默截断**: -1 变 0xFFFFFFFF（2106 年）、10^30 取低 32 位 ->
+      **签发者以为设了 A，落盘是 B**；且**哈希链台账记的是原值**
+      -> **台账与产物不一致**（审计对不上）。
+
+      ## 为什么算真缺陷（而非 drill6 记的"自伤"）
+        授权语义错 + 审计不一致 —— 不只是"影响自己"。
+
+      ## 与 V3 同一模式
+        `_csv_safe`（D-D4 落地）管**字符串字段**；本函数补**数值范围**——
+        同属 drill6 诚实边界③"工具层输入长度/格式过滤缺失"。
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise VasmError('expires 必须是整数: %r' % (v,))
+    if n < 0 or n > 0xFFFFFFFF:
+        raise VasmError('expires 越界 [0, 4294967295]: %d'
+                        '（**不截断** —— 静默截断会让台账与产物不一致）' % n)
+    return n
+
 def _ledger_prev_hash(log_path):
     """D-D2: 台账哈希链 — 上一行 body (去 prev 标记) 的 SHA-256 hex."""
     try:
@@ -644,7 +673,8 @@ def cmd_issue(args):
     elif isinstance(mid, str):
         mid = parse_machine_id_override(mid)
     tier = args.tier
-    expires = args.expires or 0
+    # D4 续: expires 范围校验（**不截断**）
+    expires = _expires_safe(args.expires or 0)
     digest = _license_sha256(serial, mid, tier, expires)
     sig = rsa_sign(d, n, digest)
     out = [
@@ -1176,7 +1206,8 @@ def cmd_sign(args):
     elif isinstance(mid, str):
         mid = parse_machine_id_override(mid)
     tier = args.tier
-    expires = args.expires or 0
+    # D4 续: expires 范围校验（**不截断**）
+    expires = _expires_safe(args.expires or 0)
     digest = _license_sha256(serial, mid, tier, expires)
     sig = rsa_sign(d, n, digest)
     out = [
