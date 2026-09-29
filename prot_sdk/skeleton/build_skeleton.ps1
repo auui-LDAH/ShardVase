@@ -194,11 +194,20 @@ if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: indirect' }
 #     GUI    -> 排除 business_stub.c
 #   用户自己的业务文件 (其它 *.c) 不受影响, 照常纳入。
 $excludeStub = if ($Gui) { 'business_stub.c' } else { 'business_stub_gui.c' }
+# ## ⚠️ 每个路径**必须加引号**（R2.3 实测, 2026-09-29）
+#
+#   本仓库路径含空格（`…\Reverse Engineering\…`）——
+#   `-join ' '` 生成的**裸路径**在 `cmd /c "cl …"` 里会被**拆词**:
+#     `cl: warning D9024: 无法识别的源文件类型"D:\specifically"，假定为对象文件`
+#     -> `rc=1`、无产物 -> **从零接入失败**（R2.3 实测复现）。
+#
+#   这正是 `build.ps1` **早已记名**的坑（其注释: "每个源路径必须加引号"）
+#   —— **脚手架的 `$busSrcs` 漏了**（同文件 L227 的 `$compSrcJoined` 已加 ✓）。
 $busSrcs = ((Get-ChildItem -LiteralPath $Project -Filter '*.c' -File |
              Where-Object { $_.Name -ne 'app_main.c' -and
                             $_.Name -ne 'pub-blob.c' -and
                             $_.Name -ne $excludeStub }) |
-            ForEach-Object { $_.FullName }) -join ' '
+            ForEach-Object { "`"$($_.FullName)`"" }) -join ' '
 $srcBase = "$REPO\src"
 # 显示名不参与编译宏 (空格会破坏 -D); 显示名改在工程 strings.txt 的 BANNER.
 $defines = "-DAPP_EXE_NAME=`"$appName`" $lite $vmcalcDef"
@@ -206,8 +215,16 @@ $vmcalcObj = if ($vmcalcDef) { "`"$genDir\vmcalc_stubs.c`"" } else { '' }
 if ($cfg.key_mode -eq 'pub') {
     $signStep = ''  # 无本地私钥, 构建期自签 license 不可行 -> smoke 走无 license 路径
 } else {
-    $signStep = '& $py "$REPO\tools\vmenc.py" sign --key ' + (Join-Path $genDir 'license_priv.json') +
-                " --json $vb --out " + (Join-Path $outDir 'license.txt')
+    # ## ⚠️ 路径**必须加引号**（R2.3 实测第 2 处, 2026-09-29）
+    #
+    #   实测错误（从零接入时）:
+    #     `vmenc.py: error: unrecognized arguments: for development and work\…`
+    #     ^^^ 裸路径在**空格处被拆词**（仓库根是 `…\Reverse Engineering\…`）
+    #
+    #   `Invoke-Expression` 拼接的字符串**不会自动加引号** ->
+    #   与 `$busSrcs` **同根因**（脚手架里第二处漏加）。
+    $signStep = '& $py "$REPO\tools\vmenc.py" sign --key ' + "`"$(Join-Path $genDir 'license_priv.json')`"" +
+                " --json `"$vb`" --out " + "`"$(Join-Path $outDir 'license.txt')`""
 }
 
 # ---- 5a. 组合 (阶段4): 由 tools/compose.py 决定参与编译的 src/*.c + 生成
