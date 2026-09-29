@@ -34,6 +34,7 @@ to_wsl / _norm_exit / _norm_expect / _run_demo_wsl / run_demo(/分派)
   · `DISTRO` 固定 `Ubuntu-24.04`（本项目 Linux 环境；换发行版需改此处）
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -136,6 +137,85 @@ def run_demo_via_wsl(exe, args=None, stdin=None, timeout=60,
     return (p.returncode,
             (out or b'').decode('utf-8', 'replace'),
             (err or b'').decode('utf-8', 'replace'))
+
+
+# ---------------------------------------------------------------------------
+# WSL 内的 mock 服务器（W4, 2026-09-25 —— e2e 的在线用例与 attacks 的 A12 共用）
+# ---------------------------------------------------------------------------
+
+
+class WslMockServer(object):
+    """**WSL 内**的 mock 服务器句柄。
+
+    ## 为什么需要
+      Linux 侧的 demo **在 WSL 内**，而 mock 若跑在 Windows Python，
+      **WSL 的 127.0.0.1 不等于 Windows 的**（实测 curl rc=7）——
+      demo 永远连不上。 => 服务器必须**也进 WSL**（同 loopback 才通）。
+
+    ## 接口与 `http.server.HTTPServer` **对齐**（`server_address` / `shutdown`）
+      调用方**只用这两个** -> 实现同接口即可**不动调用方**
+      （**适配层吸收差异**，与 A 阶段平台层同一做法）。
+    """
+
+    def __init__(self, proc, port):
+        self._proc = proc
+        self.server_address = ('127.0.0.1', port)
+
+    def shutdown(self):
+        """杀掉 WSL 内的服务进程（**必做**，否则端口/进程泄漏）。"""
+        try:
+            self._proc.terminate()
+            self._proc.wait(timeout=5)
+        except Exception:                     # noqa: BLE001
+            try:
+                self._proc.kill()
+            except Exception:                 # noqa: BLE001
+                pass
+
+
+def start_wsl_mock(extra_args, repo=None, distro=None, timeout=30):
+    """在 **WSL 内**起 `tools/mock_http.py`，返回 `WslMockServer`。
+
+    ## 协议（与 `tools/mock_http.py` 对齐）
+      启动 -> **stdout 第一行 `PORT=<n>`** -> 本函数读它。
+
+    ## ⚠️ 参数**必须用命令行**（§32.2 实测教训）
+      Windows 环境变量**不自动进入 WSL**（需 `WSLENV`）——
+      用环境变量传参**会静默丢失**（服务器永不吊销 -> 假通过/假失败）。
+
+    ## 用法
+      `start_wsl_mock(['--mode', 'check', '--revoke-serial', serial])`
+      `start_wsl_mock(['--mode', 'expect', '--wrong'])`
+      `start_wsl_mock(['--mode', 'blob', '--blob-file', to_wsl(path)])`
+    """
+    import subprocess as _sp
+    import time as _time
+
+    repo = repo or REPO
+    distro = distro or DISTRO
+    cmd = ['wsl.exe', '-d', distro, '--', 'python3',
+           'tools/mock_http.py'] + list(extra_args)
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                     cwd=repo, env=env)
+    t0 = _time.time()
+    port = None
+    while _time.time() - t0 < timeout:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        m = re.match(r'PORT=(\d+)', line.decode('utf-8', 'replace').strip())
+        if m:
+            port = int(m.group(1))
+            break
+    if port is None:
+        try:
+            proc.terminate()
+        except Exception:                     # noqa: BLE001
+            pass
+        raise RuntimeError('WSL mock 未返回 PORT（环境问题）')
+    return WslMockServer(proc, port)
 
 
 # ---------------------------------------------------------------------------

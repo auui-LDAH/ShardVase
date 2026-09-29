@@ -515,9 +515,16 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
 
-        srv = _hs.HTTPServer(('127.0.0.1', 0), _H)
-        th = _th.Thread(target=srv.serve_forever, daemon=True)
-        th.start()
+        # ## W4: **按平台分派** —— Linux 侧服务必须进 WSL
+        #   （demo 在 WSL 内，Windows 侧的 127.0.0.1 它连不到 ——
+        #    实测 curl rc=7，§32.2 记录）。
+        #   `mock_http --mode expect --wrong` 的语义与本类 `_H` **相同**。
+        if _PLATFORM != 'win':
+            srv = _plat.start_wsl_mock(['--mode', 'expect', '--wrong'])
+        else:
+            srv = _hs.HTTPServer(('127.0.0.1', 0), _H)
+            th = _th.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
         url = 'http://127.0.0.1:%d/v1/check' % srv.server_address[1]
         code, out = run_demo(args=['--license-file', LICENSE,
                                    '--vm-blob', os.path.join(REPO, 'build', 'vm.blob'),
@@ -542,15 +549,15 @@ def main():
         #     demo **不会发起请求**，服务器放哪里都无用。
         #     => 本项在 Linux 属"**设计上不可验证**"（非"待做"）。
         #        要在 Linux 通过需**先实现 Linux HTTP**（产品特性决策）。
-        if _PLATFORM != 'win':
-            results.append(('A12 offline-fix-expect', 'PLATFORM_NA',
-                            'Linux 无 HTTP 能力（prot_plat_http_get* 返回 '
-                            'PROT_ERR_UNSUPPORTED，设计决策）'))
-        else:
-            results.append(('A12 offline-fix-expect',
-                            'PASS' if ok else 'FAIL',
-                            'code=%d (online session value overrides '
-                            'local fix)' % code))
+        # ## W4: **去 NA**（2026-09-25）—— Linux 已有 HTTP 能力
+        #   此前 Linux 侧标 `PLATFORM_NA`，理由是
+        #   `prot_plat_http_get*` 返回 `PROT_ERR_UNSUPPORTED`（**W3 之前**）。
+        #   **W3 之后**实现 POSIX socket HTTP -> 本用例**真跑**。
+        #   => 与 Windows **同一判据**（不再有平台特例）。
+        results.append(('A12 offline-fix-expect',
+                        'PASS' if ok else 'FAIL',
+                        'code=%d (online session value overrides '
+                        'local fix)' % code))
     except Exception as e:
         results.append(('A12 offline-fix-expect', 'FAIL', repr(e)))
 

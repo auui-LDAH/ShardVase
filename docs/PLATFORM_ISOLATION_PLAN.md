@@ -2233,3 +2233,79 @@ REVOKE 来自 **环境变量 W4_REVOKE** -> **没传进 WSL** -> None -> 永不�
 ---
 
 *2026-09-25 · W4 前置验证成功（Linux 在线路径可用 + "环境变量跨不过 WSL"的教训）*
+
+---
+
+## 33. ✅ W4 完成：在线用例**真跑**，NA 大幅归零（2026-09-25）
+
+### 33.1 交付
+
+| # | 改动 | 说明 |
+|---|------|------|
+| ① | **`tools/mock_http.py` 复活** | WSL 内运行；三类 handler（`check`/`expect`/`blob`），**语义逐字复刻** e2e 的 `_*Handler` |
+| ② | 助手移入**公共层** `tests/_platform.py` | `WslMockServer` + `start_wsl_mock` —— **e2e 与 attacks 共用**（单一来源）|
+| ③ | e2e 的 `start_*` **平台分派** | Linux 起 WSL 内 mock（同 loopback 才通）；调用方**零改动**（适配层吸收差异）|
+| ④ | **删 `ONLINE_LABELS` + `_Results`** | 在线用例全过 -> NA 机制为空 -> **死代码删除**（不留失效判定逻辑）|
+| ⑤ | attacks **A12 去 NA** | 改为真跑，与 Windows **同一判据**（无平台特例）|
+
+### 33.2 烟测：三类 handler 全部正确（WSL 内 + 真 curl）
+```
+check(吊销)  -> {"status":"revoked","reason":"e2e"}
+check(不吊销) -> {"status":"ok","tier":1}
+expect(正确) -> {"status":"ok","tier":1,"expect1":"0x661a770a5c713b7e",...}（**复算**）
+expect(错误) -> {"status":"ok","tier":1,"expect1":"0x1111111111111111",...}
+blob        -> PROTVMB1...（真实 magic）
+```
+
+### 33.3 验收（**NA 归零**）
+
+| 指标 | 之前 | 现在 |
+|------|------|------|
+| e2e（Linux）NA | **7** | **1**（仅 T3 = Windows 调试专用）|
+| attacks（Linux）NA | **1** | **0** |
+| e2e（Linux）PASS | 21 | **27**（6 项在线真跑）|
+
+```
+Linux e2e:   **PASS 27 / FAIL 0 / SKIP 0 / NA 1**
+Windows e2e: PASS 27 / FAIL 0 / SKIP 1 / NA 0（零回归）
+attacks:     **双平台 12 / 12 / NA 0**
+门禁: **23/24**（唯一失败 = git 未提交）
+ci_linux: **12/12**
+```
+
+**6 项在线用例真跑成功**（关键证据）：
+```
+T22 online-revoked   PASS (exit=228 = 0xB1E4 低 8 位)  <- **在线吊销真实生效**
+T23 online-ok        PASS (exit=0)
+T24 online-degrade   PASS
+T25/T26 session      PASS (0 / 1)
+T27/T28 online-blob  PASS (0 / 11)
+```
+
+### 33.4 过程中修的四处（**都是 NameError 类的接线问题**）
+
+| # | 问题 | 根因 | 修 |
+|---|------|------|----|
+| 1 | `name 're' is not defined` | 我把 `start_wsl_mock` 写进 `_platform.py` 却没 `import re` | 补 import |
+| 2 | `name 'to_wsl' is not defined` | **S5 正则事故**吞掉了 e2e 的 `to_wsl` 别名（当时 `_run_demo_wsl` 改走 `_plat` 未暴露）| 补别名 + 在 S5 记录基础上追加一笔 |
+| 3 | `results = _Results()` 指向已删类 | 删机制后漏改调用点 | 改为 `[]` |
+| 4 | A12 锚点用 `threading.Thread` 实际是 `_th.Thread` | **锚点没按实际文本写** | 按实际文本改 |
+
+> ### 🎯 教训（**S5/S6 事故的第三次同类**）
+> "改结构/删代码"时的**锚点与调用点**必须**同时更新** ——
+> 本次四处都是**删/搬代码后残留引用**。
+> **统一对策**（再次确认）: 改完立刻 `py_compile` + **grep 残留**（我做了，
+> 但 `to_wsl` 那处漏在"靠 grep 已删符号"之外 —— 靠**运行时 NameError** 才暴露）。
+> => **更可靠的一步**: 改完后**跑一次真实用例**（不只是编译）——
+> NameError 类问题**编译发现不了**。
+
+### 33.5 遗留
+
+| 遗留 | 说明 |
+|------|------|
+| **T3 = 唯一 NA** | Windows 调试会话专用（本环境 `winerror 5`，§28.9 已定性为**环境限制**）|
+| `mock_http` 与 e2e 的 handler 是两处实现 | 语义靠注释表格对齐；**以 e2e 为准**（判据来源）—— 若漂移，e2e 会先红 |
+
+---
+
+*2026-09-25 · W4: 在线用例真跑（NA 7->1 / 1->0）+ mock_http 复活 + 助手入公共层*

@@ -79,6 +79,10 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _platform as _plat          # noqa: E402
 
+# `to_wsl` 来自公共层（S5）；S5 的正则事故曾把它吞掉（`_run_demo_wsl`
+# 改走 `_plat.run_demo_via_wsl` 后一直没暴露，W4 起 blob mock 需要它）。
+to_wsl = _plat.to_wsl
+
 _PLATFORM = _plat.parse_platform(sys.argv)
 
 sys.path.insert(0, os.path.join(REPO, 'tools'))
@@ -143,6 +147,9 @@ def load_strings(path):
     return out
 
 
+# W4: WSL mock 助手来自**公共层** `tests/_platform.py`
+#     （e2e 与 attacks 共用 —— 单一来源，避免"两处实现漂移"）。
+
 def _norm_exit(code, platform=None):
     """平台语义归一化（S5: 委托公共层）。"""
     return _plat.norm_exit(code, platform or _PLATFORM)
@@ -153,59 +160,16 @@ def _norm_expect(expected, platform=None):
 
 
 
-#: ## 在线类用例标签（C-3）—— Linux 侧**一律 PLATFORM_NA**
-#: ## 探测证据（2026-09-25，实测）
-#: ```
-#: curl 127.0.0.1:PORT -> **Connection refused** (rc=7)
-#: python urllib -> 同样失败
-#: => WSL2 与 Windows **loopback 独立**；mock 服务器跑在
-#:    Windows Python -> WSL 内**不可达**
-#: ```
-#: ## 为什么"PASS"的也标 NA（**诚实纪律**）
-#:   服务器不可达时 demo 走**离线/失败**路径，其 exit code **恰好**符合
-#:   某些判据（实测: T23/T25 期望 0 拿到 0；T24 期望降级拿到降级；
-#:   T28 期望 11 拿到 11）—— **那是巧合，不是验证通过**。
-#:   标 NA + 注明原因（"未验证 != 通过"）。
-#: **剩余工作**: mock 服务器放进 WSL 内（或用 host IP）-> 这些用例可完整验证。
-#: ## ⚠️ T24 **不在**此列（S1 修正, 2026-09-25）
-#:   T24 的判据是"**不可达 -> 静默降级**" —— Linux 侧**同样走降级分支**
-#:   （原因不同: Linux 是 `PROT_ERR_UNSUPPORTED`，Windows 是网络不可达，
-#:    但**代码路径相同** = `prot_plat_http_*` 返回非 OK 的 else 分支）
-#:   => 可**真验证**（见 T24 处的说明）。
-ONLINE_LABELS = ('T22 ', 'T23 ', 'T25 ', 'T26 ', 'T27 ', 'T28 ')
-
-
-class _Results(list):
-    """结果列表（**单点平台适配**）。
-
-    在 `linux` 侧把**在线用例**的状态改写为 `PLATFORM_NA`
-    —— 含那些"巧合通过"的（见 ONLINE_LABELS 注释）。
-    """
-
-    def append(self, item):
-        if (_PLATFORM != 'win'
-                and isinstance(item, tuple)
-                and len(item) >= 2
-                and isinstance(item[0], str)
-                and item[0].startswith(ONLINE_LABELS)):
-            detail = item[2] if len(item) > 2 else ''
-            # ## 根因（S1/S2 实测修正, 2026-09-25）
-            #   **不是**"服务器位置"问题（WSL2 与 Windows loopback 独立
-            #   只是**表象**），而是 **Linux 侧没有 HTTP 能力**:
-            #   `prot_plat_http_get*` 如实返回 `PROT_ERR_UNSUPPORTED`
-            #   （源码决策: 不用 libcurl，①不引入新依赖 ②诚实 ③可扩展）
-            #   => demo **不会发起请求** -> 服务器放哪里都无用
-            #      （实测: 吊销 serial 时 demo 仍 license: 1）。
-            #
-            #   **为什么仍标 NA**: 这不是"待做"而是"**设计上不可验证**"
-            #   —— 把 mock 放进 WSL 也无效；要让这些用例在 Linux 通过，
-            #   需**先实现 Linux HTTP**（产品特性决策，非测试缺口）。
-            super().append((item[0], 'PLATFORM_NA',
-                            'Linux 无 HTTP 能力（prot_plat_http_get* 返回 '
-                            'PROT_ERR_UNSUPPORTED，设计决策）；'
-                            '原 detail: %s' % detail))
-        else:
-            super().append(item)
+# W4: **已删** `ONLINE_LABELS` 与 `_Results`（2026-09-25）
+#
+#   它们曾在 **W3 之前**把 6 项在线用例标 `PLATFORM_NA`
+#   （Linux 无 HTTP 能力 -> 判据巧合成立时按"假通过"处理）。
+#
+#   **W3 之后**: Linux 有了 POSIX socket HTTP，这些用例**已真跑全过**
+#   -> NA 机制为空 -> **死代码** -> 删除（**不留失效的判定逻辑**）。
+#
+#   仍标 `PLATFORM_NA` 的只剩 **T3**（Windows 调试会话专用）——
+#   那是**直接 append** 的，不经此机制。
 
 def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
     """运行 demo；返回 (exitcode, stdout, stderr)。
@@ -430,7 +394,7 @@ def main():
     msg_dbg = strs['MSG_DBG']
     msg_tamper = strs['MSG_TAMPER']
 
-    results = _Results()
+    results = []    # W4: _Results(NA 机制) 已删（在线用例真跑）
 
     # ---- T1: 正确序列号 + 有效授权 (A1) --------------------------------
     try:
@@ -825,6 +789,22 @@ def main():
             self.wfile.write(self.serve_blob)
 
     def start_blob_mock(blob_bytes):
+        # W4: **按平台分派**
+        # Linux 侧: 字节**无法经命令行传** -> 写临时文件再让 mock 下发
+        # （**文件是最通用的跨边界通道**；参数仍用命令行而非环境变量，
+        #  见 §32.2）。
+        if _PLATFORM != 'win':
+            tmp = os.path.join(BUILD, '_w4_blob.bin')
+            with open(tmp, 'wb') as _f:
+                _f.write(blob_bytes)
+            try:
+                return _plat.start_wsl_mock(['--mode', 'blob',
+                                        '--blob-file', to_wsl(tmp)])
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         _BlobHandler.serve_blob = blob_bytes
         srv = http.server.HTTPServer(('127.0.0.1', 0), _BlobHandler)
         t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -1010,6 +990,12 @@ def main():
             self.wfile.write(body)
 
     def start_mock(revoke_serial=None):
+        # W4: **按平台分派**（Linux 侧服务必须进 WSL —— 同 loopback 才通）
+        if _PLATFORM != 'win':
+            args = ['--mode', 'check']
+            if revoke_serial:
+                args += ['--revoke-serial', revoke_serial]
+            return _plat.start_wsl_mock(args)
         h = _CheckHandler
         h.revoke_serial = revoke_serial
         srv = http.server.HTTPServer(('127.0.0.1', 0), h)
@@ -1100,6 +1086,11 @@ def main():
             self.wfile.write(body)
 
     def start_expect_mock(wrong):
+        if _PLATFORM != 'win':
+            args = ['--mode', 'expect']
+            if wrong:
+                args += ['--wrong']
+            return _plat.start_wsl_mock(args)
         _ExpectHandler.wrong = wrong
         srv = http.server.HTTPServer(('127.0.0.1', 0), _ExpectHandler)
         t = threading.Thread(target=srv.serve_forever, daemon=True)
