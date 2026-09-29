@@ -106,13 +106,64 @@ Write-Host '--- 运行时验证（12 项）---' -ForegroundColor Cyan
 & $py tools\verify_linux_runtime.py @args2
 $rc = $LASTEXITCODE
 
+
+# ## D1（2026-09-29）: **平台无关检查器镜像 + 检查器变异测试**
+#
+# ## 为什么加
+#   此前 ci_linux **只有运行时验证** —— 那 7 个"纯逻辑"检查器
+#   （modcheck/conformance/attackcheck/...）**只在 Windows 门禁跑**：
+#   若有人**只跑 Linux 入口**，它们就**完全不被验证**（覆盖缺口）。
+#   同理，Linux 侧的检查器（protchain/e2e/attacks）**从未自证能抓错**
+#   —— 即"判据可能已经变盲"没有守护（`mutate_check --platform linux` 补此）。
+#
+# ## 不镜像 migration_gate 的理由
+#   它 **96s + 跑 2 次 Windows 构建**（`demo.exe` 引用=1，非纯逻辑）——
+#   与"Linux 端到端验证"的定位不符；**已在门禁**（第 22 项），不重复。
 Write-Host ''
-if ($rc -eq 0) {
-    Write-Host '[ci_linux] PASS' -ForegroundColor Green
-} else {
-    Write-Host '[ci_linux] FAIL' -ForegroundColor Red
+Write-Host '--- 平台无关检查器镜像（D1, 7 项）---' -ForegroundColor Cyan
+$mirrorFail = 0
+$mirrors = @(
+    @('modcheck',        @('tools/modcheck.py', '--all-compositions')),
+    @('drills',          @('tools/drills.py', 'lint')),
+    @('doccheck',        @('tools/doccheck.py')),
+    @('conformance',     @('tools/conformance.py', '--selftest', '--quiet')),
+    @('comment_lint',    @('tools/comment_lint.py', '--quiet')),
+    @('attackcheck',     @('tools/attackcheck.py')),
+    @('skeleton_check',  @('tools/skeleton_check.py'))
+)
+foreach ($m in $mirrors) {
+    $name = $m[0]
+    $cmd = $m[1]
+    & $py @cmd
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ("  ok   {0}" -f $name) -ForegroundColor Green
+    } else {
+        Write-Host ("  FAIL {0} (rc={1})" -f $name, $LASTEXITCODE) -ForegroundColor Red
+        $script:mirrorFail++
+    }
 }
-exit $rc
+
+Write-Host ''
+Write-Host '--- 检查器变异测试（platform=linux；**Linux 侧自证能抓错**）---' -ForegroundColor Cyan
+& $py tools\mutate_check.py --platform linux
+$mutRc = $LASTEXITCODE
+if ($mutRc -eq 0) {
+    Write-Host '  ok   mutate_check (linux): 6 健康 / 0 盲' -ForegroundColor Green
+} else {
+    Write-Host '  FAIL mutate_check (linux)' -ForegroundColor Red
+    $script:mirrorFail++
+}
+
+Write-Host ''
+$allOk = ($rc -eq 0 -and $script:mirrorFail -eq 0)
+if ($allOk) {
+    Write-Host '[ci_linux] PASS（运行时 + 镜像检查 + 检查器健康）' -ForegroundColor Green
+    exit 0
+} else {
+    $msg = '[ci_linux] FAIL（runtime={0}, 镜像/变异失败={1}）' -f $rc, $script:mirrorFail
+    Write-Host $msg -ForegroundColor Red
+    exit 1
+}
 } finally {
     # D2: 释放锁（**finally 覆盖 exit/throw/正常**）
     & "$PSScriptRoot\verify_lock.ps1" -Holder 'ci_linux' -Release

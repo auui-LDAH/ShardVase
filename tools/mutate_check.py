@@ -130,6 +130,78 @@ def mut_demo_exe():
         raise
 
 
+def mut_demo_linux():
+    """变异 `build/demo_linux` 的 **.text 中部**（D1, 2026-09-29）。
+
+    ## 为什么不能照搬 win 的 `0x2000`
+      `0x2000` 是**针对 PE 布局**的经验偏移（避开 PE 头）——
+      ELF 的文件布局完全不同（`.text` 实测在 `ptr_raw=14848`），
+      固定 `0x2000` 可能落进**头部/动态符号区** -> 变异**打偏**
+      （"变异打偏 -> 假阳性'盲检查器'"，与 §24 的教训同类）。
+
+    ## 判据来源（**复用既有**）
+      按 `protchain_check.sections_of`（**自动分派 PE/ELF**）定位 `.text`
+      -> 取其中部偏移。**不引入新的解析**。
+    """
+    p = os.path.join(REPO, 'build', 'demo_linux')
+    restore = _backup(p)
+    try:
+        sys.path.insert(0, os.path.join(REPO, 'tests'))
+        import protchain_check as _pc                # noqa: WPS433
+
+        # ## ⚠️ **必须设 `_CURRENT_EXE`**（实测漏设的代价, 2026-09-29）
+        #
+        # `selfcrypt_meta` 内部走 `cry_section_names()` ->
+        # 读**由 `_CURRENT_EXE` 决定的平台 json**。
+        # **不设 -> 默认 Windows json -> Linux 掩码算成 0** ->
+        # 选的"非掩码"字节**其实在掩码区内** -> 打进去被 P2 的清零掩盖
+        # -> **假报"盲"**（实测正是如此: rel=17157 落在 16160..17231 内）。
+        #
+        # 教训: 复用某模块的函数时，**连同它的隐式上下文一起设**——
+        # 否则"同一个函数在两个调用点算出不同结果"。
+        _pc._CURRENT_EXE = os.path.join('build', 'demo_linux')
+        data = open(p, 'rb').read()
+        secs = _pc.sections_of(data)
+        text = next(s for s in secs if s['name'] == '.text')
+
+        # ## ⚠️ 必须选**非掩码**字节（D1 盲检的根因, 2026-09-29）
+        #
+        # `p2_mask_consistent` 的 CRC 计算是:
+        #     raw = .text 字节 -> **掩码区先清零** -> zlib.crc32 -> 与烧录值比
+        # 所以 **掩码区内的翻转会被清零掩盖**（设计如此 —— 那些区的完整性
+        # 由**运行期解密后**校验，静态 CRC 不承诺它们）。
+        #
+        # 我原先取 `.text 中部` -> 恰落进掩码区 -> P2 **设计上**不覆盖 ->
+        # 被判"盲"。**这不是 protchain 缺陷，是域错配**（测试打到了
+        # 检查器声明范围之外）。
+        #
+        # 修: 取 CRC 覆盖范围、且**不在任何掩码区**的字节（中部向后扫描）
+        #     -> 必然在 P2 的检测域内 -> 必被检出。
+        crc_len = min(text['virtual_size'], text['size_raw'])
+        masks = []
+        for mrva, mlen, _grp in _pc.selfcrypt_meta(data, secs):
+            masks.append((mrva - text['virtual_addr'], mlen))
+        rel = None
+        for cand in range(crc_len // 2, crc_len):
+            if not any(o <= cand < o + ml for o, ml in masks):
+                rel = cand
+                break
+        if rel is None:
+            # 理论不可达（掩码不覆盖整节）—— 兜底仍打中部
+            rel = crc_len // 2
+        off = text['ptr_raw'] + rel
+
+        with open(p, 'r+b') as f:
+            f.seek(off)
+            b = f.read(1)
+            f.seek(off)
+            f.write(bytes([b[0] ^ 0xFF]))
+        return restore
+    except Exception:                       # noqa: BLE001
+        restore()
+        raise
+
+
 def mut_manifest():
     """manifest 版本: 改成占位符 '?' -> 应报 FAIL。"""
     p = os.path.join(REPO, 'build', 'manifest.json')
@@ -306,6 +378,50 @@ MUTATIONS = {
     },
 }
 
+# ## D1（2026-09-29）: **Linux 侧**变异方案表
+#
+# ## 为什么需要
+#   门禁的 `mutate_check` 只证明**Windows 侧**检查器能抓错；
+#   Linux 侧的检查器（ci_linux 里的 protchain/e2e/attacks）**从未自证** ——
+#   即"**Linux 侧的判据是否可能已经变盲**"没有守护。
+#
+# ## 与 win 表的差异（**逐项理由**）
+# | 检查器 | Linux 形态 | 说明 |
+# |--------|-----------|------|
+# | modcheck/drills/doccheck | **同 win** | 平台无关（0 处产物引用）|
+# | protchain | `--exe build/demo_linux --blob build/linux/vm.blob` | **镜像** `verify_linux_runtime` 的调用（**单一来源**）|
+# | e2e | `--platform linux` | 同上 |
+# | attacks | `--platform linux` | **新增**（win 表里没有）—— 补足到 6 个 |
+# | vmc | **不含** | `vmc_tests` 依赖 MSVC + Windows 产物；Linux 侧的 vmc 检查器是 `tools/vmc_linux.py`（**被 verify_linux_runtime 调用，但不依赖 demo_linux**，故不纳入）|
+#
+# ## 变异目标
+#   `mut_demo_linux()` —— 按 `sections_of` 定位 `.text` 中部
+#   （**不照搬 win 的 0x2000**：ELF 布局不同，固定偏移会打偏 ->
+#    "变异打偏 -> 假阳性'盲检查器'"）。
+MUTATIONS_LINUX = {
+    'modcheck': MUTATIONS['modcheck'],
+    'drills':   MUTATIONS['drills'],
+    'doccheck': MUTATIONS['doccheck'],
+    'protchain': {
+        'cmd': [PY, '-X', 'utf8', 'tests/protchain_check.py',
+                '--exe', os.path.join('build', 'demo_linux'),
+                '--blob', os.path.join(REPO, 'build', 'linux', 'vm.blob')],
+        'mut': mut_demo_linux,
+        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+    },
+    'e2e': {
+        'cmd': [PY, '-X', 'utf8', 'tests/e2e.py', '--platform', 'linux'],
+        'mut': mut_demo_linux,
+        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+    },
+    'attacks': {
+        'cmd': [PY, '-X', 'utf8', 'tests/attacks.py', '--platform', 'linux'],
+        'mut': mut_demo_linux,
+        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+    },
+}
+
+
 
 def run_check(cmd, timeout=900):
     try:
@@ -321,24 +437,33 @@ def main():
     ap.add_argument('--list', action='store_true', help='列出变异方案')
     ap.add_argument('--skip-baseline', action='store_true',
                     help='跳过基线（假设已 PASS）')
+    # D1: **平台分派** —— Linux 侧的检查器需自证能抓错（此前只测 win）
+    #
+    # ⚠️ 判据教训（**同类第 N 次**）: 我先前用 `"'--platform' in t"` 判断
+    # "是否已加参数" —— 但 `MUTATIONS_LINUX` 块里**已含该字符串** ->
+    # 子串**假阳性** -> 参数没加上、`--list` 却"看起来работает"。
+    # => 判据必须是**唯一结构形态**（`add_argument('--platform'`）。
+    ap.add_argument('--platform', choices=['win', 'linux'], default='win',
+                    help='被测侧：win(门禁) / linux(ci_linux)')
     args = ap.parse_args()
 
-    names = args.only or list(MUTATIONS)
+    table = MUTATIONS if args.platform == 'win' else MUTATIONS_LINUX
+    names = args.only or list(table)
 
     if args.list:
-        print('变异方案 (%d):' % len(MUTATIONS))
-        for n, m in MUTATIONS.items():
+        print('变异方案 (%d, platform=%s):' % (len(table), args.platform))
+        for n, m in table.items():
             print('  %-12s %s' % (n, m['desc']))
         return 0
 
     print('=' * 78)
-    print('门禁检查器变异测试（每个检查器必须能抓错）')
+    print('检查器变异测试（platform=%s；每个检查器必须能抓错）' % args.platform)
     print('=' * 78)
     print()
 
     results = {}
     for name in names:
-        m = MUTATIONS.get(name)
+        m = table.get(name)
         if not m:
             print('  [%s] 无变异方案，跳过' % name)
             continue
