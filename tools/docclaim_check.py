@@ -153,15 +153,68 @@ def probe_matrix_breached():
     i = t.find('## 显式 BREACHED')
     if i < 0:
         return False, '未找到「显式 BREACHED」节'
-    seg = t[i:i + 4000]
+    # ## 只取**第一张表**（到下一个 `## ` 标题为止）
+    #   否则 §39/§40 的「D4 复核」表也会被算进去 -> 计数**偏大且无意义**。
+    nxt = t.find('\n## ', i + 5)
+    seg = t[i:(nxt if nxt > 0 else i + 4000)]
+    # 只数**条目行**（形如 `| \`drillN...\` |`）——
+    # 否则复核回填的说明行也会被算进去 -> 计数**误导读者**。
     rows = [l for l in seg.split('\n')
-            if l.strip().startswith('|') and '---' not in l
-            and not re.match(r'^\|\s*id\s*\|', l.strip())]
+            if re.match(r'^\|\s*`', l.strip())]
     unresolved = [l for l in rows
                   if '→ BLOCKED' not in l and '→ PARTIAL' not in l]
-    return True, ('显式 BREACHED 表 %d 条，其中**未处置 %d 条**'
+    if not rows:
+        return False, ('「显式 BREACHED」节存在但**解析不到条目行**'
+                       '（格式可能已变 -> 断言需更新）')
+    return True, ('显式 BREACHED %d 条（其中仍标 BREACHED 的 %d 条）'
                   % (len(rows), len(unresolved)))
 
+
+#: 必须携带「最后核实」元数据的关键文档（R1.3）
+#:   ## 为什么这些
+#:     它们是**决策依据类**文档（成本/可用性/矩阵/交接/平台/威胁模型）——
+#:     后续工作最容易引用它们的**结论**，一旦过时危害最大。
+#:     元数据必须含**方法**（否则无法复核 -> 形式主义）。
+KEY_DOCS = [
+    'docs/COST_ASYMMETRY.md',
+    'docs/USABILITY_ASSESSMENT.md',
+    'docs/ATTACK_MATRIX.md',
+    'docs/HANDOVER.md',
+    'docs/PLATFORM_ISOLATION_PLAN.md',
+    'docs/THREATMODEL.md',
+]
+
+#: 元数据格式（docclaim 校验）: `> **最后核实**: YYYY-MM-DD · 方法: ... · 提交 \`hash\``
+RE_VERIFIED = re.compile(
+    r'^> \*\*最后核实\*\*:\s*(\d{4}-\d{2}-\d{2})\s*·\s*方法:\s*(\S.+)$',
+    re.M)
+
+
+def probe_verified_metadata():
+    """关键文档必须含「最后核实」元数据（**日期 + 方法**）。
+
+    ## 为什么要求"方法"
+      只写日期是**形式主义** —— 无人知道当时**怎么核实的**、能否复现。
+      要求"方法"（工具/命令）-> 复核者可**重跑同一方法**。
+    """
+    missing, no_method, bad_date = [], [], []
+    for d in KEY_DOCS:
+        t = _read(_p(*d.split('/')))
+        if t is None:
+            missing.append(d + '(文件缺失)')
+            continue
+        m = RE_VERIFIED.search(t)
+        if not m:
+            missing.append(d)
+            continue
+        if len(m.group(2).strip()) < 6:
+            no_method.append(d)
+        if not re.match(r'^20\d\d-\d\d-\d\d$', m.group(1)):
+            bad_date.append(d)
+    if missing or no_method or bad_date:
+        return False, ('缺元数据=%s 方法缺失=%s 日期异常=%s'
+                       % (missing, no_method, bad_date))
+    return True, '%d 份关键文档均有「最后核实」（含方法）' % len(KEY_DOCS)
 
 def probe_flat_clean():
     """`demo/gen/` 根下**无文件**（§34.6 清理后防"复活"）。"""
@@ -231,6 +284,14 @@ CLAIMS = [
         'probe': probe_matrix_breached,
         'expect': True,
         'note': '**不断言具体条数**（会随复核变化）——只保证"表可解析"',
+    },
+    {
+        'id': 'verified-metadata',
+        'claim': '6 份**决策依据类**文档均含「最后核实」（日期 + **方法**）',
+        'source': 'docs/REFINE_PLAN.md',
+        'probe': probe_verified_metadata,
+        'expect': True,
+        'note': '要求"方法"而非只写日期 —— 否则无法复核（形式主义）',
     },
     {
         'id': 'flat-clean',

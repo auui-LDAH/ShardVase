@@ -793,7 +793,7 @@ Invoke-Unit 'syscall_probe.exe' $probeCl 'syscall_probe.exe (A6 direct syscall)'
 #           直接跳进 catch, exit code 永不参与判定。
 #        2) PowerShell 管道向原生进程 stdin 写入时会带编码前缀 (BOM),
 #           使 demo 读到的序列号多 3 字节 -> 校验失败 exit 1。
-#      demo.exe 恒定向 stderr 输出 [SCDBG] 自解密日志, 故上述 1) 必然触发。
+#      demo.exe **不含** SCDBG 日志（`SC_DBG` 由 PROT_SELFCRYPT_DEBUG 控制；R1 复核 2026-09-29 实测产物无该串），下述 2>nul 仅作**保守冗余**。
 #      改用 cmd /c 后: stdin 为干净字节, stderr 不被 PS 包装, exit code 可靠。
 $smokeSerial = (Get-Content -LiteralPath "${vmJson}" -Raw | ConvertFrom-Json).serial
 $smokeOk = $true
@@ -802,7 +802,7 @@ if (-not $SkipSmoke) {
     $smokeOut = @()
     for ($try = 1; $try -le 3 -and -not $smokeOk; $try++) {
         try {
-            # > 文件 收集 stdout; 2>nul 丢弃 SCDBG 噪声; < 输入序列号
+            # > 文件 收集 stdout; 2>nul 保守丢弃 stderr（含可能的调试输出）; < 输入序列号
             $smokeLog = Join-Path $env:TEMP 'prot_smoke_out.txt'
             $smokeIn = Join-Path $env:TEMP 'prot_smoke_in.txt'
             [System.IO.File]::WriteAllText($smokeIn, $smokeSerial)
