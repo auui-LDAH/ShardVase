@@ -390,6 +390,31 @@ Check '文档断言一致性 (docclaim)' {
     $LASTEXITCODE -eq 0
 }
 
+# 部署加固自检（R2.1, 2026-09-29）
+#
+# ## 为什么入门禁
+#   `USABILITY §3.3` 的 5 项显式破防里 **2 项**（`D5` DLL 劫持 / `L3` 公钥替换）
+#   的前置条件都是"**安装目录可写**"，而此前**无任何 ACL 工具**。
+#   本项证明 `deploy_harden.ps1` **能区分加固/未加固**（含**负向**:
+#   未加固目录下攻击必须成功 —— 否则检测恒真），并**实测属主绕过**这一诚实边界。
+Check '部署加固自检 (deploy_harden)' {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy_harden.ps1 -Selftest | Out-Null
+    $LASTEXITCODE -eq 0
+}
+
+# 性能基准自检（R2.2, 2026-09-29）
+#
+# ## 为什么入门禁
+#   `USABILITY §5` 曾把三项性能指标标为"**未测量**"。本项守护
+#   `perf_baseline.py` 的**负向自检**（产物缺失必须标 NA，**不编数据**）。
+#   > **注意**: 这里只跑自检，**不跑完整基准**（需 3 次组合构建，太慢）；
+#   > 完整数据由发版前手工执行并将结果写入 `USABILITY §1.2`。
+Check '性能基准自检 (perf_baseline)' {
+    & $py -X utf8 tools\perf_baseline.py --selftest | Out-Null
+    $LASTEXITCODE -eq 0
+}
+
+
 
 
 
