@@ -27,6 +27,21 @@ param(
     [string]$Python = ''
 )
 
+# ## D2（2026-09-29）: **验证互斥锁**
+#
+#   本脚本与另一侧验证（门禁 <-> ci_linux）**共享可变状态**
+#   （demo/gen/、build/、demo/vm_build.json）-> 并发会造成**假失败**
+#   （把判据本身误报为坏的；实测已 3 次误判）。
+#
+#   语义: 拿不到锁 -> **报错退出**（含持有者 PID/时长），**不排队**
+#   （串行可预测 + 日志不交错）；过期锁(>45min)自动清除（崩溃兜底）。
+#
+#   **释放放 finally** —— 实测 PowerShell 的 `exit`/`throw`/正常结束
+#   **都会触发 finally**，故释放不漏（**不依赖"记得释放"**）。
+& "$PSScriptRoot\verify_lock.ps1" -Holder 'release_check'
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+try {
+
 $ErrorActionPreference = 'Continue'
 $MyDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath (Join-Path $MyDir '..')
@@ -342,6 +357,22 @@ Check '平台层自检 (_platform)' {
     $LASTEXITCODE -eq 0
 }
 
+# 验证互斥锁自检（D2, 2026-09-29）
+#
+# ## 为什么入门禁
+#   锁是"**验证互斥**"的基础设施 —— 它若自身坏了（拿得到锁却不去重），
+#   后续所有并发保护都是**假的**（"只会通过的检查器比没有更危险"同类）。
+#   自检含 **3 个负向**（并发必须被拒 / 非持有者不能删 / 过期必须清）。
+#
+# ## 为什么能安全地在门禁内跑
+#   自检用**独立锁文件**（build/.verify.lock.selftest）——
+#   **绝不碰门禁自己的真锁**（否则会中途失锁 -> 互斥失效）。
+Check '验证互斥锁自检 (verify_lock)' {
+    & "$PSScriptRoot\verify_lock.ps1" -Selftest
+    $LASTEXITCODE -eq 0
+}
+
+
 
 
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
@@ -382,3 +413,7 @@ if ($fail -gt 0) {
 }
 Write-Host ("[release_check] PASS: {0} 项检查全通过" -f $pass) -ForegroundColor Green
 exit 0
+} finally {
+    # D2: 释放锁（**finally 覆盖 exit/throw/正常**）
+    & "$PSScriptRoot\verify_lock.ps1" -Holder 'release_check' -Release
+}

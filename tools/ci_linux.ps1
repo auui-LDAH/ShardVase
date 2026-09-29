@@ -38,6 +38,21 @@ param(
     [string]$Python = ''
 )
 
+# ## D2（2026-09-29）: **验证互斥锁**
+#
+#   本脚本与另一侧验证（门禁 <-> ci_linux）**共享可变状态**
+#   （demo/gen/、build/、demo/vm_build.json）-> 并发会造成**假失败**
+#   （把判据本身误报为坏的；实测已 3 次误判）。
+#
+#   语义: 拿不到锁 -> **报错退出**（含持有者 PID/时长），**不排队**
+#   （串行可预测 + 日志不交错）；过期锁(>45min)自动清除（崩溃兜底）。
+#
+#   **释放放 finally** —— 实测 PowerShell 的 `exit`/`throw`/正常结束
+#   **都会触发 finally**，故释放不漏（**不依赖"记得释放"**）。
+& "$PSScriptRoot\verify_lock.ps1" -Holder 'ci_linux'
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+try {
+
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
@@ -98,3 +113,7 @@ if ($rc -eq 0) {
     Write-Host '[ci_linux] FAIL' -ForegroundColor Red
 }
 exit $rc
+} finally {
+    # D2: 释放锁（**finally 覆盖 exit/throw/正常**）
+    & "$PSScriptRoot\verify_lock.ps1" -Holder 'ci_linux' -Release
+}
