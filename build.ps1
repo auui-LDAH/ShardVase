@@ -562,7 +562,7 @@ if (-not $NoPad) {
     # 本脚本用相对路径（无 $REPO 变量）
 
     # 量测当前产物（第一遍编译已完成）
-    & $py tools\measure_sections.py build\demo.exe --out-json build\section_actual.json
+    & $py tools\measure_sections.py build\demo.exe --out-json build\section_actual.json --sections-json (Join-Path $genDir 'prot_sections.json')
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: measure_sections.py' }
 
     # 基线维护: **只增不减**（取"旧基线"与"本次实际"的较大值）
@@ -587,7 +587,7 @@ if (-not $NoPad) {
     $spreadRatio = if ($null -ne $env:PROT_SPREAD_RATIO) {
         $env:PROT_SPREAD_RATIO } else { '0.35' }
     $padSeed = if ($sectionsSeed) { $sectionsSeed } else { '' }
-    $padArgs = @('tools\gen_padding.py', '--baseline', $baselineFile,
+    $padArgs = @('tools\gen_padding.py', '--baseline', $baselineFile, '--sections-json', (Join-Path $genDir 'prot_sections.json'),
                  '--actual', (Join-Path $buildDir 'section_actual.json'),
                  '--out', $padSrc,
                  '--spread-ratio', $spreadRatio,

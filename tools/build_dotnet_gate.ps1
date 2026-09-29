@@ -67,7 +67,7 @@ $dll = Join-Path $Out 'protgate.dll'
 $srcs = @('src\antidebug.c', 'src\syscall.c', 'src\strcrypt.c',
           'src\crc32.c') | ForEach-Object { Join-Path $REPO $_ }
 $srcJoined = ($srcs | ForEach-Object { "`"$_`"" }) -join ' '
-$stringsC = Join-Path $REPO 'demo\gen\strings.c'
+$stringsC = Join-Path $REPO 'demo\gen\win\strings.c'   # W5: 平台目录
 $incDir = Join-Path $REPO 'include'
 $genDir = Join-Path $REPO 'demo\gen'
 
@@ -80,7 +80,7 @@ cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath $log | Out-
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $dll)) {
     Fail-Step 'cl (原生 DLL)' @"
     常见原因:
-    1. 缺少 demo\gen\strings.c —— 先在仓库根跑一次 build.ps1 生成。
+    1. 缺少 demo\gen\win\strings.c —— 先在仓库根跑一次 build.ps1 生成。
     2. 保护库 API 变化 —— 检查 Native\gate.c 的 include 与调用。
     3. 详细日志: $log
 "@

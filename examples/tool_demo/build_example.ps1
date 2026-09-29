@@ -70,7 +70,7 @@ if (-not (Test-Path -LiteralPath 'build')) { New-Item -ItemType Directory -Path 
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: genserial' }
 
 # 1b. RSA 公钥 (license 验签; 私钥只在 build\keys, 不入库)
-& $py tools\vmenc.py keygen --key-out build\keys\license_priv.json --blob-out demo\gen\license_pubkey.c
+& $py tools\vmenc.py keygen --key-out build\keys\license_priv.json --blob-out demo\gen\win\license_pubkey.c
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: keygen' }
 
 # 2. 汇编 check.vmc -> check.vasm (M2: 类 C 源码自动编译)
@@ -78,11 +78,11 @@ if ($LASTEXITCODE -ne 0) { throw 'example FAILED: keygen' }
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: vmc' }
 
 # 2b. assemble check.vasm -> 镜像
-& $py tools\vmenc.py assemble examples\tool_demo\check.vasm demo\vm_build.json demo\gen\tool_check_blob.c demo\gen\tool_check_blob.h --name g_tool_check_image --bin-out demo\gen\tool_check_blob.bin --bin-name check
+& $py tools\vmenc.py assemble examples\tool_demo\check.vasm demo\vm_build.json demo\gen\win\tool_check_blob.c demo\gen\win\tool_check_blob.h --name g_tool_check_image --bin-out demo\gen\win\tool_check_blob.bin --bin-name check
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: assemble' }
 
 # 3. 打包 vm.blob (断源; BLOB_SIGN: --sign v1, 装载器强制 v1)
-& $py tools\vmenc.py pack --sign build\keys\license_priv.json --out build\tool_vm.blob demo\gen\tool_check_blob.bin
+& $py tools\vmenc.py pack --sign build\keys\license_priv.json --out build\tool_vm.blob demo\gen\win\tool_check_blob.bin
 if ($LASTEXITCODE -ne 0) { throw 'example FAILED: pack' }
 
 # 4. 编译 + 链接 (工具源码 + 保护库)
@@ -117,16 +117,16 @@ Write-Host "example: 注册表驱动 -> $((Get-Content -LiteralPath $compSrcList
 #   `compose.py example` 的**宿主下限**会强制补入 `indirect` / `strcrypt`
 #   （`main.c` / `indirect_table.c` 硬引用，见 §22 宿主下限机制）——
 #   这是**设计正确**的。故必须链接对应的 gen 产物:
-#     · `demo\gen\indirect_table.c` —— indirect 的置换表
-#     · `demo\gen\strings.c`        —— strcrypt 的字符串表
+#     · `demo\gen\win\indirect_table.c` —— indirect 的置换表
+#     · `demo\gen\win\strings.c`        —— strcrypt 的字符串表
 #
 #   **这不是"手工列表"的回归** —— 这几个 gen 文件是**生成物拼接**，
 #   与"哪些模块参与编译"是两个维度（模块列表仍由注册表驱动）。
 $genSrcs = @(
     # **不含** indirect_table.c —— 示例组合显式排除 indirect
     # （indirect_table 硬编码 demo 的宿主函数与私有类型 demo_mem）
-    'demo\gen\strings.c',
-    'demo\gen\license_pubkey.c'
+    'demo\gen\win\strings.c',
+    'demo\gen\win\license_pubkey.c'
 )
 foreach ($g in $genSrcs) {
     if (-not (Test-Path -LiteralPath $g)) {

@@ -134,7 +134,7 @@ def main():
                     # ## ⚠️ 默认值是 **flat 旧路径**（S4 审计, 2026-09-25）
                     #   A 阶段按平台分目录后**漏改**；调用方须显式传
                     #   `--sections-json`（build.sh/build.ps1 都已传）。
-                    default='demo/gen/prot_sections.json',
+                    default=None,   # W5: flat 默认已移除（调用方传平台路径）
                     help='gen_sections.py 的节名映射（用于按语义对齐）')
     args = ap.parse_args()
 

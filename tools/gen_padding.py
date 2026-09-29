@@ -103,6 +103,19 @@ def main():
                     help='差异扩散比例：额外填充 = 目标尺寸 × ratio（0=关闭）')
     ap.add_argument('--min-spread', dest='min_spread', type=int, default=0,
                     help='每节至少额外填充的字节数')
+    # W5: **显式传平台节名 json**（`demo/gen/<plat>/prot_sections.json`）
+    #
+    # 原状（**实测缺陷**）: 首选 `dirname(--actual)/prot_sections.json`
+    #   （`build/` 与 `build/linux/` **都不存在**）-> 永远回退到 **flat**
+    #   `demo/gen/prot_sections.json`（**Windows 名字的旧副本**）
+    #   -> **Linux 构建拿到 Windows 节名** -> 填充进错误的节。
+    #
+    # 为什么此前没被发现（**判据盲区**，§34）:
+    #   · `节名随机化` 查**产物**（由 C 源 `PROT_SEC_*` 宏产生，与填充无关）
+    #   · `文件大小统一` 只比 3 次构建**彼此**一致（同样错 -> 同样一致）
+    ap.add_argument('--sections-json', default=None,
+                    help='节名映射 JSON（**平台目录**；W5 修缺陷的显式来源）')
+
     args = ap.parse_args()
 
     base = json.load(open(args.baseline, encoding='ascii'))
@@ -112,21 +125,21 @@ def main():
 
     # 读节名映射：把逻辑名（protcrc）换成实际随机名（.4ahve8v）
     name_map = {}
-    j = os.path.join(os.path.dirname(args.actual), 'prot_sections.json')
+    # 优先级: --sections-json（**平台目录，W5**）> dirname(--actual) > flat
+    if args.sections_json:
+        j = args.sections_json
+    else:
+        j = os.path.join(os.path.dirname(args.actual),
+                         'prot_sections.json')
     if not os.path.exists(j):
-        # ## ⚠️ 第二级回退 = **flat 旧路径**（S4 审计, 2026-09-25）
-        #   A 阶段按平台分目录后这里**未跟着改** —— 它是"兜底"分支:
-        #   首选 `os.path.dirname(args.actual)/prot_sections.json`（**平台正确**），
-        #   只有该文件缺失时才回退到 `demo/gen/prot_sections.json`（**flat 遗留**，
-        #   内容可能是**另一平台**的 -> 节名映射错配）。
-        #   => 回退值保留（不破坏既有调用），但**记录为不可信**；
-        #      调用方应保证首选路径存在（build.sh/build.ps1 都传平台 actual）。
-        j = 'demo/gen/prot_sections.json'
-    if os.path.exists(j):
-        try:
-            name_map = json.load(open(j, encoding='ascii')).get('sections', {})
-        except (OSError, ValueError):
-            name_map = {}
+        sys.stderr.write('gen_padding: 节名映射不存在: %s\n'
+                         '  -> 传 --sections-json <平台目录>/prot_sections.json\n' % j)
+        return 2
+    try:
+        name_map = json.load(open(j, encoding='ascii')).get('sections', {})
+    except (OSError, ValueError) as e:
+        sys.stderr.write('gen_padding: 节名解析失败: %s\n' % e)
+        return 2
     if not args.quiet and name_map:
         print('gen_padding: 节名映射 %s' % name_map)
 

@@ -448,10 +448,12 @@ ACT_JSON="$BDIR/section_actual.json"
 [ -f "$BASE_JSON" ] || echo '{"file":0,"sections":{}}' > "$BASE_JSON"
 
 "$PY" tools/measure_sections.py "$OUT" --out-json "$ACT_JSON" \
+  --sections-json "$GEN/prot_sections.json" \
   || warn "  measure_sections 失败（跳过归一化）"
 "$PY" tools/merge_baseline.py --baseline "$BASE_JSON" --actual "$ACT_JSON" \
   || warn "  merge_baseline 失败"
 "$PY" tools/gen_padding.py --baseline "$BASE_JSON" --actual "$ACT_JSON" \
+      --sections-json "$GEN/prot_sections.json" \
       --out "$GEN/prot_padding.c" \
       --seed "$SECT_SEED" --spread-ratio 0.35 --min-spread 512 \
   || die "gen_padding 失败（填充是第二支柱的一部分，不可跳过）"
