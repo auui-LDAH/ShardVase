@@ -12,6 +12,31 @@ r"""guard_selftest.py — R3.2-b 判定点快照校验的**行为自检**（含�
 => 与"只会通过的检查器"同类 —— 必须**实证它能抓到 patch**。
 ```
 
+## ⚠️ 目标必须选 **selfcrypt 掩码区内**的判定点（实测教训）
+```
+选 `prot_antidebug_detected` 做负向**没有判别力**:
+  它**不在** selfcrypt 掩码区 -> `31 C0 C3` 会**同时**触发 `.text` CRC 失配
+  -> 退出码 2989 可能来自 `prot_integrity_check_self` **而非本守卫**
+  => **"看似通过"，实则未证明守卫有效**。
+选 `prot_license_verify`（**在掩码区内**）:
+  段 CRC **必然抓不到** -> 2989 **只可能**来自本守卫 => 有判别力。
+```
+> 这正是本项目反复出现的"**判据必须打在检查器的检测域内**"纪律。
+
+## ⚠️ 判据为什么是 `g_guard_hits` 而**不是退出码**（2026-09-29 实测教训）
+```
+原判据 = "退出码 == PROT_EXIT_TAMPERED(2989)" -> **假阳性**:
+  demo 的段 CRC（check_self）**先于**守卫执行（看门狗顺序 L175 < L211）
+  · patch **非掩码区**目标 -> CRC 先终止进程（2989）
+    => 2989 **是 CRC 的功劳**，守卫**根本没机会执行**
+  · patch **掩码区**目标 -> 走反调试路径（219 = DEBUG_DETECTED）
+    => 该 219 由**测试工具自身**的 OpenProcess 触发（无判别力）
+=> 退出码**无法**区分"守卫有效"与"别的检测同向命中"。
+新判据 = 守卫自己的命中计数 `g_guard_hits`（**判据打在检测域内**）:
+  正向: 不 patch   -> hits == 0（无恒报）
+  负向: patch 目标 -> hits  > 0（守卫**确实命中**）
+```
+
 ## 判据（两项缺一不可）
 ```
 正向: 不 patch -> 进程**不得**因篡改退出（exit != PROT_EXIT_TAMPERED）
@@ -208,9 +233,91 @@ def run(target, case_positive=True, case_negative=True):
     return rec
 
 
+# ---------------------------------------------------------------------------
+# R3.2-b (2026-09-29): **判据改为守卫自己的命中计数**
+# ---------------------------------------------------------------------------
+HITS_SYM = 'g_guard_hits'
+
+
+def _hits_va():
+    """取 `g_guard_hits` 的链接时 VA（static 符号，map 中有）。"""
+    return _sym_va(HITS_SYM)
+
+
+def run_by_hits(target):
+    """用 `g_guard_hits > 0` 判定——**判据打在守卫的检测域内**。
+
+    返回 {'positive': (exit, hits, ok), 'negative': (exit, hits, ok)}
+    """
+    va_fn = _sym_va(target)
+    va_hits = _hits_va()
+    out = {}
+    if va_fn is None or va_hits is None:
+        return None
+
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    PROCESS_ALL = 0x1F0FFF
+
+    def _mk_proc():
+        return subprocess.Popen([EXE, '--vm-blob', BLOB, '--wait-ms', '15000'],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=REPO)
+
+    def _read_hits(h, base):
+        buf = ctypes.c_int(0)
+        rd = ctypes.c_size_t(0)
+        ok = k32.ReadProcessMemory(h, ctypes.c_void_p(base + (va_hits - PREF)),
+                                   ctypes.byref(buf), 4, ctypes.byref(rd))
+        return buf.value if ok else 0
+
+    def _case(do_patch, wait_s=13):
+        p = _mk_proc()
+        time.sleep(3.0)
+        h = k32.OpenProcess(PROCESS_ALL, False, p.pid)
+        base = _module_base(p.pid, 'demo.exe') if h else None
+        if h and base and do_patch:
+            rt = ctypes.c_void_p(base + (va_fn - PREF))
+            patch = (ctypes.c_ubyte * 3)(*PATCH)
+            w = ctypes.c_size_t(0)
+            k32.WriteProcessMemory(h, rt, ctypes.byref(patch), 3,
+                                   ctypes.byref(w))
+        peak = 0
+        code = None
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            cur = k32.OpenProcess(PROCESS_ALL, False, p.pid)
+            if cur:
+                b2 = _module_base(p.pid, 'demo.exe')
+                if b2:
+                    v = _read_hits(cur, b2)
+                    if v > peak:
+                        peak = v
+                k32.CloseHandle(cur)
+            code = p.poll()
+            if code is not None:
+                break
+            time.sleep(0.3)
+        if h:
+            k32.CloseHandle(h)
+        if code is None:
+            p.terminate()
+            try:
+                p.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            code = -1
+        return code, peak
+
+    c1, h1 = _case(False)
+    out['positive'] = (c1, h1, h1 == 0)
+    c2, h2 = _case(True)
+    out['negative'] = (c2, h2, h2 > 0)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(prog='guard_selftest.py')
-    ap.add_argument('--target', default='prot_antidebug_detected')
+    ap.add_argument('--target', default='prot_license_verify')
     ap.add_argument('--json', dest='json_out', default=None)
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
@@ -224,6 +331,26 @@ def main():
         print('=== guard_selftest（判定点序言快照校验的行为自检）===')
         print('  目标: %s · PROT_EXIT_TAMPERED=0x%X' % (args.target, tamper))
 
+    # R3.2-b: **用守卫的命中计数**判定（退出码无判别力，见文件头说明）
+    hitrec = run_by_hits(args.target)
+    if hitrec is None:
+        print('[guard_selftest] SKIP: map 中缺 %s 或 %s'
+              % (args.target, HITS_SYM))
+        return 0
+    for case, label in (('positive', '正向(不patch -> hits 必须为 0)'),
+                        ('negative', '负向(patch -> hits 必须 > 0)')):
+        c, hi, okc = hitrec[case]
+        print('  %s %-32s exit=%-6s hits=%-4d %s'
+              % ('ok  ' if okc else '**FAIL**', label, c, hi,
+                 '' if okc else '<- 判据未满足'))
+    ok = all(hitrec[k][2] for k in ('positive', 'negative'))
+    print()
+    print('[guard_selftest] %s' % ('PASS（守卫命中计数可自证）' if ok
+                                   else 'FAIL: 守卫未命中（见 docs/DECISION_REDUNDANCY_PLAN.md §10）'))
+    return 0 if ok else 1
+
+
+def _unused_main_orig():
     rec = run(args.target)
     if rec['status'] == 'NA':
         print('[guard_selftest] SKIP: %s' % rec['detail'])

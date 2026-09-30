@@ -592,20 +592,64 @@ typedef struct prot_guard_entry {
 } prot_guard_entry;
 
 /* 判定点表（**函数地址编译期已知**） */
-static const prot_guard_entry g_guard_tab[] = {
+/* 编译期已知的判定点（integrity 自身 + antidebug，deps 内） */
+static const prot_guard_entry g_guard_static[] = {
     { "prot_antidebug_detected",   (const void*)&prot_antidebug_detected },
     { "prot_integrity_check_self", (const void*)&prot_integrity_check_self },
 };
 #define PROT_GUARD_N \
-    (sizeof(g_guard_tab) / sizeof(g_guard_tab[0]))
+    (sizeof(g_guard_static) / sizeof(g_guard_static[0]))
 
-static uint8_t      g_guard_snap[PROT_GUARD_N][PROT_GUARD_SNAP_LEN];
+/* R3.2-b 第2组: **运行期注册**的判定点（宿主在 #ifdef PROT_MOD_<X> 下登记）
+ *
+ * 为什么需要: license / dbiguard / vmdetect 的 deps 均为 []，
+ * `integrity.c` 直接引用会**破坏组合裁剪**（minimal 不含它们）。
+ * 注册式让 integrity 不引用任何外部模块符号（见 integrity.h 的说明）。
+ */
+static prot_guard_entry g_guard_dyn[PROT_GUARD_CAPACITY];
+static volatile int    g_guard_dyn_n = 0;
+
+static uint8_t      g_guard_snap[PROT_GUARD_N + PROT_GUARD_CAPACITY]
+                                [PROT_GUARD_SNAP_LEN];
 static volatile int g_guard_ready = 0;
 static prot_plat_mutex g_guard_lock;
 static volatile int g_guard_lock_ready = 0;
 /* 累计命中（诊断/自检用）—— 类型必须与 `prot_plat_atomic_*` 的
  * `volatile int*` 一致（否则 MSVC **C4057** -> /WX 致命；实测踩）。*/
 static volatile int g_guard_hits = 0;
+
+/* R3.2-b 第2组: **运行期登记**判定点（在首次 check_guards 之前调用）。
+ *
+ * 失败语义（**明确失败，不静默丢弃**）:
+ *   · fn == NULL            -> PROT_ERR_INVALID_ARG
+ *   · 容量已满              -> PROT_ERR_INVALID_ARG（**不覆盖已有项**）
+ *   · 已建立快照后登记      -> PROT_ERR_INVALID_ARG
+ *     （快照已固定，后登记的项**永远比对自己** = 恒真 -> 必须拒绝）
+ *   · 重复登记同一 fn       -> PROT_OK（幂等）
+ */
+prot_status prot_integrity_register_guard(const char* name, const void* fn)
+{
+    int i;
+
+    if (fn == NULL)
+        return PROT_ERR_INVALID_ARG;
+    /* 快照已建立 -> 拒绝（否则新项形同虚设） */
+    if (g_guard_ready)
+        return PROT_ERR_INVALID_ARG;
+
+    /* 幂等: 已登记过同一函数指针则直接成功 */
+    for (i = 0; i < g_guard_dyn_n; i++) {
+        if (g_guard_dyn[i].fn == fn)
+            return PROT_OK;
+    }
+    if (g_guard_dyn_n >= (int)PROT_GUARD_CAPACITY)
+        return PROT_ERR_INVALID_ARG;   /* **明确失败**，不静默丢弃 */
+
+    g_guard_dyn[g_guard_dyn_n].name = name;
+    g_guard_dyn[g_guard_dyn_n].fn = fn;
+    g_guard_dyn_n++;
+    return PROT_OK;
+}
 
 static void guard_snapshot_init(void)
 {
@@ -622,6 +666,7 @@ static void guard_snapshot_init(void)
         prot_plat_mutex_unlock(&g_guard_lock);
         return;
     }
+    /* 编译期静态项 */
     for (i = 0u; i < (uint32_t)PROT_GUARD_N; i++) {
         /* ## 为什么两步转换（实测 C4057 -> /WX 致命）
          *   `(const volatile uint8_t*)<函数指针>` 会触发
@@ -629,11 +674,20 @@ static void guard_snapshot_init(void)
          *   故: 先转 `const uint8_t*`（去 volatile），
          *       再用 `*(volatile const uint8_t*)` **逐字节易变读** ——
          *       **保留"防编译器优化成常量"的语义**（那才是校验不恒真的关键）。*/
-        const uint8_t* p = (const uint8_t*)(const void*)g_guard_tab[i].fn;
+        const uint8_t* p = (const uint8_t*)(const void*)g_guard_static[i].fn;
         if (p == NULL)
             continue;
         for (j = 0u; j < PROT_GUARD_SNAP_LEN; j++)
             g_guard_snap[i][j] = *(const volatile uint8_t*)(p + j);
+    }
+    /* R3.2-b 第2组: **运行期注册项**（紧接静态项之后） */
+    for (i = 0u; i < (uint32_t)g_guard_dyn_n; i++) {
+        const uint8_t* p = (const uint8_t*)(const void*)g_guard_dyn[i].fn;
+        if (p == NULL)
+            continue;
+        for (j = 0u; j < PROT_GUARD_SNAP_LEN; j++)
+            g_guard_snap[PROT_GUARD_N + i][j] =
+                *(const volatile uint8_t*)(p + j);
     }
     g_guard_ready = 1;
     prot_plat_mutex_unlock(&g_guard_lock);
@@ -647,10 +701,15 @@ prot_status prot_integrity_check_guards(void)
 
     guard_snapshot_init();
 
-    for (i = 0u; i < (uint32_t)PROT_GUARD_N; i++) {
+    uint32_t ntot = (uint32_t)PROT_GUARD_N + (uint32_t)g_guard_dyn_n;
+
+    for (i = 0u; i < ntot; i++) {
         /* 同快照侧: 两步转换避免 C4057；`volatile const` 读**防优化成常量**
          * （否则编译器可把序言读折叠 -> 校验恒真 = 假防护）。 */
-        const uint8_t* p = (const uint8_t*)(const void*)g_guard_tab[i].fn;
+        const prot_guard_entry* e = (i < (uint32_t)PROT_GUARD_N)
+                                    ? &g_guard_static[i]
+                                    : &g_guard_dyn[i - (uint32_t)PROT_GUARD_N];
+        const uint8_t* p = (const uint8_t*)(const void*)e->fn;
         if (p == NULL)
             continue;
         for (j = 0u; j < PROT_GUARD_SNAP_LEN; j++) {
@@ -658,7 +717,7 @@ prot_status prot_integrity_check_guards(void)
             if (cur != g_guard_snap[i][j]) {
                 (void)prot_plat_atomic_increment(&g_guard_hits);
                 IDBG("[IDBG] guard MISMATCH %s off=%u got=%02x want=%02x\n",
-                     g_guard_tab[i].name, (unsigned)j,
+                     e->name, (unsigned)j,
                      (unsigned)cur, (unsigned)g_guard_snap[i][j]);
                 return PROT_ERR_INTEGRITY;
             }
@@ -667,7 +726,32 @@ prot_status prot_integrity_check_guards(void)
     return PROT_OK;
 }
 
+/* R3.2-b 第2组修复 (2026-09-29): **主动预热判定点快照**
+ *
+ * ## 为什么必须在这里预热（实测缺陷）
+ *   原实现惰性建立快照（首次 `prot_integrity_check_guards()` 时），
+ *   而该调用发生在**看门狗线程首轮**（~3-5s，±40% 抖动）。
+ *   => 攻击者在首轮之前 patch，快照就会**拍到已 patch 的字节**
+ *      -> 比对恒真 -> **假防护**。
+ *
+ *   实测证据（5 判定点逐一负向验证）:
+ *     `prot_integrity_check_self` / `prot_license_verify`（**均在 selfcrypt
+ *     掩码区内，段 CRC 抓不到**）patch 后**未被守卫抓到**。
+ *
+ * ## 为什么选这个时机
+ *   调用者约定"登记必须在 start_watchdog 之前完成" ->
+ *   此处快照必然**已包含全部登记项**，且看门狗尚未运行 -> 窗口最小。
+ *
+ * ## 残余窗口（**诚实边界**）
+ *   "进程启动 -> start_watchdog" 之间仍可被 patch（该窗口通常 <1s，
+ *   且此时进程尚未进入受保护逻辑）。记入 known_limits。
+ */
+static void guard_prime_snapshot(void);
+
 prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms) {
+    /* R3.2-b 修复: **预热快照** —— 必须在看门狗首轮之前建立，
+     * 否则"首轮前 patch"会被快照吸收（实测缺陷，见上方注释）。 */
+    guard_prime_snapshot();
     PROT_NOISE();   /* W1.6 序言噪声 */
     if (interval_ms == 0) {
         return PROT_ERR_INVALID_ARG;
@@ -721,4 +805,11 @@ prot_status prot_integrity_stop_watchdog(void) {
      */
     g_wd_thread = NULL;
     return PROT_OK;
+}
+
+/* 预热: 建立快照（幂等；已建立则无操作）。定义在 start_watchdog 之后，
+ * 但上方有前向声明 —— 保持"预热点"紧邻看门狗启动，便于阅读。 */
+static void guard_prime_snapshot(void)
+{
+    (void)prot_integrity_check_guards();   /* 首次调用即建立快照 */
 }

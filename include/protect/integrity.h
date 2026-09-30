@@ -56,6 +56,42 @@ prot_status prot_integrity_check_iat(void);
  */
 prot_status prot_integrity_check_guards(void);
 
+/*
+ * R3.2-b 第2组 (2026-09-29): **判定点注册**（跨模块，**不引入编译期依赖**）
+ *
+ * ## 为什么用注册而非直接引用
+ *   `integrity` 的 deps 只有 `[antidebug, selfcrypt]`。直接 `#include`
+ *   `license.h`/`dbiguard.h`/`vmdetect.h` 会**破坏组合裁剪**
+ *   （`compositions/minimal` 不含这些模块 -> 链接失败 / modcheck 报 R 项）。
+ *   注册式: 由**宿主**在 `#ifdef PROT_MOD_<X>` 下登记，
+ *   `integrity.c` **不引用**那些模块的任何符号 -> 裁剪语义完好。
+ *
+ * ## 判定点清单的**官方来源**
+ *   `modules.json` 的 `host_hooks[].predicate`（不另发明清单）:
+ *     dbiguard.pre_license.predicate = prot_dbiguard_suspicious
+ *     vmdetect.post_license.predicate = prot_vmdetect_suspicious
+ *     antidebug.post_license.predicate = prot_antidebug_detected（编译期已含）
+ *     integrity.pre_business.predicate = prot_integrity_check_self（编译期已含）
+ *   `prot_license_verify` 不在 `host_hooks`（它是**宿主自己的授权门**）。
+ *
+ * ## 语义
+ *   · 必须在本进程**第一次** `prot_integrity_check_guards()` 之前完成登记
+ *     （在 `prot_integrity_start_watchdog` 之前，见宿主代码）。
+ *   · 超出容量（`PROT_GUARD_CAPACITY`）-> 返回 `PROT_ERR_INVALID_ARG`
+ *     **并明确失败**（不静默丢弃 —— 静默丢弃 = 假防护）。
+ *   · `fn == NULL` -> 返回 `PROT_ERR_INVALID_ARG`。
+ *   · `name`: 仅用于诊断输出（可为 NULL）。
+ *
+ * ## 诚实边界
+ *   · 只快照**序言 `PROT_GUARD_SNAP_LEN` 字节** —— 改函数**中部**
+ *     （超出快照窗口）**不在本校验范围内**（记入 known_limits）。
+ *   · 注册发生在运行期 -> **能控制宿主的攻击者**可跳过登记（与
+ *     "能改快照表的攻击者"同属已知边界）。
+ */
+#define PROT_GUARD_CAPACITY 12u
+
+prot_status prot_integrity_register_guard(const char* name, const void* fn);
+
 /* 启动后台看门狗线程, 每 interval_ms 检查一次; 失败按 policy 处理 */
 prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms);
 

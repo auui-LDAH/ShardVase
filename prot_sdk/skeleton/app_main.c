@@ -615,6 +615,45 @@ printf("%s\n", prot_str_get(PROT_STR_MSG_TAMPER));
 #endif /* PROT_MOD_INTEGRITY */   /* 完整性自检段 */
 
 #ifdef PROT_MOD_INTEGRITY
+    /* R3.2-b 第2组 (2026-09-29): **登记关键判定点**（跨模块，注册式）
+     *
+     * ## 为什么必须登记
+     *   `checks_guards` 的编译期静态表只含 integrity/antidebug（deps 内）。
+     *   license / dbiguard / vmdetect 的 deps 均为 [] -> integrity.c
+     *   **不能**直接引用（破坏组合裁剪）-> 由宿主在此登记。
+     *
+     * ## 判定点清单来源
+     *   `modules.json` 的 `host_hooks[].predicate`（官方声明）:
+     *     dbiguard.pre_license.predicate = prot_dbiguard_suspicious
+     *     vmdetect.post_license.predicate = prot_vmdetect_suspicious
+     *   `prot_license_verify` 不在 host_hooks（是**宿主自己的授权门**）,
+     *   但它恰是 R3.2-a 实测的**高危缺口**（在 selfcrypt 掩码区内 -> 段 CRC
+     *   抓不到），故一并登记。
+     *
+     * ## 为什么用 `#if defined(A) && defined(B)`
+     *   按模块裁剪时（如 'standard' 不含 vmdetect）若只判 INTEGRITY,
+     *   会引用**未定义符号** -> 链接失败。双重条件保证只在两者都在时才登记。
+     *
+     * ## 时机
+     *   必须在**首次** `prot_integrity_check_guards()` 之前
+     *   （即 watchdog 启动前）—— 快照建立后再登记会被**拒绝**
+     *   （`PROT_ERR_INVALID_ARG`，避免"登记了却永不比对"的假防护）。
+     */
+#if defined(PROT_MOD_LICENSE)
+    (void)prot_integrity_register_guard(
+        "prot_license_verify", (const void*)&prot_license_verify);
+#endif
+#if defined(PROT_MOD_DBIGUARD)
+    (void)prot_integrity_register_guard(
+        "prot_dbiguard_suspicious", (const void*)&prot_dbiguard_suspicious);
+#endif
+#if defined(PROT_MOD_VMDETECT)
+    (void)prot_integrity_register_guard(
+        "prot_vmdetect_suspicious", (const void*)&prot_vmdetect_suspicious);
+#endif
+#endif /* PROT_MOD_INTEGRITY */   /* R3.2-b 判定点登记 */
+
+#ifdef PROT_MOD_INTEGRITY
     /* §9.1-6: 看门狗 (每 5 秒 ±40% 抖动复查完整性 + A5 反调试) */
     prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);
 #endif /* PROT_MOD_INTEGRITY */   /* 看门狗启动 */
