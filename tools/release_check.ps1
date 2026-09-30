@@ -1,4 +1,4 @@
-# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
+﻿# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
 #
 # 一键确认发版所有前置条件:
 #   1. git 工作区干净
