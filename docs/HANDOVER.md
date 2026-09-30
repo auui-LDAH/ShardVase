@@ -415,23 +415,36 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 ### 2.9 增量（2026-09-29 晚 – 2026-09-30）：REFINE_PLAN 全阶段 + R3.2 反向结论
 
 **本阶段完成**：R1（决策留痕）· R2.1/R2.2/R2.3（可用性）· R3.1（对抗实证）·
-R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，随后实证推翻其结论**。
+R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，
+当日先得出反向结论、随后由实测更正为"守卫有效"**（见下方接手须知第 1 条）。
 
 **门禁 29 项**（新增 26–29）：
 ```
 26 docclaim        文档断言一致性（断言值从文档解析，含"最后核实"元数据要求）
 27 deploy_harden   部署加固自检（ACL 加固 -> L3/D5 攻击必须被阻断）
 28 perf_baseline   性能基准自检
-29 guard_selftest  判定点快照校验自检  <- **当前预期 FAIL（真实信号，见下）**
+29 guard_selftest  判定点快照校验自检  <- **已 PASS（判据 = g_guard_hits；见下更正）**
 ```
 
 #### ⚠️ 接手须知（**最重要**）
 
-1. **门禁第 29 项会 FAIL** —— 这不是环境问题，是**真实信号**：
-   R3.2-b 的判定点守卫（`prot_integrity_check_guards`）**实测命中计数恒为 0**
-   （`g_guard_hits`），即**从未捕获任何判定点**。
-   详见 `docs/DECISION_REDUNDANCY_PLAN.md` **§10**（含"未查明部分不下结论"）。
-   **不要**为了让门禁变绿而删除该项 —— 那正是本项目最警惕的"门禁绕过掩盖缺陷"。
+1. ✅ **更正（2026-09-30 晚）：门禁第 29 项现在 PASS，守卫机制已被证明有效。**
+   当日早些时候记录的"`g_guard_hits` 恒为 0 ⇒ 守卫从未命中"**是测量假象**，
+   根因有三层（`docs/DECISION_REDUNDANCY_PLAN.md` **§11**）：
+   ```
+   · map 正则形态假设错 -> 只解析出 948/2989 个符号
+   · 用链接偏好基址 0x140000000 读进程 -> ASLR 已生效(真实 0x7FF6860A0000)
+   · 采样间隔 120ms，而 hits 的自增与 terminate 在**同一 tick 内** -> 必然错过
+   真实根因(src/integrity.c:163-173): selfcrypt_enter 失败 -> `continue;` **整轮跳过**
+     -> 掩码区内目标(license_verify/check_self)被 patch 的是**密文**
+     -> selfcrypt 自己的 per-region CRC 先失败 -> 守卫(L211)根本没跑
+   ```
+   把运行期 `g_wd_policy` 置 CONTINUE（模拟"段 CRC 已被中和"）后实测：
+   `prot_antidebug_detected`/`prot_dbiguard_suspicious`/`prot_vmdetect_suspicious`
+   三个掩码区外目标的 `g_guard_hits` 稳定增长（3/4/3），tamper 每 tick +2，
+   与预测**定量吻合**。`guard_selftest` 重写后 **PASS（正向 0 / 负向 3）**。
+   > **仍不要**为了让门禁变绿而删项 —— 但这次红线是**测量**：
+   > 任何"读不到 / 恒为 0"的结论，**必须先用一个已知非零的靶子证明读取链路是通的**。
 
 2. **R3.2-a 的发现仍然有效**（静态可复现）：
    `prot_integrity_check_self` 与 `prot_license_verify` **落在 selfcrypt 掩码区内**
@@ -439,9 +452,11 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    其中 `check_self` 是"**校验器不在自己覆盖范围内**"的自我指涉缺口。
 
 3. **新待办：调试控制台** —— `docs/DEBUG_CONSOLE_PLAN.md`
-   （用户 2026-09-30 提出；建议**先做第 1+3 步**，正好服务于第 1 条的定位）。
+   （用户 2026-09-30 提出；本轮手工做的 map 符号解析 / ASLR 换算 / 掩码归属 /
+   运行期变量只读观测，**正是它的 `sym`+`mask`+`watch` 子命令**，
+   而本轮踩的 3 个测量坑应收进它的 `doctor`）。
 
-#### 本阶段最值钱的两条教训
+#### 本阶段最值钱的三条教训
 
 ```
 ① **判据必须打在被测对象的检测域内**（我犯了两次）
@@ -449,7 +464,13 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    （看门狗顺序: check_self L175 **先于** check_guards L211）
    改用守卫自己的计数后 -> 5/5 全为 0 -> 上轮结论被推翻。
 
-② **诊断信息不可丢失**（R2.3）
+② **"读不到" ≠ "不存在"**（同一小时内我连犯三次 —— 最贵的一条）
+   map 正则形态假设错 / 用偏好基址读 ASLR 后的进程 / 采样间隔大于事件间隔
+   => 任何"读不到 / 恒为 0"的结论，**必须先用一个已知非零的靶子证明链路是通的**。
+   => 更要命的是: 由此得出的**假反向结论**看起来"诚实"，
+      比假阳性更难被发现（它会伪装成项目最推崇的"诚实失败"）。
+
+③ **诊断信息不可丢失**（R2.3）
    smoke 只重定向 stdout -> 日志 0 字节 -> 原因不可见。
    修好同时读 stderr 后，**立刻**暴露出真正的根因（参数被空格拆词）。
 ```
@@ -457,7 +478,8 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 #### 本阶段新增/修改的工具
 ```
 新增: tools/docclaim_check.py · tools/deploy_harden.ps1 · tools/perf_baseline.py
-      tools/guard_selftest.py
+      tools/guard_selftest.py（**当日重写**: 判据改 g_guard_hits · 目标自动选掩码区外
+      · 新增 VirtualProtectEx + 写入读回验证）
 修改: tools/release_check.ps1（26–29 项）· tools/mutate_check.py（--platform linux）
       prot_sdk/skeleton/build_skeleton.ps1（**4 处路径引用/诊断修复**）
       src/integrity.c · include/protect/integrity.h · modules.json
