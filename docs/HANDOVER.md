@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-09-30 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 29 项 · 提交 `84d3b70`
+> **最后核实**: 2026-09-30 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **30** 项 · 提交 `84d3b70`（`prot_dbg` 入库后随同提交更新）
 
 
 ## 1. 项目是什么
@@ -418,12 +418,13 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，
 当日先得出反向结论、随后由实测更正为"守卫有效"**（见下方接手须知第 1 条）。
 
-**门禁 29 项**（新增 26–29）：
+**门禁 30 项**（新增 26–30）：
 ```
 26 docclaim        文档断言一致性（断言值从文档解析，含"最后核实"元数据要求）
 27 deploy_harden   部署加固自检（ACL 加固 -> L3/D5 攻击必须被阻断）
 28 perf_baseline   性能基准自检
 29 guard_selftest  判定点快照校验自检  <- **已 PASS（判据 = g_guard_hits；见下更正）**
+30 prot_dbg        调试控制台自检（**第 1 步** doctor/sym/mask/exit；纯只读）
 ```
 
 #### ⚠️ 接手须知（**最重要**）
@@ -455,8 +456,16 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    （用户 2026-09-30 提出；本轮手工做的 map 符号解析 / ASLR 换算 / 掩码归属 /
    运行期变量只读观测，**正是它的 `sym`+`mask`+`watch` 子命令**，
    而本轮踩的 3 个测量坑应收进它的 `doctor`）。
+   > **进度（2026-09-30）**：**第 1 步已交付** —— `tools/prot_dbg.py`
+   > （`doctor`/`sym`/`mask`/`exit`，**纯只读**）+ 门禁第 30 项。
+   > 判据就是上面第 ② 条的固化: `doctor` 做**正向对照**（map 符号必须落进
+   > 产物节区间），且**空 map / 格式不识别 / 解析出 0 符号分别报错、都不许 PASS**。
+   > 价值已当场兑现: R3.2 会话里花 3 个失败探针才拿到的 8 个掩码区 + 5 个区内
+   > `prot_*` 符号，现在 `mask` **一条命令**给出且**逐字吻合**。
+   > 第 2 步（`patch`/`read`/`watch`）、第 4 步（反调试提示）未做；
+   > 第 3 步（诊断构建）**降级为可选**（§5 已更新依据）。
 
-#### 本阶段最值钱的三条教训
+#### 本阶段最值钱的四条教训
 
 ```
 ① **判据必须打在被测对象的检测域内**（我犯了两次）
@@ -473,6 +482,13 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 ③ **诊断信息不可丢失**（R2.3）
    smoke 只重定向 stdout -> 日志 0 字节 -> 原因不可见。
    修好同时读 stderr 后，**立刻**暴露出真正的根因（参数被空格拆词）。
+
+④ **把纪律"写进注释"不等于"写进了代码"**（2026-09-30，`tools/prot_dbg.py`）
+   我在文件头把"读不到 != 不存在"写成头号纪律，代码里却把三个分支写成
+   `if self.map_lines > 0: ...` —— 于是**空 map 会静默 PASS**（0 个符号还报通过）。
+   抓住它的是自检 **T7（负向）**，不是我的复查。
+   => 纪律必须落成**可执行的负向判据**；写下来的纪律仍然会漏。
+   => 且**自检要先写"必须失败"的用例**：只写正向用例时，这个洞会一路进仓库。
 ```
 
 #### 本阶段新增/修改的工具
@@ -480,7 +496,9 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 新增: tools/docclaim_check.py · tools/deploy_harden.ps1 · tools/perf_baseline.py
       tools/guard_selftest.py（**当日重写**: 判据改 g_guard_hits · 目标自动选掩码区外
       · 新增 VirtualProtectEx + 写入读回验证）
-修改: tools/release_check.ps1（26–29 项）· tools/mutate_check.py（--platform linux）
+      tools/prot_dbg.py（**调试控制台第 1 步**: doctor/sym/mask/exit，纯只读；
+      **不含** patch/read/watch —— 未实现就不假装支持）
+修改: tools/release_check.ps1（26–30 项）· tools/mutate_check.py（--platform linux）
       prot_sdk/skeleton/build_skeleton.ps1（**4 处路径引用/诊断修复**）
       src/integrity.c · include/protect/integrity.h · modules.json
 ```
