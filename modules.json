@@ -185,6 +185,7 @@
         "prot_integrity_check_guards",
         "prot_integrity_check_iat",
         "prot_integrity_check_self",
+        "prot_integrity_register_guard",
         "prot_integrity_set_watchdog_callback",
         "prot_integrity_start_watchdog",
         "prot_integrity_stop_watchdog"
