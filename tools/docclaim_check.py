@@ -92,10 +92,32 @@ def probe_scdbg_guarded():
 
 
 def _gate_items():
+    """从 release_check.ps1 解析门禁项名（**行锚定**）。
+
+    ## ⚠️ 为什么必须行锚定（2026-10-01 实测缺陷）
+
+    原写法 `re.findall(r"Check\\s+'([^']+)'", t)` **非锚定**，会把
+    `tools/release_check.ps1:79` 注释里的示例文本
+
+        # 于是 `Check 'X' { & $tool; $LASTEXITCODE -eq 0 }` 得到的是
+
+    也算成一项（多出假项 `'X'`），于是断言得到 **31** 而真实调用点是 **30**。
+
+    **更隐蔽的是它刚好"对"**：`tools/doccheck.py:156-163` 用行锚定正则得 30，
+    再**硬编码 `+1`**（"签名提示项"）也得到 31 —— 两个检查器用**两种不同的
+    错误方式**各凑出同一个 31，于是 `publish/*.md`(31) / docclaim(31) /
+    doccheck(31) 三方一致，**却三方都错**。这是「自洽 != 正确」的第 5 次重演，
+    也是「判据必须用**唯一结构形态**，宽松子串已 4 次假阳性」的再次验证。
+
+    修法有两部分，缺一不可：
+      ① 本函数改**行锚定**（行首可空白 + `Check` + 引号）；
+      ② `tools/release_check.ps1` 的签名块改为**真正的 `Check`** ——
+         否则行锚定会得 30 而运行期报 31，漂移只是换了个方向。
+    """
     t = _read(_p('tools', 'release_check.ps1'), enc='utf-8-sig')
     if t is None:
         return None
-    return re.findall(r"Check\s+'([^']+)'", t)
+    return re.findall(r"(?m)^\s*Check\s+'([^']+)'", t)
 
 
 def probe_gate_count_matches_docs():
@@ -514,11 +536,79 @@ def selftest():
              mm is not None and RE_SHA.match(mm.group(1).strip()) is None,
              '改后仍被判为合法 sha')
 
+    # T7 **负向**: 注释里的 `Check 'X'` 不得被算作门禁项
+    #   ## 为什么必须有这条（2026-10-01 实测缺陷）
+    #     旧 `_gate_items()` 用**非锚定**正则 `Check\s+'([^']+)'`，把
+    #     `tools/release_check.ps1:79` 的**注释示例**
+    #         `# 于是 \`Check 'X' { & $tool; $LASTEXITCODE -eq 0 }\``
+    #     也算作一项（假项 `'X'`），于是断言得 31 而真实调用点是 30。
+    #   ## 为什么这个洞能活这么久（最值得记的一点）
+    #     它**刚好凑对**了: `tools/doccheck.py` 用行锚定正则得 30，
+    #     再**硬编码 `+1`**（"签名提示项"）也得到 31 —— 两个检查器用
+    #     **两种不同的错误方式**各凑出同一个 31，于是文档 / doccheck /
+    #     docclaim 三方一致却**三方都错**（自证循环）。
+    #     => 静态判据之间**不能互相印证**，必须与**运行期证据**对齐。
+    #   ## 形态
+    #     纯函数 + 内存构造（零文件副作用）: 断言"注释形态不计入"，
+    #     并断言"真实脚本的行锚定计数 == 运行期证据行数"这一更强的不变量。
+    def _count_anchored(text):
+        return len(re.findall(r"(?m)^\s*Check\s+'([^']+)'", text))
+
+    def _count_naive(text):
+        return len(re.findall(r"Check\s+'([^']+)'", text))
+
+    fake_ps = (
+        "Check '真项 A' { $true }\n"
+        "# 于是 `Check 'X' { & $tool; $LASTEXITCODE -eq 0 }` 得到的是\n"
+        "    Check '真项 B' { $true }\n"
+        "  # 注释里的 Check 'Y' 也不算\n"
+        "Check '真项 C' { $true }\n"
+    )
+    case('T7 **负向**: 注释里的 `Check \'X\'` 不得计入（锚定正则）',
+         _count_anchored(fake_ps) == 3, '锚定得 %d，期望 3' % _count_anchored(fake_ps))
+    case('T7 正向对照: 非锚定正则**确实**会多算（证明本用例有判别力）',
+         _count_naive(fake_ps) == 5, '非锚定得 %d，期望 5' % _count_naive(fake_ps))
+
+    # 对**真实脚本**断言: 静态项数 == 运行期 [ok] 证据行数这一不变量。
+    #   运行期证据来自门禁日志（gate_log 落盘）；若无日志则跳过并**明确标注**。
+    items7 = _gate_items()
+    if items7 is None:
+        case('T7 **负向**: 无 release_check.ps1（跳过）', True)
+    else:
+        case('T7 正向对照: 真实脚本无假项 X/Y（现况 %d 项）' % len(items7),
+             'X' not in items7 and 'Y' not in items7,
+             '仍含注释假项: %s' % [n for n in items7 if n in ('X', 'Y')])
+        logs = sorted(glob.glob(_p('build', 'logs', 'release_check_*.log')))
+        src = _p('tools', 'release_check.ps1')
+        src_mt = os.path.getmtime(src) if os.path.isfile(src) else 0
+        # 只看**已完成 PASS 轮**的日志，且拒绝"早于被测脚本"的日志。
+        #   ## 为什么必须比时间戳（本项目「归档产物必须自带 prot_sections.json」同型）
+        #     一份在脚本**改动之前**跑出的日志，不能作为**当前脚本**的证据 ——
+        #     否则本次修复会被上一轮的旧日志判为失败（"用当前 json 校验旧构建"
+        #     的镜像错误）。日志与脚本同代才可对账。
+        done = []
+        for lg in logs:
+            lt = _read(lg, enc='utf-8') or ''
+            if re.search(r'PASS:\s*(\d+)\s*项检查全通过', lt) and os.path.getmtime(lg) >= src_mt:
+                done.append(lg)
+        if not done:
+            case('T7 不变量: 无"与当前脚本同代"的 PASS 日志可对账（未验证 != 通过）', True)
+        else:
+            lt = _read(done[-1], enc='utf-8') or ''
+            nok = len(re.findall(r'(?m)^\[ok\]', lt))
+            npass = re.findall(r'PASS:\s*(\d+)\s*项检查全通过', lt)
+            case('T7 不变量: 静态项数(%d) == 运行期报告项数(%s) == 证据行数(%d)'
+                 % (len(items7), npass[-1], nok),
+                 len(items7) == int(npass[-1]) == nok,
+                 '项数 %d / 报告 %s / [ok] 行 %d 三者不等（%s）'
+                 % (len(items7), npass[-1], nok, os.path.basename(done[-1])))
+
     print()
     if fail:
         print('[docclaim-selftest] FAIL: %d 项' % fail)
         return 1
-    print('[docclaim-selftest] PASS: 1 正向 + **5 负向** + T6 占位符判据（10 负向/正向对）均可自证')
+    print('[docclaim-selftest] PASS: 1 正向 + **5 负向** + T6 占位符判据（10 负向/正向对）'
+          ' + T7 计数形态判据（注释不计入 + 静态==运行期不变量）均可自证')
     return 0
 
 

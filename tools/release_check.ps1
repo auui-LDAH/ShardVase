@@ -153,17 +153,30 @@ if (-not $SkipTest) {
 }
 
 # 签名: 可复现 (repro) 要求 SkipSign 重建, 与 Authenticode 互斥 (签名改 SHA,
-# RELEASE §3/§5 已知). 发版顺序 = 确认可复现后单独签名. 这里只提示不 FAIL.
-if (Test-Path -LiteralPath 'build\keys\codesign.pfx') {
+# RELEASE §3/§5 已知). 发版顺序 = 确认可复现后单独签名 -> **未签名不算失败**,
+# 但必须产出证据行。
+#
+# ⚠️ 严重教训 (2026-10-01 实测): 本块原为普通 `if`, 在"pfx 存在但未签名"分支里
+#    只 `$script:pass++` 而**不打印 [ok]** -> 门禁报 "31 项"而日志只有 30 条 [ok]:
+#    有一个通过**没有证据行**。且项数**环境相关**(pfx 不存在时同一份代码报 30)。
+#    更糟的是两个检查器各自用不同方式"补"这 1 项 (tools/doccheck.py 硬编码 +1、
+#    tools/docclaim_check.py 把上面 L79 注释里的示例 `Check 'X'` 误匹配成一项),
+#    于是 publish/*.md 声称 31、两个检查器实测 31 —— **三方一致但三方都错**。
+#    这是「自洽 != 正确」的第 5 次重演。
+#    修法: 改为真正的 Check, 任何环境都产出 [ok] 行 -> 静态调用点数 =
+#    运行期项数 = [ok] 行数, 三者恒等且与环境无关。
+Check '签名 (Authenticode)' {
+    if (-not (Test-Path -LiteralPath 'build\keys\codesign.pfx')) {
+        Write-Host '      (无 codesign.pfx — demo/未签名构建; 未签名不 FAIL)' -ForegroundColor DarkGray
+        return $true
+    }
     $sig = Get-AuthenticodeSignature -LiteralPath 'build\demo.exe' -ErrorAction SilentlyContinue
     if ($sig -and $sig.Status -ne 'NotSigned') {
-        $script:pass++; Write-Host ('[ok]  签名有效 ({0})' -f $sig.Status) -ForegroundColor Green
-    } else {
-        Write-Host '[info] 未签名 (可复现构建产物) — 发版时 signtool 单独签名' -ForegroundColor DarkYellow
-        $script:pass++  # 视为通过 (签名在可复现后单独做)
+        Write-Host ('      签名有效 ({0})' -f $sig.Status) -ForegroundColor DarkGray
+        return $true
     }
-} else {
-    Write-Host '[info] codesign.pfx absent - sign check skipped (demo/unsigned build only)' -ForegroundColor DarkYellow
+    Write-Host '      (未签名 — 可复现构建产物; 发版时 signtool 单独签名)' -ForegroundColor DarkGray
+    return $true
 }
 
 # W5(验证框架): 检查器**变异测试** —— 每个检查器必须自证能抓错。

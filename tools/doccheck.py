@@ -154,13 +154,34 @@ def check_deployed_links():
 
 
 def actual_gate_count():
-    """release_check.ps1 的实际门禁项数 (Check 调用数 + 签名提示项)。"""
+    """release_check.ps1 的实际门禁项数 = `Check` 调用点数。
+
+    ## ⚠️ 这里曾有硬编码 `+1`（2026-10-01 移除）
+
+    原实现:
+
+        n = len(re.findall(r"^\\s*Check '", open(p, encoding='utf-8').read(), re.M))
+        # +1: codesign.pfx 存在时的签名 pass++ 项
+        return n + 1
+
+    那个 `+1` 是在**猜**"签名提示项必然存在"。它与
+    `tools/docclaim_check.py` 的另一种错误（非锚定正则把注释里的
+    `Check 'X'` 误算成一项）**刚好凑出同一个 31** —— 于是
+    `publish/*.md` / doccheck / docclaim 三方一致却**三方都错**。
+
+    根因不在检查器而在被测脚本: `tools/release_check.ps1` 的签名块当时是普通
+    `if`，"pfx 存在但未签名"分支只 `$script:pass++` 不打印 `[ok]`，
+    于是项数既**比证据行多 1**、又**环境相关**。已改为真正的 `Check`
+    （任何环境都产出 `[ok]` 行），故这里的 `+1` 假设必须删除 ——
+    判据里**不允许存在"某个项必然在"的硬编码假设**。
+    """
     p = os.path.join(REPO, 'tools', 'release_check.ps1')
     if not os.path.isfile(p):
         return None
-    n = len(re.findall(r"^\s*Check '", open(p, encoding='utf-8').read(), re.M))
-    # +1: codesign.pfx 存在时的签名 pass++ 项
-    return n + 1
+    t = open(p, encoding='utf-8-sig').read()
+    # 行锚定（唯一结构形态）: 行首可空白 + Check + 引号。
+    # 非锚定形态已 5 次假阳性（最近一次把 L79 注释里的示例算成一项）。
+    return len(re.findall(r"(?m)^\s*Check\s+'", t))
 
 
 def actual_rounds():
