@@ -1,4 +1,4 @@
-﻿# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
+# tools/release_check.ps1 — 发布前置检查 gate (INFRA_PLAN I3)
 #
 # 一键确认发版所有前置条件:
 #   1. git 工作区干净
@@ -397,6 +397,14 @@ Check '验证互斥锁自检 (verify_lock)' {
 #     · 等共 7 条（每条写明来源文档 -> 防悬空断言）
 #
 #   **一旦实测与文档不符 -> 门禁直接红**，不再等人发现。
+#
+#   ## 2026-09-30 加固: 断言探针的"元数据占位符"判据
+#     实测缺陷: 3 份关键文档把「最后核实」的提交字段写成 `提交 \`pending\``，
+#     而**旧版探针放行**（它只校验日期与方法）。
+#     => 一个"为防形式主义而写"的检查器，被**形式主义本身**骗过。
+#     现在提交字段**必须是 7-40 位十六进制 sha**；自检 T6 用 6 个占位符
+#     （pending/TBD/—/todo/空/HEAD）+ 3 个真 sha 做正负对照，并**先证明
+#     修复前的形态会 FAIL**（不是自说自话）。
 Check '文档断言一致性 (docclaim)' {
     & $py -X utf8 tools\docclaim_check.py --quiet
     $LASTEXITCODE -eq 0

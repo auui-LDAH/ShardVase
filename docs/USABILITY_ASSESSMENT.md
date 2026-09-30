@@ -8,7 +8,7 @@
 > `docs/compat-matrix.csv`（环境实测矩阵）。
 > **日期**：2026-09-21
 
-> **最后核实**: 2026-09-29 · 方法: `tools/perf_baseline.py` + `tools/deploy_harden.ps1 -Selftest` · 提交 `pending`
+> **最后核实**: 2026-09-29 · 方法: `tools/perf_baseline.py` + `tools/deploy_harden.ps1 -Selftest` · 提交 `1d59ac0`
 
 ---
 

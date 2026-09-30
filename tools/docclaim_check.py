@@ -189,15 +189,33 @@ RE_VERIFIED = re.compile(
     r'^> \*\*最后核实\*\*:\s*(\d{4}-\d{2}-\d{2})\s*·\s*方法:\s*(\S.+)$',
     re.M)
 
+#: 末段的「提交 `hash`」字段。
+#:   ## 为什么单独抽出来查（2026-09-30 新增）
+#:     本探针的**全部意义**就是"防形式主义"（要求"方法"而非只写日期）。
+#:     但实测发现：3 份关键文档把提交字段写成 `提交 \`pending\`` ——
+#:     **这恰恰是形式主义本身**，而旧版探针**放行**（它只校验日期与方法）。
+#:     => 一处"占位符永久滞留"能骗过为防占位符而写的检查器。
+#:   ## 判据的形态
+#:     提交字段的值**必须是 7–40 位十六进制 sha**。
+#:     用**唯一结构形态**（反引号包裹 + 全 hex）而非宽松子串 —— 后者已 4 次假阳性。
+RE_COMMIT = re.compile(r'·\s*提交\s*`([^`]+)`')
+RE_SHA = re.compile(r'^[0-9a-f]{7,40}$')
+
 
 def probe_verified_metadata():
-    """关键文档必须含「最后核实」元数据（**日期 + 方法**）。
+    """关键文档必须含「最后核实」元数据（**日期 + 方法 + 可核对的提交**）。
 
     ## 为什么要求"方法"
       只写日期是**形式主义** —— 无人知道当时**怎么核实的**、能否复现。
       要求"方法"（工具/命令）-> 复核者可**重跑同一方法**。
+
+    ## 为什么还要求"提交是 sha"
+      `提交 \\`pending\\`` / `\\`TBD\\`` / `\\`—\\`` 与"只写日期"同罪：
+      它让复核者**无法回到当时那个仓库状态**。实测已有 3 份文档长期滞留
+      `pending`（占位符比日期更隐蔽 —— 日期至少会显得"旧"，`pending` 看起来
+      像"正在做"）。=> 占位符必须**硬失败**，否则防形式主义的检查器自己会形式化。
     """
-    missing, no_method, bad_date = [], [], []
+    missing, no_method, bad_date, bad_commit = [], [], [], []
     for d in KEY_DOCS:
         t = _read(_p(*d.split('/')))
         if t is None:
@@ -211,10 +229,16 @@ def probe_verified_metadata():
             no_method.append(d)
         if not re.match(r'^20\d\d-\d\d-\d\d$', m.group(1)):
             bad_date.append(d)
-    if missing or no_method or bad_date:
-        return False, ('缺元数据=%s 方法缺失=%s 日期异常=%s'
-                       % (missing, no_method, bad_date))
-    return True, '%d 份关键文档均有「最后核实」（含方法）' % len(KEY_DOCS)
+        c = RE_COMMIT.search(t)
+        # 缺字段 与 占位符 分开报 —— 两者的处置不同（补字段 vs 补真实提交）
+        if not c:
+            bad_commit.append(d + '(缺提交字段)')
+        elif not RE_SHA.match(c.group(1).strip()):
+            bad_commit.append('%s(%s)' % (d, c.group(1).strip()[:16]))
+    if missing or no_method or bad_date or bad_commit:
+        return False, ('缺元数据=%s 方法缺失=%s 日期异常=%s 提交非 sha=%s'
+                       % (missing, no_method, bad_date, bad_commit))
+    return True, '%d 份关键文档均有「最后核实」（日期 + 方法 + sha）' % len(KEY_DOCS)
 
 def probe_flat_clean():
     """`demo/gen/` 根下**无文件**（§34.6 清理后防"复活"）。"""
@@ -447,11 +471,54 @@ def selftest():
                  after == orig_bytes,
                  '恢复后 %d vs 原 %d 字节' % (len(after), len(orig_bytes)))
 
+    # T6 **负向**: 「最后核实」的**占位符**必须被拒
+    #   ## 为什么必须有这条
+    #     实测发现 3 份关键文档长期写着 `提交 \`pending\``，而**旧版探针放行** ——
+    #     一个"为防形式主义而写"的检查器，被**形式主义本身**骗过。
+    #     这正是自检 T6 存在的理由：**先写"必须失败"的用例**，
+    #     否则这个洞会一路进仓库（同 prot_dbg 的空 map 静默 PASS）。
+    #   ## 形态
+    #     直接调 RE_SHA / RE_COMMIT 的**纯函数**（不碰真实文档 -> 零副作用），
+    #     并对**真实 KEY_DOCS 现况**再断言一次（防止将来又写出 pending）。
+    for bad_val in ('pending', 'TBD', '—', 'todo', '', 'HEAD'):
+        hit = RE_SHA.match(bad_val)
+        case('T6 **负向**: 提交字段占位符 %r 必须不被接受' % bad_val,
+             hit is None, 'RE_SHA 竟然接受了 %r' % bad_val)
+    for good_val in ('ca14477', 'b700574', '1d59ac0'):
+        case('T6 正向: 真实 sha %r 必须被接受' % good_val,
+             RE_SHA.match(good_val) is not None, 'RE_SHA 拒绝了 %r' % good_val)
+    # 对真实文档复现"当时的缺陷形态"：把元数据行的提交段替换成 pending
+    #   -> 只在**内存里**替换后调判定逻辑，不写文件
+    places = []
+    for d in KEY_DOCS:
+        t = _read(_p(*d.split('/')))
+        if t is None:
+            continue
+        m = RE_COMMIT.search(t)
+        if m and not RE_SHA.match(m.group(1).strip()):
+            places.append('%s=%s' % (d, m.group(1).strip()[:12]))
+    case('T6 正向对照: 真实 KEY_DOCS 的提交字段全为 sha（现况 %d 份）'
+         % len(KEY_DOCS), not places, '仍有占位符: %s' % places)
+    # 构造式负向: 把一份真实文档在内存里改成 pending -> 判定必须是 False
+    probe_src = None
+    for d in KEY_DOCS:
+        t = _read(_p(*d.split('/')))
+        if t and RE_COMMIT.search(t):
+            probe_src = RE_COMMIT.sub('· 提交 `pending`', t, count=1)
+            break
+    if probe_src is None:
+        case('T6 **负向**: 无可构造的样本（跳过）', True)
+    else:
+        mm = RE_COMMIT.search(probe_src)
+        case('T6 **负向**: 内存中改成 `pending` -> 判定必须为"非 sha"',
+             mm is not None and RE_SHA.match(mm.group(1).strip()) is None,
+             '改后仍被判为合法 sha')
+
     print()
     if fail:
         print('[docclaim-selftest] FAIL: %d 项' % fail)
         return 1
-    print('[docclaim-selftest] PASS: 1 正向 + **5 负向**均可自证')
+    print('[docclaim-selftest] PASS: 1 正向 + **5 负向** + T6 占位符判据（10 负向/正向对）均可自证')
     return 0
 
 

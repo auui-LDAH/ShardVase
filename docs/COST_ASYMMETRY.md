@@ -7,7 +7,7 @@
 > （符号表补丁实证）、`docs/DEFENSE_DEEPEN_PLAN.md`（S1-S5）、
 > `publish/06-诚实边界.md`（对外口径）。
 
-> **最后核实**: 2026-09-29 · 方法: `docs/ATTACK_DRILL8.md`（两次构建 map 对比）· 提交 `pending`
+> **最后核实**: 2026-09-29 · 方法: `docs/ATTACK_DRILL8.md`（两次构建 map 对比）· 提交 `ca14477`
 
 ---
 
