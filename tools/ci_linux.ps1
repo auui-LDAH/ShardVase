@@ -51,6 +51,12 @@ param(
 #   **都会触发 finally**，故释放不漏（**不依赖"记得释放"**）。
 & "$PSScriptRoot\verify_lock.ps1" -Holder 'ci_linux'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# ## 门禁落日志（2026-09-30）: 与 release_check.ps1 **同一机制、同一理由**
+#   （实测事故: 一次失败因输出被截断而**永久丢失现场**，此后 5 轮无法复现）
+#   本侧是慢任务（~10 分钟），失败现场更值钱。
+#   => `build/logs/ci_linux_<时间戳>.log`；开启失败只告警、不中断。
+& "$PSScriptRoot\gate_log.ps1" -Dir (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\logs') -Name ci_linux
 try {
 
 $ErrorActionPreference = 'Stop'
@@ -155,6 +161,9 @@ if ($mutRc -eq 0) {
 }
 
 Write-Host ''
+# 门禁落日志: 把路径再报一次（人读的是结尾；失败时尤其关键）
+$__log = [string](Get-Variable -Name '__GateLogPath' -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
+if ($__log) { Write-Host ("[log] 本轮完整输出: {0}" -f $__log) -ForegroundColor DarkGray }
 $allOk = ($rc -eq 0 -and $script:mirrorFail -eq 0)
 if ($allOk) {
     Write-Host '[ci_linux] PASS（运行时 + 镜像检查 + 检查器健康）' -ForegroundColor Green
@@ -165,6 +174,8 @@ if ($allOk) {
     exit 1
 }
 } finally {
+    # 门禁落日志: 停止转录（**finally 覆盖 exit/throw/正常** —— 同锁的理由）
+    & "$PSScriptRoot\gate_log.ps1" -Stop | Out-Null
     # D2: 释放锁（**finally 覆盖 exit/throw/正常**）
     & "$PSScriptRoot\verify_lock.ps1" -Holder 'ci_linux' -Release
 }

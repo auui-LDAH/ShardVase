@@ -40,6 +40,18 @@ param(
 #   **都会触发 finally**，故释放不漏（**不依赖"记得释放"**）。
 & "$PSScriptRoot\verify_lock.ps1" -Holder 'release_check'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# ## 门禁落日志（2026-09-30）: **失败现场不再丢失**
+#
+#   实测事故: 一次门禁报「1/29 未通过」，但调用方只截了 `-Last 6` 行，
+#   失败项名与详情**永久丢失** -> 此后**连跑 5 轮无法复现、无法定位**。
+#   这与 R2.3 记名的「诊断信息不可丢失」是**同型问题**。
+#
+#   => 本轮全部输出（含 `Write-Host` 的宿主 UI 流）落盘到
+#      `build/logs/release_check_<时间戳>.log`（build/ 已 gitignore）。
+#      开启失败**只告警、不中断**（日志是辅助证据，不能变成新的失败源）。
+#      详见 `tools/gate_log.ps1` 文件头。
+& "$PSScriptRoot\gate_log.ps1" -Dir (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\logs') -Name release_check
 try {
 
 $ErrorActionPreference = 'Continue'
@@ -459,6 +471,20 @@ Check '调试控制台自检 (prot_dbg)' {
     $LASTEXITCODE -eq 0
 }
 
+# 门禁日志自检（2026-09-30）
+#   本工具存在的理由就是「判据失败要留下证据」，故它自己必须先被证明。
+#   ⚠️ 它要在**同一会话**里 start/stop 转录；而门禁此刻正开着转录 ——
+#      直接跑会把**门禁这一轮**的日志掐断（同 verify_lock 自检删掉门禁自己的
+#      锁那类事故）。`gate_log.ps1` 自己检测到外层转录时会**换子进程**运行，
+#      此处按普通项调用即可（隔离性另有实测证据，见该文件头）。
+#   T2 正向对照: 开启后 Write-Host 必须落盘（否则'日志里没有'分不清是
+#      '没写'还是'没记'）; T3/T4/T5 负向: 停止后不得落盘 / 未开启 -Stop 返回空
+#      / 目录不可用时不致命。
+Check '门禁日志自检 (gate_log)' {
+    & "$PSScriptRoot\gate_log.ps1" -Selftest | Out-Null
+    $LASTEXITCODE -eq 0
+}
+
 
 
 
@@ -497,6 +523,9 @@ Check '调试控制台自检 (prot_dbg)' {
 }
 
 Write-Host ''
+# 门禁落日志: 把路径再报一次（人读的是结尾；失败时尤其关键）
+$__log = [string](Get-Variable -Name '__GateLogPath' -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
+if ($__log) { Write-Host ("[log] 本轮完整输出: {0}" -f $__log) -ForegroundColor DarkGray }
 if ($fail -gt 0) {
     Write-Host ("[release_check] FAIL: {0}/{1} 未通过" -f $fail, ($pass + $fail)) -ForegroundColor Red
     exit 1
@@ -504,6 +533,8 @@ if ($fail -gt 0) {
 Write-Host ("[release_check] PASS: {0} 项检查全通过" -f $pass) -ForegroundColor Green
 exit 0
 } finally {
+    # 门禁落日志: 停止转录（**finally 覆盖 exit/throw/正常** —— 同锁的理由）
+    & "$PSScriptRoot\gate_log.ps1" -Stop | Out-Null
     # D2: 释放锁（**finally 覆盖 exit/throw/正常**）
     & "$PSScriptRoot\verify_lock.ps1" -Holder 'release_check' -Release
 }

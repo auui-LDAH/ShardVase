@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-09-30 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **30** 项 · 提交 `84d3b70`（`prot_dbg` 入库后随同提交更新）
+> **最后核实**: 2026-09-30 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **31** 项 · 提交 `b700574`（`gate_log` 入库后随同提交更新）
 
 
 ## 1. 项目是什么
@@ -418,13 +418,14 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，
 当日先得出反向结论、随后由实测更正为"守卫有效"**（见下方接手须知第 1 条）。
 
-**门禁 30 项**（新增 26–30）：
+**门禁 31 项**（新增 26–31）：
 ```
 26 docclaim        文档断言一致性（断言值从文档解析，含"最后核实"元数据要求）
 27 deploy_harden   部署加固自检（ACL 加固 -> L3/D5 攻击必须被阻断）
 28 perf_baseline   性能基准自检
 29 guard_selftest  判定点快照校验自检  <- **已 PASS（判据 = g_guard_hits；见下更正）**
 30 prot_dbg        调试控制台自检（**第 1 步** doctor/sym/mask/exit；纯只读）
+31 gate_log        门禁日志自检（本轮输出落盘 `build/logs/`；见下第 4 条）
 ```
 
 #### ⚠️ 接手须知（**最重要**）
@@ -465,7 +466,26 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    > 第 2 步（`patch`/`read`/`watch`）、第 4 步（反调试提示）未做；
    > 第 3 步（诊断构建）**降级为可选**（§5 已更新依据）。
 
-#### 本阶段最值钱的四条教训
+4. **门禁现在会落日志**（2026-09-30）—— `tools/gate_log.ps1`
+   ```
+   为什么: 实测事故 —— 一次门禁报「1/29 未通过」，但调用方只截了 `-Last 6` 行,
+           失败项名与详情**永久丢失** -> 此后连跑 5 轮**无法复现、无法定位**。
+           （与 R2.3 记名的「诊断信息不可丢失」同型）
+   现状:   门禁/ci_linux 每轮输出落盘 `build/logs/<name>_<时间戳>.log`
+           （`build/` 已 gitignore），开头与结尾各打印一次路径。
+   机制:   `Start-Transcript`（实测: Write-Host 裸调用 / `& { … } | Out-Null` 内 /
+           `Check` 内部详情行 / `[ok]`/`[X]` 行 / `Write-Output` **全部落盘**）。
+   ⚠️ 诚实边界: 日志记的是**门禁自己的控制台输出**。被 `Check` 里 `| Out-Null`
+           吞掉的**子进程 stdout 不在其中** —— 现在至少能知道**哪一项**失败，
+           详情仍需单独重跑该项。
+   ⚠️ 已实测的两条坑: ① 自检要 start/stop 转录，而转录是**会话级**的 ——
+           同一会话里跑会把**门禁这一轮**的日志掐断（同 verify_lock 自检删掉门禁
+           锁那类事故）=> 检测到外层转录时**换子进程**跑自检（门禁输出里会打印
+           `[gate_log] 检测到外层转录 -> …`）；② 子进程的 `Write-Host`
+           **不进父进程转录**（所以子进程跑的自检横幅不在日志里，属预期）。
+   ```
+
+#### 本阶段最值钱的五条教训
 
 ```
 ① **判据必须打在被测对象的检测域内**（我犯了两次）
@@ -489,6 +509,14 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    抓住它的是自检 **T7（负向）**，不是我的复查。
    => 纪律必须落成**可执行的负向判据**；写下来的纪律仍然会漏。
    => 且**自检要先写"必须失败"的用例**：只写正向用例时，这个洞会一路进仓库。
+
+⑤ **判据失败时留下的证据，比判据本身更值钱**（2026-09-30，`tools/gate_log.ps1`）
+   门禁不落日志 -> 一次 1/29 失败因输出被截断而**永久丢失现场** ->
+   此后连跑 5 轮都**无法复现**（不知是哪一项、什么形态）。
+   => 任何"跑一次要几分钟、失败不常见"的门禁，**默认必须落盘**：
+      否则一个偶发失败永远不会变成可修的问题，只会变成传说。
+   => 且新机制自己要有**正向对照**（"开启后写的行必须落盘"）——
+      否则"日志里没有"分不清是**没写**还是**没记**。
 ```
 
 #### 本阶段新增/修改的工具
@@ -498,7 +526,10 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
       · 新增 VirtualProtectEx + 写入读回验证）
       tools/prot_dbg.py（**调试控制台第 1 步**: doctor/sym/mask/exit，纯只读；
       **不含** patch/read/watch —— 未实现就不假装支持）
-修改: tools/release_check.ps1（26–30 项）· tools/mutate_check.py（--platform linux）
+      tools/gate_log.ps1（**门禁落日志**: start/-Stop/-Selftest；自检 5 项含 3 负向；
+      检测到外层转录时自检自动换子进程）
+修改: tools/release_check.ps1（26–31 项）· tools/ci_linux.ps1（同步落日志）
+      tools/mutate_check.py（--platform linux）
       prot_sdk/skeleton/build_skeleton.ps1（**4 处路径引用/诊断修复**）
       src/integrity.c · include/protect/integrity.h · modules.json
 ```
