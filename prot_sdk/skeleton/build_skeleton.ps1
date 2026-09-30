@@ -345,7 +345,12 @@ $set = "$serialName`n"
 $inFile = Join-Path $outDir 'smoke_stdin.txt'
 Set-Content -LiteralPath $inFile -Value $serialName -Encoding ascii
 $sOut = Join-Path $outDir 'smoke_out.log'
+# ## R2.3（2026-09-29）: **诊断流也要重定向**
+#   实测: 壳把 usage/错误**全部写入 stderr** —— 只抓 stdout 会得到
+#   **0 字节日志** -> 判据失配 -> **FAIL 且原因不可见**。
+$sErr = Join-Path $outDir 'smoke_err.log'
 Remove-Item -LiteralPath $sOut -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $sErr -ErrorAction SilentlyContinue
 # smoke 期间用 PROT_SERIAL 显式提供序列号 (GUI 骨架的 provider 第 1 优先级)。
 #
 # 为什么需要 (实测 2026-09-21): GUI 程序在**无控制台**时会弹窗收集序列号
@@ -361,9 +366,19 @@ Remove-Item -LiteralPath $sOut -ErrorAction SilentlyContinue
 #   （仍能被 Redirect* 与 WaitForExit 正常控制，功能不变）。
 $prevSerial = $env:PROT_SERIAL
 $env:PROT_SERIAL = $serialName
+# ## ⚠️ 路径**必须自带引号**（R2.3 实测, 2026-09-29）
+#
+#   `-ArgumentList` 把数组**用空格 join** 后交给 CreateProcess，
+#   **不会自动加引号** -> 路径含空格的仓库里会被**拆词**:
+#     `--license-file D:\specifically for development and work\…`
+#     -> 参数错乱 -> main() 走 usage 分支 -> smoke 失败且**原因不可见**。
+#   （"原因不可见"正是缺陷 ④；修好 ④ 才暴露出本处。）
+#
+#   > **注意**: 注释**不能**插进这条反引号续行的命令中间 ——
+#   > 续行会落在注释后，`-ArgumentList` 变成新语句（**实测踩过**）。
 $p = Start-Process -FilePath "$outDir\$appName.exe" `
-    -ArgumentList '--license-file', "$outDir\license.txt", '--vm-blob', "$outDir\vm.blob", '--wait-after', '6000' `
-    -RedirectStandardInput $inFile -RedirectStandardOutput $sOut -PassThru `
+    -ArgumentList '--license-file', "`"$outDir\license.txt`"", '--vm-blob', "`"$outDir\vm.blob`"", '--wait-after', '6000' `
+    -RedirectStandardInput $inFile -RedirectStandardOutput $sOut -RedirectStandardError $sErr -PassThru `
     -WindowStyle Hidden
 Start-Sleep -Seconds 9
 if (-not $p.HasExited) { $p.WaitForExit(15000) | Out-Null }
@@ -371,9 +386,17 @@ $smokeExited = $p.HasExited
 if (-not $smokeExited) { Stop-Process -Id $p.Id -Force }
 # 恢复 PROT_SERIAL (避免污染后续步骤)
 $env:PROT_SERIAL = $prevSerial
-$sLines = Get-Content -LiteralPath $sOut -ErrorAction SilentlyContinue
+# ## R2.3 修复（2026-09-29）: 判据用 **stdout + stderr 合并**，并**分流打印**
+#
+#   此前只读 stdout -> 实测得到 0 字节 -> 判据失配且**看不到原因**。
+#   现在: 两流都读、都打印 -> 失败时**原因可见**。
+#   > 与 P3 教训同型: 诊断信息丢失 = 把"可修的错误"变成"无从下手的失败"。
+$sOutLines = @(Get-Content -LiteralPath $sOut -ErrorAction SilentlyContinue)
+$sErrLines = @(Get-Content -LiteralPath $sErr -ErrorAction SilentlyContinue)
+$sLines = @($sOutLines + $sErrLines)
 $sText = ($sLines -join ' ')
-Write-Host "build_skeleton: smoke output: $($sLines -join ' | ')"
+Write-Host "build_skeleton: smoke stdout: $($sOutLines -join ' | ')"
+Write-Host "build_skeleton: smoke stderr: $($sErrLines -join ' | ')"
 $smokeFail = $false
 if ($cfg.key_mode -ne 'new') {
     # pub 模式: blob 待签发, 运行到"装载失败"属预期 (产品交付前由服务器补签)
