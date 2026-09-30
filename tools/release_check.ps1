@@ -414,6 +414,27 @@ Check '性能基准自检 (perf_baseline)' {
     $LASTEXITCODE -eq 0
 }
 
+# 判定点快照校验自检（R3.2-b, 2026-09-29）
+#
+# ## 为什么入门禁（**防"快照校验退化为恒真"**）
+#   `prot_integrity_check_guards` 若退化为恒真（比较写错 / 序言读取被编译器
+#   折叠成常量 / 快照时机错），**所有其它测试仍会全绿** ——
+#   这正是本项目最警惕的失败模式（"只会通过的检查器比没有更危险"）。
+#
+#   本项**实证它能抓到 patch**:
+#     · 正向: 不 patch -> 进程**不得**因篡改退出
+#     · 负向: patch `prot_antidebug_detected` 序言 (`31 C0 C3`) ->
+#             **必须**以 PROT_EXIT_TAMPERED(0xBAD=2989) 退出
+#   手法与 `ATTACK_DRILL7` 步骤 4 **同款**（OpenProcess + WriteProcessMemory）。
+#
+# ## 为什么能安全地跑
+#   用的是**独立进程**（demo.exe），不污染构建状态；非 Windows 上 SKIP。
+Check '判定点快照校验自检 (guard_selftest)' {
+    & $py -X utf8 tools\guard_selftest.py --quiet
+    $LASTEXITCODE -eq 0
+}
+
+
 
 
 
