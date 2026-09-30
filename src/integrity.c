@@ -203,6 +203,25 @@ static void watchdog_thread(void* param) {
                     break;
             }
         }
+        /* R3.2-b: **判定点序言快照**周期复查 ——
+         *   段 CRC 先清零 selfcrypt 区 -> 落在该区的判定点改它**不影响 CRC**
+         *   （R3.2-a 实测: ③ check_self / ④ license_verify 均在区内）。
+         *   本校验不依赖 CRC -> 对"落掩码区"与"重算 CRC"**均有效**。
+         *   （策略处理沿用既有三分支；刻意重复以**最小侵入**，重构另议。） */
+        if (prot_integrity_check_guards() != PROT_OK) {
+            switch (g_wd_policy) {
+                case PROT_POLICY_EXIT:
+                    prot_plat_terminate(PROT_EXIT_TAMPERED);
+                    break;
+                case PROT_POLICY_FAKE:
+                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
+                    break;
+                case PROT_POLICY_CONTINUE:
+                default:
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
+                    break;
+            }
+        }
         /* A5: 反附加周期复查 —— 驻留期调试器/探测不再只有启动一次检测 */
         if (g_ad_scan_fn != NULL && g_ad_scan_fn(&ad) == PROT_OK &&
             prot_antidebug_detected(&ad) != 0u) {
@@ -542,6 +561,107 @@ prot_status prot_integrity_check_iat(void)
     for (i = 0u; i < g_iat_snap_len; i++) {
         if (((volatile uint8_t*)base)[iat.rva + i] != g_iat_snap[i]) {
             return PROT_ERR_INTEGRITY;
+        }
+    }
+    return PROT_OK;
+}
+
+/* --- R3.2-b (2026-09-29): **判定点序言快照校验** ---
+ *
+ * ## 与 IAT 快照（G2）的关系
+ *   同一模式: "启动快照 + 运行期逐字节比对"。
+ *   IAT 版防**导入表改写**；本版防**判定函数头 patch**（DRILL7 步骤 4）。
+ *
+ * ## 为什么必须做（R3.2-a 实测, 见 docs/DECISION_REDUNDANCY_PLAN.md §9）
+ *   `prot_integrity_check_self` 与 `prot_license_verify` **落在 selfcrypt
+ *   掩码区内** -> 段 CRC 先清零该区 -> **改它们不影响 CRC**。其中
+ *   `check_self` 更是"**校验器不在自己覆盖范围内**"的自我指涉缺口。
+ *   本校验**不依赖 CRC** -> 两种规避（落掩码区 / 重算 CRC）**均无效**。
+ *
+ * ## 覆盖范围（第 1 组）
+ *   ① `prot_antidebug_detected`（DRILL7 步骤 4 实证的要害）
+ *   ③ `prot_integrity_check_self`（自我指涉缺口）
+ *   本模块 deps = [antidebug, selfcrypt] -> **无新增跨模块依赖**。
+ *   ② dbiguard / ④ license / ⑤ vmdetect 需注册式扩展（后续组）。
+ */
+#define PROT_GUARD_SNAP_LEN 16u
+
+typedef struct prot_guard_entry {
+    const char*  name;      /* 仅用于诊断 */
+    const void*  fn;
+} prot_guard_entry;
+
+/* 判定点表（**函数地址编译期已知**） */
+static const prot_guard_entry g_guard_tab[] = {
+    { "prot_antidebug_detected",   (const void*)&prot_antidebug_detected },
+    { "prot_integrity_check_self", (const void*)&prot_integrity_check_self },
+};
+#define PROT_GUARD_N \
+    (sizeof(g_guard_tab) / sizeof(g_guard_tab[0]))
+
+static uint8_t      g_guard_snap[PROT_GUARD_N][PROT_GUARD_SNAP_LEN];
+static volatile int g_guard_ready = 0;
+static prot_plat_mutex g_guard_lock;
+static volatile int g_guard_lock_ready = 0;
+/* 累计命中（诊断/自检用）—— 类型必须与 `prot_plat_atomic_*` 的
+ * `volatile int*` 一致（否则 MSVC **C4057** -> /WX 致命；实测踩）。*/
+static volatile int g_guard_hits = 0;
+
+static void guard_snapshot_init(void)
+{
+    uint32_t i, j;
+
+    if (g_guard_ready)
+        return;
+    if (!g_guard_lock_ready) {
+        (void)prot_plat_mutex_init(&g_guard_lock);
+        g_guard_lock_ready = 1;
+    }
+    prot_plat_mutex_lock(&g_guard_lock);
+    if (g_guard_ready) {                    /* 双重检查 */
+        prot_plat_mutex_unlock(&g_guard_lock);
+        return;
+    }
+    for (i = 0u; i < (uint32_t)PROT_GUARD_N; i++) {
+        /* ## 为什么两步转换（实测 C4057 -> /WX 致命）
+         *   `(const volatile uint8_t*)<函数指针>` 会触发
+         *   MSVC **C4057**（基类型间接程度差异）-> 构建失败。
+         *   故: 先转 `const uint8_t*`（去 volatile），
+         *       再用 `*(volatile const uint8_t*)` **逐字节易变读** ——
+         *       **保留"防编译器优化成常量"的语义**（那才是校验不恒真的关键）。*/
+        const uint8_t* p = (const uint8_t*)(const void*)g_guard_tab[i].fn;
+        if (p == NULL)
+            continue;
+        for (j = 0u; j < PROT_GUARD_SNAP_LEN; j++)
+            g_guard_snap[i][j] = *(const volatile uint8_t*)(p + j);
+    }
+    g_guard_ready = 1;
+    prot_plat_mutex_unlock(&g_guard_lock);
+}
+
+prot_status prot_integrity_check_guards(void)
+{
+    uint32_t i, j;
+
+    PROT_NOISE();   /* W1.6 序言噪声 */
+
+    guard_snapshot_init();
+
+    for (i = 0u; i < (uint32_t)PROT_GUARD_N; i++) {
+        /* 同快照侧: 两步转换避免 C4057；`volatile const` 读**防优化成常量**
+         * （否则编译器可把序言读折叠 -> 校验恒真 = 假防护）。 */
+        const uint8_t* p = (const uint8_t*)(const void*)g_guard_tab[i].fn;
+        if (p == NULL)
+            continue;
+        for (j = 0u; j < PROT_GUARD_SNAP_LEN; j++) {
+            uint8_t cur = *(const volatile uint8_t*)(p + j);
+            if (cur != g_guard_snap[i][j]) {
+                (void)prot_plat_atomic_increment(&g_guard_hits);
+                IDBG("[IDBG] guard MISMATCH %s off=%u got=%02x want=%02x\n",
+                     g_guard_tab[i].name, (unsigned)j,
+                     (unsigned)cur, (unsigned)g_guard_snap[i][j]);
+                return PROT_ERR_INTEGRITY;
+            }
         }
     }
     return PROT_OK;

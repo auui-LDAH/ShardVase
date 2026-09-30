@@ -34,6 +34,28 @@ prot_status prot_integrity_check_self(void);
  */
 prot_status prot_integrity_check_iat(void);
 
+/*
+ * R3.2-b (2026-09-29): **判定点序言快照校验**
+ *
+ * ## 为什么需要
+ *   段 CRC 会**先清零 selfcrypt 区**（`build_selfcrypt_mask`）->
+ *   落在掩码区内的判定点**改它不影响 CRC**（静态完整性抓不到）。
+ *   本校验**不依赖 CRC** -> 对"落掩码区"与"重算 CRC"两种规避**都有效**。
+ *
+ * ## 语义（仿 `prot_integrity_check_iat`）
+ *   首次调用建立快照（各判定函数**序言 16 字节**）；
+ *   之后逐字节比对，不一致即 `PROT_ERR_INTEGRITY`。
+ *   **只读、无副作用**，可由看门狗周期调用。
+ *
+ * ## 诚实边界
+ *   · D2b（调用级解密）下若函数处于**加密态**，快照/比对的对象是密文 ——
+ *     仍能检出 patch（明文 != 密文），但**会随 enter/leave 抖动**；
+ *     默认 D2a（init 解密后保持明文）无此问题。
+ *   · 快照本身位于可写数据段 —— 能同时改快照的**更强攻击者**不在本校验范围内
+ *     （记入 known limits）。
+ */
+prot_status prot_integrity_check_guards(void);
+
 /* 启动后台看门狗线程, 每 interval_ms 检查一次; 失败按 policy 处理 */
 prot_status prot_integrity_start_watchdog(prot_policy pol, uint32_t interval_ms);
 
