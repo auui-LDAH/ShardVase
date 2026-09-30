@@ -411,3 +411,54 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 | `docs/` | CONTRACT/PLAN/ROADMAP/THREATMODEL/PRODUCTION/BUSINESS/RELEASE/OPS/COMPAT/PHASE2/PHASE3/ADVANCED/ADVANCED2/HANDOVER |
 | `docs/` | CONTRACT / PLAN / ROADMAP / THREATMODEL / PRODUCTION / **BUSINESS（总纲）+ RELEASE + OPS + COMPAT（商业化文档体系，2026-08-14）** / HANDOVER(本文件) |
 | `build/`（gitignore） | 产物 + manifest.json + keys\（私钥） |
+
+### 2.9 增量（2026-09-29 晚 – 2026-09-30）：REFINE_PLAN 全阶段 + R3.2 反向结论
+
+**本阶段完成**：R1（决策留痕）· R2.1/R2.2/R2.3（可用性）· R3.1（对抗实证）·
+R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，随后实证推翻其结论**。
+
+**门禁 29 项**（新增 26–29）：
+```
+26 docclaim        文档断言一致性（断言值从文档解析，含"最后核实"元数据要求）
+27 deploy_harden   部署加固自检（ACL 加固 -> L3/D5 攻击必须被阻断）
+28 perf_baseline   性能基准自检
+29 guard_selftest  判定点快照校验自检  <- **当前预期 FAIL（真实信号，见下）**
+```
+
+#### ⚠️ 接手须知（**最重要**）
+
+1. **门禁第 29 项会 FAIL** —— 这不是环境问题，是**真实信号**：
+   R3.2-b 的判定点守卫（`prot_integrity_check_guards`）**实测命中计数恒为 0**
+   （`g_guard_hits`），即**从未捕获任何判定点**。
+   详见 `docs/DECISION_REDUNDANCY_PLAN.md` **§10**（含"未查明部分不下结论"）。
+   **不要**为了让门禁变绿而删除该项 —— 那正是本项目最警惕的"门禁绕过掩盖缺陷"。
+
+2. **R3.2-a 的发现仍然有效**（静态可复现）：
+   `prot_integrity_check_self` 与 `prot_license_verify` **落在 selfcrypt 掩码区内**
+   -> 段 CRC 先清零该区 -> **改它们不影响 CRC**。
+   其中 `check_self` 是"**校验器不在自己覆盖范围内**"的自我指涉缺口。
+
+3. **新待办：调试控制台** —— `docs/DEBUG_CONSOLE_PLAN.md`
+   （用户 2026-09-30 提出；建议**先做第 1+3 步**，正好服务于第 1 条的定位）。
+
+#### 本阶段最值钱的两条教训
+
+```
+① **判据必须打在被测对象的检测域内**（我犯了两次）
+   R3.2-b 用"退出码 == 2989"判"守卫生效" -> 那是 **.text CRC** 的功劳
+   （看门狗顺序: check_self L175 **先于** check_guards L211）
+   改用守卫自己的计数后 -> 5/5 全为 0 -> 上轮结论被推翻。
+
+② **诊断信息不可丢失**（R2.3）
+   smoke 只重定向 stdout -> 日志 0 字节 -> 原因不可见。
+   修好同时读 stderr 后，**立刻**暴露出真正的根因（参数被空格拆词）。
+```
+
+#### 本阶段新增/修改的工具
+```
+新增: tools/docclaim_check.py · tools/deploy_harden.ps1 · tools/perf_baseline.py
+      tools/guard_selftest.py
+修改: tools/release_check.ps1（26–29 项）· tools/mutate_check.py（--platform linux）
+      prot_sdk/skeleton/build_skeleton.ps1（**4 处路径引用/诊断修复**）
+      src/integrity.c · include/protect/integrity.h · modules.json
+```
