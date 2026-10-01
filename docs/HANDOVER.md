@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `4cf2cb6`（Q1 mojibake 修复 + 新增全库回归门禁后更新）
+> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `efe4f3d`（Q2 缺陷⑤定证修复 + 判据 v5 后更新）
 
 
 ## 1. 项目是什么
@@ -640,7 +640,14 @@ watch <符号> [--seconds S] [--patch <符号>…]   轮询被观测符号**自�
 
 **本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q0–Q2）:
 Q0 文档回填（`1c7604a`）/ Q1 源码 mojibake **216 行**修复 + 新增全库回归门禁第 33 项
-（`4cf2cb6`）/ Q2 缺陷⑤ usage 字面宏名**定证并修复**（本轮末尾）。
+（`4cf2cb6`）/ Q2 缺陷⑤ usage 字面宏名**定证并修复** + 判据 v5 补单字符盲区
+（`efe4f3d`）。
+
+**Q2 收尾实测**: 干净树上全量门禁 `PASS: 30 项检查全通过`
+（`build/logs/release_check_20261002_022916.log`）；`tools/sdk_pack.py --force --zip`
+重打包 101 文件 / 886.6 KB，产物 `app_main.c` 1106 行 **坏行 0**、`crc32.c` 86 行
+**坏行 0**；`-WithMutation` / `-WithSkeleton` / `-WithMigration` 三项**未跑**
+—— **未验证 != 通过**。
 
 **① Q1: 旧判据是错的，漏检 73%**
 ```
