@@ -196,7 +196,7 @@ prot_sdk/wizard      : key_mode = new | pub（二选一）+ lite 精简单开关
 
 ### 路线 A —— 成本计算器（最小、最接近变现）
 
-把已有 8 轮演练 + 3 组矩阵数据，量化成对外可用的成本证据。
+把已有 9 轮演练 + 3 组矩阵数据，量化成对外可用的成本证据。
 
 - 输入：`docs/ATTACK_DRILL*.md`、`archive/attack-drill-*.json`
 - 输出：`tools/cost_model.py` + 一份「攻击成本估算表」

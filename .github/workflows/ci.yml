@@ -49,7 +49,7 @@ jobs:
         run: python tests\protchain_check.py
 
       # 阶段 1/3/5 新增的门禁项必须也在 CI 里跑 —— 否则等于"本地才生效的门禁",
-      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 14 项。
+      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 33 项 (默认 30)。
       - name: Module contract (modcheck)
         run: python tools\modcheck.py --all-compositions
 

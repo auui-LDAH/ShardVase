@@ -6,7 +6,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Commercial](https://img.shields.io/badge/license-commercial%20available-green.svg)](LICENSE.md)
-[![Gate](https://img.shields.io/badge/release__check-14%2F14-brightgreen.svg)](#质量门禁)
+[![Gate](https://img.shields.io/badge/release__check-30%2F30-brightgreen.svg)](#质量门禁)
 
 ---
 
@@ -50,7 +50,7 @@ powershell -File build.ps1 -Config Release -Composition minimal
 
 ### 2. 攻防双侧，记录可查
 
-**7 轮正式演练 + 4 组回归矩阵**，共 122 条结构化记录：
+**9 轮正式演练 + 4 组回归矩阵**，共 122 条结构化记录：
 
 | 结果 | 数量 | 含义 |
 |------|------|------|
@@ -64,6 +64,11 @@ powershell -File build.ps1 -Config Release -Composition minimal
 
 > **我们不写"0 破防点"。** 那是模糊表述。5 项破防列在
 > [攻防记录](publish/07-攻防记录.md)里，欢迎核验。
+>
+> 第 8/9 轮（`docs/ATTACK_DRILL8.md` / `docs/ATTACK_DRILL9.md`）分别覆盖
+> 函数头 patch vs 跨构建布局随机化、判定点 patch + CRC 重算 vs 快照守卫；
+> 后者的**守卫检查器自身不在段 CRC 覆盖内**已作为真漏洞公开，见
+> [DRILL9 §5](docs/ATTACK_DRILL9.md)。
 
 ### 3. 边界诚实
 
@@ -99,7 +104,7 @@ powershell -File <工程>\build_skeleton.ps1 -Project <工程>
 
 ```powershell
 powershell -File build.ps1 -Config Release
-powershell -File tools\release_check.ps1     # 14 项门禁
+powershell -File tools\release_check.ps1     # 30 项门禁（默认；共 33 项）
 ```
 
 ---
@@ -124,16 +129,30 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 
 ## 质量门禁
 
-`tools/release_check.ps1` 跑 **14 项**，全绿才算通过：
+`tools/release_check.ps1` 跑 **30 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
+后共 **33 项**），全绿才算通过。默认跑的全部 30 项：
 
 ```
-[ok]  git 工作区干净              [ok]  protchain P1-P6
-[ok]  版本非占位                  [ok]  模块契约 (modcheck)
-[ok]  可复现构建 (两次字节一致)    [ok]  攻防记录 (drills lint)
-[ok]  e2e T1-T28                  [ok]  对外材料 (doccheck)
-[ok]  attacks A1-A12              [ok]  vm_unit / vmc
-[ok]  example E1-E7
+[ok] git 工作区干净               [ok] Linux 编译覆盖 (linux_compile_check)
+[ok] 版本非占位                   [ok] C 注释词法 (comment_lint)
+[ok] Release 构建 (build.ps1)     [ok] mojibake 全库回归 (mojibake_check)
+[ok] 可复现 (repro_check)         [ok] 平台层契约 (platform conformance)
+[ok] e2e T1-T28                   [ok] 攻击技契约 (attackcheck)
+[ok] attacks A1-A12               [ok] 构建状态自检 (check_state_platform)
+[ok] vm_unit                      [ok] 平台层自检 (_platform)
+[ok] vmc                          [ok] 验证互斥锁自检 (verify_lock)
+[ok] example E1-E7                [ok] 文档断言一致性 (docclaim)
+[ok] protchain P1-P6              [ok] 部署加固自检 (deploy_harden)
+[ok] 模块契约 (modcheck)          [ok] 性能基准自检 (perf_baseline)
+[ok] 攻防记录 (drills lint)       [ok] 判定点快照校验自检 (guard_selftest)
+[ok] 对外材料 (doccheck)          [ok] 调试控制台自检 (prot_dbg)
+[ok] 签名 (Authenticode)          [ok] 门禁日志自检 (gate_log)
+[ok] 协议兼容性 (conformance)     [ok] 调试控制台活体自检 (prot_dbg live)
 ```
+
+默认不跑的 3 项（各约 1-4 分钟，发版前用 `-With*` 启用）：
+`检查器变异测试 (mutate_check)`、`骨架回归 (skeleton_check)`、`迁移成本 (migration_gate)`
+—— 跳过时脚本会明确打印「未运行 —— **未验证 != 通过**」。
 
 几个检查器本身值得一说：
 
