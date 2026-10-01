@@ -260,6 +260,35 @@ Check 'C 注释词法 (comment_lint)' {
     & $py tools\comment_lint.py --quiet; $LASTEXITCODE -eq 0
 }
 
+# mojibake 全库回归（Q1, 2026-10-01）: 源码/文档里的 GBK 错解残留。
+#
+# **为什么需要**: `prot_sdk/skeleton/app_main.c` 与 `demo/main.c` 曾带着
+#   **216 行** GBK 错解残留入库（HEAD 实测），且**旧判据漏检其中的 73%**:
+#   旧判据 `l.encode('gbk')` 在遇到 PUA 字（U+E000 区）时**抛异常**，
+#   被 `except` 吞掉 -> 整行**静默放过**。独立标注集实测:
+#     旧判据 P=1.000 **R=0.2685**（漏 158/216）  vs  字节重建判据 P=1.000 R=1.000
+#   => "满分"来自循环论证的标注集（正样本就是用该判据的祖先圈出来的）。
+#
+# **本项判据**: `tools/mojibake.py` —— 把行按 CP936 语义**重新编码再解码**
+#   （`decode_cp936` 精确复刻 .NET CP936: 非法双字节对**固定吞 2 字节**吐 '?'，
+#   这正是"吃标点/吃换行"与 k 行合并的来源），还原文本里**最长连续中文串 >= 2**
+#   即判坏。该判据对 23940 条双字节全表 **decode/encode mismatch 均为 0**，
+#   且在全库 30548 条正确中文行上**假阳性 0**。
+#
+# **含负向自检**（7 项: 判据层漏判 / 门禁层漏判 / 豁免失效 / 豁免空 /
+#   僵尸豁免 / 豁免空转 / 干净行假阳性）—— 每项都经变异测试证明**可以失败**
+#   （`build/_q1_selftest_falsify.py`: 5 项变异各自被对应检查捕获，无恒真装饰）。
+# **豁免**必须**显式按路径登记**（`tools/mojibake_check.py` 的 EXEMPT，
+#   含理由），且豁免行数**照常打印** —— 不允许静默吞掉。
+#   豁免**必须随事实收缩**: 本项上线时曾豁免 `docs/CONTINUATION_PLAN.md`
+#   （其 §2.3 引用过一段示意乱码）；Q1 写完、§2.3 改写后该文件坏行已为 0，
+#   故**删除该条豁免**，避免留下无人复查的永久后门。
+Check 'mojibake 全库回归 (mojibake_check)' {
+    & $py tools\mojibake_check.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\mojibake_check.py --quiet; $LASTEXITCODE -eq 0
+}
+
 # 平台层契约测试（L4-A, 2026-09-23）: 定义"**什么算合规的平台实现**"。
 #
 # **为什么需要**: L4 目标是"实现 Linux 平台层"。但新平台实现是否正确，

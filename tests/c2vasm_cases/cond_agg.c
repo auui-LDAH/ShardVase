@@ -1,4 +1,4 @@
-/* cond_agg.c 鈥?golden 鏍蜂緥 5: if/else 鏉′欢鑱氬悎 */
+/* cond_agg.c — golden 样例 5: if/else 条件聚合 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

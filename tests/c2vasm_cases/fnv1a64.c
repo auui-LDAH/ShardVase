@@ -1,4 +1,4 @@
-/* fnv1a64.c 鈥?golden 鏍蜂緥 1: FNV-1a 64 浣?(涓?license_hash.vasm 鍚岀畻娉? */
+/* fnv1a64.c — golden 样例 1: FNV-1a 64 位 (与 license_hash.vasm 同算法) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

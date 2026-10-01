@@ -1,4 +1,4 @@
-/* poly.c 鈥?golden 鏍蜂緥 4: 澶氶」寮忔眰鍊?(Horner) 鐖跺惊鐜?*/
+/* poly.c — golden 样例 4: 多项式求值 (Horner) 父循环 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
