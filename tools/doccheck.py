@@ -469,10 +469,15 @@ def main(argv=None):
     if struct:
         errors.extend(struct)
     else:
-        _n = len(re.findall(r"(?m)^\s*Check\s+'",
-                            open(os.path.join(REPO, 'tools', 'release_check.ps1'),
-                                 encoding='utf-8-sig').read()))
-        print('  [ok] 门禁结构: %d 项均为顶层语句（默认调用下都会运行）' % _n)
+        _src = open(os.path.join(REPO, 'tools', 'release_check.ps1'),
+                    encoding='utf-8-sig').read()
+        _n = len(re.findall(r"(?m)^\s*Check\s+'", _src))
+        # `$With*` 可控的项默认不跑 —— 这是**设计**，不是事故：
+        # 判据是"每个 if ($With*) 的 body 里最多一个 Check"，落在 if 外的一律默认必跑。
+        _opt = len(re.findall(r"(?m)^\s*if\s*\(\s*\$With\w+\s*\)", _src))
+        print('  [ok] 门禁结构: %d 项均为顶层语句，无被嵌套项；'
+              '其中 %d 项由 -With* 显式开关控制（默认不跑），默认调用跑 %d 项'
+              % (_n, _opt, _n - _opt))
 
     for f in TARGETS:
         rel = os.path.relpath(f, REPO)
