@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `2f48ab1`（Q3 doccheck 盲区消除后更新）
+> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `acbdb94`（Q5 DRILL9 后更新）
 
 
 ## 1. 项目是什么
@@ -807,4 +807,121 @@ tools/comment_lint.py        : PASS（102 个 .c/.h, 0 警告）
   的状态行 `⬜ 待评审（未开始实施）` 已严重过期）**不会被门禁抓到**。
 这是**有意的取舍**: 力争"不误报历史"必然牺牲"抓全全部过期现值"。
 补充手段是人工复核（docs/CONTINUATION_PLAN.md §6 Q4 的逐条复核清单）。
+```
+
+### 2.13 增量（2026-10-02）：Q5 —— DRILL9 端到端实证 + ⚠️ **守卫检查器自身不在 CRC 覆盖内**（真漏洞）
+
+**本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q5，提交 `acbdb94`）:
+补上 `docs/DECISION_REDUNDANCY_PLAN.md:516` 记的"**仍未做**"—— 在**出厂
+`PROT_POLICY_EXIT` 策略下**的端到端演示。`tools/guard_selftest.py` 是靠
+**改策略模拟**段 CRC 被中和；本轮把它**显式化为真的重算**。
+交付 `docs/ATTACK_DRILL9.md` + `docs/ATTACK_MATRIX.md` 复核节 +
+`docs/COST_ASYMMETRY.md §4` 杠杆表第 10 行。
+
+**① 缘起: `0xBAD` 有四个出口，只测"进程死了"是无效测量**
+```
+src/integrity.c 看门狗 (:144-223) 的 EXIT 分支:
+  :163 prot_selfcrypt_enter  （唯一带 `continue` 的）
+  :175 check_self  （段 CRC）
+  :192 check_iat   （运行期 IAT 复查）
+  :211 check_guards（判定点序言快照, R3.2-b）
+=> 必须构造对照把前三道逐一排除, 剩下才是守卫的功劳。
+   （这正是 ATTACK_MATRIX 已记名的教训: 无对照 = 无效测量。）
+```
+
+**② 8 用例设计（探针 `build/_drill9_probe.py`；`build/` 被 gitignore，输出内嵌文档）**
+```
+A_baseline              无 patch                             -> exit 1
+B_guard_no_recalc       patch 守卫, 不重算                   -> exit 2989（段 CRC 先抓）
+D_ctrl_recalc           patch 非守卫 + 重算                  -> exit 1  ← 对照
+C_guard_recalc          patch 守卫 + 重算                    -> exit 2989 ← 决定性
+E_guard_recalc_continue 同上但策略改 CONTINUE               -> hits=4  ← 独立佐证
+F/G/H                   检查器自身 / 完整链（见 ⑤）           -> 见 ⑤
+对照组选 prot_antidebug_apply_policy 的理由: 非守卫（不在快照表内）+
+  掩码区外 + **启动后不再被调用** -> patch 它惰性、不影响任何行为。
+两条前置守卫（防假结论）: ① 目标必须不在 selfcrypt 掩码区（区内目标在
+  :163-173 被 continue 整轮跳过, 无判别力）② **守卫目标必须落在 .text**
+  （否则段 CRC 覆盖不到它, "重算"这件事本身无意义）。
+CRC 复算口径: 读**内存镜像**, .text 的 min(virtual_size, size_raw)=139024,
+  IAT 单区间 + .reloc 槽位 + 8 条 selfcrypt 段整段掩码清零后 zlib.crc32;
+  断言 A0: 该复算值 == 进程内 g_prot_baked_crc 烧录值（全部结论的地基）。
+```
+
+**③ 实测（`build/_drill9_run5.txt`，探针 exit 0）**
+```
+A0  CRC 复算 = 内存烧录值       before=2087216295 computed=2087216295
+B   patch 守卫(不重算)          exit=2989  -> 段 CRC 先终止
+D   patch 非守卫 + 重算         exit=1     crc_after_write=884772529
+C   patch 守卫 + 重算           exit=2989  crc_after_write=3467459129
+E   CONTINUE 下守卫生效         hits=4     （20s ÷ 5s 周期 ≈ 4, 与周期吻合）
+=> C 的 0xBAD 只能由 :211 check_guards 解释（其余三处已逐条排除）。
+```
+归因链: ① 只 patch 掩码区外目标, 未触碰 8 条加密段 -> 排除 selfcrypt;
+② 对照 D 也重算却 exit 1 -> **反证重算确实生效**, 排除段 CRC;
+③ 未改 IAT, 且 D 同样未改却 exit 1 -> 排除 IAT;
+④ A5 反附加(:226) 只产 0xDB(219), 全部用例均未出现 219。
+
+**④ 回填**
+```
+COST_ASYMMETRY §4 新增第 10 行（patch 判定点 + 重算段 CRC -> 杠杆"高"）+
+  更新头部 `最后核实`; ATTACK_MATRIX 追加 `## DRILL9（2026-10-02）` 节。
+ATTACK_MATRIX 是**部分生成物**: `tools/drills.py matrix` 只生成到
+  `## 显式 BREACHED` 表为止, D4/DRILL8/R3.3 等复核节**不在生成范围**,
+  且生成器写 BOM、文件人工修正过未映射行（20/21/0）—— 
+  **必须手工编辑, 绝不可 `--out docs/ATTACK_MATRIX.md` 覆盖**。
+未加 `drills/*.json` 记录: DRILL7/DRILL8 均无入册 JSON（沿用先例）,
+  且会级联改动多处公开计数（这些计数本就已不一致: 122/125/125）。
+```
+
+**⑤ ⚠️ 附带发现: 守卫检查器自身不在段 CRC 覆盖内（**真漏洞**）**
+```
+prot_integrity_check_guards 的 rva = 0x14d0, 落在 **.protxec** 节
+  （PE 名 .3y7lsz8, va 0x1000-0x1c00）, **不是 .text**;
+而段 CRC 只覆盖 prot_plat_crc_target_name() 的三个节
+  （src/platform/prot_platform_win.c:678-683）: .text / .rdata / .pdata。
+=> 检查器自身的代码**从来不在段 CRC 的覆盖范围内** ->
+   patch 其函数头（31 C0 C3）-> 立即 return PROT_OK（protdef.h:27）-> 恒真,
+   且**无需任何 CRC 重算**; 再按 DRILL7 步骤 4 patch 守卫 -> **盾失效**。
+双重实证: F crc_unchanged_by_patch=True（重算值 = 原值 2087216295
+   -> 该 patch 根本不进 .text）; G 零 CRC 操作仍 exit 1;
+   H 检查器 + 守卫双 patch -> exit 1（完整攻击链闭合）。
+该覆盖缺口**此前已被记录**: docs/OPEN_SOURCE_COMPENSATION.md:87 已列
+   .protxec 在"未覆盖"清单里 —— 但**从未评估"守卫自身不在覆盖内"这一后果**。
+   （.protxec 当初是为**分页隔离/防 selfcrypt 自伤**而设, 安全后果是副作用。）
+=> 与 DRILL8 §2 **同一模式**: 能力/缺口落地了, 但它的**安全含义没被推导**。
+```
+
+**⑥ 诚实边界（**不过度声称**）**
+```
+① 测试工具自身用 OpenProcess/WriteProcessMemory -> 会被产品反调试看到;
+   本 drill 测的是"内存改写能否被守卫抓住", 不是"攻击者能否不被发现"。
+② 只有 E 改策略; **A/B/C/D/F/G/H 全部保持出厂 EXIT**
+   -> C 是真正意义上"EXIT 策略下的端到端演示"。
+③ build/demo.exe 是 NotSigned -> 不覆盖 Authenticode 签名这道线。
+④ 仅 Windows。
+⑤ 守卫快照在 start_watchdog 内对**内存当前字节**建立 -> 离线文件级 patch
+   无效 -> 澄清威胁模型 = "进程起来之后的运行期内存改写"。
+⑥ 用例 B/C 的 stdout 为 0 B（TerminateProcess 立即杀进程、缓冲未 flush）
+   —— 判据是退出码, 不削弱结论（A/D/E 的 713 B 证明同一路径确实会打印）。
+```
+
+**⑦ 连带修掉: 轮次口径漂移（7 处）**
+```
+`actual_rounds()` = docs/ATTACK_DRILL*.md 的**文件个数**（本轮新增第 9 个
+  -> 7 轮 已超 (rounds, rounds-1) 容差, doccheck 报 7 条 warning）。
+  7 轮 -> 9 轮: publish/{01-关于ShardVase, 02-项目档案×2, 03-攻防实录-01-dump,
+  06-诚实边界} + docs/marketing/{article-1-dump, boundaries}。
+未在扫描范围内但同样过时（留给 Q4）: README.md:53、ShardVase-展示文档.md:86、
+  docs/BLUEPRINT.md:21/:120/:641、docs/COST_ASYMMETRY.md:199、
+  docs/阶段总结-2026-08-30.md:104、docs/部署档案-ShardVase.md:107/:165、
+  docs/blog_project_overview.md:43/:71（多为 `8+ 轮` 形态, 语义已过时）。
+```
+
+**⑧ 验证**
+```
+tools/doccheck.py            : 检查 409 条, 错误 0, **警告 0** -> PASS
+  （豁免 79: 代码块 36 / 日期语境 29 / 自带日期 5 / 沿革 3 / 转述他文 3 /
+    计划验收 2 / 规划交付物 1）
+tools/docclaim_check.py      : PASS (8/8)（含 verified-metadata 6 份齐备）
+门禁默认 30 项                : 29/30 过, 唯一红项 = `git 工作区干净`（因未提交）
 ```
