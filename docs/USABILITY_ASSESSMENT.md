@@ -58,7 +58,7 @@
 | **①** | `prot_wizard.py` **是 tkinter GUI**，`--help` **挂住 120 秒** | 实测超时；源码 `tk.Tk()` + `mainloop()`，**无 argparse** | **诚实边界**（文档已说"GUI 向导"；但 TUTORIAL 给的命令无 CLI 替代 —— 建议补 `--headless`）|
 | **②** | **`$busSrcs` 路径未加引号** -> 空格拆词 | `cl: warning D9024: 无法识别的源文件类型"D:\specifically"` | ✅ **已修** |
 | **③** | **`$signStep` 路径未加引号** | `vmenc.py: error: unrecognized arguments: for development and work\…` | ✅ **已修** |
-| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ⏳ **已定位，修复待做** |
+| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ✅ **已修**（提交 `e2aa5a8`，2026-09-30）|
 
 #### ②③ 的根因是**同一个**（已在本仓库记名过）
 ```
