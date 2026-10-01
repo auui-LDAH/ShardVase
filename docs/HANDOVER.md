@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `acbdb94`（Q5 DRILL9 后更新）
+> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `2f20512`（Q4 文档漂移清理后更新）
 
 
 ## 1. 项目是什么
@@ -925,3 +925,127 @@ tools/doccheck.py            : 检查 409 条, 错误 0, **警告 0** -> PASS
 tools/docclaim_check.py      : PASS (8/8)（含 verified-metadata 6 份齐备）
 门禁默认 30 项                : 29/30 过, 唯一红项 = `git 工作区干净`（因未提交）
 ```
+
+---
+
+### 2.14 增量（2026-10-02）：Q4 —— 文档漂移清理 + 🔑 **量化出 doccheck 的覆盖缺口**（288 处无保护断言）
+
+**① §6.2 的 13 处归档逐条复核 —— 全部确认有历史依据，一处未改**
+
+写探针 `build/_q4_anc.py`（打印目标行原文 + 祖先标题栈及各级是否带日期）逐条实测:
+```
+docs/PLATFORM_ISOLATION_PLAN.md:146/:179  确证在围栏代码块 :141-147 / :174-180 内
+docs/LINUX_PORT_PLAN.md:340               确证在 `## 4. 里程碑与门禁` 代码块 :339-345 内
+docs/WORKBENCH_ROADMAP.md:17/:1808/:2264  文件结构: ## 0.-## 7.(:12-:294) = 计划期,
+                                          ## 8. 起(:295+) 全部带日期(2026-09-23)
+```
+=> 判据原则再次成立: **"文件里有个陈旧的数字" != "文件在声称现值"**。
+
+**② 已修的两处真过期项**
+
+```
+1. docs/LINUX_PORT_PLAN.md:7（该文件 2226 行）
+   ⬜ 待评审（本文档为计划，未开始实施）
+     -> ✅ 已完成（A–G 阶段全部落地，2026-09-25；§9 起为逐阶段实施记录）
+   并加阅读提示块: §0–§8 是 2026-09-25 的**计划期文本，保持原样不改**
+   （那些数字是当时的实况, 改动即篡改历史; 实际结果以 §9 起实施记录为准）。
+   依据: §9–§23 的 ## 标题全部带 ✅ 与（2026-09-25）; :23 最终 | Windows 门禁 | ✅ 21/22 |
+   ⚠️ 该文件**未自声明现时** -> 不在 doccheck 范围 -> 此过期**门禁永远抓不到**。
+   （Q3 时已在 §6.2 附录里点出, Q4 才真正修掉。）
+
+2. docs/WORKBENCH_ROADMAP.md:17（`## 0. 结论先行` 表, **不带日期**）
+   ③跨构建差异率（实测仅 0.55%，目标 >30%）
+   与本文件后文 20+ 处实测结论直接矛盾:
+     :301   | V1 跨构建差异率 | >30% | **67.85%** | ✅ |
+     :1729  | C1 | 跨构建差异率 | 67.85% | **86.45%~93.28%** | ⚠️ 数字不稳健 |
+     :1772  | 跨构建差异率 | **约 86~94%**（>30% 目标**稳健达成**）|
+     :1899  可控条件下（完整种子表）= **0.0000%**（完全可复现）;
+            随机条件下 = **86~94%**
+   -> **保留原句 + 追加 ⚠️ 推翻标注**（## 0. 是计划期结论, 需存沿革）。
+```
+
+**③ 轮次口径 / 门禁项数的对外一致性（Q5 只改了 7 处，留下跨文件分裂）**
+
+权威判据（读 `tools/doccheck.py` 源码确认）:
+```
+actual_rounds()     @:568-571 = glob('docs/ATTACK_DRILL*.md') 的**文件个数** -> 9
+actual_gate_count() @:400-428 = len(re.findall(r"(?m)^\s*Check\s+'", release_check.ps1)) -> 33
+GATE_DEFAULT        @:148     = 30（3 项由 -WithSkeleton/-WithMutation/-WithMigration 控制）
+```
+改成现值的一览（13 处，跨 10 文件）:
+```
+README.md:53              7 轮正式演练 -> 9 轮正式演练
+README.md:9               badge 14%2F14 -> 30%2F30
+README.md:102             # 14 项门禁 -> # 30 项门禁（默认；共 33 项）
+README.md:132-155         8 个并排项示意块 -> **全部 30 项默认项** + 3 项未跑项显式说明
+ShardVase-展示文档.md:86   7 轮 -> 9 轮
+ShardVase-展示文档.md:97-105 轮次表只到第 7 轮 -> 补第 8/9 轮（DRILL8/DRILL9）
+ShardVase-展示文档.md:138/:163  14 项 -> 33 项（默认跑 30 项）
+docs/BLUEPRINT.md:21/:120 7 轮 -> 9 轮
+docs/BLUEPRINT.md:128     发布门禁（14 项）-> 发布门禁（33 项，默认 30）
+docs/COST_ASYMMETRY.md:199 8 轮演练 -> 9 轮演练
+CONTRIBUTING.md:67/:95    13 项 / 13/13 PASS -> 30 项（-With* 共 33）/ 30/30 PASS
+.github/PULL_REQUEST_TEMPLATE.md:16  14/14 PASS -> 30/30 PASS（默认）
+.github/workflows/ci.yml:52  release_check 覆盖 14 项 -> 覆盖 33 项 (默认 30)
+```
+**有意未改**: `docs/BLUEPRINT.md:640/:641/:667/:670`（历史漂移记录表 + `13 → 14 项`
+沿革叙述）、`docs/MODULAR_ARCH.md:309`（阶段 3 待做项的历史描述）、
+`docs/阶段总结-2026-08-30.md:104`（H1 带日期 ⇒ 历史快照）、
+`docs/部署档案-ShardVase.md:107/:165` 与 `docs/blog_project_overview.md:43/:71`
+（最后提交均 `c941c9c`、**无任何文件引用它们** ⇒ 博客发布稿存底, 非活文档）。
+**"4 组矩阵"一律未动** —— `archive/` 有 13 份归档、`tests/attack_*` 只有 6 个文件,
+矩阵"组"在**任何地方都没有权威定义**, 故只改有权威判据的**轮次**。
+
+**④ 🔑 本轮量化出的覆盖缺口（比逐条漂移更重要）**
+
+写探针 `build/_q4_census.py` 做**全库**普查（而非只扫 doccheck 的 TARGETS）:
+```
+基准: 门禁 33 项 (默认 30), 轮次 9 个
+TARGETS 24 个文件 (doccheck 扫描范围)
+非现值断言总数: 门禁 132 项 / 118 N/N / 38 轮
+```
+=> **全库有 288 处非现值断言, 而 doccheck 报 0 错误 —— 因为它只扫 24 个文件。**
+**33 个文件完全不受门禁保护**（存疑处数降序, 前几名）:
+```
+docs/WORKBENCH_ROADMAP.md      43      docs/OSS_TAIL_PLAN.md          13
+docs/LINUX_PORT_PLAN.md        25      docs/阶段总结-2026-09-30.md     12
+docs/PORTABILITY_ASSESSMENT.md 10      docs/BLUEPRINT.md               9
+...                                     README.md                       3
+ShardVase-展示文档.md            3
+```
+**根因**（`tools/doccheck.py:36-57` 的注释**自己承认了**）:
+`build_targets()` @`:72` 只纳入**头部块显式自声明 `最后核实`** 的 `docs/**/*.md`,
+即**新文档默认不被检查**（注释原文: "无此声明不得纳入检查 … 是有意为之"）。
+该设计避免了"历史文档标题从不带日期"导致的 31 条误报, 代价就是上表的量化结果。
+
+**不可接受的子集**: `README.md` 与 `ShardVase-展示文档.md` 是**开源项目的门面**,
+**既不在 doccheck 的 TARGETS、也不在 `docclaim_check` 的 KEY_DOCS**,
+最后提交分别停在 `041753e`(2026-09-21) / `094e26e`(2026-09-25)
+—— 它们携带的过期数字**对外可见且长期无人修**。
+本轮已手工修正（见 ③）, 但**"靠人记得"不是机制**。
+**建议（未实施, 留作独立排程）**: 把这两份门面纳入 `PUBLIC_MATERIAL`,
+或在 PR 模板加"门面文档数字须与门禁实况一致"一条。
+
+**⚠️ 反面教训**: 普查同时暴露大量**误报** ——
+`docs/CONTRACT.md:313` `5 轮 × Sleep(20)`、`docs/COMPAT.md:21` `5 轮采样`、
+`docs/DEFENSE_DEEPEN_PLAN.md:157` `连续 12 轮全 PASS`、
+`docs/COST_ASYMMETRY.md:144` 的 `轮换`（被 `\d+\s*轮` 正则误吃）、
+`docs/DEBUG_CONSOLE_PLAN.md:93` `第 1 / 2 / 4 步`。
+=> **再次确认 §5.2 的结论: 扩范围不能只加一行 glob, 判据必须跟着扩。**
+故本轮**只做手工修正, 不改任何检查器的扫描范围**。
+
+**⑤ 验证（提交前实跑）**
+```
+tools/doccheck.py            : 检查 436 条, 错误 0, **警告 0** -> PASS
+  （基准: 门禁 33 项, 轮次 9 个; 豁免 101: 日期语境 45 / 代码块 42 / 自带日期 5 /
+    沿革 3 / 转述他文 3 / 计划验收 2 / 规划交付物 1）
+tools/docclaim_check.py      : PASS (8/8)（gate-count: 一致 **33 项**, 2 份文档）
+tools/drills.py lint         : 125 条攻击记录, 0 错误
+tools/modcheck.py --all-compositions : PASS（全 8 模块均有演练记录）
+tools/comment_lint.py        : PASS: 无注释词法陷阱（0 警告）
+tools/mojibake_check.py      : PASS: 白名单外无 mojibake（豁免 3 行）
+门禁默认 30 项                : **PASS: 30 项检查全通过**
+  （log build/logs/release_check_20261002_073936.log）
+```
+⚠️ 过程中 `doccheck` 一度因我自己写的一个**不存在的相对路径**（把根目录的
+`CONTRIBUTING.md` 误加成 `docs/` 前缀）报 1 条 error —— **写文档时引路径必须核对存在性**。
