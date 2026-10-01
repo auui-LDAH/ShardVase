@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
-> 版本：2026-10-02 v4 · 状态：**🚧 实施中**（Q0 ✅ / Q1 ✅ / Q2 ✅ / **Q3 ✅** / Q4–Q6 待办）
-> **最后核实**: 2026-10-02 · 方法: `tools/docclaim_check.py` + 门禁默认 **30** 项实跑 + 逐文件行号复核 · 提交 `4cf2cb6` 起
+> 版本：2026-10-02 v5 · 状态：**🚧 实施中**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / **Q5 ✅** / Q4、Q6 待办）
+> **最后核实**: 2026-10-02 · 方法: `tools/docclaim_check.py` + 门禁默认 **30** 项实跑 + 逐文件行号复核 · 提交 `acbdb94`（Q5 DRILL9 后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
@@ -453,14 +453,19 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 
 ### 7.2 交付物（**三个，缺一不可**）
 
-1. `docs/ATTACK_DRILL9.md` —— **该文件当前不存在**。
+1. `docs/ATTACK_DRILL9.md` —— ✅ **已交付**（2026-10-02，提交 `acbdb94`，244 行）。
    格式照 `docs/ATTACK_DRILL8.md`（115 行）:
    `# 第九轮 — …（ATTACK_DRILL9）` / `> 版本 · 状态 · 关联` /
-   `## 1. 缘起` / `## 2. 复核发现` / `## 3. 实证（两次构建，各自保存 map/exe/json）` /
-   `### 3.1 产物级证据` / `### 3.2 函数级证据（决定性）` / `### 3.3 证据文件` /
-   `## 4. 结论（三档判定）` / `### 4.1 诚实边界（不可过度声称）` / `## 5. 附带发现`。
-2. `docs/ATTACK_MATRIX.md` 回填（新攻击链的判定）。
-3. `docs/COST_ASYMMETRY.md` §4 杠杆表对应行更新。
+   `## 1. 缘起` / `## 2. 复核发现` / `## 3. 实证` /
+   `### 3.1 用例设计` / `### 3.2 实测输出原文（决定性）` / `### 3.3 证据文件` /
+   `## 4. 结论（三档判定）` / `### 4.1 诚实边界（不可过度声称）` /
+   `### 4.2 COST_ASYMMETRY §4 回填` / `## 5. 附带发现`（**内容比原计划更强** ——
+   除证明"守卫在 CRC 被中和后仍是第二道"外，**新发现一处真漏洞**:
+   守卫检查器自身 `prot_integrity_check_guards` 在 `.protxec` 节，
+   **不在段 CRC 覆盖内** -> 可被直接 patch 而无需重算）。
+2. `docs/ATTACK_MATRIX.md` 回填 —— ✅ **已追加 `## DRILL9（2026-10-02）` 节**
+   （**手工编辑**: 该文件是部分生成物，`--out` 覆盖会丢掉全部复核节）。
+3. `docs/COST_ASYMMETRY.md` §4 杠杆表对应行更新 —— ✅ **已新增第 10 行**。
 
 ### 7.3 实现落点（前 4 组已实施，DRILL9 用的是它们）
 
@@ -484,6 +489,9 @@ DRILL9 可以直接用 `watch g_guard_hits --patch <target>` 做观测。
 
 **Q5 验收**: `docs/ATTACK_DRILL9.md` 存在且含**实测输出原文**（不是推断）；
 `ATTACK_MATRIX` / `COST_ASYMMETRY` 已回填；`docclaim_check` PASS。
+**实测结论: ✅ 三项全部满足**（2026-10-02）—— `ATTACK_DRILL9.md` 内嵌 8 用例
+stdout 原文（因 `build/` 被 `.gitignore:2` 忽略，证据必须内嵌）；
+`doccheck` 409 条 / 错误 0 / 警告 0; `docclaim_check` 8/8 PASS; 门禁默认 30 项全过。
 
 ---
 
