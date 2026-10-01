@@ -67,6 +67,46 @@ MIN_RUN = 2
 EURO = '\u20ac'                      # CP936 对孤立字节 0x80 的映射
 LOST = 0x3F                          # 无法反查时的占位字节（'?'）
 
+# ---------------------------------------------------------------- 盲区配对表
+#
+# ## 为什么需要它（v4 的**结构性**盲区，不是阈值问题）
+#
+# v4 的判据是 `longest_cjk_run(restored) >= 2`。原文是 CJK 时，其 UTF-8 占
+# **3 字节**，而 CP936 错解每次只喂 2 字节 -> 还原出的 CJK **必然成串**，
+# 故"run>=2"对"原文是 CJK"是完备的。
+#
+# 盲区 = 原文是**非 CJK 的 >127 字符**（如 `§` U+00A7，UTF-8 `C2 A7` 只 2
+# 字节）。它错解成的字**本身是 CJK**（`§` -> U+6402），还原后 run=0 -> 判据放过。
+# （本文档一律用**码点**而非字形引用损坏结果 —— 写字形会让本文件自己变成
+#   `is_bad` 的命中行，门禁将无法区分"文档描述了盲区"与"本文件真的坏了"。）
+# 实测全库 128 种非 CJK 字符里**恰好 16 种**如此（见
+# `build/_q2_nonascii_chars.py` 的枚举）。
+#
+# ## 为什么不能靠编码规则区分
+#
+# "正确中文 `写`（GBK `A7 D5`）"与"损坏的 `§`（同为 `C2 A7` 类结构）"在**字节
+# 层面完全同构** —— 任何满足 damage(restored(l)) == l 的行都既能解释成损坏、
+# 也能解释成巧合往返（全库 71 条，其中 67 条其实是**正确**文本）。信息不在编码里。
+#
+# ## 本表的判据（语料校准 + 可审计，见 `build/_q2_blind_table.py`）
+#
+#   采纳(ADOPT) iff
+#     ① freq_img == freq_cand   —— 像字符的**每一次**出现都落在"硬验证候选行"上，
+#                                  即从未观察到合法用法（见到一次合法用法即拒绝）
+#     ② freq_orig >= 5          —— 还原目标在该语料里确实常用（避免还原成生僻字）
+#
+# 实测 16 对里只采纳 **3** 对；被拒的典型是 `实`->`ʵ`（`实` 合法出现 3856 次，
+# 只在 2 条候选行上是假象）与 `漏`->`©`（合法 228 次）。
+#
+# ## ⚠️ 诚实边界
+#
+# 这不是"发现了一个普适规律"，而是**一张按本仓库语料校准的白名单**。
+# 它可证伪、可重算（判据与全部 16 对的频次都在 `build/_q2_blind_table.txt`），
+# 但**换一个语料就必须重算**：新语料里若 U+6402 有合法用法，这条就应当被撤销。
+# 因此 `_BLIND_PAIRS` 在导入时**硬验证** `damage(orig) == img`，表错即崩，
+# 不会静默地把正确文本改坏；`tools/mojibake_check.py` 的自检亦覆盖此路径。
+_BLIND_PAIRS_SRC = '6402:00A7,8133:00D7,5364:00B1'
+
 # CP936 用户自定义区(UDA): `gb18030` 与 CP936 分歧的 81 对。
 # 格式 "原始双字节HEX:CP936字符HEX"，由 build/_q1_fixtable.py 从 .NET 表导出。
 _UDA = ('A2E3:E76C,A8BF:E7C8,A989:E7E7,A98A:E7E8,A98B:E7E9,A98C:E7EA,A98D:E7EB'
@@ -89,6 +129,14 @@ for _item in _UDA.split(','):
     _DECODE_FIX[bytes.fromhex(_b)] = chr(int(_c, 16))
     _ENCODE_FIX[chr(int(_c, 16))] = bytes.fromhex(_b)
 del _item, _b, _c
+
+# 盲区配对: 像字符 -> 原字符（见 `_BLIND_PAIRS_SRC` 上方的完整推导）
+_BLIND = {}
+for _item in _BLIND_PAIRS_SRC.split(','):
+    _img, _org = _item.split(':')
+    _BLIND[chr(int(_img, 16))] = chr(int(_org, 16))
+del _item, _img, _org
+assert len(_BLIND) == len(_BLIND_PAIRS_SRC.split(',')), '盲区配对表有重复键'
 
 
 # ------------------------------------------------------------ CP936 精确编解码
@@ -195,16 +243,23 @@ def decode_gbk_bytes(line):
 
 
 def is_bad(line):
-    """整行判定（**权威判据 v4**）。
+    """整行判定（**权威判据 v5**）。
 
     纯 ASCII 行 -> False（快路径）
     否则: 字节重建 + UTF-8 解码后，最长连续 CJK 串 >= MIN_RUN 即为损坏
+
+    **v5 相对 v4 的变化**: 补上**单字符盲区** —— 原文是非 CJK 的 >127
+    字符（UTF-8 只 2 字节）时，其错解可能本身是 CJK，还原后 run=0 而被
+    v4 放过。此类由 `_BLIND` 白名单兜底（判据与诚实边界见该表上方注释）。
 
     **不再**因为 `encode('gbk')` 抛异常就放过整行 —— 那正是 v3 漏掉 158 行的原因。
     """
     if not NONASCII.search(line):
         return False
-    return longest_cjk_run(restored_text(line)) >= MIN_RUN
+    if longest_cjk_run(restored_text(line)) >= MIN_RUN:
+        return True
+    # 盲区兜底: 行内是否存在"已知盲区字符的损坏像"
+    return any(c in _BLIND for c in line)
 
 
 def damage(text):
@@ -214,6 +269,14 @@ def damage(text):
     `decode_cp936(text.encode('utf-8'))`。自检夹具与"重放损坏"都用它。
     """
     return decode_cp936(text.encode('utf-8'))
+
+
+# 盲区配对表硬验证（放在这里以复用 `damage`）: 每个"像"必须真的是对应
+# "原"的损坏像。没有这条断言, 一次手误就能让判据把**正确**文本判成损坏。
+for _img, _org in _BLIND.items():
+    assert damage(_org) == _img, \
+        '盲区配对表损坏: damage(%r)=%r != %r' % (_org, damage(_org), _img)
+del _img, _org
 
 
 def fix_line(line):
@@ -247,9 +310,13 @@ def fix_line(line):
         if lost:
             lossy = True
         fx = raw.decode('utf-8', 'replace')
-        if longest_cjk_run(fx) < MIN_RUN:
-            return seg              # 正常中文，原样保留
-        return fx
+        if longest_cjk_run(fx) >= MIN_RUN:
+            return fx
+        # 单字符盲区（v5）: 整段都是已知盲区像 -> 按表还原。
+        # 只认**整段**命中，避免把含该字的正常词（如 `实施`）截断。
+        if seg and all(c in _BLIND for c in seg):
+            return ''.join(_BLIND[c] for c in seg)
+        return seg              # 正常中文，原样保留
 
     return NONASCII_RUN.sub(sub, line), lossy
 
@@ -289,6 +356,10 @@ _CORRECT = [
     # 以下两条含 CP936 UDA 字，是 v4 才抓到的第三类漏检现场
     '    uint32_t result2;      /* +100 (N3: result 副本2, VM#4 写) */',
     '            st = vm_run_wrapped(&g_vm_imgs[1], &mem); /* 循环 mix+verify */',
+    # 以下两条是 **v5 才抓到的单字符盲区现场**（实测 4 处，见 §盲区配对表）。
+    # 原文 `§` U+00A7 的 UTF-8 只 2 字节 -> 错解成 CJK U+6402 -> v4 的 run>=2 放过。
+    'printf("prot-demo %s\\n", PROT_VERSION_STR); /* RELEASE §1.2 */',
+    '/* §9.1-3: BANNER */',
 ]
 
 # 负样本: 正常中文（含三个曾造成假阳性的文件里的行）+ ASCII
@@ -308,6 +379,12 @@ _CLEAN = [
     '| NtQueryInformationProcess 直调（A6） | **SSN 运行时提取**（不硬编码）',
     '| **`indirect` 表** | `s_perm` 随构建 seed 变化（防跨构建复用 patch）|',
     '"私钥离线 -> 伪造成本高; 但公钥可被替换 (需安装目录可写 + ACL 失效)",',
+    # 以下三条是 **v5 盲区配对表必须拒绝**的现场（否则会把正确文本改坏）:
+    # `实施` 的 GBK 字节恰好能"还原"成 `ʵʩ`，但 `实` 有 3856 次合法用法 ->
+    # 判据 freq_img == freq_cand 不成立 -> 不采纳。这两行必须判为**正常**。
+    '- [ ] S2-S5 实施',
+    '### 18.3 实施',
+    '  | `g_vm_hash_image` | `demo/license_hash.vasm` | FNV-1a(serial) | 写 `h` @ mem+64 |',
 ]
 
 _CASES = ([(damage(c), True) for c in _CORRECT]
@@ -336,10 +413,33 @@ def selftest(verbose=True):
             fixed += 1
         elif verbose:
             print('  [FAIL-fix] %r -> %r' % (c[:60], got[:60]))
+    # 盲区行**不满足**上面的 run>=2 过滤，必须单独覆盖 `fix_line` 的盲区分支，
+    # 否则"判据能认出来、但修复器修不回"这种半成品不会被任何测试发现。
+    # 只取**无损**的那些: 有损行本就无法单行还原，不属本函数职责。
+    blind = [c for c in _CORRECT
+             if c not in fixable and '\ufffd' not in restored_text(damage(c))]
+    bfix = 0
+    for c in blind:
+        got, _ = fix_line(damage(c))
+        if got == c:
+            bfix += 1
+        elif verbose:
+            print('  [FAIL-blindfix] %r -> %r' % (c[:60], got[:60]))
+    # 反向: 盲区配对表**不得**吞掉含该字的正常词（`实施` 类假阳性回归守卫）
+    guard = 0
+    for c in _CLEAN:
+        got, _ = fix_line(c)
+        if got == c:
+            guard += 1
+        elif verbose:
+            print('  [FAIL-cleanfix] %r -> %r' % (c[:60], got[:60]))
     if verbose:
-        print('  selftest: is_bad %d/%d · fix_line %d/%d'
-              % (len(_CASES) - bad, len(_CASES), fixed, len(fixable)))
-    return 0 if (bad == 0 and fixed == len(fixable)) else 1
+        print('  selftest: is_bad %d/%d · fix_line %d/%d · 盲区修复 %d/%d · '
+              '正常行不动 %d/%d'
+              % (len(_CASES) - bad, len(_CASES), fixed, len(fixable),
+                 bfix, len(blind), guard, len(_CLEAN)))
+    return 0 if (bad == 0 and fixed == len(fixable) and bfix == len(blind)
+                 and guard == len(_CLEAN)) else 1
 
 
 if __name__ == '__main__':

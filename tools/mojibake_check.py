@@ -65,6 +65,50 @@ def walk_repo():
             yield rel
 
 
+def _cp(ch):
+    """码点表示 —— 报告里一律写码点，不写字形。"""
+    return 'U+%04X' % ord(ch)
+
+
+_FREQ_CACHE = None
+
+
+def _blind_freqs():
+    """重算盲区配对表的校准依据 (freq_img, freq_cand)。
+
+    freq_img[ch]  = 该字符在全库的出现次数
+    freq_cand[ch] = 该字符出现在"硬验证候选行"上的次数，候选行定义:
+                    `damage(restored_text(line)) == line`
+                    （即该行**既能**解释成损坏、**也能**解释成巧合往返）
+
+    采纳条件 `freq_img == freq_cand` 的含义是: **从未观察到合法用法**。
+    """
+    global _FREQ_CACHE
+    if _FREQ_CACHE is not None:
+        return _FREQ_CACHE
+    freq_img, freq_cand = {}, {}
+    watch = set(M._BLIND) | set(M._BLIND.values())
+    for rel in walk_repo():
+        try:
+            with open(os.path.join(REPO, rel), encoding='utf-8') as f:
+                text = f.read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for line in text.replace('\r\n', '\n').split('\n'):
+            if not M.NONASCII.search(line):
+                continue
+            hit = [c for c in line if c in watch]
+            if not hit:
+                continue
+            for c in hit:
+                freq_img[c] = freq_img.get(c, 0) + 1
+            if M.damage(M.restored_text(line)) == line:
+                for c in hit:
+                    freq_cand[c] = freq_cand.get(c, 0) + 1
+    _FREQ_CACHE = (freq_img, freq_cand)
+    return _FREQ_CACHE
+
+
 def scan():
     """返回 (违规, 已豁免)。违规元素 = (rel, 行号, 原文)。"""
     bad, exempt = [], []
@@ -136,6 +180,41 @@ def selftest(quiet=False):
 
     # ④ 干净行不得误报
     check(not M.is_bad(good), '假阳性: 正确的中文行被判坏')
+
+    # ⑤ 盲区层（v5）: 配对表必须非空，且每个"像"确实是对应"原"的损坏像。
+    #    （`mojibake.py` 导入时已有同款断言，这里再验一次是为了让**门禁**
+    #     也覆盖"表被改坏"这条路 —— 门禁不能依赖被检查对象的自证。）
+    check(bool(M._BLIND), '盲区表空: v5 的单字符盲区兜底已失效')
+    for img, org in M._BLIND.items():
+        check(M.damage(org) == img,
+              '盲区表错: damage(%s)=%s != %s' % (_cp(org), _cp(M.damage(org)), _cp(img)))
+    #   坏掉的盲区字符必须被判据抓住（这是 v5 相对 v4 补上的**唯一**召回）
+    for org in M._BLIND.values():
+        check(M.is_bad(M.damage(org)),
+              '盲区漏判: %s 的损坏形态未被 is_bad 抓住' % _cp(org))
+
+    # ⑥ 盲区配对表**必须仍然成立**（语料校准的自我复核）。
+    #    采纳条件是 freq_img == freq_cand: 像字符的每一次出现都落在"硬验证候选行"
+    #    上，即**从未观察到合法用法**。若日后有人在正文里正常写出该字（例如
+    #    在某处合法地用了 U+6402），这条就失去依据，门禁必须报错并要求重算 ——
+    #    否则白名单会悄悄变成一个越用越松的后门。
+    freq_img, freq_cand = _blind_freqs()
+    for img, org in M._BLIND.items():
+        check(freq_img.get(img, 0) == freq_cand.get(img, 0),
+              '盲区校准失效: %s 出现 %d 次但有 %d 次不在候选行上 —— '
+              '该字已存在合法用法, 必须从 _BLIND_PAIRS_SRC 撤销 %s->%s'
+              % (_cp(img), freq_img.get(img, 0),
+                 freq_img.get(img, 0) - freq_cand.get(img, 0), _cp(img), _cp(org)))
+        check(freq_img.get(org, 0) >= 5,
+              '盲区校准失效: 还原目标 %s 在该语料只出现 %d 次 (<5), 依据不足'
+              % (_cp(org), freq_img.get(org, 0)))
+
+    # ⑦ 被**拒绝**的配对不得被偷偷采纳: `实施` 是 `ʵʩ` 假阳性现场（`实` 有
+    #    3856 次合法用法），它必须判为正常，且修复器不得动它。
+    for clean in ('- [ ] S2-S5 实施', '### 18.3 实施'):
+        check(not M.is_bad(clean), '假阳性: 含该字的正常行被判坏 (%s)' % clean)
+        check(M.fix_line(clean)[0] == clean,
+              '误改: 修复器改动了正常行 (%s)' % clean)
 
     if not quiet:
         for f in fails:

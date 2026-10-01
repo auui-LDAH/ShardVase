@@ -307,7 +307,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             }
             i++;
         } else if (strcmp(argv[i], "--version") == 0) {
-            printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE 搂1.2 */
+            printf("prot-demo %s\n", PROT_VERSION_STR); /* RELEASE §1.2 */
             exit(0);
 #ifdef PROT_DRILL_HOOK
         } else if (strcmp(argv[i], "--loop-vm") == 0) {
@@ -517,7 +517,7 @@ int main(int argc, char** argv)
         return 2; /* 用法错误 */
     }
 
-    /* 搂9.1-3: BANNER */
+    /* §9.1-3: BANNER */
     printf("%s\n", prot_str_get(PROT_STR_BANNER));
 
     /* N1 (二期 II-1): 解密引擎函数 + 解密态 CRC 校验; 失败 = 完整性被破坏 */

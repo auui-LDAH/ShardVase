@@ -43,7 +43,12 @@
 
 
 /* 产品显示名 / exe 名: 向导以 -DAPP_EXE_NAME=xxx 覆盖 (无引号, 默认占位).
- * APP_EXE_NAME_STR 经字符串化宏展开为字面量, 规避 cmd 传递引号问题. */
+ * APP_EXE_NAME_STR 经字符串化宏展开为字面量, 规避 cmd 传递引号问题.
+ *
+ * ⚠️ 必须**两级**间接: `#` 的操作数不会被宏展开, 所以
+ *     #define APP_EXE_NAME_STR PROT_APP_STR_(APP_EXE_NAME)   ← 错
+ * 得到的是字面量 "APP_EXE_NAME" 而不是 "SkelCheck"。
+ * 多一层 PROT_APP_STR 后, 参数先展开再字符串化。 */
 #ifndef APP_DISPLAY_NAME
 #define APP_DISPLAY_NAME "protected-app"
 #endif
@@ -51,7 +56,8 @@
 #define APP_EXE_NAME protected_app
 #endif
 #define PROT_APP_STR_(x) #x
-#define APP_EXE_NAME_STR PROT_APP_STR_(APP_EXE_NAME)
+#define PROT_APP_STR(x) PROT_APP_STR_(x)
+#define APP_EXE_NAME_STR PROT_APP_STR(APP_EXE_NAME)
 
 #include "protect/antidebug.h"
 #include "protect/blob.h"
@@ -307,7 +313,7 @@ static int parse_args(int argc, char** argv, int* selftest, uint32_t* wait_ms,
             }
             i++;
         } else if (strcmp(argv[i], "--version") == 0) {
-            printf("%s %s\n", APP_DISPLAY_NAME, PROT_VERSION_STR); /* RELEASE 搂1.2 */
+            printf("%s %s\n", APP_DISPLAY_NAME, PROT_VERSION_STR); /* RELEASE §1.2 */
             exit(0);
 #ifdef PROT_DRILL_HOOK
         } else if (strcmp(argv[i], "--loop-vm") == 0) {
@@ -526,7 +532,7 @@ int main(int argc, char** argv)
         return 2; /* 用法错误 */
     }
 
-    /* 搂9.1-3: BANNER */
+    /* §9.1-3: BANNER */
     printf("%s\n", prot_str_get(PROT_STR_BANNER));
 
     /* N1 (二期 II-1): 解密引擎函数 + 解密态 CRC 校验; 失败 = 完整性被破坏 */

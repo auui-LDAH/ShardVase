@@ -79,14 +79,24 @@ smoke 的判据是 `$sText -match 'license: 1'`，而 $sText 来自
 => 与 P3 教训同型（"门禁绕过会掩盖真实缺陷"）：
    **诊断信息丢失**会把"可修的错误"变成"无从下手的失败"。
 ```
-**修复方向**（待下轮）: 同时 `-RedirectStandardError` 并在失败时打印两流。
+**修复**（已完成，见上表 ④）: `build_skeleton.ps1` 增加 `$sErr = smoke_err.log`
+并在失败时打印 `$sOutLines` / `$sErrLines` 两流（提交 `e2aa5a8`）。
 
-#### ⑤ 附带发现: usage 提示显示**字面宏名**
+#### ⑤ 附带发现: usage 提示显示**字面宏名** —— ✅ **已修**（Q2，2026-10-02）
 ```
-usage: APP_EXE_NAME [--selftest] ...
-       ^^^^^^^^^^^^ 应为真实程序名（APP_EXE_NAME 是编译宏，未展开）
-=> 显示名注入未覆盖 usage 路径（第 4 项发现，低危但影响可用性）
+（原记录症状）usage: APP_EXE_NAME [--selftest] ...
+                        ^^^^^^^^^^^^ 应为真实程序名
 ```
+**根因（非"显示名注入未覆盖 usage"）**: `app_main.c` 的字符串化只有**一级**
+间接 —— `#define APP_EXE_NAME_STR PROT_APP_STR_(APP_EXE_NAME)`。C 标准规定
+`#` 的操作数**不做宏展开**，故 `#x` 把参数**符号本身**字符串化，得到字面量
+`"APP_EXE_NAME"`。修法是经典**两级间接**（`PROT_APP_STR(x) -> PROT_APP_STR_(x)`）。
+
+**端到端定证**: `cl` 实测（`-D` 带引号/带空格均正确展开）→
+`tools/skeleton_check.py --keep` 重建后扫 `build/SkelCheck.exe`，
+8 条 usage 串全为 `usage: SkelCheck ...`，`literal macro name present? False`。
+
+> 另注: `demo/main.c` 不受影响 —— 它的 usage 全是**硬编码字面量** `demo.exe`，不走宏。
 
 ### 1.2 运行开销 —— ✅ **R2 已实测**（2026-09-29）
 
@@ -123,8 +133,8 @@ full:     自检 **+673.32 ms (+4940%)** · 内存 +0.00 MB
 |----|--------|------|
 | `antidebug` 计时检测 | **固定 250ms**（5×20ms + 150ms）| `modules.json` known_limits |
 | `vm` 回跳开销 | O(ip) 重绕密钥流；大量回跳呈**近平方级** | 同上 |
-| 启动总开销 | **未单独测量** | ⬜ 待测 |
-| 常驻内存增量 | **未测量** | ⬜ 待测 |
+| 启动总开销 | **已测**（minimal 10.53 / standard 11.27 / full 20.75 ms）| 上表，`tools/perf_baseline.py` |
+| 常驻内存增量 | **已测**（峰值工作集 2.60 MB，**几乎不随模块数变化**）| 上表，同上 |
 
 > **诚实说明**：`antidebug` 的 250ms 是**可量化代价**，对启动敏感的程序
 > 应选 `minimal` 拼装图（不含 antidebug）。
@@ -339,4 +349,4 @@ full:     自检 **+673.32 ms (+4940%)** · 内存 +0.00 MB
 
 ---
 
-*2026-09-21 · 基于实测数据；未验证项如实标注*
+*2026-10-02 · 基于实测数据；未验证项如实标注（②③④⑤ 已修，① 为诚实边界，⑤ 见 §1.6）*
