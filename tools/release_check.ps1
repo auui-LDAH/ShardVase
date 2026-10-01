@@ -506,6 +506,36 @@ Check '门禁日志自检 (gate_log)' {
     $LASTEXITCODE -eq 0
 }
 
+# ── 32. 调试控制台**活体**自检（`docs/DEBUG_CONSOLE_PLAN.md` 第 2 步, 2026-10-01）──
+#
+# ## 为什么单独一项（不与第 30 项合并）
+#   第 30 项是**纯只读**的（只读产物/map/C 头，不启进程）—— 那是它敢进门禁的前提。
+#   第 2 步新增的 `read`/`patch`/`watch` 会 **OpenProcess + WriteProcessMemory**，
+#   性质完全不同（需要权限、会拉起进程、会改目标内存），必须**分开**评估与记录。
+#
+# ## 它挡的是什么（本轮真实事故）
+#   活体自检的 L4 原本断言"不改页保护写 `.text` 只读页必须失败"。
+#   **该断言是错的** —— 2026-10-01 实测:
+#     · 映像页(`MEM_IMAGE`, 写时复制): RX/RWX **能**直接写成功; R 失败 err=998
+#     · 私有页(`VirtualAllocEx`): RX/RW **能**写; R/NOACCESS 失败 err=998
+#   => `WriteProcessMemory` 的返回值**是可信的**，纪律 ⑦ 原先的理由
+#      ("系统会返回成功却没写进去")**未复现**。是一次**自检把我自己的错误断言抓了出来**。
+#   修法: L4 改用**自建私有只读页**做对照，并加 L4b（同一页解锁后必须写得进去）
+#         —— 证明 L4 的失败**确实来自"页保护"**，而不是"地址非法/长度越界"。
+#   没有 L4b，L4 的"失败"可以被"地址算错了"解释，那就**没有判别力**。
+#
+# ## 为什么能安全地跑
+#   用**独立进程**（demo.exe，自拉自杀），不污染构建状态、不写 build/；
+#   非 Windows 上 SKIP（返回 2，**未验证 != 通过**，门禁按非 0 处理 -> 见下）。
+Check '调试控制台活体自检 (prot_dbg live)' {
+    if ($env:OS -ne 'Windows_NT') {
+        Write-Host '      (非 Windows — 只读自检已覆盖静态部分; 活体部分 SKIP)' -ForegroundColor DarkGray
+        return $true
+    }
+    & $py -X utf8 tools\prot_dbg.py --selftest-live --quiet
+    $LASTEXITCODE -eq 0
+}
+
 
 
 

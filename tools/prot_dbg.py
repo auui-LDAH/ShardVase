@@ -3,16 +3,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 ShardVase contributors
 # 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
-r"""`tools/prot_dbg.py` — 调试控制台（**第 1 步：只读子命令**，2026-09-30）。
+r"""`tools/prot_dbg.py` — 调试控制台（**第 1 + 2 + 4 步**，2026-09-30/10-01）。
 
 ## 为什么需要（不是"想要"，是**实测反复踩到**）
   本项目 100+ 次调试里，同一批动作被反复手写、每次写临时脚本、每次可能踩同一批坑。
   见 `docs/DEBUG_CONSOLE_PLAN.md` §1 的清单（map 符号解析 5+ 次 / 运行时地址换算 4+ 次 /
   退出码解释 8+ 次 / 掩码归属判定 3 次 …）。
 
-## 本文件当前只实现**第 1 步**（`sym` / `mask` / `exit` / `doctor`）—— **纯只读，零风险**
-  `patch` / `read` / `watch`（第 2 步）与 `run`（第 3 步）、反调试提示（第 4 步）**尚未实现**。
-  未实现就是未实现 —— 本工具**不会**假装支持（P4 诚实边界）。
+## 已实现 / 未实现（**未实现就不假装支持**，P4 诚实边界）
+  第 1 步 ✅ `doctor` / `sym` / `mask` / `exit` —— **纯只读，零风险**
+  第 2 步 ✅ `patch` / `read` / `watch` —— 进程内读写（Windows）
+  第 4 步 ✅ 反调试干扰提示（`patch`/`read`/`watch` 自动打印，`--no-advice` 可关）
+  第 3 步 ❌ `run` + `-DPROT_INTEGRITY_DEBUG` 诊断构建包装 —— **用户已降级为可选**（计划 §5）
 
 ## 用法
 ```
@@ -20,10 +22,18 @@ python tools/prot_dbg.py doctor                  # 环境体检 + **解析链路
 python tools/prot_dbg.py sym <名字> [<名字>…]     # 符号 -> 链接时 VA / RVA / .text 偏移 / 掩码归属
 python tools/prot_dbg.py mask [<名字>…]           # 掩码区清单（产物 meta 为权威）+ 各区内的符号
 python tools/prot_dbg.py exit <码> [<码>…]        # 退出码解释（**从 C 头解析，不硬编码**）
-python tools/prot_dbg.py --selftest [--quiet]
+python tools/prot_dbg.py read <符号> [--len N]    # 读运行时内存（**与产物文件字节对照**）
+python tools/prot_dbg.py patch <符号> [--observe S] [--policy continue]
+                                                  # 运行期 patch（ASLR 自动换算 + **读回验证**）
+python tools/prot_dbg.py watch <符号> [<符号>…]   # 轮询计数，打印**变化时间线**
+python tools/prot_dbg.py --selftest        [--quiet]   # 第 1 步自检（**纯只读**，可进门禁）
+python tools/prot_dbg.py --selftest-live   [--quiet]   # 第 2 步自检（拉目标进程；非 Windows SKIP）
 ```
   通用选项: `--exe P`（默认 `build/demo.exe`）· `--map P`（默认与 exe 同名 `.map`）·
   `--json F`（结构化证据落盘）· `--quiet`
+  第 2 步选项: `--pid P`（附着既有进程；缺省则**本工具自己拉起** demo 并在结束时杀掉）·
+  `--len N` · `--seconds S` · `--interval MS` · `--bytes HEX` · `--policy continue|exit|fake` ·
+  `--observe S` · `--rva R` · `--no-advice`
 
 ## 设计纪律（**每一条都来自实际踩坑**）
   ① **退出码从 `include/protect/*.h` 解析**，不硬编码 —— R1 `docclaim` 的教训: 硬编码会漂移。
@@ -40,8 +50,24 @@ python tools/prot_dbg.py --selftest [--quiet]
      > 生成物 JSON，得到**静默错误**的节名（本项目已记名的坑）。
   ⑤ **不向用户暴露未换算的运行时地址**: 打印的是**链接时 VA**，并显式提示 ASLR。
   ⑥ **不改仓库状态**（只读 + 临时目录），自检可在门禁里跑。
+  ⑦ **写远程内存必须"读回验证"**（第 2 步）。**2026-10-01 实测更正了这条的理由**:
+     本工具曾断言"`.text` 是只读页，所以 `WriteProcessMemory` 会**返回成功但没写进去**"——
+     **该断言未复现**。实测（`build/probe_live_page2.py`，同一目标进程）:
+       · **映像页**（`MEM_IMAGE`）: RX(`0x20`)、RWX(`0x40`) 不带页保护**直接写就成功**，
+         且读回一致（映像是写时复制页，`SEC_IMAGE` 的只读保护**不阻止** WPM）；
+         而 R(`0x02`) 失败 `err=998`。
+       · **私有页**（`VirtualAllocEx`）: RX/RW 成功；R(`0x02`)/NOACCESS(`0x01`) 失败 `err=998`。
+     结论: **WPM 的返回值是可信的**（失败就是 `False`）。读回验证仍然要做，但理由改成
+     **① 防"部分写入"（`n.value < len`）② 防调用方从"ok"误推出语义**，
+     **不是**"系统会骗你"。
+     > 教训: 把没验证过的机制当成结论写进注释，比不写更危险 —— 它会误导后来人
+     > 去"修"一个不存在的问题（此处正是一次自检把我自己的错误断言抓了出来）。
+  ⑧ **读不到 ≠ 值为 0，也 ≠ 写入失败**（第 2 步）: 无权限 / 进程已退出 / 地址算错
+     都是**不同的错误**，必须分别报出，绝不静默退化成 0。
+  ⑨ **判据不能用退出码**（第 2 步）: 退出码无判别力（各检测同向命中）——
+     `watch` 看的是**被观测符号自己的变化**，`patch` 打印的是**读回字节**。
 
-## 自检（`--selftest`，1 前置 + 4 正向 + 4 负向）
+## 自检（`--selftest`，1 前置 + 4 正向 + 4 负向）—— **纯只读，可进门禁**
 ```
 T0 前置: 产物+map 就绪（缺则 SKIP，不假装通过）
 T1 **正向** doctor 通过
@@ -54,14 +80,35 @@ T7 **负向** map 为**空文件** -> doctor **必须报错**（不是静默通�
 T8 **负向** map **非空但格式不可识别** -> doctor 必须报"读不到 != 不存在"
 T9 **负向** 掩码判定不得恒真/恒假（区内点必须在、区外点必须不在）
 ```
+
+## 活体自检（`--selftest-live`，第 2 步；**会拉起 demo.exe 并在结束时杀掉**）
+```
+L0 前置: Windows + 产物就绪（非 Windows -> **SKIP 并说明**，不假装通过）
+L1 **正向** `read` 一个真实符号 -> 读到的字节必须**与产物文件同址字节一致**
+           （把"内存读取链路"钉死在文件这个已知基准上 —— 纪律 ②）
+L2 **正向** `patch` -> **读回验证**必须成功，且 patch 前字节与 patch 后字节**必须不同**
+L3 **负向** `read` 一个不存在的符号 -> **必须 rc=1**，不得读成 0
+L4 **负向对照** **写入链路必须有判别力**: 写一个**私有只读页**（`VirtualAllocEx` +
+           `PAGE_READONLY`）-> 必须**明确失败**（`err=998`）。
+           ⚠ 2026-10-01 实测更正: 原先写的是"不改页保护写 `.text` -> 必须失败"，
+           **该前提是错的** —— 映像 RX 页**可以**直接写成功（写时复制），
+           L4 因此一度 FAIL。改用**自建页**做对照，因为它给的是**受控**的保护值，
+           不受 `SEC_IMAGE` 语义影响。（见纪律 ⑦）
+L5 **负向** `watch` 一个**同址不变量**（只 patch 后应保持的字节）-> 必须报"无变化"
+           而不是凭空报变化（采样链路不得恒报）
+```
 """
 import argparse
+import ctypes
+import io
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -77,6 +124,33 @@ import protchain_check as pc    # noqa: E402  节表 / selfcrypt meta 的权威�
 
 DEFAULT_EXE = os.path.join(REPO, 'build', 'demo.exe')
 PROT_HDR_DIR = os.path.join(REPO, 'include', 'protect')
+
+# ---- 第 2 步（活体调试）常量 ---------------------------------------------
+# 这些值与 `tools/guard_selftest.py` **同源**（共享思路，不共享代码）:
+# 该文件已被门禁第 29 项验收，此处是它的**参数化重写**（目标符号/长度可传参），
+# 而不是反过来 import 它（它 print 大量输出且不接受参数）。
+PREF = 0x140000000              # PE 默认映像基址（map 里的链接时 VA 隐含它）
+PATCH = (0x31, 0xC0, 0xC3)      # xor eax,eax; ret —— 函数头 patch 的经典形态
+SETTLE_S = 1.2                  # 拉起进程后等它把 watchdog/自检跑起来
+POLL_S = 0.2                    # watch 采样间隔
+OBSERVE_S = 15.0                # watch 默认观察窗口
+KEEP_MS = 30000                 # 自拉目标时留给我们的调试窗口（--wait-after）
+PROCESS_ALL = 0x1F0FFF
+TH32CS_SNAPMODULE = 0x8
+PAGE_NOACCESS = 0x01
+PAGE_READONLY = 0x02
+PAGE_READWRITE = 0x04
+PAGE_EXECUTE_READ = 0x20
+PAGE_EXECUTE_READWRITE = 0x40
+PAGE_GUARD = 0x100
+MEM_COMMIT = 0x1000
+MEM_RESERVE = 0x2000
+MEM_RELEASE = 0x8000
+MEMORY_BASIC_INFORMATION_SIZE = 48   # x64: 8+8+4+4+2+2+4+8 = 48
+EXIT_DEBUG_DETECTED = 219       # PROT_EXIT_DEBUG_DETECTED（第 4 步提示里引用）
+SYM_POLICY = 'g_wd_policy'
+SYM_HITS = 'g_guard_hits'
+SYM_TAMPER = 'g_wd_tamper'
 
 
 def rel(p):
@@ -107,6 +181,365 @@ def build_dir_of(plat):
     """平台专属 build 目录（**唯一事实源** `tools/genpaths.py`）。"""
     import genpaths
     return genpaths.paths(plat or 'win').build_dir
+
+
+# ===========================================================================
+# 第 2 步：活体调试（读 / 写目标进程内存）
+#
+# ⚠ 第 4 步的核心结论固化在这段文本里，**所有活体命令都必须打印它**:
+#   本工具用 `OpenProcess`/`ReadProcessMemory` 打开目标进程，这**本身就是调试行为**，
+#   可能被 demo 自身的反调试检测到，目标可能以 219（PROT_EXIT_DEBUG_DETECTED）退出。
+#   **该退出码不能作为"守卫有效/失效"的判据** —— 2026-09-30 实测差点把它误读成"守卫失效"。
+# ===========================================================================
+ANTIDEBUG_NOTICE = [
+    '⚠ 反调试干扰提示（docs/DEBUG_CONSOLE_PLAN.md 第 4 步）:',
+    '  本工具用 OpenProcess/ReadProcessMemory 打开目标进程 —— **这本身就是调试行为**，',
+    '  可能被 demo 自身的反调试检测到，目标可能以 219 (%d = PROT_EXIT_DEBUG_DETECTED) 退出。' % EXIT_DEBUG_DETECTED,
+    '  **219 不能作为"守卫有效/失效"的判据**：它只说明"检测到了"，不说明"检测准不准"。',
+    '  判据请用**被观测符号自己的值**（`read` 读回的字节 / `watch` 看到的变化）。',
+]
+
+_ERROR_HINTS = {
+    5: ('ACCESS_DENIED', '权限不足：需要与目标**相同或更高完整性级别**（本工具不提权）。'
+                         '请以同等权限重跑，或改用 --pid 附着由你自己启动的目标。'),
+    6: ('INVALID_HANDLE', '句柄无效：目标进程**可能已经退出**（查 --pid 是否还在）。'),
+    87: ('INVALID_PARAMETER', '参数无效：多半是**地址算错**（RVA 换算）或长度越界。'),
+    299: ('PARTIAL_COPY', '只能读取部分内存 -> **地址很可能不对**。两个最常见原因: '
+                          '① 拿**链接时 VA**（0x140000000 附近）去读 ASLR 后的进程 '
+                          '（必须先减映像基址、再加**运行时**模块基址）；'
+                          '② 该地址不在已提交页内（未初始化 / 已释放 / 只在文件里）。'),
+}
+
+
+class DbError(Exception):
+    """带**分类**的调试错误。
+
+    纪律 ⑧: 权限 / 进程 / 地址 / 符号是**不同的**错误，必须分开报出，
+    绝不静默退化成"读到 0"或"写入失败但不吭声"。
+    """
+
+    def __init__(self, kind, msg, hint=None):
+        Exception.__init__(self, msg)
+        self.kind = kind          # permission|process|address|symbol|platform|internal
+        self.msg = msg
+        self.hint = hint
+
+
+def _why(k32, default_kind='address'):
+    """把 Win32 最后一次错误翻成 (kind, 可读文本)。"""
+    code = ctypes.get_last_error() if k32 is not None else 0
+    name, hint = _ERROR_HINTS.get(code, ('ERROR_%d' % code, None))
+    kind = 'permission' if code == 5 else ('process' if code in (6, 87) else default_kind)
+    if code == 87:
+        kind = 'address'
+    txt = 'Win32 %d (%s)' % (code, name)
+    return kind, txt, hint
+
+
+class _MODULEENTRY32(ctypes.Structure):
+    """`Module32First/Next` 的结构体。
+
+    ⚠ 用它取**运行时**模块基址，**不要**用 `PREF`(0x140000000) 直接读 ——
+    2026-09-30 的实测教训: 那样读会全部失败并报 `err=299 (ERROR_PARTIAL_COPY)`，
+    差点被读成"这个变量不存在"（`tools/guard_selftest.py` 同款记录）。
+    """
+
+    _fields_ = [
+        ('dwSize', ctypes.c_ulong),
+        ('th32ModuleID', ctypes.c_ulong),
+        ('th32ProcessID', ctypes.c_ulong),
+        ('GlblcntUsage', ctypes.c_ulong),
+        ('ProccntUsage', ctypes.c_ulong),
+        ('modBaseAddr', ctypes.c_void_p),
+        ('modBaseSize', ctypes.c_ulong),
+        ('hModule', ctypes.c_void_p),
+        ('szModule', ctypes.c_char * 256),
+        ('szExePath', ctypes.c_char * 260),
+    ]
+
+
+def _kernel32():
+    """绑定 kernel32（**只在 Windows 上**；非 Windows 抛 platform 类错误）。"""
+    if sys.platform != 'win32':
+        raise DbError('platform', '本功能仅 Windows（OpenProcess/ReadProcessMemory/WriteProcessMemory）',
+                      '在 Linux 上用 `readelf`/`gdb`，或改跑 CI 的 Linux 门禁。')
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    from ctypes import wintypes as wt
+    k32.OpenProcess.restype = wt.HANDLE
+    k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    k32.CloseHandle.argtypes = [wt.HANDLE]
+    k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    k32.WriteProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    k32.VirtualProtectEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
+                                     wt.DWORD, ctypes.POINTER(wt.DWORD)]
+    k32.VirtualQuery.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    # 自检 L4 的**受控**对照页需要自己分配/设保护/释放
+    k32.VirtualAllocEx.restype = ctypes.c_void_p
+    k32.VirtualAllocEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
+                                   wt.DWORD, wt.DWORD]
+    k32.VirtualFreeEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wt.DWORD]
+    k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+    k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    k32.Module32First.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
+    k32.Module32Next.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
+    return k32
+
+
+def _module_base(k32, pid, exe_name):
+    """取**运行时**模块基址（ASLR 后的真实基址）。找不到返回 None。"""
+    TH32CS_SNAPMODULE32 = 0x10
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
+    if not snap or snap in (ctypes.c_void_p(-1).value, -1):
+        return None
+    try:
+        me = _MODULEENTRY32()
+        me.dwSize = ctypes.sizeof(_MODULEENTRY32)
+        if not k32.Module32First(snap, ctypes.byref(me)):
+            return None
+        want = os.path.basename(exe_name).lower().encode()
+        while True:
+            if want in me.szModule.lower():
+                return me.modBaseAddr or None
+            if not k32.Module32Next(snap, ctypes.byref(me)):
+                return None
+    finally:
+        k32.CloseHandle(snap)
+
+
+def file_bytes_at(ctx, rva, n):
+    """产物**文件里**同地址的字节（用于 `read` 的正向对照）；不在任何节原始数据内返回 None。
+
+    这是纪律 ② 的落地: 内存读取链路必须钉死在一个**已知基准**（文件）上，
+    否则"读到 0x00"到底是真值还是读失败，无法分辨。
+    """
+    if not ctx or not ctx.data:
+        return None
+    for s in ctx.secs:
+        va, raw, ptr = s['virtual_addr'], s['size_raw'], s['ptr_raw']
+        if raw and va <= rva < va + raw:
+            off = ptr + (rva - va)
+            return ctx.data[off:off + n]
+    return None
+
+
+class Target(object):
+    """一个**活着的**调试目标：已换算的运行时地址 + 已打开的进程句柄。"""
+
+    def __init__(self, k32, pid, base, exe_path, proc=None):
+        self.k32 = k32
+        self.pid = pid
+        self.base = base
+        self.exe_path = exe_path
+        self.proc = proc          # 自己拉起的 Popen；None = 附着到别人的进程
+        self.owns = proc is not None
+        self.h = None
+        self.errors = []
+
+    # ---- 生命周期 ---------------------------------------------------------
+    def open(self):
+        self.h = self.k32.OpenProcess(PROCESS_ALL, False, self.pid)
+        if not self.h:
+            kind, txt, hint = _why(self.k32, 'process')
+            raise DbError(kind, 'OpenProcess(pid=%d) 失败: %s' % (self.pid, txt), hint)
+        return self
+
+    def close(self):
+        if self.h:
+            self.k32.CloseHandle(self.h)
+            self.h = None
+
+    def alive(self):
+        return self.proc is None or self.proc.poll() is None
+
+    def exit_code(self):
+        return None if self.proc is None else self.proc.poll()
+
+    def kill(self):
+        if self.owns and self.proc and self.proc.poll() is None:
+            self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+
+    # ---- 页查询（L4 的受控对照要用）---------------------------------------
+    def prot_of(self, va):
+        """返回该地址所在页的 `(Protect, RegionSize, State)`；查不到返回 `(None, 0, 0)`。"""
+        from ctypes import wintypes as wt
+        mbi = ctypes.create_string_buffer(MEMORY_BASIC_INFORMATION_SIZE)
+        n = self.k32.VirtualQuery(self.h, ctypes.c_void_p(va), mbi,
+                                  MEMORY_BASIC_INFORMATION_SIZE)
+        if not n:
+            return None, 0, 0
+        # x64 MEMORY_BASIC_INFORMATION: BaseAddress(8) AllocationBase(8)
+        #   AllocationProtect(4) PartitionId(2) pad(2) RegionSize(8)
+        #   State(4) Protect(4) Type(4) pad(4)
+        prot = ctypes.c_uint32.from_buffer(mbi, 32).value
+        state = ctypes.c_uint32.from_buffer(mbi, 40).value
+        size = ctypes.c_uint64.from_buffer(mbi, 24).value
+        return prot, size, state
+
+    def alloc_ro_page(self, size=0x1000):
+        """分配一个**私有只读页**并返回地址（L4 的受控对照）。
+
+        为什么不用映像 `.text` 当对照: 映像页是 `SEC_IMAGE` 写时复制，
+        其"只读"**不阻止** `WriteProcessMemory` —— 2026-10-01 实测（纪律 ⑦）。
+        私有页的保护值由我们**自己设定**，才是干净的对照。
+        """
+        mem = self.k32.VirtualAllocEx(self.h, None, size,
+                                      MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        if not mem:
+            kind, txt, hint = _why(self.k32, 'internal')
+            raise DbError(kind, 'VirtualAllocEx 失败: %s' % txt, hint)
+        # 先写点已知字节（RW 时写入），再降为只读
+        ok, back, det = self.write(mem, b'\xA5' * 16, protect=False)
+        if not ok:
+            raise DbError('internal', '对照页初始化写入失败: %s' % det)
+        from ctypes import wintypes as wt
+        old = wt.DWORD(0)
+        if not self.k32.VirtualProtectEx(self.h, ctypes.c_void_p(mem), size,
+                                         PAGE_READONLY, ctypes.byref(old)):
+            kind, txt, hint = _why(self.k32, 'internal')
+            raise DbError(kind, '对照页设为 PAGE_READONLY 失败: %s' % txt, hint)
+        return mem
+
+    def free_page(self, mem):
+        if mem:
+            self.k32.VirtualFreeEx(self.h, ctypes.c_void_p(mem), 0, MEM_RELEASE)
+
+    # ---- 地址换算 ---------------------------------------------------------
+    def rt(self, link_va):
+        """**链接时 VA -> 运行时地址**（这就是"ASLR 自动换算"）。
+
+        绝不允许把 `link_va` 直接当运行时地址用（`err=299` 的经典来源）。
+        """
+        return self.base + (link_va - PREF)
+
+    # ---- 读写 -------------------------------------------------------------
+    def read(self, va, n):
+        """读 n 字节；**失败抛错**（绝不返回 b'\\x00'*n 冒充成功）。"""
+        buf = (ctypes.c_ubyte * n)()
+        got = ctypes.c_size_t(0)
+        ok = self.k32.ReadProcessMemory(self.h, ctypes.c_void_p(va), buf, n, ctypes.byref(got))
+        if not ok or got.value != n:
+            kind, txt, hint = _why(self.k32)
+            raise DbError(kind, 'ReadProcessMemory(0x%X, %d) 失败: %s（读到 %d 字节）'
+                          % (va, n, txt, got.value), hint)
+        return bytes(buf)
+
+    def write(self, va, data, protect=True):
+        """写远程内存 + **读回验证**（纪律 ⑦）。
+
+        返回 `(ok, back, detail)`。`protect=False` 用于自检的**负向对照**：
+        不给页解锁就写**私有只读页**，**必须失败**（`err=998`）。
+
+        ⚠ 2026-10-01 实测更正: 曾以为"映像 `.text` 是只读页，WPM 会返回成功却没写进去"——
+        **未复现**。映像页（`SEC_IMAGE`）的 RX/RWX **不阻止** WPM（写时复制），
+        返回值可信。故这里的 `protect=` **只是省事**（免得每个调用点自己管页保护），
+        **不是**为了绕开"系统会骗你"。
+        """
+        data = bytes(data)
+        from ctypes import wintypes as wt
+        old = wt.DWORD(0)
+        if protect:
+            if not self.k32.VirtualProtectEx(self.h, ctypes.c_void_p(va & ~0xFFF), 0x1000,
+                                             PAGE_EXECUTE_READWRITE, ctypes.byref(old)):
+                kind, txt, hint = _why(self.k32, 'permission')
+                return False, None, 'VirtualProtectEx 失败: %s' % txt
+        n = ctypes.c_size_t(0)
+        buf = (ctypes.c_ubyte * len(data))(*data)
+        ok = bool(self.k32.WriteProcessMemory(self.h, ctypes.c_void_p(va), buf, len(data),
+                                             ctypes.byref(n)))
+        werr = None
+        if not ok:
+            kind, txt, hint = _why(self.k32, 'address')
+            werr = txt + ('；' + hint if hint else '')
+        if protect and old.value:
+            self.k32.VirtualProtectEx(self.h, ctypes.c_void_p(va & ~0xFFF), 0x1000,
+                                      old.value, ctypes.byref(old))
+        back = None
+        try:
+            back = self.read(va, len(data))
+        except DbError as e:
+            werr = (werr or '') + ' [读回也失败: %s]' % e.msg
+        good = bool(ok) and n.value == len(data) and back == data
+        detail = werr or ('写入并读回一致' if good else '写入返回成功但**读回不一致**')
+        return good, back, detail
+
+
+def _resolve(ctx, name):
+    """符号名 -> 信息 dict；缺失抛 symbol 类错误（**不静默**）。"""
+    info = ctx.sym(name)
+    if info is None:
+        raise DbError('symbol', '符号 `%s` **不在 map 中**' % name,
+                      '可能原因:\n    - ' + '\n    - '.join(ctx.why_missing(name)))
+    return info
+
+
+def _default_target(ctx, pid):
+    """`--pid` 附着已有进程；否则**自己拉起 demo**（带标准参数）。"""
+    k32 = _kernel32()
+    exe = ctx.exe
+    if pid:
+        # 纪律 ⑧: 先确认**能打开**，再谈"模块在不在" —— 否则把 ACCESS_DENIED
+        # （如 pid 4 = System，低权限打不开）误报成"模块名不符/进程已退出"。
+        h = k32.OpenProcess(PROCESS_ALL, False, pid)
+        if not h:
+            code = ctypes.get_last_error()
+            name, _hint = _ERROR_HINTS.get(code, ('ERROR_%d' % code, None))
+            # OpenProcess 的错误**只能**是"权限 / 进程"两类，**不是**地址问题 ——
+            # 这里必须盖掉默认的 address 归类，否则提示会把人引向 RVA 换算（错方向）。
+            if code == 5:
+                raise DbError('permission', 'OpenProcess(pid=%d) 失败: Win32 %d (%s)'
+                              % (pid, code, name),
+                              '权限不足：需要与目标**相同或更高完整性级别**'
+                              '（本工具不提权）。请以同等权限重跑。')
+            raise DbError('process', 'OpenProcess(pid=%d) 失败: Win32 %d (%s)'
+                          % (pid, code, name),
+                          '该 pid **不存在或已退出**（ERR 87 = 参数无效通常就是"没有这个进程"）。'
+                          '用任务管理器/`Get-Process` 确认 pid 后再附着。')
+        k32.CloseHandle(h)
+        base = _module_base(k32, pid, exe)
+        if base is None:
+            raise DbError('process',
+                          '在 pid=%d 里找不到模块 `%s`（进程可能已退出，或模块名不符）'
+                          % (pid, os.path.basename(exe)),
+                          '用 `--exe` 指明正确的产物，或确认 --pid 仍在运行。')
+        return Target(k32, pid, base, exe, proc=None)
+    # ---- 自己拉起 ---------------------------------------------------------
+    bd = os.path.dirname(os.path.abspath(exe))
+    argv = [exe, '--selftest', '--wait-after', str(int(KEEP_MS))]
+    blob = os.path.join(bd, 'vm.blob')
+    if os.path.exists(blob):
+        argv += ['--vm-blob', blob]
+    lic = os.path.join(bd, 'license.txt')
+    if os.path.exists(lic):
+        argv += ['--license-file', lic]
+    print('[prot_dbg] 拉起目标: %s' % ' '.join('"%s"' % a for a in argv))
+    proc = subprocess.Popen(argv, cwd=REPO, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    time.sleep(SETTLE_S)
+    if proc.poll() is not None:
+        raise DbError('process',
+                      '目标在 %.1fs 内就以 %s 退出 —— 无法调试（先跑 `prot_dbg doctor` 看产物/依赖）'
+                      % (SETTLE_S, proc.returncode))
+    base = _module_base(k32, proc.pid, exe)
+    if base is None:
+        proc.kill()
+        raise DbError('process', '拿不到 pid=%d 的运行时模块基址' % proc.pid)
+    return Target(k32, proc.pid, base, exe, proc=proc)
+
+
+def _adwarn(quiet, no_adwarn, where):
+    """第 4 步验收: 提示文本必须出现在 `patch`/`watch` 的输出里；`--quiet` 可关。"""
+    if quiet or no_adwarn:
+        return
+    print('')
+    for ln in ANTIDEBUG_NOTICE:
+        print('[%s] %s' % (where, ln))
+
 
 
 # ===========================================================================
@@ -444,7 +877,10 @@ def cmd_doctor(ctx, quiet, js):
           '本机**实测 ASLR 生效**（同一次实验两次基址不同），不要直接拿 VA 去读进程。')
     print('  · 启动 demo 时 `--vm-blob` **必须显式传**，否则 rc=45323 '
           '（PROT_EXIT_BLOB_MISSING）—— 本项目已踩 6+ 次。')
-    print('  · 第 2 步（`patch`/`read`/`watch`）与第 3 步（`run`）**尚未实现**。')
+    print('  · 活体命令（`read`/`patch`/`watch`，第 2 步）会**打开目标进程** —— 与只读命令'
+          '不同，它们**需要权限**，且**可能触发目标自身的反调试**（见第 4 步提示）。')
+    print('  · 第 3 步（`run` + `-DPROT_INTEGRITY_DEBUG` 诊断构建包装）**尚未实现**'
+          '（**用户已降级为可选**，计划 §5）。')
     for w in ctx.warns:
         print('  [warn] %s' % w)
     print()
@@ -564,6 +1000,374 @@ def cmd_exit(ctx, codes, quiet, js):
 
 
 # ===========================================================================
+# 第 2 步子命令：read / patch / watch（活体，需权限）
+# ===========================================================================
+def _hexdump(data, base=0, width=16):
+    out = []
+    for i in range(0, len(data), width):
+        chunk = data[i:i + width]
+        hs = ' '.join('%02X' % b for b in chunk)
+        asc = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+        out.append('  %08X  %-*s  %s' % (base + i, width * 3 - 1, hs, asc))
+    return out
+
+
+def _parse_hex_bytes(s):
+    """`"31 C0 C3"` / `"31C0C3"` / `"0x31,0xC0"` -> bytes。非法抛 ValueError。"""
+    toks = [t for t in re.split(r'[\s,:]+', (s or '').strip()) if t]
+    out = []
+    for t in toks:
+        if t.lower().startswith('0x'):
+            t = t[2:]
+        if len(t) > 2:
+            if len(t) % 2:
+                raise ValueError('十六进制串长度必须是偶数: `%s`' % t)
+            for i in range(0, len(t), 2):
+                out.append(int(t[i:i + 2], 16))
+        else:
+            out.append(int(t, 16))
+    return bytes(out)
+
+
+def _policy_continue():
+    """从 C 头**解析** `PROT_POLICY_CONTINUE`（纪律 ①: 解析而非硬编码）。"""
+    val = 0
+    if os.path.isdir(PROT_HDR_DIR):
+        for fn in sorted(os.listdir(PROT_HDR_DIR)):
+            if not fn.endswith('.h'):
+                continue
+            try:
+                t = open(os.path.join(PROT_HDR_DIR, fn),
+                         encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            m = re.search(r'\bPROT_POLICY_CONTINUE\s*=\s*(\d+)', t)
+            if m:
+                val = int(m.group(1))
+    return val
+
+
+def _live_setup(ctx, a):
+    """建目标 + 打开句柄。调用方负责 `close()` 与 `kill()`。"""
+    if ctx.errors:
+        raise DbError('symbol',
+                      '产物/map 链路异常 -> **先修 `doctor` 再调试**（读不到 != 不存在）',
+                      '跑 `prot_dbg doctor` 看是哪一环断了。')
+    if not os.path.exists(ctx.exe):
+        raise DbError('process', '产物不存在: %s' % rel(ctx.exe), '先构建再调试。')
+    t = _default_target(ctx, a.pid)
+    t.open()
+    return t
+
+
+def _keep_alive(t, ctx, quiet, js):
+    """把看门狗策略预置成 CONTINUE，免得 patch 之后被 watchdog **立刻 EXIT** 掉
+    （`demo/main.c:657` 是 `prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000)`）。
+
+    ⚠ 这**本身也是一次写入** —— 必须如实报告，不能当成"没做事"（纪律 ⑦/⑨）。
+    做法与 `tools/guard_selftest.py` 一致（共享思路）。
+    """
+    rec = {'sym': SYM_POLICY, 'applied': False}
+    info = ctx.sym(SYM_POLICY)
+    if not info:
+        rec['why'] = '符号 `%s` 不在 map 中（无法预置策略；patch 后可能被 watchdog 退出）' % SYM_POLICY
+        js['keep_alive'] = rec
+        return rec
+    cont = _policy_continue()
+    rt = t.rt(info['va'])
+    ok, back, detail = t.write(rt, bytes([cont & 0xFF, 0, 0, 0]))
+    rec.update({'applied': bool(ok), 'value': cont, 'rt': rt,
+                'back': None if back is None else list(back), 'detail': detail})
+    if not quiet:
+        print('  预置看门狗策略: %s = %d (PROT_POLICY_CONTINUE) -> %s'
+              % (SYM_POLICY, cont, '已写入并读回一致' if ok else '**写入失败**: %s' % detail))
+    js['keep_alive'] = rec
+    return rec
+
+
+def _fail(js, cmd, kind, msg, hint, quiet):
+    js['ok'] = False
+    js['error'] = {'kind': kind, 'msg': msg, 'hint': hint}
+    if not quiet:
+        print()
+        print('[prot_dbg %s] **失败**（%s）: %s' % (cmd, kind, msg))
+        if hint:
+            print('  提示: %s' % hint)
+    else:
+        sys.stderr.write('[prot_dbg] %s 失败 (%s): %s\n' % (cmd, kind, msg))
+    return 1
+
+
+def _rtline(t, info):
+    slide = t.base - PREF
+    return ('  链接时 VA 0x%X  ->  运行时地址 0x%X  '
+            '(映像基址 0x%X；ASLR 滑动 +0x%X)'
+            % (info['va'], t.rt(info['va']), t.base, slide))
+
+
+def cmd_read(ctx, operands, quiet, js, a):
+    """读目标进程内存（**读不到就报错，绝不返回 0**）。"""
+    _adwarn(quiet, a.no_adwarn, 'read')
+    if not operands:
+        print('用法: prot_dbg read <符号> [--len N] [--pid P]')
+        return 2
+    name = operands[0]
+    n = a.len or 16
+    t = None
+    try:
+        info = _resolve(ctx, name)
+        t = _live_setup(ctx, a)
+        va = t.rt(info['va'])
+        mem = t.read(va, n)
+        rel_va = info['va']
+    except DbError as e:
+        if t:
+            t.close()
+            t.kill()
+        return _fail(js, 'read', e.kind, e.msg, e.hint, quiet)
+    try:
+        js['read'] = {'sym': name, 'len': n, 'pid': t.pid, 'rt': va,
+                      'bytes': list(mem), 'base': t.base, 'rva': info['rva']}
+        if quiet:
+            return 0
+        print('读内存: %s' % name)
+        print('  RVA 0x%X  (map 符号)' % info['rva'])
+        print(_rtline(t, info))
+        print('  pid %d  长度 %d 字节' % (t.pid, n))
+        print()
+        for l in _hexdump(mem, va):
+            print(l)
+        # ---- 纪律 ②: 把内存读取链路钉死在**文件**这个已知基准上 ----
+        f = file_bytes_at(ctx, info['rva'], n)
+        print()
+        if f is None:
+            print('  正向对照: 该 RVA **不在任何节的原始数据内**（可能是未初始化数据 / '
+                  '运行期才填的内存）—— 无法用文件做基准。')
+        elif f == mem:
+            print('  正向对照: 与产物**文件内同址字节完全一致**（%s） -> 读取链路可信。'
+                  % f.hex(' '))
+        else:
+            print('  正向对照: **与文件不一致**')
+            print('    文件: %s' % f.hex(' '))
+            print('    内存: %s' % mem.hex(' '))
+            print('  -> 两种可能，**不要混为一谈**: ① 该地址在运行期被写过（正常）；'
+                  '② 读取链路有偏（地址算错）。')
+            print('    判别: 换一个**只读且运行期不改**的符号（如 .rdata 里的字符串）重读。')
+        m = info['mask'] or ctx.mask_hit(info['rva'])
+        if m:
+            print('  掩码区: 0x%06X..0x%06X (len=%d group=%d)' % (m[0], m[0] + m[1], m[1], m[2]))
+        print()
+    finally:
+        t.close()
+        t.kill()
+    return 0
+
+
+def cmd_patch(ctx, operands, quiet, js, a):
+    """写目标进程内存 + **读回验证**（纪律 ⑦）。"""
+    _adwarn(quiet, a.no_adwarn, 'patch')
+    if not operands:
+        print('用法: prot_dbg patch <符号> [--bytes "31 C0 C3" | --nop N | --restore] '
+              '[--pid P] [--no-keep-alive]')
+        return 2
+    name = operands[0]
+    try:
+        info = _resolve(ctx, name)
+    except DbError as e:
+        return _fail(js, 'patch', e.kind, e.msg, e.hint, quiet)
+    # ---- 决定要写入的字节 -------------------------------------------------
+    src = 'default(PATCH=31 C0 C3)'
+    try:
+        if a.restore:
+            data = file_bytes_at(ctx, info['rva'], a.len or len(PATCH))
+            src = 'restore(产物文件原字节)'
+            if data is None:
+                return _fail(js, 'patch', 'symbol',
+                             '`--restore` 失败: RVA 0x%X **不在任何节的原始数据内**，'
+                             '拿不到"原字节"做基准' % info['rva'],
+                             '这类地址（未初始化数据）只能靠你自己记住原值。', quiet)
+        elif a.nop:
+            data = b'\x90' * a.nop
+            src = '--nop %d' % a.nop
+        elif a.bytes:
+            data = _parse_hex_bytes(a.bytes)
+            src = '--bytes "%s"' % a.bytes
+        else:
+            data = bytes(PATCH)
+    except ValueError as e:
+        return _fail(js, 'patch', 'address', '十六进制解析失败: %s' % e, None, quiet)
+    if not data:
+        return _fail(js, 'patch', 'address', '要写入的字节为空', None, quiet)
+    t = None
+    try:
+        t = _live_setup(ctx, a)
+        va = t.rt(info['va'])
+        try:
+            before = t.read(va, len(data))
+        except DbError as e:
+            return _fail(js, 'patch', e.kind,
+                         'patch **前**读取失败（所以"改了什么"无从谈起）: %s' % e.msg,
+                         e.hint, quiet)
+        ka = None if a.no_keep_alive else _keep_alive(t, ctx, quiet, js)
+        ok, back, detail = t.write(va, data)
+    except DbError as e:
+        if t:
+            t.close()
+            t.kill()
+        return _fail(js, 'patch', e.kind, e.msg, e.hint, quiet)
+    try:
+        rec = {'sym': name, 'rva': info['rva'], 'rt': va, 'pid': t.pid, 'src': src,
+               'want': list(data), 'before': list(before),
+               'back': None if back is None else list(back), 'ok': bool(ok),
+               'detail': detail, 'verify': 'readback'}
+        js['patch'] = rec
+        rc = 0 if ok else 1
+        if not quiet:
+            print('patch: %s  (%s)' % (name, src))
+            print('  RVA 0x%X' % info['rva'])
+            print(_rtline(t, info))
+            print('  pid %d  %d 字节' % (t.pid, len(data)))
+            print()
+            print('  写入前: %s' % before.hex(' '))
+            print('  期望:   %s' % data.hex(' '))
+            print('  读回:   %s' % (back.hex(' ') if back is not None else '<读回失败>'))
+            print()
+            # ---- 纪律 ⑦: 只有"读回一致"才算写进去 ----
+            if ok:
+                print('  ✓ **读回验证通过** —— 写入确实生效（这不是推测，是读回来的）。')
+            else:
+                print('  [X] **读回验证失败**: %s' % detail)
+                print('  -> 不要把它读成"守卫失效"（那正是纪律 ⑦ 挡的误判）。'
+                      '先查权限/页保护/地址换算。')
+            # ---- 完整性检测的**诚实边界** ----
+            m = info['mask'] or ctx.mask_hit(info['rva'])
+            in_text = info['text_off'] is not None
+            if m:
+                print('  掩码区: 0x%06X..0x%06X -> 改的是**密文**；.text 段 CRC 看不到，'
+                      '但 selfcrypt 自己的 per-region CRC 会先失败。'
+                      % (m[0], m[0] + m[1]))
+            elif in_text:
+                print('  掩码区: 不在区内（在 .text 内）-> .text 段 CRC **会**看到这次改动。')
+            elif not in_text:
+                print('  掩码区: 不在 .text 内 -> 段 CRC 的结论对它**不直接适用**（需另判该节）。')
+            print()
+            print('  ⚠ 判据提醒: 本命令能证明的是"**我写进去了**"（读回）。'
+                  '它**不能**证明"守卫有效/失效" ——')
+            print('    那要看**被观测符号自己的值**（用 `prot_dbg watch <计数器>` 看变化）。')
+            ec = t.exit_code()
+            if ec is not None:
+                print('  ⚠ 目标已退出，退出码 %d%s' % (ec, _ec_note(ec)))
+            print()
+        return rc
+    finally:
+        t.close()
+        t.kill()
+
+
+def _ec_note(ec):
+    """退出码注解 —— 第 4 步: 219 必须**当场**被标注为"不能当判据"。"""
+    if ec == EXIT_DEBUG_DETECTED:
+        return (' = PROT_EXIT_DEBUG_DETECTED。**这不是"守卫有效/失效"的判据** —— '
+                '本工具自己就是探测源（OpenProcess/ReadProcessMemory）。')
+    return ''
+
+
+def cmd_watch(ctx, operands, quiet, js, a):
+    """轮询被观测符号的字节变化 —— **判据是它自己的值，不是进程死没死**（纪律 ⑨）。"""
+    _adwarn(quiet, a.no_adwarn, 'watch')
+    if not operands:
+        print('用法: prot_dbg watch <符号> [--len N] [--interval S] [--seconds S] '
+              '[--patch <符号>]… [--pid P]')
+        return 2
+    name = operands[0]
+    n = a.len or 4
+    interval = a.interval or POLL_S
+    seconds = a.seconds or OBSERVE_S
+    try:
+        info = _resolve(ctx, name)
+    except DbError as e:
+        return _fail(js, 'watch', e.kind, e.msg, e.hint, quiet)
+    t = None
+    try:
+        t = _live_setup(ctx, a)
+        va = t.rt(info['va'])
+        if not a.no_keep_alive:
+            _keep_alive(t, ctx, quiet, js)
+        # ---- 可选的"先 patch 别的符号"：把多轮实验压成一条命令 ----
+        patched = []
+        for pn in (a.patch or []):
+            try:
+                pinfo = _resolve(ctx, pn)
+                pva = t.rt(pinfo['va'])
+                ok, back, detail = t.write(pva, bytes(PATCH))
+                patched.append({'sym': pn, 'ok': bool(ok), 'want': list(PATCH),
+                                'back': None if back is None else list(back), 'detail': detail})
+                if not quiet:
+                    print('  先 patch: %s @0x%X <- %s -> %s'
+                          % (pn, pva, bytes(PATCH).hex(' '),
+                             '读回一致' if ok else '**读回失败**: %s' % detail))
+            except DbError as e:
+                return _fail(js, 'watch', e.kind, '预置 patch `%s` 失败: %s' % (pn, e.msg),
+                             e.hint, quiet)
+        js['watch'] = {'sym': name, 'len': n, 'pid': t.pid, 'rt': va,
+                       'interval': interval, 'seconds': seconds, 'prepatched': patched}
+        if not quiet:
+            print('watch: %s  (len=%d, 每 %.2fs 采样, 观察 %.1fs)'
+                  % (name, n, interval, seconds))
+            print('  RVA 0x%X' % info['rva'])
+            print(_rtline(t, info))
+            print('  pid %d' % t.pid)
+            print()
+        first = t.read(va, n)
+        cur = first
+        changes = []
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            time.sleep(interval)
+            try:
+                now = t.read(va, n)
+            except DbError as e:
+                if not quiet:
+                    print('  [%6.2fs] 读取失败: %s' % (time.time() - t0, e.msg))
+                changes.append({'t': round(time.time() - t0, 3), 'error': e.kind})
+                break
+            if now != cur:
+                changes.append({'t': round(time.time() - t0, 3),
+                                'from': list(cur), 'to': list(now)})
+                if not quiet:
+                    print('  [%6.2fs] %s -> %s' % (time.time() - t0, cur.hex(' '), now.hex(' ')))
+                cur = now
+            if t.exit_code() is not None:
+                if not quiet:
+                    print('  [%6.2fs] 目标退出，退出码 %d%s'
+                          % (time.time() - t0, t.exit_code(), _ec_note(t.exit_code())))
+                break
+        js['watch'].update({'first': list(first), 'last': list(cur),
+                            'changes': changes, 'n_changes': len(changes)})
+        if not quiet:
+            print()
+            if not changes:
+                # ---- 纪律 ⑨: "无变化"是一个**结论**，不是"读不到" ----
+                print('  结果: **观察窗口内无变化**（%d 次采样，值恒为 %s）'
+                      % (int(seconds / interval) + 1, first.hex(' ')))
+                print('  -> 这是一个**有效结论**（读取链路已被正向对照验证过）：'
+                      '该符号在此期间没被改写。')
+            else:
+                print('  结果: **变化 %d 次**，首值 %s -> 末值 %s'
+                      % (len(changes), first.hex(' '), cur.hex(' ')))
+                print('  -> 判据看的是**这个符号自己的值**，与进程是否退出**无关**'
+                      '（退出码无判别力）。')
+            print()
+        return 0
+    except DbError as e:
+        return _fail(js, 'watch', e.kind, e.msg, e.hint, quiet)
+    finally:
+        if t:
+            t.close()
+            t.kill()
+
+
+# ===========================================================================
 # 自检
 # ===========================================================================
 def selftest(quiet):
@@ -673,11 +1477,154 @@ def selftest(quiet):
 
 
 # ===========================================================================
+# 活体自检（第 2 步）—— **会拉起并杀掉 demo.exe**，故不进只读门禁
+#
+# 与只读自检同一条纪律: **"只会通过的检查器没有价值"**。
+# 因此既有正向对照（L1 内存==文件、L2 读回一致），也有负向对照
+# （L3 不存在的符号必须失败、L4 写私有只读页必须失败、
+#   L5 采样链路不得恒报"有变化"）。
+# ===========================================================================
+class _FakeArgs(object):
+    """给活体命令凑一个 argparse 命名空间（自检不走命令行）。"""
+
+    def __init__(self, **kw):
+        self.pid = 0
+        self.len = 0
+        self.bytes = None
+        self.nop = 0
+        self.restore = False
+        self.interval = 0.0
+        self.seconds = 0.0
+        self.patch = None
+        self.no_keep_alive = True
+        self.no_adwarn = True
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+def selftest_live(quiet):
+    def case(name, ok, detail=None):
+        if not ok:
+            fails.append(name)
+        if not quiet:
+            print('  %s  %s' % ('ok  ' if ok else 'FAIL', name))
+            if detail and not ok:
+                print('        detail: %s' % detail)
+        return ok
+
+    fails = []
+    if not quiet:
+        print('=== prot_dbg 活体自检（第 2 步；**会拉起并杀掉 demo.exe**）===')
+    if sys.platform != 'win32':
+        print('[prot_dbg-selftest-live] SKIP: 仅 Windows（OpenProcess/ReadProcessMemory）'
+              '（**未验证 != 通过**）')
+        return 2
+
+    ctx = Ctx()
+    ready = (os.path.isfile(ctx.exe) and os.path.isfile(ctx.map_path) and not ctx.errors)
+    if not case('L0 前置: Windows + 产物/map 就绪且链路通过', ready,
+                '; '.join(ctx.errors)[:160]):
+        print('[prot_dbg-selftest-live] SKIP: 前置不满足（**未验证 != 通过**）')
+        return 2
+
+    # 选一个**落在 .text 内、且在产物的原始数据里**的符号（才能做文件对照）
+    pick = next((n for n, rv in sorted(ctx.syms.items())
+                 if ctx.text_off(rv) is not None
+                 and file_bytes_at(ctx, rv, 3) is not None), None)
+    if not case('L1a **前置**: 存在可做文件对照的 .text 符号', pick is not None):
+        print('[prot_dbg-selftest-live] SKIP: 无可对照符号（**未验证 != 通过**）')
+        return 2
+
+    t = None
+    try:
+        t = _live_setup(ctx, _FakeArgs())
+        info = ctx.sym(pick)
+        va = t.rt(info['va'])
+
+        # ---- L1 正向: 内存 == 文件（把读取链路钉在已知基准上）----
+        mem = t.read(va, 8)
+        f = file_bytes_at(ctx, info['rva'], 8)
+        case('L1 **正向**: read 的字节与产物**文件内同址字节一致**',
+             f is not None and mem == f,
+             'mem=%s file=%s' % (mem.hex(' '), None if f is None else f.hex(' ')))
+
+        # ---- L2 正向: patch 必须"读回一致"且确实变了 ----
+        before = t.read(va, 3)
+        ok2, back2, det2 = t.write(va, bytes(PATCH))
+        case('L2 **正向**: patch 写入后**读回验证**必须成功', ok2, det2)
+        case('L2b **正向**: patch 后字节必须**确实变了**', back2 == bytes(PATCH),
+             'back=%s' % (None if back2 is None else back2.hex(' ')))
+        # 还原本地（进程随即被杀，但这步保证"撤销"路径也被走到）
+        ok2c, back2c, _ = t.write(va, before)
+        case('L2c **正向**: 写回原字节也必须读回一致', ok2c and back2c == before,
+             'back=%s' % (None if back2c is None else back2c.hex(' ')))
+
+        # ---- L3 负向: 不存在的符号必须**失败**，不得读成 0 ----
+        jsn = {}
+        rc3 = cmd_read(ctx, ['__no_such_symbol_prot_dbg__'], True, jsn,
+                       _FakeArgs(pid=t.pid, len=4))
+        case('L3 **负向**: read 不存在的符号 -> **必须 rc=1**（不得读成 0）',
+             rc3 == 1, 'rc=%d' % rc3)
+
+        # ---- L4 负向对照: **私有**只读页必须拒绝写入 ----
+        #   2026-10-01 更正: 原先拿映像 `.text` 当对照，前提就是错的 ——
+        #   映像页是 SEC_IMAGE 写时复制，RX 页**可以**直接写成功（实测）。
+        #   私有页的保护值由我们设定，才是"写入链路有判别力"的干净对照。
+        ctrl = None
+        try:
+            ctrl = t.alloc_ro_page()
+            ok4, back4, det4 = t.write(ctrl, bytes(PATCH), protect=False)
+            case('L4 **负向对照**: 写**私有 PAGE_READONLY 页**（不改保护）-> 必须**明确失败**',
+                 not ok4, 'ok=%s detail=%s back=%s'
+                 % (ok4, det4, None if back4 is None else back4.hex(' ')))
+            # L4b **正向对照**: 同一个私有页，**改**页保护后必须写得进去 ——
+            #   证明 L4 的失败是"保护"造成的，而不是"地址无效/长度非法"造成的。
+            ok4b, back4b, det4b = t.write(ctrl, bytes(PATCH), protect=True)
+            case('L4b **正向对照**: 同一私有页**改**页保护后 -> 必须写成功'
+                 '（证明 L4 的失败确实是"保护"造成的，而非地址非法）',
+                 ok4b and back4b == bytes(PATCH),
+                 'ok=%s back=%s detail=%s'
+                 % (ok4b, None if back4b is None else back4b.hex(' '), det4b))
+            ro_va = ctrl
+        finally:
+            if ctrl:
+                t.free_page(ctrl)
+
+        # ---- L5 负向: 采样链路不得**恒报变化** ----
+        a1 = t.read(va, 4)
+        time.sleep(0.3)
+        a2 = t.read(va, 4)
+        case('L5 **负向**: 同址两次采样（期间无人写）-> 必须**相等**（采样链路不得恒报变化）',
+             a1 == a2, 'a1=%s a2=%s' % (a1.hex(' '), a2.hex(' ')))
+    except DbError as e:
+        case('L* 活体链路异常', False, '%s: %s' % (e.kind, e.msg))
+    finally:
+        if t:
+            t.close()
+            t.kill()
+
+    print()
+    print('=' * 66)
+    if fails:
+        msg = '[prot_dbg-selftest-live] FAIL: %s' % '; '.join(fails)
+        if quiet:
+            sys.stderr.write(msg + '\n')
+        else:
+            print(msg)
+        return 1
+    print('[prot_dbg-selftest-live] PASS: 3 前置/正向 + 3 负向均可自证 '
+          '（读回验证、页保护对照、采样链路均已自证）')
+    return 0
+
+
+# ===========================================================================
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog='prot_dbg.py',
-        description='ShardVase 调试控制台（第 1 步: 只读子命令）',
-        epilog='子命令: doctor | sym <名字…> | mask [名字…] | exit <码…>')
+        description='ShardVase 调试控制台（第 1 步只读 + 第 2 步活体调试）',
+        epilog='只读: doctor | sym <名字…> | mask [名字…] | exit <码…>\n'
+               '活体: read <符号> | patch <符号> | watch <符号>   '
+               '（需权限；会打开目标进程，可能触发反调试 -> 见第 4 步提示）')
     p.add_argument('args', nargs='*', help='子命令与操作数')
     p.add_argument('--exe', default=None, help='产物路径（默认 build/demo.exe）')
     p.add_argument('--map', dest='map_path', default=None,
@@ -685,7 +1632,26 @@ def main(argv=None):
     p.add_argument('--json', dest='json_out', default=None,
                    help='结构化结果落盘（JSON）')
     p.add_argument('--quiet', action='store_true')
-    p.add_argument('--selftest', action='store_true')
+    p.add_argument('--selftest', action='store_true',
+                   help='纯只读自检（可进门禁）')
+    p.add_argument('--selftest-live', dest='selftest_live', action='store_true',
+                   help='活体自检（**会拉起并杀掉 demo.exe**，不进只读门禁）')
+    # ---- 第 2 步: 活体调试参数 ----
+    p.add_argument('--pid', type=int, default=0,
+                   help='附着到已有进程（不给则自己拉起一个 demo）')
+    p.add_argument('--len', type=int, default=0, help='读/写/观测的字节数')
+    p.add_argument('--bytes', default=None, help='patch 写入的字节，如 "31 C0 C3"')
+    p.add_argument('--nop', type=int, default=0, help='patch 写入 N 个 0x90')
+    p.add_argument('--restore', action='store_true',
+                   help='patch 用产物文件里的原字节写回（撤销）')
+    p.add_argument('--interval', type=float, default=0.0, help='watch 采样间隔秒')
+    p.add_argument('--seconds', type=float, default=0.0, help='watch 观察窗口秒')
+    p.add_argument('--patch', action='append', default=None, metavar='符号',
+                   help='watch 前先 patch 该符号（可重复）')
+    p.add_argument('--no-keep-alive', dest='no_keep_alive', action='store_true',
+                   help='不预置看门狗策略（默认预置 CONTINUE，免得刚 patch 就被 EXIT）')
+    p.add_argument('--no-adwarn', dest='no_adwarn', action='store_true',
+                   help='关闭反调试干扰提示（第 4 步；--quiet 也会关掉它）')
     a = p.parse_args(argv)
 
     # ## `--quiet` 的真实语义（2026-09-30 补: 原先只写在参数表里、**没有任何效果**）
@@ -710,16 +1676,22 @@ def main(argv=None):
 def _dispatch(p, a):
     if a.selftest:
         return selftest(a.quiet)
+    if a.selftest_live:
+        return selftest_live(a.quiet)
 
     if not a.args:
         p.print_help()
         return 2
     cmd, operands = a.args[0], a.args[1:]
-    if cmd not in ('doctor', 'sym', 'mask', 'exit'):
-        print('未知子命令: %s（可选: doctor | sym | mask | exit）' % cmd)
+    READONLY = ('doctor', 'sym', 'mask', 'exit')
+    LIVE = ('read', 'patch', 'watch')
+    if cmd not in READONLY + LIVE:
+        print('未知子命令: %s（只读: %s；活体: %s）'
+              % (cmd, ' | '.join(READONLY), ' | '.join(LIVE)))
         return 2
 
-    js = {'tool': 'prot_dbg', 'cmd': cmd, 'exe': a.exe or DEFAULT_EXE}
+    js = {'tool': 'prot_dbg', 'cmd': cmd, 'exe': a.exe or DEFAULT_EXE,
+          'step': 1 if cmd in READONLY else 2}
     if cmd == 'exit':
         # exit 不依赖产物 -> 无产物也能用（例如读别人的退出码）
         rc = cmd_exit(None, operands, a.quiet, js)
@@ -732,8 +1704,14 @@ def _dispatch(p, a):
                 print('sym 需要一个或多个符号名')
                 return 2
             rc = cmd_sym(ctx, operands, a.quiet, js)
-        else:
+        elif cmd == 'mask':
             rc = cmd_mask(ctx, operands, a.quiet, js)
+        elif cmd == 'read':
+            rc = cmd_read(ctx, operands, a.quiet, js, a)
+        elif cmd == 'patch':
+            rc = cmd_patch(ctx, operands, a.quiet, js, a)
+        else:
+            rc = cmd_watch(ctx, operands, a.quiet, js, a)
 
     if a.json_out:
         try:
