@@ -33,9 +33,62 @@ import sys
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-# 被检查的对外材料
-TARGETS = sorted(glob.glob(os.path.join(REPO, 'publish', '*.md'))) + \
-          sorted(glob.glob(os.path.join(REPO, 'docs', 'marketing', '*.md')))
+# --- 扫描范围 (Q3, 2026-10-02: 消除片段式覆盖面) ---
+#
+# ## 旧范围为什么不够
+# 旧 TARGETS 只有 publish/ + docs/marketing/ (16 文件)。实测:
+#   * 库内门禁项数断言共 219 处, 其中 **119 处**是 `N 项` 形态 ——
+#     旧正则 `release_check N/N` 完全抓不到 (`docs/HANDOVER.md:194` 的
+#     "release_check 现为 12 项" 这类写法全部漏检)。
+#   * 死链规则在当前范围内**从未触发过**: 全库 25 条死链**全部在 docs/**,
+#     对外材料 0 条 —— 该规则此前只具装饰性。
+#
+# ## 为什么不能简单地扩到 docs/**
+# 实测: 在全部 docs/**/*.md 上跑同一引擎 -> 31 条"真缺陷"跨 15 文件,
+# 其中 12 个是**非**元数据文件。原因: 大量历史文档的标题**从不带日期**
+# (docs/OSS_TAIL_PLAN.md 的 `门禁 14/14`、docs/PLATFORM_EXPANSION_PLAN.md
+# 的 `门禁 14/14`、docs/BLUEPRINT.md:640 的 `release_check 11/11` …),
+# 它们记录的**是当时的真实值** —— 改成现值即**篡改历史**。
+#
+# ## 故: 范围 = 对外材料 + **显式自称现时**的内部文档
+# `> **最后核实**: <日期> · 方法: … · 提交 <sha>` 是文档对"我自称现时"
+# 的**显式自声明**。声明是承重的: 无此声明不得纳入检查 (新文档默认不被
+# 检查, 是有意为之 —— 想被检查就先声明)。实测 24 文件 / 88 处数字断言,
+# 残留 2 条真缺陷, 零噪声。
+VERIFIED_META = re.compile(r'^>\s*\*\*最后核实\*\*', re.M)
+
+
+def header_declares_current(text):
+    """头部块(首个 `## ` 之前)是否含 `最后核实` 元数据。
+
+    限定头部块是必要的: 正文里**提到**该元数据的行(如勘查表
+    `| docs/HANDOVER.md:237 | ... |`)不构成自声明。
+    """
+    cut = text.find('\n## ')
+    head = text if cut < 0 else text[:cut]
+    return bool(VERIFIED_META.search(head))
+
+
+def build_targets():
+    ts = sorted(glob.glob(os.path.join(REPO, 'publish', '*.md')))
+    ts += sorted(glob.glob(os.path.join(REPO, 'docs', 'marketing', '*.md')))
+    for f in sorted(glob.glob(os.path.join(REPO, 'docs', '**', '*.md'),
+                             recursive=True)):
+        try:
+            t = open(f, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        if header_declares_current(t):
+            ts.append(f)
+    return sorted(set(ts))
+
+
+# 对外材料 —— 恒为"现时" (它们随同步发布, 读者就是当下的人)
+PUBLIC_MATERIAL = tuple(
+    os.path.join(REPO, d).replace('\\', '/')
+    for d in (os.path.join('publish'), os.path.join('docs', 'marketing')))
+
+TARGETS = build_targets()
 
 # 模糊/误导性表述 (必须不出现)
 #
@@ -73,6 +126,197 @@ def _is_quoted_or_negated(text, start, end):
 #   golden 6/6       = c2vasm golden 样例
 #   流程测试 11/11   = vmcalc flow test
 EXEMPT_NN = re.compile(r'golden|流程测试|样例')
+
+# --- 数字漂移判据 (Q3) ---
+#
+# ## 形态: 从 `N/N` 放宽到 `N/N` **和** `N 项`
+# 实测全库门禁项数断言 219 处, 其中 `N 项` 形态 **119 处** —— 旧正则
+# `release_check[^\n]*?(\d+)/(\d+)` 对它们**完全不可见**
+# (如 `docs/HANDOVER.md:194` 的 "release_check 现为 12 项")。
+#
+# ## 比的是**分母**, 不是分子
+# 实测范围内 34 处 `N/M` 里 16 处 N != M, 全部是"通过数/总数"对:
+#   docs/PLATFORM_ISOLATION_PLAN.md:532  「门禁 21/22（唯一失败=未提交）」
+#   docs/HANDOVER.md:473                 「一次门禁报 1/29 未通过」
+#   docs/DEBUG_CONSOLE_PLAN.md:224       「已交付并入库门禁（30 / 32)」
+# 语义上门禁项数**只可能是分母**。旧实现比较 `m.group(2)` —— 方向本就对。
+#
+# ## 容差 {33, 30}
+# 总数 33 / 默认调用 30 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
+# 沿用轮次规则的先例: 允许"全量"与"默认"两种口径。
+GATE_TOTAL = 33
+GATE_DEFAULT = 30
+GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
+
+RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
+# `门禁 **33** 项` 的 `**` 会打断 `(\d+)\s*项`, 故必须允许结束的强调标记
+RE_GATE_N  = re.compile(
+    r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*项')
+
+# 沿革记录 (`11/15/22/26/31 → **33**`) —— 记的是"曾经是这些值", 不是现值
+RE_DELTA = re.compile(r'(?:→|->|⇒)')
+DELTA_WORDS = re.compile(r'现为|曾|旧值?|已过期')
+
+# 单条"第 N 项" —— 是序号不是总数
+RE_ORDINAL = re.compile(r'第\s*\d+\s*项')
+
+# 转述他文: **必须带行号**才是转述别处
+#   `docs/HANDOVER.md:237 门禁 32 项`  <- 转述 docs 里某个位置
+# 反例 (初版写成"任何路径"过宽): `方法: tools/docclaim_check.py + 门禁 26 项`
+# 因提到一个 `.py` 就被豁免了**本文档自己**过期的元数据 —— 收窄后正确暴露。
+RE_XREF = re.compile(r'[\w\-/.]+\.(?:md|py|ps1|c|h|yml|json|txt):\d+')
+
+# 计划/验收语境: 计划表(以及其"验收/交付"列)里的门禁项数是**当时的验收
+# 标准**, 不是对现值的声明。
+#   docs/PLATFORM_ISOLATION_PLAN.md:328  `| A-c | ... | Windows 门禁 22 项全通过 |`
+#   docs/CONTINUATION_PLAN.md:397        `**Q5 验收**: docs/ATTACK_DRILL9.md 存在...`
+# 反例(必须仍然报错): docs/HANDOVER.md:355 位于 `| 优先级 | 项 | 状态 |` 表,
+# 表头无验收/交付列 -> 仍被正确判为过期。故判据必须看**表头**, 不能只看"是表格行"。
+RE_PLAN_COL = re.compile(r'验收|交付|目标|标准')
+
+# 日期: 2019-2099 之间的 YYYY-MM-DD
+RE_DATE = re.compile(r'\b20[1-9]\d-\d{2}-\d{2}\b')
+FENCE = '```'
+RE_HEADING = re.compile(r'^(#{1,6})\s+(.*)$')
+
+
+class DocView(object):
+    """按行提供语境判断 (标题栈 / 代码块 / 豁免)。
+
+    `exempt(line_no, text, m)` 返回豁免类别名, 或 None (应判为现时断言)。
+
+    ## 标题栈为什么必须存在
+    初版只看"最近一个上级标题是否带日期" -> `## 2.5 当前验收状态（2026-08-30
+    增量）` 下的无日期 `### 构建与回归` 会把带日期的父语境**清空**, 于是
+    `docs/HANDOVER.md:87` 的 `11/11` 被误判为现时。改为**栈**: 任一祖先带
+    日期即为历史语境。
+    """
+
+    def __init__(self, text, path):
+        self.text = text
+        self.lines = text.splitlines()
+        self.path = path
+        self.stack = []          # [(level, title, has_date)]
+        self.in_fence = False
+        self.hist = []           # 每行是否处于历史(带日期)语境
+        self.in_code = []        # 每行是否在代码块内
+        # 命中偏移 -> 行号 的查找表
+        self.starts = [0]
+        for l in self.lines[:-1]:
+            self.starts.append(self.starts[-1] + len(l) + 1)
+        self._walk()
+
+    def line_of(self, pos):
+        """偏移 -> 0-based 行号 (二分)。"""
+        lo, hi = 0, len(self.starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    def _walk(self):
+        stack, inside = [], False
+        for l in self.lines:
+            if l.lstrip().startswith(FENCE):
+                self.hist.append(any(h for _, _, h in stack))
+                self.in_code.append(True)
+                inside = not inside
+                continue
+            # ⚠️ 代码块内的 `#` 是注释, 不是标题。
+            #    漏掉这个 guard -> 文档里的 shell 注释被当成 H1, 把带日期的
+            #    父标题**挤出栈** -> 历史行被误判成现时。
+            if not inside:
+                m = RE_HEADING.match(l)
+                if m:
+                    lvl = len(m.group(1))
+                    while stack and stack[-1][0] >= lvl:
+                        stack.pop()
+                    stack.append((lvl, m.group(2).strip(),
+                                  bool(RE_DATE.search(l))))
+                    self.hist.append(any(h for _, _, h in stack))
+                    self.in_code.append(False)
+                    continue
+            self.hist.append(any(h for _, _, h in stack))
+            self.in_code.append(inside)
+
+    def plan_ctx(self, i, m):
+        """命中是否处于"计划/验收"语境 —— 记的是验收标准, 不是现值。
+
+        两种形态:
+          * 行内: 命中点**之前**出现 `验收/交付/目标/标准`
+            (docs/CONTINUATION_PLAN.md:397 `**Q5 验收**: docs/ATTACK_DRILL9.md ...`)
+          * 表格: 命中所在**列**的表头是 `验收/交付/目标/标准`
+            (docs/PLATFORM_ISOLATION_PLAN.md:328 `| A-c | ... | Windows 门禁 22 项全通过 |`)
+
+        ⚠️ 必须按**列**判断, 不能"是表格行就豁免": docs/HANDOVER.md:355 所在
+        表头是 `| 优先级 | 项 | 状态 |` (无验收列) -> 仍被正确判为过期。
+        """
+        line = self.lines[i]
+        off = m.start() - self.starts[i]
+        if RE_PLAN_COL.search(line[:off]):
+            return True
+        # 向上找到本表格的首行
+        j = i
+        while j >= 0 and '|' in self.lines[j]:
+            j -= 1
+        head = j + 1
+        if head + 1 >= len(self.lines) or head >= i:
+            return False
+        # 表头下一行必须是分隔行, 否则不是表格
+        if not re.match(r'^\s*\|[\s:|\-]+\|\s*$', self.lines[head + 1]):
+            return False
+        col = line.count('|', 0, off)
+        cells = self.lines[head].split('|')
+        return 0 <= col < len(cells) and bool(RE_PLAN_COL.search(cells[col]))
+
+    def exempt(self, i, m, kind):
+        """i: 0-based 行号; m: 命中 match; kind: 'nn'|'nge'|'link'|'vague'."""
+        line = self.lines[i]
+        if self.in_code[i]:
+            return '代码块'
+        if self.hist[i]:
+            return '日期语境'
+        if RE_DATE.search(line):
+            # 行自带日期 => "截至 DATE 已核实" 的历史 attestation
+            return '自带日期'
+        if kind in ('nn', 'nge'):
+            # 计划/验收表里的项数 = 验收标准
+            if self.plan_ctx(i, m):
+                return '计划验收'
+            # 沿革记录: 记的是历史值序列
+            if RE_DELTA.search(line) or DELTA_WORDS.search(line):
+                return '沿革'
+            # 序号: 窗口必须覆盖 "第 N 项" 整段
+            # ⚠️ 右界曾是固定 m.start()+8 -> `门禁默认第 20 项` 的 `项`
+            #    落在窗口外, 该条被漏判。改为 m.end()+2。
+            win = line[max(0, m.start() - 6):m.end() + 2]
+            if RE_ORDINAL.search(win):
+                return '序号'
+            # 转述他文(必须带行号)
+            if RE_XREF.search(line):
+                return '转述他文'
+        return None
+
+
+# --- 规划中的交付物 (死链规则的唯一合法例外) ---
+#
+# 实测全库 25 条死链**全部在 docs/**, publish/ 与 docs/marketing/ **0 条** ——
+# 即该规则在旧范围内从未真正生效过。普查后这 25 条**没有一条是真缺陷**:
+#   * 前向引用: docs/ATTACK_DRILL9.md 是 Q5 的**待交付物**;
+#     tools/cost_model.py / tools/pack_release.ps1 / tools/gate_lock.ps1 等
+#     都是计划中尚未实施的工具。
+#   * 显式声明: docs/CONTINUATION_PLAN.md:368 `docs/ATTACK_DRILL9.md`
+#     —— **该文件当前不存在**。 规则却把这句话本身判成了死链。
+#   * 示意/占位: docs/项目文件分类-2026-08-30.md 的 `docs/XXX.md`、`docs/plan/`。
+#
+# 故判据必须区分"引用一个**已存在**文件"(要报) 与"规划一个**尚未创建**的
+# 交付物"(不报)。区分依据 = 该行是否有"计划/待交付/不存在/输出/未来"语境。
+PLANNED = re.compile(
+    r'当前不存在|尚未创建|待交付|待创建|计划中|规划|将新增|未来|输出(?:\s*)[:：]'
+    r'|不存在|未实施|待实现|TODO|待办|交付物|示意|占位|例如|形如')
 
 # --- 部署布局 (用于相对链接解析) ---
 #
@@ -440,11 +684,208 @@ def check_issue_links():
     return errors, checked
 
 
+def check_text(rel, t, gate, rounds, exc, exists=None):
+    """对单个文档文本跑规则 1–4, 返回 (errors, warnings, checked)。
+
+    抽成函数是为了让 `--selftest` 能在**内存里的改动副本**上跑同一套判据 ——
+    负向测试必须走与生产**完全同一条**代码路径, 否则测的是另一个实现。
+
+    `exists(path)` 可注入, 供自检伪造文件存在性 (默认查真实仓库)。
+    """
+    if exists is None:
+        exists = lambda p: os.path.exists(os.path.join(REPO, p))  # noqa: E731
+    errors, warnings, checked = [], [], 0
+    view = DocView(t, rel)
+
+    def _hit(m, kind):
+        """返回 (0-based 行号, 豁免类别)。"""
+        i = view.line_of(m.start())
+        return i, view.exempt(i, m, kind)
+
+    # --- 1. 模糊表述 (排除引用/否定语境) ---
+    for pat, why in VAGUE_PATTERNS:
+        for m in re.finditer(pat, t):
+            if _is_quoted_or_negated(t, m.start(), m.end()):
+                continue
+            i, why_ex = _hit(m, 'vague')
+            if why_ex:
+                exc[why_ex] = exc.get(why_ex, 0) + 1
+                continue
+            errors.append('%s:%d 出现%s' % (rel, i + 1, why))
+
+    # --- 2. 门禁项数: `N/N` 与 `N 项` 两种形态, 比分母 ---
+    for m in re.finditer(RE_GATE_NN, t):
+        checked += 1
+        claim = int(m.group(2))
+        if claim in GATE_OK:
+            continue
+        i, why_ex = _hit(m, 'nn')
+        if why_ex:
+            exc[why_ex] = exc.get(why_ex, 0) + 1
+            continue
+        if gate is not None:
+            errors.append('%s:%d 门禁项数声称 %d, 实际 %d'
+                          % (rel, i + 1, claim, gate))
+    for m in re.finditer(RE_GATE_N, t):
+        checked += 1
+        claim = int(m.group(1))
+        if claim in GATE_OK:
+            continue
+        # `第 N 项` 是序号, 不是总数 —— 直接放行, 不进豁免统计
+        win = t[max(0, m.start() - 6):m.end() + 2]
+        if RE_ORDINAL.search(win):
+            continue
+        i, why_ex = _hit(m, 'nge')
+        if why_ex:
+            exc[why_ex] = exc.get(why_ex, 0) + 1
+            continue
+        if gate is not None:
+            errors.append('%s:%d 门禁项数声称 %d 项, 实际 %d'
+                          % (rel, i + 1, claim, gate))
+
+    # --- 3. 轮次口径 ---
+    for m in re.finditer(r'(\d+)\s*\+?\s*轮(?:正式|完整|攻防|演练)?', t):
+        claim = int(m.group(1))
+        i = view.line_of(m.start())
+        # 只检查"攻防演练轮次"这类主口径 (排除"第一轮/第二轮"表格行)
+        if re.search(r'第[一二三四五六七八九十\d]+轮',
+                     t[max(0, m.start()-6):m.start()+8]):
+            continue
+        why_ex = view.exempt(i, m, 'round')
+        if why_ex:
+            exc[why_ex] = exc.get(why_ex, 0) + 1
+            continue
+        checked += 1
+        if claim not in (rounds, rounds - 1) and '矩阵' in t[m.start():m.start()+30]:
+            warnings.append('%s:%d 轮次声称 %d, 实际 %d (请确认口径)'
+                            % (rel, i + 1, claim, rounds))
+
+    # --- 4. 引用的仓库内路径 (死链是错误, 不是警告) ---
+    for m in re.finditer(r'`((?:docs|tools|tests|src|include|prot_sdk|publish|drills|compositions)/[\w\-./]+)`', t):
+        checked += 1
+        if exists(m.group(1)):
+            continue
+        i = view.line_of(m.start())
+        # 规划中的交付物 / 显式声明不存在 —— 不是死链
+        if PLANNED.search(view.lines[i]):
+            exc['规划交付物'] = exc.get('规划交付物', 0) + 1
+            continue
+        # 验收条件里的路径 = 尚待交付的目标 (docs/CONTINUATION_PLAN.md:397)
+        if view.plan_ctx(i, m):
+            exc['计划验收'] = exc.get('计划验收', 0) + 1
+            continue
+        errors.append('%s:%d 引用路径不存在: %s'
+                      % (rel, i + 1, m.group(1)))
+    return errors, warnings, checked
+
+
+def selftest():
+    """负向自检: 判据**必须在真缺陷出现时报错**, 且**不得**把合规写法误报。
+
+    为什么必须有: 本工具的判据含 7 类豁免, 豁免越多越容易"宽到什么都不报"。
+    只验"仓库当前 PASS"是不够的 —— 一个恒返回空的检查器也能 PASS。
+    故每个规则都配一条**注入缺陷 -> 必须 FAIL** 的用例。
+    """
+    cases = []          # (名称, 文本, 期望错误数)
+
+    def case(name, text, n):
+        cases.append((name, text, n))
+
+    # --- 数字漂移: `N/N` 与 `N 项` 两种形态都必须抓到 ---
+    case('N/N 漂移', '门禁 32/32 全通过\n', 1)
+    case('N 项漂移', 'release_check 32 项全通过\n', 1)
+    case('N 项 + 强调漂移', '门禁 **32** 项\n', 1)
+    case('正确值不报', '门禁 33/33 全通过\nrelease_check 30 项\n', 0)
+    # 比分母, 不是分子: `门禁 21/33` 是"通过 21 / 共 33", 分母对即放行
+    case('分母正确/分子是失败数 -> 放行', '门禁 21/33（唯一失败=未提交）\n', 0)
+    case('分母错误 -> 必报', '门禁 33/22\n', 1)
+    # 豁免必须仍然生效 (否则"多报"也是判据失效)
+    case('代码块内 -> 豁免', '```\n门禁 11/11\n```\n', 0)
+    case('带日期的历史标题 -> 豁免', '## 2.5 验收（2026-08-30 增量）\n门禁 11/11\n', 0)
+    case('沿革 -> 豁免', '门禁项数 11/15/22/26/31 → **33**\n', 0)
+    case('序号 -> 豁免', '门禁默认第 20 项\n', 0)
+    case('自带日期 -> 豁免', '门禁 **26** 项 · 2026-09-29\n', 0)
+    case('转述他文(带行号) -> 豁免', 'docs/HANDOVER.md:237 门禁 32 项\n', 0)
+    case('计划验收列 -> 豁免', '| 子阶段 | 内容 | 验收 |\n|---|---|---|\n| A-c | x | 门禁 22 项全通过 |\n', 0)
+    case('无验收列的表 -> 必须报', '| 优先级 | 项 | 状态 |\n|---|---|---|\n| 剩余待办 | 门禁 11/11 绿 | 待 |\n', 1)
+
+    # --- 模糊表述 ---
+    case('模糊表述', '累计 0 破防点\n', 1)
+    case('否定语境 -> 豁免', '> **我们不写"0 破防"** —— 那是模糊表述。\n', 0)
+    case('合规写法(显式破防 N 项) -> 不报', '累计 BLOCKED 54 / 显式破防 5 项\n', 0)
+
+    # --- 死链 ---
+    case('死链', '见 `docs/NO_SUCH_FILE_XYZ.md`\n', 1)
+    case('规划交付物 -> 豁免', '输出：`tools/no_such_tool_xyz.py`\n', 0)
+    case('验收条件里的路径 -> 豁免', '**Q5 验收**: `docs/no_such_drill_xyz.md` 存在\n', 0)
+
+    # --- 判据的判据: 把真实仓库里**已声明现值**的正确值改坏, 必须报错 ---
+    # 内存副本, 不落盘: 自检不得改动工作区。
+    rel = 'publish/01-关于ShardVase.md'
+    fails = []
+    try:
+        real = open(os.path.join(REPO, rel), encoding='utf-8').read()
+    except OSError:
+        real = None
+
+    for name, text, want in cases:
+        exc = {}
+        e, w, c = check_text('<selftest>', text, GATE_TOTAL, 8, exc,
+                             exists=lambda p: False)
+        got = len(e)
+        if got != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, got, e[:1]))
+
+    # 真实文档用例必须走**真实的**存在性判断 (否则它自身的链接全成死链),
+    # 且只改一处数字, 预期错误数恰好为 1。
+    real_case = None
+    if real is None:
+        fails.append('%s 不可读 —— 负向用例失去锚点' % rel)
+    else:
+        for good, bad in (('33/33', '32/32'), ('33 项', '32 项')):
+            if good in real:
+                real_case = ('真实文档 %s: %s -> %s 必须报' % (rel, good, bad),
+                             real.replace(good, bad))
+                break
+        else:
+            fails.append('%s 里既无 `33/33` 也无 `33 项` —— '
+                         '负向用例失去锚点, 请改用其他已声明现值的文档' % rel)
+    if real_case:
+        cases.append(real_case + (1,))
+        exc = {}
+        e, _, _ = check_text(rel, real_case[1], GATE_TOTAL, 8, exc)
+        if len(e) != 1:
+            fails.append('%s: 期望 1 条错误, 实际 %d 条 (%s)'
+                         % (real_case[0], len(e), e[:2]))
+
+    print('=== doccheck 自检 ===')
+    bad = set(f.split(':')[0] for f in fails)
+    for name, text, want in cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
+    if fails:
+        for f in fails:
+            print('  [X] %s' % f)
+        print('[doccheck-selftest] FAIL (%d/%d)' % (len(fails), len(cases)))
+        return 1
+    # 数一数用例构成: 期望 != 0 的是负向注入, 期望 == 0 的是合规豁免。
+    neg = len([c for c in cases if c[2]])
+    print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
+          % (len(cases), neg, len(cases) - neg))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='doccheck.py',
                                  description='对外材料数字漂移检查')
     ap.add_argument('--list', action='store_true', help='列出被检查的数字')
+    ap.add_argument('--selftest', action='store_true',
+                    help='负向自检: 注入缺陷必须报错, 合规写法不得误报')
     args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
 
     errors = []
     warnings = []
@@ -479,49 +920,17 @@ def main(argv=None):
               '其中 %d 项由 -With* 显式开关控制（默认不跑），默认调用跑 %d 项'
               % (_n, _opt, _n - _opt))
 
+    exc = {}
     for f in TARGETS:
-        rel = os.path.relpath(f, REPO)
+        rel = os.path.relpath(f, REPO).replace('\\', '/')
         try:
             t = open(f, encoding='utf-8').read()
         except OSError:
             continue
-
-        # --- 1. 模糊表述 (排除引用/否定语境) ---
-        for pat, why in VAGUE_PATTERNS:
-            for m in re.finditer(pat, t):
-                if _is_quoted_or_negated(t, m.start(), m.end()):
-                    continue
-                ln = t[:m.start()].count('\n') + 1
-                errors.append('%s:%d 出现%s' % (rel, ln, why))
-
-        # --- 2. release_check N/N ---
-        for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
-            checked += 1
-            claim = int(m.group(2))
-            if gate is not None and claim != gate:
-                ln = t[:m.start()].count('\n') + 1
-                errors.append('%s:%d release_check 声称 %d, 实际 %d'
-                              % (rel, ln, claim, gate))
-
-        # --- 3. 轮次口径 ---
-        for m in re.finditer(r'(\d+)\s*\+?\s*轮(?:正式|完整|攻防|演练)?', t):
-            claim = int(m.group(1))
-            # 只检查"攻防演练轮次"这类主口径 (排除"第一轮/第二轮"表格行)
-            if re.search(r'第[一二三四五六七八九十\d]+轮', t[max(0, m.start()-6):m.start()+8]):
-                continue
-            checked += 1
-            if claim not in (rounds, rounds - 1) and '矩阵' in t[m.start():m.start()+30]:
-                ln = t[:m.start()].count('\n') + 1
-                warnings.append('%s:%d 轮次声称 %d, 实际 %d (请确认口径)'
-                                % (rel, ln, claim, rounds))
-
-        # --- 4. 引用的仓库内路径 (死链是错误, 不是警告) ---
-        for m in re.finditer(r'`((?:docs|tools|tests|src|include|prot_sdk|publish|drills|compositions)/[\w\-./]+)`', t):
-            checked += 1
-            if not os.path.exists(os.path.join(REPO, m.group(1))):
-                ln = t[:m.start()].count('\n') + 1
-                errors.append('%s:%d 引用路径不存在: %s'
-                              % (rel, ln, m.group(1)))
+        e, w, c = check_text(rel, t, gate, rounds, exc)
+        errors.extend(e)
+        warnings.extend(w)
+        checked += c
 
     # --- 5. 部署后的相对链接 (按 GitHub 渲染规则) ---
     # 这类死链只在部署后才暴露 —— 本地渲染正常, 上线后越界。
@@ -600,6 +1009,13 @@ def main(argv=None):
         print('  [!] %s' % w)
     print()
     print('  检查数字 %d 处, 错误 %d, 警告 %d' % (checked, len(errors), len(warnings)))
+    if exc:
+        # 豁免**必须显式打印** —— 静默豁免 = 无人复查的后门。
+        # 豁免突然变多说明判据正在被削弱, 应能在日志里立刻看到。
+        print('  豁免 %d 处: %s'
+              % (sum(exc.values()),
+                 ' / '.join('%s %d' % (k, exc[k])
+                            for k in sorted(exc, key=lambda x: -exc[x]))))
     print()
 
 

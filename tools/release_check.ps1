@@ -149,7 +149,21 @@ if (-not $SkipTest) {
     #   (门禁项数 / 轮次口径 / 模糊表述 / 死链)。2026-09-20 核对时发现
     #   "0 破防点"、"release_check 11/11"、"8+ 轮 vs 6 轮" 三类漂移,
     #   本检查防止其复发。
-    Check '对外材料 (doccheck)' { & $py tools\doccheck.py; $LASTEXITCODE -eq 0 }
+    #
+    # ⚠️ 为什么先跑 `--selftest`(2026-10-02 补): 本判据含 **7 类豁免**
+    #    (代码块/日期语境/自带日期/沿革/序号/转述他文/计划验收)。
+    #    豁免越多越容易"宽到什么都不报" —— 只验"仓库当前 PASS"是无法
+    #    发现判据失效的, **一个恒返回空的检查器同样 PASS**。
+    #    `--selftest` 逐条注入缺陷并要求报错(8 项负向), 且要求合规写法
+    #    不被误报(13 项), 其中一项直接改真实文档 `publish/01-关于ShardVase.md`
+    #    的 `33/33` -> 必须 FAIL。
+    #    失败时才打印自检明细, 成功时静默 —— 门禁日志不被 21 行 [ok] 淹没。
+    Check '对外材料 (doccheck)' {
+        $st = & $py tools\doccheck.py --selftest
+        if ($LASTEXITCODE -ne 0) { $st | Write-Host; return $false }
+        & $py tools\doccheck.py
+        $LASTEXITCODE -eq 0
+    }
 }
 
 # 签名: 可复现 (repro) 要求 SkipSign 重建, 与 Authenticode 互斥 (签名改 SHA,
