@@ -115,3 +115,18 @@ license_message: struct.pack('<I', expires & 0xFFFFFFFF)
 ③ 判据: 若加尾随后仍 rc=0 -> 确认"容忍"（PARTIAL 成立）；
         若 rc!=0 -> 说明 b64 校验已收紧 -> **改 BLOCKED**
 ```
+
+## DRILL9（2026-10-02）—— **判定点 patch + CRC 重算 vs 快照守卫**
+
+| 项 | 结论 |
+|----|------|
+| `DECISION_REDUNDANCY §11.5:516`"EXIT 策略下的端到端演示" | **已完成** —— 重算 `.text` CRC 并写回（`2087216295 -> 3467459129`）后，patch 守卫 `prot_antidebug_detected` 仍被 **`0xBAD`(2989)** 终止 |
+| 守卫是否只是段 CRC 的副本 | **不是** —— 对照用例 D（patch 非守卫 + 重算 -> `exit 1`）反证重算**确实生效**，故 C 的 `0xBAD` 只能由 `check_guards` 解释；CONTINUE 下 `g_guard_hits=4` 独立佐证 |
+| ⚠️ **附带发现（真漏洞）** | **守卫检查器自身 `prot_integrity_check_guards` 在 `.protxec` 节（rva `0x14d0`），不在段 CRC 覆盖内**（CRC 只覆盖 `.text`/`.rdata`/`.pdata`）-> 直接 patch 其函数头即可恒返回 `PROT_OK`，**无需任何 CRC 重算**；再 patch 守卫 -> **盾失效**（用例 H）|
+| 该缺口的记录状态 | `docs/OPEN_SOURCE_COMPENSATION.md:87` 已列 `.protxec` 为"未覆盖"，但**从未评估"守卫自身不在覆盖内"这一后果** —— 本轮首次实测 |
+| 诚实边界 | ① 测试工具自身用 `OpenProcess`/`WriteProcessMemory`（会被产品反调试看到）② 仅 `E` 用例改策略，**A/B/C/D/F/G/H 全部保持出厂 EXIT** ③ `demo.exe` 为 `NotSigned`，不覆盖 Authenticode ④ 仅 Windows ⑤ 守卫快照对**内存当前字节**建立 -> 离线文件级 patch 无效 |
+
+详见 `docs/ATTACK_DRILL9.md`。
+
+> **与 DRILL8 §2 同一模式**：缺口/能力落地了，但它的**安全含义没被推导**。
+> DRILL8 是"能力落地、记录未回填"；DRILL9 是"缺口已记录、后果未评估"。

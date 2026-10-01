@@ -7,7 +7,7 @@
 > （符号表补丁实证）、`docs/DEFENSE_DEEPEN_PLAN.md`（S1-S5）、
 > `publish/06-诚实边界.md`（对外口径）。
 
-> **最后核实**: 2026-09-29 · 方法: `docs/ATTACK_DRILL8.md`（两次构建 map 对比）· 提交 `ca14477`
+> **最后核实**: 2026-10-02 · 方法: `docs/ATTACK_DRILL9.md`（EXIT 策略下 patch + CRC 重算实测）· 提交 `ca14477`
 
 ---
 
@@ -101,6 +101,7 @@
 | 7 | 回拨系统时钟 | 在线时间锚点 | 低（未做） | DRILL6 `L4_clock_rollback` BREACHED |
 | 8 | 暂停 watchdog 线程 | 多线程交叉校验 | 中 | DRILL3 `C3` BLOCKED |
 | 9 | 符号表定位（MAP/PDB） | RELEASE 无符号 | 中 | DRILL7 §3.3 边界 |
+| 10 | **patch 判定点 + 重算段 CRC** | **判定点序言快照（`check_guards`）** | **高（第二道独立成立）** | ✅ **DRILL9（2026-10-02）**: 出厂 EXIT 策略下重算 `.text` CRC 并写回（`2087216295 -> 3467459129`）-> 仍被 **`0xBAD`** 终止；对照用例 D 反证重算确实生效；CONTINUE 下 `g_guard_hits=4` 佐证。⚠️ **但守卫检查器自身在 `.protxec`（不在 CRC 覆盖内）-> 可先 patch 它再 patch 守卫（用例 H，见 DRILL9 §5）** |
 
 > **杠杆的真相**：真正在起作用的不是「轮换密钥」这一条，而是
 > **「让攻击成果有保质期」这一族**——周期重算、会话值、运行期 rekey、跨构建变异。
