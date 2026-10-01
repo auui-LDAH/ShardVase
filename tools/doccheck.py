@@ -184,6 +184,143 @@ def actual_gate_count():
     return len(re.findall(r"(?m)^\s*Check\s+'", t))
 
 
+def _ps_scan(text):
+    """逐行返回 `(行号, 本行净 '{' 数, 本行净 '}' 数, 行末深度, 去注释去字符串后的文本, 原始行)`。
+
+    ## 为什么不用真解析器
+    `tools/release_check.ps1` 没有 here-string（`@'` / `@"`）也没有块注释（`<#`），
+    所以"去字符串 + 去行注释 + 数括号"足够精确。**这个前提是被断言的**：
+    `check_gate_structure()` 若在文件里搜到这三者会**直接 FAIL**，而不是拿一个
+    不可靠的扫描结果去静默放行（"未验证 != 通过"）。
+
+    ## ⚠️ 为什么要同时返回**原始行**（2026-10-01，本函数第一版的真实缺陷）
+    第一版只用"去字符串后的文本"做匹配，于是 `Check 'X' {` 变成 `Check {`
+    —— 而判据正则写的是 `^\\s*Check\\s+'`，**永远匹配不上，一个 `Check` 都数不到**，
+    守卫恒返回"无错误"。用**负向测试**（人为回退修复、确认守卫会 FAIL）才暴露:
+    当时注入 bug 后守卫仍打印"32 项均为顶层语句"。教训: **一个从未被负向测试
+    证明过会 FAIL 的守卫，等于没有守卫** —— 它会安静地给出虚假的安全感。
+    => 结构匹配一律对**原始行**做；括号计数才用去字符串后的文本。
+    """
+    rows = []
+    depth = 0
+    for ln, raw in enumerate(text.splitlines(), 1):
+        cleaned = []
+        j = 0
+        quote = None
+        while j < len(raw):
+            ch = raw[j]
+            if quote == "'":
+                if ch == "'":
+                    if j + 1 < len(raw) and raw[j + 1] == "'":
+                        j += 2
+                        continue
+                    quote = None
+                j += 1
+                continue
+            if quote == '"':
+                if ch == '`':
+                    j += 2
+                    continue
+                if ch == '"':
+                    if j + 1 < len(raw) and raw[j + 1] == '"':
+                        j += 2
+                        continue
+                    quote = None
+                j += 1
+                continue
+            if ch == '#':
+                break
+            if ch == "'":
+                quote = "'"
+                j += 1
+                continue
+            if ch == '"':
+                quote = '"'
+                j += 1
+                continue
+            cleaned.append(ch)
+            j += 1
+        c = ''.join(cleaned)
+        op, cl = c.count('{'), c.count('}')
+        depth += op - cl
+        rows.append((ln, op, cl, depth, c, raw))
+    return rows
+
+
+def check_gate_structure():
+    """断言每个 `Check` 在**默认调用**下都会运行（结构判据）。
+
+    ## 为什么需要（2026-10-01，真实事故）
+    提交 `abc5edc` 把一整段注释块插进了 `if ($WithMigration) {` 的 body 里，
+    **吃掉了它原本的 `} else {`** —— 于是门禁第 23~32 项（含"文档断言一致性"
+    与"门禁日志自检"自己）**全部被嵌套进 `if ($WithMigration)`**，
+    只有显式传 `-WithMigration` 才跑。实测证据（同一脚本、同一台机器）:
+
+        · 不带任何开关                                  -> `PASS: 19 项`
+        · `-WithSkeleton -WithMutation -WithMigration`  -> `PASS: 30 项`
+
+    即**默认调用下门禁静默跳过约 10 项，而 PASS 文案照打** —— 违反本项目
+    反复记名的"未验证 != 通过"。**既有两个数门禁项数的检查器都没抓住**:
+    第 26 项 `docclaim`、第 31 项 `gate_log` 都只数 `Check` 的**出现次数**
+    （32 个全对），**没有一个断言它们在顶层**；更糟的是这两项**自己就落在
+    被嵌套的区间里**，复发时根本不会运行。
+
+    ## 判据
+    每个 `if ($With*)` 的 body 里**最多只能有它自己那一个 `Check`**。
+    多出来的必然是"被注释块吞掉 `} else {`"这一类结构事故 —— 因为 `$With*`
+    的意义就是"只控制它自己那一个可选门禁项"，任何其它项被罩进去都是**事故**
+    而非设计。这个判据不依赖"哪些项本该是有条件的"这类容易过时的清单。
+    """
+    p = os.path.join(REPO, 'tools', 'release_check.ps1')
+    if not os.path.isfile(p):
+        return []
+    text = open(p, encoding='utf-8-sig').read()
+
+    errors = []
+    # 前提断言: 扫描器的适用条件若被破坏，宁可 FAIL 也不静默给错结果。
+    for pat, why in ((r"@'", "here-string @'"), (r'@"', 'here-string @"'),
+                     (r'<#', '块注释 <#')):
+        if re.search(pat, text):
+            errors.append('tools/release_check.ps1 含 %s -> 结构扫描器前提被破坏'
+                          '（需改用真解析器）；本判据**不做猜测**' % why)
+    if errors:
+        return errors
+
+    rows = _ps_scan(text)
+    # ⚠️ 一律对**原始行**（第 6 列）做结构匹配；第 5 列是去过字符串的文本，
+    #    用它匹配 `Check '` 会一个都数不到（见 _ps_scan 文档里的真实缺陷）。
+    n_check = 0
+    for idx, (ln, op, _cl, depth, _c, raw) in enumerate(rows):
+        if re.match(r"^\s*Check\s+'", raw):
+            n_check += 1
+        m = re.match(r"^\s*if\s*\(\s*(\$With\w+)\s*\)\s*\{", raw)
+        if not m:
+            continue
+        name = m.group(1)
+        base = depth - op          # 进入 if 之前的深度
+        inner = []
+        for ln2, _o2, _c2, d2, _c2s, raw2 in rows[idx + 1:]:
+            if d2 <= base:
+                break
+            if re.match(r"^\s*Check\s+'", raw2):
+                inner.append(ln2)
+        if len(inner) > 1:
+            errors.append(
+                'tools/release_check.ps1:%d `if (%s)` 的 body 里有 %d 个 '
+                '`Check`（L%s）—— 只有它自己那一个是有意的；'
+                '其余是被结构事故罩进去的，**默认调用下不会运行**。'
+                '典型成因: 一段注释块被插进 if body，吃掉了 `} else {`'
+                % (ln, name, len(inner), ', '.join('L%d' % x for x in inner)))
+
+    # 自证: 一个 `Check` 都数不到，说明扫描器或判据本身坏了 —— 宁 FAIL 不静默通过。
+    if n_check == 0:
+        errors.append('tools/release_check.ps1 结构扫描数到 **0** 个 `Check` '
+                      '-> 扫描器或判据本身已失效（"未验证 != 通过"）；'
+                      '不要把它读成"没有结构问题"')
+    return errors
+
+
+
 def actual_rounds():
     """docs/ATTACK_DRILL*.md 的实际轮次数量。"""
     docs = glob.glob(os.path.join(REPO, 'docs', 'ATTACK_DRILL*.md'))
@@ -326,6 +463,16 @@ def main(argv=None):
     print('=== 对外材料数字漂移检查 ===')
     print('  基准: 门禁 %s 项, 轮次 %s 个' % (gate, rounds))
     print()
+
+    # --- 0. 门禁结构断言（**必须最先跑**，见 check_gate_structure 的文档）---
+    struct = check_gate_structure()
+    if struct:
+        errors.extend(struct)
+    else:
+        _n = len(re.findall(r"(?m)^\s*Check\s+'",
+                            open(os.path.join(REPO, 'tools', 'release_check.ps1'),
+                                 encoding='utf-8-sig').read()))
+        print('  [ok] 门禁结构: %d 项均为顶层语句（默认调用下都会运行）' % _n)
 
     for f in TARGETS:
         rel = os.path.relpath(f, REPO)

@@ -340,6 +340,9 @@ if ($WithMigration) {
     Check '迁移成本 (migration_gate)' {
         & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
     }
+} else {
+    Write-Host '[info] 迁移成本门禁未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
+}
 
 # 构建状态自检（A-d，2026-09-25）
 #
@@ -568,10 +571,23 @@ Check '调试控制台活体自检 (prot_dbg live)' {
 #   慢（数分钟）。跳过时**明确标注**（未运行 != 通过）—— 与 -WithMutation 同纪律。
 #
 # ## 含负向自检
-
-} else {
-    Write-Host '[info] 迁移成本门禁未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
-}
+#
+# ⚠️ **2026-10-01 修复**: 上面那个 `} else {` 曾**被误删**（提交 `abc5edc` 把
+#   本段的注释块插进了 `if ($WithMigration)` 的 body，**吃掉了它的 `} else {`**）。
+#   后果: 门禁第 23~32 项（含本节自身）**全部被嵌套进 `if ($WithMigration)`**，
+#   只有显式传 `-WithMigration` 才会跑。实测证据（同一脚本、同一台机器）:
+#     · 不带任何开关                 -> `PASS: 19 项`（第 23 项起全没跑）
+#     · `-WithSkeleton -WithMutation -WithMigration` -> `PASS: 30 项`
+#   即**默认调用下门禁自己静默跳过约 10 项，PASS 文案照打** —— 正是本项目反复
+#   记名的"未验证 != 通过"被违反，且**门禁项数（32）看起来完全正确**。
+#
+#   教训: **纯注释块插进 `if` 体，解析器发现不了**（`Parser::ParseFile` 报 0 error）。
+#   只有**结构断言**能抓住。而既有两个数门禁项数的检查器（第 26 项 `docclaim`、
+#   第 31 项 `gate_log`）都只数 `Check` 的**出现次数**（32 个全对），
+#   **没有一个断言它们在顶层**；更糟的是这两项**自己就落在被嵌套的区间里**，
+#   复发时根本不会运行。=> 结构断言必须放在**不受该 bug 影响**的靠前项。
+#   已补: `tools/doccheck.py`（门禁第 13 项，默认必跑）新增"每个 `Check` 必须
+#   在顶层"的断言。
 
 Write-Host ''
 # 门禁落日志: 把路径再报一次（人读的是结尾；失败时尤其关键）

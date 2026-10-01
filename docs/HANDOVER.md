@@ -418,7 +418,7 @@ python tools\vmenc.py sign --key build\keys\license_priv.json --json demo\vm_bui
 R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两组，
 当日先得出反向结论、随后由实测更正为"守卫有效"**（见下方接手须知第 1 条）。
 
-**门禁 31 项**（新增 26–31）：
+**门禁 32 项**（新增 26–32）：
 ```
 26 docclaim        文档断言一致性（断言值从文档解析，含"最后核实"元数据要求）
 27 deploy_harden   部署加固自检（ACL 加固 -> L3/D5 攻击必须被阻断）
@@ -426,6 +426,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 29 guard_selftest  判定点快照校验自检  <- **已 PASS（判据 = g_guard_hits；见下更正）**
 30 prot_dbg        调试控制台自检（**第 1 步** doctor/sym/mask/exit；纯只读）
 31 gate_log        门禁日志自检（本轮输出落盘 `build/logs/`；见下第 4 条）
+32 prot_dbg live   调试控制台活体自检（第 2/4 步；OpenProcess/WriteProcessMemory）
 ```
 
 #### ⚠️ 接手须知（**最重要**）
@@ -463,7 +464,8 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    > 产物节区间），且**空 map / 格式不识别 / 解析出 0 符号分别报错、都不许 PASS**。
    > 价值已当场兑现: R3.2 会话里花 3 个失败探针才拿到的 8 个掩码区 + 5 个区内
    > `prot_*` 符号，现在 `mask` **一条命令**给出且**逐字吻合**。
-   > 第 2 步（`patch`/`read`/`watch`）、第 4 步（反调试提示）未做；
+   > 第 2 步（`patch`/`read`/`watch`）、第 4 步（反调试提示）**已于 2026-10-01 交付**
+   > （提交 `5e7340b` + 门禁第 32 项，见下方 **§2.10**）；
    > 第 3 步（诊断构建）**降级为可选**（§5 已更新依据）。
 
 4. **门禁现在会落日志**（2026-09-30）—— `tools/gate_log.ps1`
@@ -485,7 +487,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
            **不进父进程转录**（所以子进程跑的自检横幅不在日志里，属预期）。
    ```
 
-#### 本阶段最值钱的七条教训
+#### 本阶段最值钱的八条教训
 
 ```
 ① **判据必须打在被测对象的检测域内**（我犯了两次）
@@ -534,6 +536,29 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    我这次**改完没做解析检查就提交**了 —— 于是"整条防线失效"被提交进仓库。
    => 改完 `.ps1`：`Parser::ParseFile` + 校验前三字节是 `239,187,191`，**然后**才提交。
    => 记名的坑仍然会踩：**纪律要变成提交前的一条命令**，而不是记忆里的一条注释。
+
+⑧ ⭐ **门禁自己静默跳过了 10 项，还照打 `PASS`**（2026-10-01，`tools/release_check.ps1`）
+   不带任何开关跑，报 `PASS: 19 项检查全通过` —— 而脚本里明明有 **32 个** `Check`。
+   根因（二分 14 个历史 ref 定位）: 提交 `abc5edc`（2026-09-27）把一段**纯注释块**
+   插进了 `if ($WithMigration) { … }` 的 body，**吃掉了它的 `} else {`** ——
+   于是第 23~32 项**全部被罩进那个 if**，只有显式传 `-WithMigration` 才跑。
+   实测对照（同一脚本、同一台机器）:
+     · 不带开关                        -> `[ok]` 19 行 -> `PASS: 19 项`
+     · `-WithSkeleton -WithMutation -WithMigration` -> `[ok]` 30 行 -> `PASS: 31 项`
+   => **纯注释块插进 if 体，语法解析器发现不了**（`Parser::ParseFile` 报 0 error）。
+   => 两个"数门禁项数"的检查器（含本节第 ⑥ 条那个 `docclaim`）都只数 `Check` 的
+      **出现次数**（32 个全对），**没有一个断言它们在顶层**；更糟的是这两项
+      **自己就落在被嵌套的区间里**，复发时根本不会运行 —— 守卫必须放在**上游**。
+   => 修法: `tools/doccheck.py`（门禁第 13 项，默认必跑）新增结构断言 ——
+      逐字符词法扫描（去字符串/去行注释后数括号），任何 `if ($With*)` 的 body 里
+      出现 **>1 个** `Check` 即 FAIL。**判据不靠清单**（清单会过时）:
+      `$With*` 的意义就是只控制它自己那一个可选项，多出来的必是事故。
+   => ⚠️ 这条守卫的**第一版自己就是假的**: 它用"去字符串后的文本"匹配 `Check '`，
+      而 `Check 'X' {` 去掉引号后变成 `Check {` -> **一个都数不到 -> 恒返回"无错误"**。
+      注入 bug 复现时它照样打印 `[ok] … 32 项均为顶层语句`。
+      **是负向测试（人为回退修复、确认守卫会 FAIL）把它抓出来的** ——
+      教训: **一个从未被负向测试证明过会 FAIL 的守卫，等于没有守卫**，
+      它只是把"没有防线"包装成了"防线全绿"。
 ```
 
 #### 本阶段新增/修改的工具
@@ -542,11 +567,60 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
       tools/guard_selftest.py（**当日重写**: 判据改 g_guard_hits · 目标自动选掩码区外
       · 新增 VirtualProtectEx + 写入读回验证）
       tools/prot_dbg.py（**调试控制台第 1 步**: doctor/sym/mask/exit，纯只读；
-      **不含** patch/read/watch —— 未实现就不假装支持）
+      **第 2/4 步 2026-10-01 已交付**: read/patch/watch + 反调试提示，见 §2.10）
       tools/gate_log.ps1（**门禁落日志**: start/-Stop/-Selftest；自检 5 项含 3 负向；
       检测到外层转录时自检自动换子进程）
-修改: tools/release_check.ps1（26–31 项）· tools/ci_linux.ps1（同步落日志）
+修改: tools/release_check.ps1（26–32 项 + **结构修复**: 补回 `abc5edc` 吃掉的
+      `} else {`，见教训 ⑧）
+      tools/doccheck.py（**新增门禁结构断言**: 每个 `Check` 必须在顶层）
+      tools/ci_linux.ps1（同步落日志）
       tools/mutate_check.py（--platform linux）
       prot_sdk/skeleton/build_skeleton.ps1（**4 处路径引用/诊断修复**）
       src/integrity.c · include/protect/integrity.h · modules.json
 ```
+
+### 2.10 增量（2026-10-01）：调试控制台第 2/4 步 + **门禁"静默跳过 10 项"事故**
+
+**本轮完成**：`docs/DEBUG_CONSOLE_PLAN.md` **第 2 步**（`read`/`patch`/`watch`）
+与**第 4 步**（反调试干扰提示）交付（提交 `5e7340b`，门禁第 32 项）；
+随后复查中发现并修复**门禁自身静默跳过 10 项**的结构事故（详见教训 ⑧）。
+
+**① 调试控制台第 2/4 步**（`tools/prot_dbg.py`，第 1 步为纯只读）:
+```
+read  <符号> [--len N]                        读进程内存 + **与产物文件同址字节对照**
+patch <符号> [--bytes "31 C0 C3"|--nop N|--restore]   写 + **读回验证** + 完整性边界提示
+watch <符号> [--seconds S] [--patch <符号>…]   轮询被观测符号**自己的值**
+活体通用: --pid P（附着已有进程）/ --no-keep-alive / --no-adwarn / --quiet
+```
+```
+· ASLR 自动换算: Target.rt(link_va) = base + (link_va - PREF)；PREF = 0x140000000
+· 验收① 一条命令替代 4 轮试错:
+    watch g_guard_hits --seconds 6 --patch prot_antidebug_detected
+    -> [3.01s] 00 00 00 00 -> 01 00 00 00 ; 「变化 1 次」（判据是符号自己的值）
+· 验收② 写后必读回: 「写入前 / 期望 / 读回」三行 + `✓ 读回验证通过`
+· 验收③ 错误分类（`DbError(kind,msg,hint)`，不静默退化成"读到 0"）:
+    --pid 999999 -> process  (Win32 87)    --pid 4 -> permission (Win32 5)
+    不存在的符号 -> symbol              非 Windows -> platform
+· 第 4 步: `ANTIDEBUG_NOTICE` 在每个活体命令开头打印 —— 本工具用 OpenProcess /
+    ReadProcessMemory，**这本身就是调试行为**，目标可能以 219
+    (PROT_EXIT_DEBUG_DETECTED) 退出；**219 不能作为"守卫有效/失效"的判据**。
+· 自检: `--selftest-live` 10 项全 PASS（含 4 负向），已入库门禁第 32 项。
+```
+
+**② ⚠️ 本轮最重要的发现: 门禁不带开关时会静默跳过 10 项仍报 PASS**
+```
+现象: `tools\release_check.ps1`（无开关）-> `PASS: 19 项`，而脚本里有 32 个 `Check`
+根因: 提交 `abc5edc`（2026-09-27）把一段**纯注释块**插进了 `if ($WithMigration)`
+      的 body，**吃掉了它的 `} else {`** -> 第 23~32 项全被罩进那个 if
+      （二分 14 个历史 ref，该提交处 if body span 从 4 行跳到 32 行）
+实测: 无开关 19 项 / 三开关全开 31 项（同一脚本、同一台机器）
+修复: 补回 `} else {`；并在 `tools/doccheck.py`（门禁第 13 项，**默认必跑、
+      且位于嵌套区间之前**）新增结构断言：任何 `if ($With*)` body 里 >1 个 `Check` 即 FAIL
+教训: 见下方 ⑧ —— 尤其是**这条守卫的第一版自己就是假的**（被负向测试抓出）
+```
+
+#### 本轮新增纪律（延续 §2.9 的七条 -> 共八条）
+
+上文 ⑧ 为 2026-10-01 新增；第 ⑦ 条（改 `.ps1` 必须先解析再提交）本轮**再次踩到**
+（`edit` 又一次剥掉 `tools/release_check.ps1` 的 BOM，中途 AST 报 13 个 error），
+再次验证它必须是一条**提交前的命令**而不是记忆里的注释。
