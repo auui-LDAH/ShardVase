@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-01 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **32** 项 · 提交 `5e7340b`（`prot_dbg` 第 2/4 步入库后随同提交更新）
+> **最后核实**: 2026-10-01 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **32** 项 · 提交 `9dc0586`（门禁结构事故修复后随同提交更新）
 
 
 ## 1. 项目是什么
@@ -536,6 +536,16 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    我这次**改完没做解析检查就提交**了 —— 于是"整条防线失效"被提交进仓库。
    => 改完 `.ps1`：`Parser::ParseFile` + 校验前三字节是 `239,187,191`，**然后**才提交。
    => 记名的坑仍然会踩：**纪律要变成提交前的一条命令**，而不是记忆里的一条注释。
+
+   ⑧ 的同伴（2026-10-01，同一天内踩第 3 次 —— BOM 会从**任何**写文件的出口进来）:
+     用 `Set-Content -Encoding UTF8 build\commitmsg.tmp` 写提交消息 ->
+     **PowerShell 5.1 的 `-Encoding UTF8` 会加 BOM** -> 提交标题带不可见 BOM
+     （`git log` 显示成 `﻿fix(gate)!: …`，肉眼几乎看不见，但会污染历史）。
+   => 修法: 用 Python **读 `rb`、剥掉 `b'\xef\xbb\xbf'`、`open(...,'wb')` 无 BOM 写回**，
+      再 `git commit --amend -F`；并用 `git log -1 --format=%s` 断言
+      `s[:3] != b'\xef\xbb\xbf'` 来验。
+   => 结论: 本项目里**"写文件"的每一个出口都要查 BOM**（`edit` 剥掉、
+      `Set-Content` 加上 —— 两个方向都会出事），不限 `.ps1`。
 
 ⑧ ⭐ **门禁自己静默跳过了 10 项，还照打 `PASS`**（2026-10-01，`tools/release_check.ps1`）
    不带任何开关跑，报 `PASS: 19 项检查全通过` —— 而脚本里明明有 **32 个** `Check`。
