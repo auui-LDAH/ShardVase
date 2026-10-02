@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `2f20512`（Q4 文档漂移清理后更新）
+> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `36b38d6`（Q6 回填 §2.15/§2.16 后更新）
 
 
 ## 1. 项目是什么

@@ -19,7 +19,7 @@
 | `vm` | 3 | 2 | 0 | 0 | 5 |
 | `vmdetect` | 0 | 2 | 0 | 0 | 2 |
 | *(未映射)* | 20 | 21 | **0** | 3 | 44 |
-> **最后核实**: 2026-10-02 · 方法: tools/docclaim_check.py (§matrix-breached) · 提交 `2f20512`
+> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py (§matrix-breached) · 提交 `36b38d6`
 
 
 ## 显式 BREACHED（诚实边界）
