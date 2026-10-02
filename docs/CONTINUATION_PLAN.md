@@ -618,10 +618,15 @@ remote = `https://github.com/jurecoasertkrocket777/shardvase.git`（**PRIVATE**�
 
 **④ 已回填**: `docs/CI_PLAN.md` §8 的「CI 远程运行待首次 push 后回填」已按上表更新。
 
-**⑤ 仍未验证（诚实边界）**: 缺陷 7 / 8 的修法在本机复演通过
+**⑤ 已由第九跑实证（原"诚实边界"已消除）**: 缺陷 7 / 8 的修法先在本机复演通过
 （`build/_def7_repro_sim.py` 用**该轮 CI 真实产物**复演比对逻辑 = PASS；
-`verify_sdk_standalone.py` 由 rc=1 转 rc=0），但
-**两个 job 尚未在真实 CI 上绿过一次** —— 待**第九跑**。
+`verify_sdk_standalone.py` 由 rc=1 转 rc=0），随后
+**第九跑 `37061070912` / `90b98d4` 四个 job 全绿**：
+`build-and-verify` 22/22、`reproducible` 6/6（含 `Compare SHA-256`）、
+`sdk-package` 7/7（含 `Verify SDK is standalone`）、`linux-portability` 5/5。
+⇒ **Q6 验收达成**（判据是"两 job 至少绿一次"）。
+唯一 `skipped`：`sdk-package` 的 `Publish GitHub Release`
+（`if: startsWith(github.ref, 'refs/tags/v')`，tag 门控）。
 
 **⑥ 另**: `ci.yml:52` 的注释 `release_check 覆盖 14 项` 已在 Q4 改为 **33**（默认 30）。
 

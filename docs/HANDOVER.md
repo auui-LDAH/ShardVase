@@ -1209,10 +1209,84 @@ tools/verify_sdk_standalone.py              : rc=0  构建 ✓ smoke ✓ DONE �
 `verify_sdk_standalone.py`），并加 `-SkipSdk` 开关。
 => **"CI 里有的 job，本机模拟器必须也有"**，否则本地全绿不能推出 CI 全绿。
 
-**⑨ 本轮仍未验证的**
+**⑨ 第九跑实证（2026-10-02，本节写作后的补充）**
 
-- **CI 第九跑尚未发生**。缺陷 7/8 的修法在本机复演通过，
-  但 `reproducible` 与 `sdk-package` **两个 job 尚未在真实 CI 上绿过一次**。
+第九跑 `37061070912` / `90b98d4` **四个 job 全绿**：
+
+| job | 步数 | 关键步 |
+|---|---|---|
+| `build-and-verify` | 22/22 | 含 step 19 `Full release gate` |
+| `reproducible` | 6/6 | 含 step 6 `Compare SHA-256 with first build` |
+| `sdk-package` | 7/7 | 含 step 6 `Verify SDK is standalone` |
+| `linux-portability` | 5/5 | — |
+
+唯一 `skipped`：`sdk-package` 的 `Publish GitHub Release`
+（`ci.yml:283` `if: startsWith(github.ref, 'refs/tags/v')` —— **tag 门控，设计如此**）。
+⇒ **Q6 验收达成**（判据 = 缺陷 7/8 修后 `reproducible` 与 `sdk-package`
+至少各绿一次），缺陷 7 / 8 在真实 CI 上闭环。
+
+**⑩ 本轮仍未验证的**
+
 - 上述**静态门禁缺口**（加密目标调用点是否落在解密窗口内）**未实施**。
 - `tools/release_check.ps1` 仍不含 SDK 打包（`ci_sim.ps1` 已含，门禁未含）。
+- **同型第二处调用点（见 §2.16）仅静态判定，未实施修复、未动态复现**。
+
+---
+
+### 2.16 增量（2026-10-02）：T11 的**同型第二处** —— `apply_policy` 的 `else` 分支
+
+**性质**：T11 根因修完后，按「加密目标的所有调用点是否都在解密窗口内」这一判据
+把 4 个组 1（EXT）目标的全库调用点**逐个复查**，发现**同一缺陷类的第二处**。
+**静态判定，未动态复现**（故不列为已验证缺陷，仅列为待判定项）。
+
+**判据**：`prot_antidebug_apply_policy`（`src/antidebug.c:542`）**自身不是加密目标**
+（不在 `DEFAULT_TARGETS` / `EXT_TARGETS` 内），但它**第一个动作**就是调用加密目标：
+
+```c
+src/antidebug.c:542  prot_status prot_antidebug_apply_policy(prot_policy pol) {
+src/antidebug.c:548      prot_antidebug_scan(&rep);   /* <- 组 1 加密目标 */
+```
+
+⇒ **`apply_policy` 的合法性完全取决于调用方是否已开窗口**
+（`src/antidebug.c` 全文 `selfcrypt` / `sc_ext` 命中数 = **0**，
+即它自己不开窗口）。而它的两个调用点：
+
+| 调用点 | 上下文 | 窗口 |
+|---|---|---|
+| `demo/main.c:611` | `if (sc_ext_enter() == PROT_OK) { … }` 内 | ✅ 开 |
+| `demo/main.c:614` | 同 `if` 的 **`else`** 分支 | ❌ **未开** |
+
+```c
+demo/main.c:610      if (sc_ext_enter() == PROT_OK) {
+demo/main.c:611          prot_antidebug_apply_policy(PROT_POLICY_EXIT);
+demo/main.c:612          sc_ext_leave();
+demo/main.c:613      } else {
+demo/main.c:614          prot_antidebug_apply_policy(PROT_POLICY_EXIT);   /* <- 无窗口 */
+demo/main.c:615      }
+```
+
+**可达性**：`sc_ext_enter()` 失败要求 D2b 且 `sc_do_range` 返回非 OK
+（`src/selfcrypt.c:325-331`：`st = sc_do_range(i,1); if (st != PROT_OK) break;
+g_sc_state[i] = 1u;` —— **失败项之前的目标已被解密、失败项及其之后未解密**）。
+D2a 下 `prot_selfcrypt_enter` 首行即 `return PROT_OK`，`else` 分支不可达。
+故与 T11 同样**只在 D2b（Release）下存在**。
+
+**为什么它比 T11 更难触发、也更难归因**：走到该分支时组 1 处于
+**部分解密**状态 —— `prot_antidebug_scan` 恰好排在已解密的那一段时
+**碰巧执行明文而不崩**，排在失败项之后时才执行密文。即
+**崩不崩取决于"哪一个 idx 先失败"**，比 T11 的"密文首字节是否恰为 `ret`"
+更多一层偶然。
+
+**建议修法（二选一，均未实施）**：
+1. `apply_policy` 内部自带窗口（`enter`/`leave` 包住 `:548` 那次 `scan`）——
+   自洽，不依赖调用方；注意与调用方已开的窗口**嵌套**
+   （`g_sc_state` 只有 0/1 两态、**无嵌套计数**，见 `src/selfcrypt.c:83-86`，
+   内层 `leave` 会提前把组重新加密 ⇒ 需先补嵌套语义）；
+2. `main.c:614` 的 `else` 分支改为**不调用** `apply_policy`（失败即按
+   `PROT_EXIT_*` 直接终止，不进入加密目标）。
+
+**教训（与 T11 合起来看）**：真正的不变量不是「加密目标不得被直接 `E8` 调用」
+（那是 P5 的字面判据，`main.c:544` 的直接调用一直合法存在），而是
+**「每一处对加密目标的调用都必须在配对 `enter`/`leave` 之间」** ——
+该不变量**目前仍无任何静态门禁覆盖**，且它已经产生了 **2 处**违规。
 
