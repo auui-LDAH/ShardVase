@@ -31,6 +31,11 @@ import struct
 import sys
 import zlib
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 
 # ## map 解析的单一实现（B 阶段，2026-09-25）
 #   本项目曾有 **4 处**各自实现（MSVC/gcc 支持不一，已实际漂移）

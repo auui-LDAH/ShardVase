@@ -40,17 +40,38 @@
  *   · 机器指纹因子返回的是**替代方案**，值与 Windows **必然不同**
  */
 
+/* ## ⚠️ `_GNU_SOURCE` 必须**先于任何 `<...>` 包含**（CI 实测教训 2026-10-02）
+ *
+ * 本文件曾把这段"先判后定义"放在 `prot_platform.h` / `prot_compiler.h` **之后**。
+ * 那两个头会间接拉入 `<stdio.h>` —— 而 glibc 的 `<features.h>` 在**第一次**
+ * 遇到系统头时就把特性宏**读死并冻结**，之后再定义 `_GNU_SOURCE` **完全无效**。
+ *
+ * 后果（**只在 CI 上暴露，本地门禁永远看不到**）：
+ *   · `tools/linux_compile_check.py` 与 `build.ps1` 都传 `-D_GNU_SOURCE`
+ *     -> 定义在命令行，早于一切包含 -> 编译通过；
+ *   · `.github/workflows/ci.yml` 原先**没传**该宏 -> 11+ 个错误：
+ *       CLOCK_MONOTONIC undeclared / struct dl_phdr_info /
+ *       PTHREAD_MUTEX_NORMAL / siginfo_t / SA_SIGINFO / struct addrinfo ...
+ *   => 典型的"**本地才生效的门禁**"：两条编译命令不一致时，
+ *      本地那条带着宏，于是缺陷只在 CI 上现形。
+ *
+ * 修法（两处都做，缺一不可）：
+ *   ① **本文件自给自足** —— 宏定义提到所有 `#include` 之前（就是下面这段）；
+ *   ② `ci.yml` 的两条 `gcc` 补 `-D_GNU_SOURCE`，与 `linux_compile_check.py`
+ *      的 `CFLAGS` 逐字一致（命令行定义与这里的 `#ifndef` 不冲突）。
+ *
+ * 为什么保留 `#ifndef` 守卫：命令行已定义时**不能重复 define**，
+ * 否则严格构建（`-Werror`）会因 "redefined" 失败。 */
+#ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+#endif
+
 #include "protect/prot_platform.h"
 #include "protect/prot_compiler.h"   /* W3: PROT_FOPEN_S / PROT_SNPRINTF / PROT_STRCPY_S
                                       *（与 `prot_platform_win.c` 结构对等 —— 该侧早已包含）*/
 
 #if PROT_PLATFORM == PROT_PLATFORM_LINUX
 
-/* _GNU_SOURCE 可能已由构建命令行定义（-D_GNU_SOURCE），
- * 故**先判后定义**，避免 "redefined" 警告（`/WX` 风格的严格构建会失败）。 */
-#ifndef _GNU_SOURCE
-#  define _GNU_SOURCE
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

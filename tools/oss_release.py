@@ -40,6 +40,11 @@ import sys
 import os as _os_hw
 import sys as _sys_hw
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 
 def _hw_tools_dir():
     d = _os_hw.path.dirname(_os_hw.path.abspath(__file__))

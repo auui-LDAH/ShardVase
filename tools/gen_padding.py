@@ -28,6 +28,11 @@ import os
 import random
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 # 可填充的节 -> （pragma 属性, 变量名前缀）
 # 属性必须与目标节一致，否则链接器不合并（取自 src/*.c 的现有声明）。
 #

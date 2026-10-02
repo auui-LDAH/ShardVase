@@ -28,6 +28,11 @@ import json
 import os
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 REGISTRY = os.path.join(REPO, 'modules.json')
 COMPOSITIONS = os.path.join(REPO, 'compositions')

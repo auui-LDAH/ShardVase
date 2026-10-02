@@ -71,6 +71,19 @@ DEFAULT_DISTRO = 'Ubuntu-24.04'
 # 编译参数（与 Windows 的 /W4 /WX 对应）
 CFLAGS = '-c -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE'
 
+# 不含 -D_GNU_SOURCE 的变体 —— 用于复核"源文件自称会自行定义 _GNU_SOURCE"是否为真。
+#
+# 为什么需要这一遍（CI 实测教训 2026-10-02）：`src/platform/prot_platform_linux.c`
+# 曾在**两个自家头之后**才 `#define _GNU_SOURCE`，而 glibc 的 <features.h> 在第一次
+# 遇到系统头（自家头里已拉入 <stdio.h>）时就把特性宏读死冻结了 —— 此后再定义完全无效。
+# 结果：命令行带 `-D_GNU_SOURCE` 时编译通过（本地门禁一直带着，**永远看不到**），
+# 命令行不带时 11+ 个错误（CI 的 gcc 调用没带，**必崩**）。
+# 判据：**源文件自己 `#define _GNU_SOURCE` 就要在"命令行不定义"时也能编过** ——
+# 这样本地门禁与 CI 就不可能再对同一份源码得出相反结论。
+NO_GNU_CFLAGS = '-c -O2 -Wall -Wextra -Werror -std=c11'
+
+RE_SELF_GNU = re.compile(r'^[ \t]*#[ \t]*define[ \t]+_GNU_SOURCE\b', re.M)
+
 # 扫描哪些目录
 SCAN_DIRS = ['src']
 
@@ -126,11 +139,29 @@ def classify(errors_text):
     return kinds
 
 
-def check_one(rel, distro='Ubuntu-24.04'):
+def self_gnu_sources(srcs=None):
+    """返回**自己 `#define _GNU_SOURCE`** 的源文件（相对仓库路径）。
+
+    判据不靠清单：凡是源文件自称会定义该宏，就必须在**命令行不定义**时也能编译 ——
+    否则它的"自给自足"是假的，且只在某一条构建路径上暴露。
+    """
+    out = []
+    for rel in (srcs if srcs is not None else collect_sources()):
+        p = os.path.join(REPO, rel)
+        try:
+            with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                if RE_SELF_GNU.search(f.read()):
+                    out.append(rel)
+        except OSError:
+            continue
+    return out
+
+
+def check_one(rel, distro='Ubuntu-24.04', cflags=None):
     """编译单个文件。返回 (ok, error_text, kinds)。"""
     repo_wsl = to_wsl_path(REPO)
     script = ('cd "%s" && gcc %s -I include "%s" -o /tmp/lcc.o 2>&1'
-              % (repo_wsl, CFLAGS, rel))
+              % (repo_wsl, cflags or CFLAGS, rel))
     env = dict(os.environ)
     env['WSL_UTF8'] = '1'
     try:
@@ -145,8 +176,14 @@ def check_one(rel, distro='Ubuntu-24.04'):
 
 
 def check_all(distro='Ubuntu-24.04', quiet=False):
-    """检查全部源文件。返回 dict 结果。"""
+    """检查全部源文件。返回 dict 结果。
+
+    第二遍（`no_gnu`）只对**自称 `#define _GNU_SOURCE`** 的源文件跑，且**故意不带
+    `-D_GNU_SOURCE`** —— 这类文件若只在"命令行替它定义"时能编过，说明它的
+    `#define` 位置太晚（被 `<features.h>` 冻结），本判据就是为抓这种情况而生。
+    """
     srcs = collect_sources()
+    self_gnu = self_gnu_sources(srcs)
     results = {}
     for rel in srcs:
         ok, err, kinds = check_one(rel, distro)
@@ -157,8 +194,30 @@ def check_all(distro='Ubuntu-24.04', quiet=False):
             mark = 'OK  ' if ok else 'FAIL'
             extra = ('  [%s]' % ','.join(kinds)) if kinds else ''
             print('  %-42s %s%s' % (rel, mark, extra))
+
+    # 第二遍: 自称 _GNU_SOURCE 的必须在**不带 -D_GNU_SOURCE**时也能编过。
+    for rel in self_gnu:
+        ok2, err2, kinds2 = check_one(rel, distro, cflags=NO_GNU_CFLAGS)
+        results[rel]['no_gnu_ok'] = ok2
+        results[rel]['no_gnu_error'] = (err2.strip().split('\n')[0][:200]
+                                        if err2 else '')
+        # 覆盖结果: 自称自给自足却只在带宏时成立 => 该文件判为**不通过**。
+        if not ok2:
+            results[rel]['ok'] = False
+            results[rel]['divergent'] = True
+            for k in (kinds2 or ['OTHER']):
+                if k not in results[rel]['kinds']:
+                    results[rel]['kinds'].append(k)
+        if not quiet:
+            mark = 'OK  ' if ok2 else 'FAIL'
+            extra = '' if ok2 else '  [无 -D_GNU_SOURCE 时失败 —— 自给自足是假的]'
+            print('  %-42s %s (no -D_GNU_SOURCE)%s' % (rel, mark, extra))
+
     n_ok = sum(1 for v in results.values() if v['ok'])
     return {'total': len(srcs), 'ok': n_ok,
+            'self_gnu': self_gnu,
+            'divergent': sorted(r for r, v in results.items()
+                                if v.get('divergent')),
             'rates': '%d/%d' % (n_ok, len(srcs)), 'results': results}
 
 
@@ -270,6 +329,31 @@ def selftest():
     finally:
         if os.path.exists(tmpc3):
             os.remove(tmpc3)
+
+    # T7: **负向** —— 复刻 prot_platform_linux.c 的历史缺陷形态：
+    # `#define _GNU_SOURCE` 写在 <stdio.h> **之后**，再使用 CLOCK_MONOTONIC。
+    # 它必须"带 -D_GNU_SOURCE 能过、不带则失败" —— 这正是第二遍要抓的分歧。
+    tmpc4 = os.path.join(REPO, 'src', '__lcc_selftest_late_gnu.c')
+    try:
+        with open(tmpc4, 'w', encoding='utf-8') as f:
+            f.write('#include <stdio.h>\n'
+                    '#ifndef _GNU_SOURCE\n'
+                    '#  define _GNU_SOURCE\n'
+                    '#endif\n'
+                    '#include <time.h>\n'
+                    'int lcc_self_late_gnu(void) {\n'
+                    '    struct timespec ts;\n'
+                    '    return clock_gettime(CLOCK_MONOTONIC, &ts);\n'
+                    '}\n')
+        rel4 = 'src/__lcc_selftest_late_gnu.c'
+        ok_with, _, _ = check_one(rel4)
+        ok_without, _, _ = check_one(rel4, cflags=NO_GNU_CFLAGS)
+        case('T7 晚定义 _GNU_SOURCE: 带宏能过', ok_with)
+        case('T8 晚定义 _GNU_SOURCE: **不带宏必须被抓**', not ok_without)
+        case('T9 自给自足检测命中该文件', rel4 in self_gnu_sources([rel4]))
+    finally:
+        if os.path.exists(tmpc4):
+            os.remove(tmpc4)
 
     print()
     print('=' * 66)

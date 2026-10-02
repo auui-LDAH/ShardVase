@@ -16,6 +16,11 @@ import json
 import struct
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 STD = {'.text', '.rdata', '.data', '.pdata', '.rsrc', '.reloc'}
 
 

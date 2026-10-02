@@ -40,6 +40,11 @@ import os
 import subprocess
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 __all__ = ['popen_kwargs', 'run', 'Popen', 'check_output',
            'IS_WINDOWS', 'CREATE_NO_WINDOW', 'selftest']
 

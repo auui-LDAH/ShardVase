@@ -27,6 +27,11 @@ import os
 import random
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 # 需要随机化的节（逻辑名 -> 属性）
 # 属性与现有一致（改动属性会影响加载行为，故保持）
 SECTION_SPECS = {

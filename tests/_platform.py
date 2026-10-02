@@ -38,6 +38,11 @@ import re
 import subprocess
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 #: WSL 发行版（本项目 Linux 侧环境；换发行版只改这里）
 DISTRO = 'Ubuntu-24.04'
 

@@ -13,6 +13,11 @@ PowerShell 5.1 按 ANSI 读 -> 中文全被当字节 -> AST 一堆假错误）�
 """
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 BOM = b'\xef\xbb\xbf'
 
 

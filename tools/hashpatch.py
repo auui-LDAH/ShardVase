@@ -33,6 +33,11 @@ import struct
 import sys
 import zlib
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 # 与 src/integrity.c g_prot_baked_crc 顺序一致
 MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP')
 

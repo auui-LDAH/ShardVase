@@ -54,6 +54,12 @@ v3 的"P=1.000 R=1.000（60 正 / 1583 负）"是**循环论证**:
 > 就在测一个不存在的损坏形态（第一版 `_damage` 用 `gbk` 就踩了这个坑）。
 """
 import re
+import sys
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 
 CJK = re.compile(r'[\u4e00-\u9fff]')
 NONASCII = re.compile(r'[^\x00-\x7f]')

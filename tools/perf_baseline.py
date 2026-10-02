@@ -48,6 +48,11 @@ import subprocess
 import sys
 import time
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPOSITIONS = ['minimal', 'standard', 'full']
 

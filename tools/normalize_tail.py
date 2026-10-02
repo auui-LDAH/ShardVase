@@ -28,6 +28,11 @@ import os
 import random
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
 
 def main():
     ap = argparse.ArgumentParser(prog='normalize_tail.py')
