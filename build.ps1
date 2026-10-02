@@ -27,6 +27,12 @@ param(
     [switch]$D2b,
     [switch]$Drill,
     [switch]$NoD2b,
+    # 缺陷 5c（2026-10-02）: Dev 配置下也强制链接器 /Brepro。
+    # 为什么需要: `reproducible` job 的两步都用默认 Dev，而 /Brepro 原本
+    # 只在 Release 分支注入（见下方 $linkHard）-> PE TimeDateStamp 每构建
+    # 不同 -> 即使种子全部记录，字节比对仍 MISMATCH。实测见
+    # build/_repro_5c_out.txt（6 字节差异，其中 0x108 即 TimeDateStamp）。
+    [switch]$Brepro,
     [string]$ExtraSelfCrypt = '',  # S1 排障: 追加加密函数名 (逗号分隔)
     [switch]$ScDebug,              # selfcrypt 解密期诊断日志 (默认关闭)
     [string]$Composition = '',     # 阶段2: 拼装图名 (compositions/<name>.json)
@@ -53,10 +59,52 @@ $sectionsSeed = ''
 # 从而破坏攻击者的"字节特征跨构建匹配"（W5.6 实测 55.9% 可匹配）。
 # 允许外部（-BuildSalt 或环境变量）覆盖，否则由种子派生。
 $buildSalt = if ($env:PROT_BUILD_SALT) { $env:PROT_BUILD_SALT } else { '' }
+$seedTable = $null
 if ($SeedsFile -and (Test-Path -LiteralPath $SeedsFile)) {
     # 由种子表内容派生一个稳定种子（同表 -> 同节名；不同表 -> 不同节名）
     $seedHash = (Get-FileHash -LiteralPath $SeedsFile -Algorithm SHA256).Hash
     $sectionsSeed = '0x' + $seedHash.Substring(0, 16).ToLower()
+
+    # 缺陷 5（2026-10-02 实测）: 若种子表**自带** sectionsSeed/buildSalt 则优先采用。
+    # 旧种子表无这两个键 -> 回退到上面的哈希派生（向后兼容）。
+    #
+    # **为什么必须有这两键**: `-RecordSeeds` 原本只记录 images/strgen/indirect，
+    #   · `sectionsSeed`（节名/magic/gen_padding/normalize_tail）是 `SystemRandom`
+    #   · `buildSalt`（/DPROT_BUILD_SALT，保护函数机器码）是 `RandomNumberGenerator`
+    # 二者都不在表里 -> 同表重建只能碰巧一致。实测（build/_exact_ci_out.txt）:
+    # 首次构建盐 0x2d0533f3 / sha E4C2F982…，带 -SeedsFile 重建盐 0xd5718f9f /
+    # sha C2290CE5… -> CI `reproducible` job 的 `A -eq B` 恒为 False。
+    # 环境变量 PROT_BUILD_SALT 仍**优先于**种子表（显式覆盖 > 表内记录）。
+    $seedTable = Get-Content -LiteralPath $SeedsFile -Raw | ConvertFrom-Json
+    if ($seedTable.sectionsSeed) { $sectionsSeed = [string]$seedTable.sectionsSeed }
+    if ($seedTable.buildSalt -and -not $env:PROT_BUILD_SALT) {
+        $buildSalt = [string]$seedTable.buildSalt
+    }
+}
+
+# 缺陷 5b（2026-10-02 实测）: 无确定性种子时, **本脚本必须自己产生** sectionsSeed。
+#
+# ⚠️ 这是缺陷 5 的必要补充 —— 只把 `$sectionsSeed` 写进种子表还不够:
+#   在「未传 -SeedsFile / 未传 -UserId」的发布构建路径上 `$sectionsSeed` 恒为 ''，
+#   于是 `--seed` 根本不会传给子工具 —— `gen_sections.py` / `gen_padding.py` /
+#   `normalize_tail.py` **各自在内部**用 `random.SystemRandom()` 取种子。那个值
+#   build.ps1 从未见过, 自然也无从记录 -> 重建必然不同。
+#
+# 实测（build/_repro_fix_out.txt）: 记录出的 `sectionsSeed = `（空字符串）,
+#   带 -SeedsFile 重建后 `demo.exe A -eq B = False`（而 `vm.blob` 已能一致 ——
+#   它由 images 种子决定, 与本节无关）。
+#
+# 修法: 与下方 strgen（4.）/ indirect（4c.）**同一惯例** —— 只在 `-RecordSeeds`
+#   时物化, 使「非 RecordSeeds 构建」的字节行为与改动前**完全一致**;
+#   随机性语义不变（仍是每构建不同）, 只是那个随机值现在**可被记录**。
+#   用密码学 RNG 而非 `Get-Random`: 本节名种子驱动节名/magic/填充/尾部,
+#   与 buildSalt 同类（见下方 W1.6 派生段用的是同一个 RNG）。
+if ($RecordSeeds -and -not $sectionsSeed) {
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $sbuf = New-Object byte[] 8
+    $rng.GetBytes($sbuf)
+    $rng.Dispose()
+    $sectionsSeed = '0x' + (($sbuf | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
 # W4: 用户种子派生（**优先于**系统随机，但**低于** -SeedsFile）
@@ -327,7 +375,31 @@ if (-not (Test-Path -LiteralPath 'build')) {
 }
 
 # 2. 重算期望常量 (machine_id 默认 auto=绑定本机; 可 --MachineId 覆盖)
-& $py tools\vmenc.py genserial --json "${vmJson}" --machine-id "$MachineId"
+#
+# 缺陷 5e（2026-10-02 实测）: `machine_id` 是决定 demo.exe 字节的第三个未记录输入。
+#   `tools/vmenc.py:974-979` 对 'auto'/'0' 一律用 `hostid()` **重算**，并**丢弃**
+#   `demo/vm_build.json` 里已有的 machine_id。而 CI 的 `build-and-verify` 与
+#   `reproducible` 跑在**不同 runner** 上、两步都传 `-MachineId auto`
+#   -> hostid 不同 -> expect2 不同 -> 该常量被编译进 demo.exe -> 恒 MISMATCH。
+#
+# 实测（build/_mid_out.txt）: 显式 MID=0x1122334455667788 构建得
+#   sha FD689063F1C676CBF60C142B71E1F29DBCB485E8B8E9D32D1AF02CDD022B9FA8
+#   （mid=1234605616436508552, expect2=0x51ba0eb085e11c04）;
+#   同种子 + `-MachineId auto` 重建得 sha CF8D6F52…0513
+#   （mid=12981648366597980211, expect2=0x2d270f40b2a15b10）-> A == B **False**;
+#   再显式复述同一 MID 重建又得 FD689063…9FA8 -> A == C **True**。
+#   （注意 expect1 两边相同 —— 它只由 serial 决定 —— 差异全在 expect2。）
+#
+# 修法: `-SeedsFile` 带来的**表内** machine_id 优先于 `auto`。
+#   优先级: 显式 `-MachineId <值>` > 种子表 `machine_id` > 本机 hostid 绑定。
+#   这样 CI 跨 runner 的重放才确定; 不带种子表的发布构建行为**不变**（仍绑本机）。
+$effMachineId = $MachineId
+if ($MachineId -in @('auto', '0') -and $seedTable -and $seedTable.machine_id) {
+    $effMachineId = [string]$seedTable.machine_id
+    Write-Host ("build: machine_id {0} -> 采用种子表记录值 {1}（缺陷 5e 跨机重放）" -f `
+                $MachineId, $effMachineId)
+}
+& $py tools\vmenc.py genserial --json "${vmJson}" --machine-id "$effMachineId"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py genserial' }
 
 # 2.2. N5: 从 vm_build.json 生成构建期默认期望值 C 文件 (VM#3 离线兜底值)
@@ -446,7 +518,14 @@ if ($isRelease) {
 #      (a) 生成 demo\gen\prot_modconfig.h (宿主条件编译依据)
 #      (b) 输出本次参与编译的 src/*.c 清单
 #    未指定时 default = "full" (等价于改造前的全模块硬编码构建)。
-$linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' } else { '' }
+# 缺陷 5c（2026-10-02）: /Brepro 让链接器产出**确定性** PE 头（TimeDateStamp/
+#   校验和）与调试目录时间戳，是"同种子两次构建字节一致"的必要条件（I3）。
+#   Release 恒开（原有行为不变）。Dev **默认仍关**（保留 /INCREMENTAL 等开发
+#   体验、也不改变既有 Dev 产物字节）；但 CI 的 reproducible job 用 Dev，
+#   故新增显式 `-Brepro` 让调用方按需打开，而不去动 Dev 的默认语义。
+$linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' }
+            elseif ($Brepro) { ' /Brepro' }
+            else { '' }
 $resObj = if ($isRelease) {  ' ' + (Join-Path $genDir 'version.res')  } else { '' }
 
 $compName = if ($Composition) { $Composition } else { 'full' }
@@ -889,13 +968,40 @@ $manifest | ConvertTo-Json | Set-Content -LiteralPath build\manifest.json -Encod
 if ($RecordSeeds) {
     $strgenSeed = if ($strgenSeedArgs.Count -ge 2) { $strgenSeedArgs[1] } else { '' }
     $seedOut = @{ images = $seedMapOut }
+
+    # 缺陷 5（2026-10-02 实测）: **必须**把 sectionsSeed / buildSalt 一并记入。
+    #
+    # 旧版只记录 images/strgen/indirect，漏掉了两个各自由系统随机数产生、
+    # 却**直接决定产物字节**的输入:
+    #   · sectionsSeed -> 节名/magic（gen_sections.py）+ gen_padding --seed
+    #                     + normalize_tail --seed
+    #   · buildSalt    -> /DPROT_BUILD_SALT（保护函数的序言噪声机器码）
+    # 后果: `-SeedsFile` 重建时二者重新随机（或由表哈希另派生）-> 与首次构建
+    # 不同 -> `reproducible` job 的 SHA-256 比对**必然** MISMATCH。
+    # 证据: build/_exact_ci_out.txt —— 首次盐 0x2d0533f3 / sha E4C2F982…，
+    # 重建盐 0xd5718f9f / sha C2290CE5…，`A -eq B = False`。
+    #
+    # 读回侧见本文件上方 `-SeedsFile` 分支（优先采用表内这两键）。
+    $seedOut['sectionsSeed'] = $sectionsSeed
+    $seedOut['buildSalt'] = $buildSalt
+
+    # 缺陷 5e（2026-10-02 实测）: machine_id 同样是决定字节的输入，必须记录。
+    #
+    # CI 的 `reproducible` job 与 `build-and-verify` 跑在**不同 runner** 上，
+    # 而两侧都传 `-MachineId auto` -> `vmenc.py` 用 `hostid()` 重算 ->
+    # 卷序列号/计算机名/MachineGuid/磁盘序列号任一变 -> expect2 变 ->
+    # 该常量被编译进 demo.exe -> 字节比对 MISMATCH（与种子无关）。
+    # 实测 build/_mid_out.txt: A(显式 MID) FD689063… != B(auto) CF8D6F52…,
+    # 而 A == C(显式 MID 复述) -> 记下 machine_id 即可跨机复现。
+    $seedOut['machine_id'] = $jb.machine_id
+
     if ($strgenSeed) { $seedOut['strgen'] = $strgenSeed }
     if ($indirectSeed -and $indirectSeed.Count -ge 2) {
         $seedOut['indirect'] = $indirectSeed[1] -replace '^0x', ''
     }
     $seedOut | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath build\seeds.json -Encoding utf8
-    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed indirect=$($seedOut.indirect))"
+    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed indirect=$($seedOut.indirect) sections=$sectionsSeed salt=$buildSalt mid=$($seedOut.machine_id))"
 }
 
 # 8.

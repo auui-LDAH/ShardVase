@@ -23,9 +23,24 @@ jobs:
           python --version
           git --version
 
-      # CI_PLAN: -RecordSeeds 记录种子供 reproducible job 复用
-      - name: Build (Release), record seeds
-        run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -RecordSeeds -SkipSign
+      # 本步用默认配置（Dev，无 D2b / 无 PROT_RELEASE_CONCEAL）。
+      #   旧步骤名写作 "Build (Release)" 与实现不符，已改正。
+      #   保留 Dev 的理由：门禁（下面的 Full release gate）会用 `-Config Release`
+      #   构建**另一份**二进制并跑 e2e/attacks/vm_unit/vmc/example/protchain；
+      #   若本步也改 Release，这些"独立步骤"就只是在重复门禁已做过的同配置检查，
+      #   失去"Dev 配置也测一遍"的覆盖面。若确实想要 Release，加 `-Config Release`
+      #   并同步 `docs/CI_PLAN.md` §2.1 与 `tools/ci_sim.ps1:61`。
+      #
+      # 缺陷 5c（2026-10-02）: 本步加 -Brepro 只为让**本步自身**的 Dev 产物
+      #   可复现（否则 /Brepro 只在 Release 分支注入 -> PE TimeDateStamp /
+      #   调试目录时间戳每次不同）。它与 reproducible job 的判定**无关**：
+      #   那一侧两侧都是 Release（Release 隐含 /Brepro），见下方 5d 说明。
+      #
+      # ⚠️ 本步的 seeds.json **不会**被 reproducible job 复用（缺陷 5d）：
+      #   门禁 `release_check.ps1:250` 的 `-Config Release -RecordSeeds` 覆盖了
+      #   `build\demo.exe` 与 `build\seeds.json`，上传的是那份 Release 产物。
+      - name: Build (Dev), record seeds
+        run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -RecordSeeds -SkipSign -Brepro
 
       - name: Run e2e suite (T1-T28)
         run: python tests\e2e.py
@@ -171,13 +186,23 @@ jobs:
           name: build-artifacts
           path: build_artifacts
 
+      # ## 缺陷 5d（2026-10-02 实测）: 必须 `-Config Release`，不能沿用默认 Dev
+      #   本 job 下载的 `build\demo.exe` **不是** build-and-verify 步骤 1 的产物：
+      #   门禁 `tools\release_check.ps1:250` 用 `-Config Release` 覆盖了它，
+      #   紧跟的 `:253` `repro_check.ps1`（`:24`/`:34`，同样是 Release）又覆盖一次
+      #   -- 上传的正是**门禁遗留的 Release 产物**，其 `build\seeds.json` 也是
+      #   门禁那次 `-RecordSeeds` 写的。
+      #   若这里用 Dev 重建，比对的是"同种子、不同配置"的两个二进制：
+      #   实测差异 **276571 字节 / 14365 簇**（`build/_repro_5d_ci_out.txt`），
+      #   恒 MISMATCH，与 `/Brepro` 无关。Release 隐含 `/Brepro`，故无需再传。
+      #   （`docs/CI_PLAN.md:67` 原本就写的 `Build (Release, -SeedsFile …)`。）
       - name: Reproducible rebuild (same seeds + key, no signing)
         run: |
           New-Item -ItemType Directory -Force -Path build\keys | Out-Null
           Copy-Item build_artifacts\seeds.json build\seeds.json
           Copy-Item build_artifacts\vm_build.json demo\vm_build.json
           Copy-Item build_artifacts\license_priv.json build\keys\license_priv.json
-          powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -SkipSign -SkipSmoke -SeedsFile build\seeds.json
+          powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release -MachineId auto -SkipSign -SkipSmoke -SeedsFile build\seeds.json
 
       - name: Compare SHA-256 with first build
         shell: pwsh
