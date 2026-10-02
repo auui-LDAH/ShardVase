@@ -115,6 +115,25 @@ jobs:
       - name: Python syntax check (all tools)
         run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
 
+      # ## 为什么必须单独上传门禁日志（2026-10-02 实测教训）
+      #   `Full release gate` 失败时，上面的 artifact 上传步**根本不会执行**
+      #   （GitHub Actions 默认 `if: success()`），而 `gate_log.ps1` 记录的
+      #   完整转录只存在 runner 本地 -> **失败现场随 runner 一起销毁**。
+      #   第四跑就吃了这个亏: 门禁报 `FAIL: 1/27`，被测的看起来是 e2e，
+      #   但日志里拿不到那一行 —— 只能靠 12 行截断的诊断去猜。
+      #   => `if: always()`，把 `build/logs/**` 无条件带出来。
+      #   这不是"掩盖失败": 门禁仍然 FAIL 且 job 仍然红，只是**留下证据**。
+      #   （与 `tools/gate_log.ps1` 文件头记名的「失败项名与详情永久丢失」
+      #     同型事故的对策。日志是辅助证据, 不改变任何判据。）
+      - name: Upload gate logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-logs
+          path: build\logs\**
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

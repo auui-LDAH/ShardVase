@@ -84,27 +84,80 @@ $pass = 0; $fail = 0; $skip = 0
 #
 # ## 判据
 #   `$out` 的**末值就是判据本身**（布尔或 `'SKIP'`），其余全部是被测进程
-#   的输出 -> 逐行缩进打印。**限长**（最多 12 行、每行 400 字符）以免一个
-#   失败的构建把日志刷爆 —— 但**绝不静默**（无输出时明确说明）。
+#   的输出 -> 逐行缩进打印。**限长**以免一个失败的构建把日志刷爆 ——
+#   但**绝不静默**（无输出时明确说明）。
+#
+# ## ⚠️ 限长规则本身出过一次事故（2026-10-02，同一天）
+#   第一版限长写的是**盲取末 12 行**（`Select-Object -Last 12`）。CI 第四跑
+#   立刻证明它**恰好丢掉了唯一有用的那一行**: `e2e T1-T28` 失败时，被测
+#   脚本先逐项打印 27 行用例、**再**打印汇总行 —— 于是"末 12 行"全是
+#   `T16..T26 PASS` 的噪声，真正含 `FAIL` 的那一行（在 T1..T15 区间）
+#   被当作"前 N 行"省略了。日志里只有:
+#       [X]  e2e T1-T28
+#       ... 省略前 17 行诊断 ...
+#       | T16 revoke-clean  PASS …
+#   => **拿到了"哪一项失败"，依然拿不到"为什么失败"**，与本次修复的初衷
+#      完全同型地失败了第二次。
+#   **教训: "限长"不能只按位置取（末 N 行），必须按**相关性**取** ——
+#   含失败标记的行优先于普通行，位置只用作同优先级内的次序。
+#
+# ## 选择规则
+#   ① 收集全部诊断行（展开多行字符串），滤掉 `$null` 与空行；
+#   ② **信号行优先**: 匹配 `FAIL|ERROR|Traceback|Exception|[X]|✗|未通过|
+#      错误|失败` 的行先入选（若信号行多于预算，取**靠后**的 —— 靠近结论
+#      的更相关）；
+#   ③ 预算未满时再从**尾部**补齐（去重），保持原始行序输出；
+#   ④ 只要有省略就**如实报告总行数**（"诊断共 N 行，此处显示 M 行"），
+#      绝不让读者以为已经看到了全部。
 function Show-Diag($out, [string]$prefix = '      | ') {
     $diag = @()
     if ($out.Count -gt 1) { $diag = @($out[0..($out.Count - 2)]) }
-    $diag = @($diag | Where-Object { $null -ne $_ } |
-              ForEach-Object { ([string]$_).TrimEnd() } |
-              Where-Object { $_ -ne '' })
-    if ($diag.Count -eq 0) {
+
+    # 展开为行（一个元素可能是多行字符串）
+    $lines = @()
+    foreach ($d in $diag) {
+        if ($null -eq $d) { continue }
+        foreach ($ln in ([string]$d -split "`r?`n")) {
+            $t = $ln.TrimEnd()
+            if ($t -ne '') { $lines += $t }
+        }
+    }
+    if ($lines.Count -eq 0) {
         Write-Host '      (该项无额外诊断输出 —— 它只返回了判据本身)' -ForegroundColor DarkGray
         return
     }
-    $shown = @($diag | Select-Object -Last 12)
-    if ($diag.Count -gt $shown.Count) {
-        Write-Host ("      ... 省略前 {0} 行诊断 ..." -f ($diag.Count - $shown.Count)) -ForegroundColor DarkGray
+
+    $budget = 12
+    $re = '(?i)FAIL|ERROR|Traceback|Exception|\[X\]|✗|未通过|错误|失败'
+
+    # ② 信号行优先（多则取靠后的）
+    $sig = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match $re) { $sig += $i }
     }
-    foreach ($d in $shown) {
-        foreach ($ln in ([string]$d -split "`r?`n")) {
-            if ($ln.Length -gt 400) { $ln = $ln.Substring(0, 400) + ' …' }
-            Write-Host ($prefix + $ln) -ForegroundColor DarkGray
+    $pick = @()
+    if ($sig.Count -gt 0) {
+        $start = [Math]::Max(0, $sig.Count - $budget)
+        for ($k = $start; $k -lt $sig.Count; $k++) { $pick += $sig[$k] }
+    }
+    # ③ 未满则从尾部补齐（去重，保持原序）
+    if ($pick.Count -lt $budget) {
+        for ($i = $lines.Count - 1; $i -ge 0 -and $pick.Count -lt $budget; $i--) {
+            if ($pick -notcontains $i) { $pick += $i }
         }
+    }
+    $pick = @($pick | Sort-Object)
+
+    # ④ 有省略就如实报总数
+    if ($pick.Count -lt $lines.Count) {
+        $sigNote = if ($sig.Count -gt 0) { '，含失败标记的行已优先保留' } else { '' }
+        Write-Host ("      ... 诊断共 {0} 行，此处显示 {1} 行{2} ..." -f `
+            $lines.Count, $pick.Count, $sigNote) -ForegroundColor DarkGray
+    }
+    foreach ($i in $pick) {
+        $ln = $lines[$i]
+        if ($ln.Length -gt 400) { $ln = $ln.Substring(0, 400) + ' …' }
+        Write-Host ($prefix + $ln) -ForegroundColor DarkGray
     }
 }
 
@@ -346,15 +399,31 @@ Check 'Linux 编译覆盖 (linux_compile_check)' {
     #   进程**不存在**时 `& unknownExe` 抛非终止错误 -> 被 catch；
     #   而 `$LASTEXITCODE` **保持上一次的值**（实测: `exit 3` 后跑不存在的
     #   exe 再读 -> 仍是 3）。=> 绝不能只看 `$LASTEXITCODE` 判"可用"，
-    #   必须先确认命令存在（`Get-Command`），并且**每次调用前显式置
-    #   `$LASTEXITCODE = 0`**。
+    #   必须先确认命令存在（`Get-Command`）。
+    #
+    # ## 🔴 更严重的陷阱: **绝不要在这个 scriptblock 里给 `$LASTEXITCODE` 赋值**
+    #   （2026-10-02 我自己踩中并已在 CI 上复现的假通过）
+    #   第一版修法写了 `$LASTEXITCODE = 0` 来"清掉陈旧值"，结果它在本
+    #   scriptblock 的作用域内**投下一个影子变量**，随后的原生命令
+    #   （`wsl.exe` / `python`）**都不再更新它** -> 之后每一次读取都是 0。
+    #   实测（ps5.1 与 pwsh7 **一致**）:
+    #       先 `$LASTEXITCODE = 0` 再跑 `exit 2` 的程序 -> 读出来仍是 **0**
+    #       不赋值、直接跑 `exit 2` 的程序        -> 读出来是 **2**
+    #   后果: 该分支**永远判 ok** —— `wslOk` 恒真，且末尾 `--min 18` 的
+    #   退出码也被读成 0 => 本项在**无 WSL 发行版的 CI 上谎报通过**。
+    #   CI 第四跑的原样现场（正是此 bug）:
+    #       [linux_compile_check] SKIP: WSL 发行版 Ubuntu-24.04 不可用 …
+    #       [ok]  Linux 编译覆盖 (linux_compile_check)      <- 工具报了 SKIP，门禁却说 ok
+    #   => 正确修法: **不赋值**，改为每次调用**立刻**把退出码捕获进自己的
+    #      变量（`$rc = $LASTEXITCODE`），后续一律只读 `$rc`。
+    #      实测: 捕获式在 rc=2 -> SKIP、rc=1 -> FAIL、rc=0 -> ok 三态全对。
     $distro = 'Ubuntu-24.04'
     $wslOk = $false
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         $env:WSL_UTF8 = '1'
-        $LASTEXITCODE = 0
-        try { & wsl.exe -d $distro -- true 2>&1 | Out-Null } catch { }
-        $wslOk = ($LASTEXITCODE -eq 0)
+        $rc = $null
+        try { & wsl.exe -d $distro -- true 2>&1 | Out-Null; $rc = $LASTEXITCODE } catch { $rc = $null }
+        $wslOk = ($rc -eq 0)
     }
     if (-not $wslOk) {
         Write-Host ("      前置不满足: WSL 发行版 '{0}' 不可用（`wsl.exe -d {0} -- true` 非 0）。" -f $distro, $distro) -ForegroundColor DarkGray
@@ -366,12 +435,15 @@ Check 'Linux 编译覆盖 (linux_compile_check)' {
     #   上面这段负责"门禁这一侧的诚实"（打印补齐方式），工具那侧负责
     #   "任何人直接调用时也诚实"。任何一环判出前置不满足 -> SKIP。
     #   **显式判 2，不做全局隐式映射**（隐式映射会把"工具坏掉返回 2"也算跳过）。
+    #   注意: 每步调用后**立刻**捕获 `$rc`，不读 `$LASTEXITCODE`（见上面的陷阱）。
     & $py tools\linux_compile_check.py --selftest --quiet
-    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
-    if ($LASTEXITCODE -ne 0) { return $false }
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
     & $py tools\linux_compile_check.py --quiet --min 18
-    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
-    $LASTEXITCODE -eq 0
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    $rc -eq 0
 }
 
 # C 注释词法检查（L6b, 2026-09-25）: 防"注释里的符号序列"陷阱。
