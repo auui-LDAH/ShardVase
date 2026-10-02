@@ -319,12 +319,28 @@ Check '平台层契约 (platform conformance)' {
     $pcDir = Join-Path $env:TEMP 'shardvase_platconf'
     New-Item -ItemType Directory -Force -Path $pcDir | Out-Null
     $pcExe = Join-Path $pcDir 'platconf.exe'
-    $vc = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022' -Recurse -Filter vcvars64.bat -EA SilentlyContinue | Select-Object -First 1
-    if (-not $vc) { $vc = Get-Item 'D:\environment\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat' -EA SilentlyContinue }
+    # ## CI 暴露的缺陷（2026-10-02）: 原为两次硬编码查找
+    #   （`Get-ChildItem 'C:\Program Files (x86)\...\2022'` + 回退
+    #   `D:\environment\VS2022BuildTools\...`），**无 vswhere 兜底、
+    #   也不检查 `cl` 是否已在 PATH**。
+    #   GitHub windows-latest 的 MSVC 在 `Microsoft Visual Studio\18\Enterprise`
+    #   （不在上述范围内），且 CI 用 `ilammy/msvc-dev-cmd` 把 `cl` 放进 PATH
+    #   -> 该硬编码查找必然落空。统一走 `tools\vcvars.py` 的单一实现。
+    $vc = $null
+    try {
+        $vcLine = & $py tools\vcvars.py --print
+        if ($LASTEXITCODE -eq 0 -and $vcLine) { $vc = $vcLine.Trim() }
+    } catch { $vc = $null }
+    if (-not $vc) { return $false }
     $bat = Join-Path $pcDir 'b.bat'
     $log = Join-Path $pcDir 'cl.log'
     $cl = "cl /nologo /O2 /W4 /std:c11 /utf-8 /I include /Fe:`"$pcExe`" tests\platform_conformance.c src\platform\prot_platform_win.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
-    "call `"$($vc.FullName)`" >nul 2>&1`r`ncd /d `"$((Get-Location).Path)`"`r`n$cl > `"$log`" 2>&1" | Set-Content -Path $bat -Encoding ASCII
+    # 'CL_ON_PATH' 哨兵 = cl 已在 PATH, **不写 call 行**
+    #   （`call "" >nul 2>&1` 会静默失败并让后续 cl 找不到）
+    $head = ''
+    if ($vc -ne 'CL_ON_PATH') { $head = "call `"$vc`" >nul 2>&1`r`n" }
+    $body = "cd /d `"$((Get-Location).Path)`"`r`n$cl > `"$log`" 2>&1"
+    Set-Content -Path $bat -Value ($head + $body) -Encoding ASCII
     cmd /c $bat | Out-Null
     if (-not (Test-Path $pcExe)) { return $false }
     & $pcExe

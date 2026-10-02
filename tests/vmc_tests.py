@@ -43,6 +43,7 @@ _hw_tools = _hw_tools_dir()
 if _hw_tools and _hw_tools not in _sys_hw.path:
     _sys_hw.path.insert(0, _hw_tools)
 import winproc  # noqa: E402
+import vcvars as _vcvars  # noqa: E402
 
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -180,14 +181,29 @@ def run_case(name, src, host_hex):
         return 'ASSEMBLE FAIL: ' + r.stderr.strip()
     with open(runner_c, 'w', encoding='utf-8') as f:
         f.write(RUNNER_TMPL)
-    vcvars = None
-    for c in ('D:\\environment\\VS2022BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat',
-              r'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'):
-        if os.path.isfile(c):
-            vcvars = c
-            break
-    if vcvars is None:
-        return 'CL FAIL: vcvars not found'
+    # ## CI 暴露的缺陷（2026-10-02）: 硬编码 vcvars 路径
+    #
+    # **问题**: 此处原硬编码**两个本机路径**（`D:\environment\VS2022BuildTools`
+    #   与 `2022\BuildTools`），没有 vswhere 兜底、也不检查 `cl` 是否已在 PATH。
+    #   本地之所以一直过，是因为本机编译器恰好落在硬编码表里。
+    #
+    # **CI 上的后果**: GitHub windows-latest 的 MSVC 位于
+    #   `C:\Program Files\Microsoft Visual Studio\18\Enterprise`（**不在表里**），
+    #   且 CI 用 `ilammy/msvc-dev-cmd` 把 `cl` 直接放进 PATH（**不生成
+    #   那两个 vcvars64.bat**）-> 6 个正例全部
+    #   `FAIL (CL FAIL: vcvars not found)`。
+    #   **这是"本地才通过"的同一类缺陷**（与 build.ps1 的 vswhere 兜底相对照:
+    #   它当年就有兜底，所以 build 步在 CI 上是过的）。
+    #
+    # **修法**: 统一走 `tools/vcvars.py` 的单一实现 ——
+    #   判据 ① `cl` 已在 PATH（CI 形态，**根本不需要 vcvars64.bat**）；
+    #   判据 ② 常见路径 + `vswhere` 问安装位置（覆盖任意盘符/版本号/版次）。
+    #   `vcvars.bat_text()` 在判据 ① 成立时**不写 `call` 行**，
+    #   避免 `call "" >nul 2>&1` 静默失败。
+    try:
+        _vc = _vcvars.find_vcvars()
+    except _vcvars.VcVarsNotFound as e:
+        return 'CL FAIL: ' + str(e).splitlines()[0]
     # ## L6b（2026-09-25）: 加入平台层源文件
     #
     # **问题**: L6b 把 `vm.c` 的平台相关部分改走平台层
@@ -213,7 +229,7 @@ def run_case(name, src, host_hex):
              '/link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib')
     bat = os.path.join(BUILD, 'vmc_cl.bat')
     with open(bat, 'w', encoding='ascii') as f:
-        f.write('@echo off\r\ncall "%s" >nul 2>&1\r\n%s\r\n' % (vcvars, clcmd))
+        f.write(_vcvars.bat_text(clcmd, _vc))
     r = winproc.run([bat], capture_output=True, text=True,
                         encoding='utf-8', errors='replace')   # W5: 防 cl 中文输出解码崩溃
     if r.returncode != 0:

@@ -51,30 +51,67 @@ $display = $cfg.display_name
 $serialName = $cfg.serial
 $lite = if ($cfg.lite -eq $true) { '-DPROT_LITE_GUI' } else { '' }
 
-# ---- vcvars (同 build.ps1 探测) ----
+# ---- 编译器环境 (vcvars) ----
+<#
+统一委托 tools/vcvars.py —— **单一实现**, 不再各脚本各抄一份路径表。
+
+为什么改 (2026-10-02, CI 实测):
+  原实现是两份硬编码路径表 (本脚本 + tests/vmc_tests.py)。在 GitHub
+  windows-latest 上 cl 已由 ilammy/msvc-dev-cmd 放进 PATH, 但 runner 的
+  MSVC 位于 `...\Microsoft Visual Studio\18\Enterprise`, 两个硬编码路径
+  都不存在 -> "vcvars64.bat not found" -> 骨架回归/CI 必挂。
+  本地永远不暴露, 因为本地恰好命中硬编码的 D:\environment\...。
+
+三条路径, 按序:
+  1. $env:PROT_SDK_VCVARS 显式指定 (与 $env:PROT_SDK_PYTHON 同一惯例)
+  2. tools/vcvars.py --print  (候选表 -> vswhere 兜底 -> cl 已在 PATH)
+     --print 输出 'CL_ON_PATH' 哨兵表示"cl 已在 PATH, 无需 call"
+  3. 回退: 旧 SDK 包内可能没有 tools/vcvars.py, 做最小探测
+#>
 $vcvars = $null
-if (Test-Path -LiteralPath "D:\environment\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat") {
-    $vcvars = "D:\environment\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-} else {
-    $cands = @(
-        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat',
-        'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
-        'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
-        'C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat')
-    foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { $vcvars = $c; break } }
+if ($env:PROT_SDK_VCVARS -and (Test-Path -LiteralPath $env:PROT_SDK_VCVARS)) {
+    $vcvars = $env:PROT_SDK_VCVARS
 }
 if (-not $vcvars) {
-    Write-Host 'build_skeleton FAILED: vcvars64.bat not found' -ForegroundColor Red
-    Write-Host ''
-    Write-Host '处理: 需要 Visual Studio 2022 的 C++ 生成工具。' -ForegroundColor Yellow
-    Write-Host '  1. 安装 VS2022 BuildTools, 勾选"使用 C++ 的桌面开发"'
-    Write-Host '  2. 或用 -VcVars <path> 显式指定 vcvars64.bat 路径'
-    Write-Host '  3. 常见路径: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-    Write-Host ''
-    throw 'build_skeleton: vcvars64.bat not found'
+    $vcvTool = Join-Path $REPO 'tools\vcvars.py'
+    if (Test-Path -LiteralPath $vcvTool) {
+        $vcLine = & $py $vcvTool --print 2>$null
+        if ($LASTEXITCODE -eq 0 -and $vcLine) { $vcvars = $vcLine.Trim() }
+    }
 }
-Write-Host "build_skeleton: vcvars = $vcvars"
+if (-not $vcvars) {
+    # 回退 (SDK 包内无 tools/vcvars.py): cl 已在 PATH 则无需 vcvars
+    if (Get-Command cl -ErrorAction SilentlyContinue) {
+        $vcvars = 'CL_ON_PATH'
+    } else {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere) {
+            $inst = & $vswhere -latest -products * -property installationPath 2>$null | Select-Object -First 1
+            if ($inst) {
+                $cand = Join-Path $inst.Trim() 'VC\Auxiliary\Build\vcvars64.bat'
+                if (Test-Path -LiteralPath $cand) { $vcvars = $cand }
+            }
+        }
+    }
+}
+if (-not $vcvars) {
+    Write-Host 'build_skeleton FAILED: 找不到 C++ 编译器环境' -ForegroundColor Red
+    Write-Host ''
+    Write-Host '处理: 需要 Visual Studio 的 C++ 生成工具 (cl.exe)。' -ForegroundColor Yellow
+    Write-Host '  1. 安装 VS BuildTools, 勾选"使用 C++ 的桌面开发"'
+    Write-Host '  2. 或设 $env:PROT_SDK_VCVARS=<vcvars64.bat 路径>'
+    Write-Host '  3. 常见路径: C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+    Write-Host ''
+    throw 'build_skeleton: C++ build environment not found'
+}
+# 'CL_ON_PATH' = cl 已在 PATH, 不写 call 行 (写 call "" >nul 会静默失败)
+$vcvPrefix = ''
+if ($vcvars -eq 'CL_ON_PATH') {
+    Write-Host 'build_skeleton: cl 已在 PATH (跳过 vcvars)'
+} else {
+    Write-Host "build_skeleton: vcvars = $vcvars"
+    $vcvPrefix = '"' + $vcvars + '" >nul 2>&1 && '
+}
 
 # ---- 友好错误 (阶段4: 把"失败"变成"下一步怎么做") ----
 # 目标: 使用者不需要读脚本也能知道怎么修。每条给"现象 + 原因 + 动作"。
@@ -264,7 +301,7 @@ $clCmd = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I `"$REPO\include`" /I `"$genD
     "`"$Project\app_main.c`" $busSrcs $vmcalcObj " +
     "`"$genDir\strings.c`" `"$genDir\license_pubkey.c`" `"$genDir\indirect_table.c`" `"$genDir\expect_default.c`" " +
     "/link $subsys $weak bcrypt.lib winhttp.lib advapi32.lib /MAP:`"$outDir\$appName.map`""
-cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd" 2>&1 | Tee-Object -FilePath (Join-Path $outDir 'cl_log.txt') | Out-Host
+cmd /c "$vcvPrefix$clCmd" 2>&1 | Tee-Object -FilePath (Join-Path $outDir 'cl_log.txt') | Out-Host
 if ($LASTEXITCODE -ne 0) {
     $clLog = Join-Path $outDir 'cl_log.txt'
     Fail-Step 'cl (编译/链接)' @"

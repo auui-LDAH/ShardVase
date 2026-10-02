@@ -62,6 +62,9 @@ TOOLS_KEEP = {
     'gen_sections.py', 'gen_padding.py', 'normalize_tail.py',
     'conformance.py', 'identity.py', 'merge_baseline.py',
     'measure_sections.py', 'vmc.py',
+    # 编译器环境探测 (build_skeleton.ps1 委托它; 2026-10-02)
+    # 缺了它, 包内骨架构建会回退到最小探测 —— 在 CI 的 MSVC 布局下找不到
+    'vcvars.py',
 }
 
 # prot_sdk/ 需要的内容
@@ -255,7 +258,7 @@ def selftest():
         case('总字节 > 100KB (%d)' % nb, nb > 100000)
         # 必需内容
         for rel in ['include/protect/protdef.h', 'src/vm.c',
-                    'tools/vmenc.py', 'tools/compat.py',
+                    'tools/vmenc.py', 'tools/compat.py', 'tools/vcvars.py',
                     'prot_sdk/skeleton/build_skeleton.ps1',
                     'prot_sdk/skeleton/strings.txt',
                     'modules.json', 'compositions/standard.json',
