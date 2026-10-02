@@ -186,6 +186,48 @@ static void watchdog_thread(void* param) {
                     break;
             }
         }
+        /* A5: 反附加周期复查 —— 驻留期调试器/探测不再只有启动一次检测
+         *
+         * ## T11 修复（2026-10-03）: 必须留在 `enter(EXT)` 窗口**之内**
+         *
+         *   缺陷: 本块原先放在 `prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_EXT)`
+         *   **之后**。而 `g_ad_scan_fn` 指向 `prot_antidebug_scan` ——
+         *   它**本身是 selfcrypt 加密目标**（`EXT_TARGETS`，组 1）。
+         *   leave 已把组 1 全部重新加密, 于是这次调用执行的是**磁盘密文**。
+         *
+         *   为什么本机长期没暴露: 8 个条目共用同一个硬编码 key0
+         *   (`tools/selfcrypt_proto.py` 的 seed), 密钥流与构建无关 ->
+         *   密文首字节恒 = `明文首字节 ^ 0x8f`。本机 MSVC 14.44 下
+         *   `prot_antidebug_scan` 明文首字节 = 0x4C(C4 帧序言) ->
+         *   密文首字节 = 0xC3 = `ret` -> 调用**静默空转**(A5 复查失效, 但不崩)。
+         *   CI 的 MSVC 14.51 下序言字节不同 -> 密文首字节非 `ret` ->
+         *   执行垃圾指令 -> `0xC0000005`, 表现为 e2e `T11 watchdog-stable`
+         *   以 `exit=3221225477` 失败。
+         *
+         *   修法: 把本块移到 `leave(EXT)` **之前**（即与 `check_self` 同窗口）。
+         *   注: `check_iat` / `check_guards` **不是**加密目标, 留在窗口外无妨;
+         *   而所有加密目标（`prot_vm_blob_load` / `prot_license_verify` /
+         *   `prot_integrity_check_self` / `prot_antidebug_scan`）都必须在
+         *   各自的 enter/leave 窗口内被调用。
+         *
+         *   遗留风险（**诚实边界**）: 该约束目前**无静态门禁覆盖** ——
+         *   P5 只判"加密函数不得被直接 E8 调用", 不判"调用点是否在窗口内"。
+         *   间接调用绕过了 P5 的字面判据。 */
+        if (g_ad_scan_fn != NULL && g_ad_scan_fn(&ad) == PROT_OK &&
+            prot_antidebug_detected(&ad) != 0u) {
+            switch (g_wd_policy) {
+                case PROT_POLICY_EXIT:
+                    prot_plat_terminate(PROT_EXIT_DEBUG_DETECTED);
+                    break;
+                case PROT_POLICY_FAKE:
+                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
+                    break;
+                case PROT_POLICY_CONTINUE:
+                default:
+                    (void)prot_plat_atomic_increment(&g_wd_tamper);
+                    break;
+            }
+        }
         prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_EXT);
         /* G2 补洞: 运行期 IAT 改写 (hook 导入表) 周期复查 ——
          * 文件级 CRC 不覆盖 loader 写入的 IAT, 这里快照比对 detect。 */
@@ -222,22 +264,8 @@ static void watchdog_thread(void* param) {
                     break;
             }
         }
-        /* A5: 反附加周期复查 —— 驻留期调试器/探测不再只有启动一次检测 */
-        if (g_ad_scan_fn != NULL && g_ad_scan_fn(&ad) == PROT_OK &&
-            prot_antidebug_detected(&ad) != 0u) {
-            switch (g_wd_policy) {
-                case PROT_POLICY_EXIT:
-                    prot_plat_terminate(PROT_EXIT_DEBUG_DETECTED);
-                    break;
-                case PROT_POLICY_FAKE:
-                    (void)prot_plat_atomic_exchange(&g_wd_fake, 1);
-                    break;
-                case PROT_POLICY_CONTINUE:
-                default:
-                    (void)prot_plat_atomic_increment(&g_wd_tamper);
-                    break;
-            }
-        }
+        /* A5 反附加周期复查**已上移**到 leave(EXT) 之前 —— 见上方 T11 修复注释。
+         * （`prot_antidebug_scan` 是组 1 加密目标, 必须在解密窗口内调用。） */
         /* W2 (WIN_ENHANCE): 周期回调 (demo N3 数据自校验等) */
         {
             prot_wd_callback cb;
