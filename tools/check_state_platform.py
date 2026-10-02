@@ -128,6 +128,40 @@ def check_flat_clean(gen_root):
     return True, 'flat clean (0 files, only win/ linux/)'
 
 
+def missing_prereq(gen_dir, artifact):
+    """**前置产物**是否齐备。齐备 -> `None`；否则返回缺失说明。
+
+    ## 为什么必须与"错配"区分开（2026-10-02 实测缺陷）
+      在**只构建 Windows** 的环境（CI 的 Windows-only runner、干净克隆）上，
+      linux 产物与生成物**本就不存在** -> `check()` 返回 `missing ...` ->
+      `main()` 汇总为 FAIL -> **门禁在干净环境上永远红**。
+      实测: CI 上本项报 `[X]`，日志只有
+        `[linux] FAIL missing ...demo/gen/linux/prot_sections.json`
+      —— 报的是"文件没有"，**不是"状态错配"**。
+      而"永远红的门禁" == 没有门禁（会被无视）。
+
+    ## 但**也不能算通过**
+      前置不存在时本判据**从未执行**。按本项目反复记名的
+      「未验证 != 通过」，`main()` 走 **SKIP（退出 2）**，
+      与 `tools/guard_selftest.py`(`SKIP: 缺 build/demo.exe ...（需先构建）`)、
+      `tools/prot_dbg.py`(`T0 前置: 产物+map 就绪（缺则 SKIP，不假装通过）`)、
+      `tools/linux_compile_check.py`(`return 2`) 的既有 SKIP 语义一致。
+
+    ## 为什么本函数**不能**改 `check()`
+      `check()` 的 `missing -> False` 是 `selftest` T4 负向用例的**判据本身**
+      （"文件缺失 -> **必须 FAIL**（不崩溃）"，`:332-338`）。
+      把 `check()` 改成返回 SKIP 会让 T4 失去意义（一个从未被负向测试
+      证明过的判据等于没有判据）。=> 只把**前置判定**提到 `main()` 层，
+      `check()` 的语义一字不改。
+    """
+    sj = os.path.join(gen_dir, 'prot_sections.json')
+    if not os.path.isfile(sj):
+        return '缺生成物 %s' % sj
+    if not os.path.isfile(artifact):
+        return '缺产物 %s' % artifact
+    return None
+
+
 def check(gen_dir, artifact):
     """核心判据: **生成物节名 ⊆ 产物节名** + expect 一致性。
 
@@ -258,23 +292,52 @@ def main():
 
     plats = ['win', 'linux'] if args.platform == 'both' else [args.platform]
     results = []
+    skipped = []
     for p in plats:
         gen_dir, art = PLATFORMS[p]
+        # 前置缺失 -> **SKIP**（不是 FAIL；见 missing_prereq 的注释）
+        miss = missing_prereq(gen_dir, art)
+        if miss is not None:
+            results.append((p, None, miss))
+            skipped.append(p)
+            if not args.json:
+                print('[%s] SKIP %s（本项未验证 != 通过）' % (p, miss))
+            continue
         ok, det = check(gen_dir, art)
         results.append((p, ok, det))
         if not args.json:
             print('[%s] %-4s %s' % (p, 'ok' if ok else 'FAIL', det))
 
     if args.json:
-        print(json.dumps([{'platform': p, 'ok': ok, 'detail': d}
+        print(json.dumps([{'platform': p,
+                           'ok': ok,
+                           'skipped': ok is None,
+                           'detail': d}
                           for p, ok, d in results],
                          ensure_ascii=False, indent=2))
-    all_ok = all(ok for _, ok, _ in results)
+    # ## 三态: 有 FAIL -> 1；**有任何平台被跳过 -> 2**（未验证 != 通过）；否则 0
+    #
+    #   为什么"部分跳过"也返回 SKIP（而不是"跳过 1 / 通过 1 就算 PASS"）:
+    #   本项的名字与判据都是**跨平台**的（"生成物节名 ⊆ 产物"要两平台都成立
+    #   才叫状态正常）。若 linux 产物根本没构建，本项**只验证了一半** ——
+    #   报 `[ok]` 就是**过度声称**（"未验证 != 通过"）。诚实的做法是
+    #   SKIP: 告诉读者"这项没跑全，别把它当通过"。
+    #   CI 上（Windows-only runner）正是这种情况 -> 门禁显示 `[skip]`。
+    checked = [(p, ok, d) for p, ok, d in results if ok is not None]
+    n_fail = sum(1 for _, ok, _ in checked if not ok)
+    all_ok = (n_fail == 0)
     if not args.json:
-        print('[check_state_platform] %s (%d/%d)'
-              % ('PASS' if all_ok else 'FAIL',
-                 sum(1 for _, ok, _ in results if ok), len(results)))
-    return 0 if all_ok else 1
+        print('[check_state_platform] %s (检查 %d/%d，跳过 %d)'
+              % ('PASS' if all_ok else 'FAIL', len(checked), len(results),
+                 len(skipped)))
+        if skipped and all_ok:
+            print('[check_state_platform] SKIP: %s 平台产物未构建 —— '
+                  '本项未验证（未验证 != 通过）' % ','.join(skipped))
+    if not all_ok:
+        return 1
+    if skipped:
+        return 2
+    return 0
 
 
 def selftest():
@@ -301,13 +364,22 @@ def selftest():
         os.path.join(lw, 'prot_sections.json'))
     lin_ok = os.path.isfile(al) and os.path.isfile(
         os.path.join(ll, 'prot_sections.json'))
-    case('T0 前置: 两平台产物与生成物存在（缺则需先构建）',
-         win_ok and lin_ok)
+    # ## 前置不满足 -> **SKIP，不报 FAIL**（2026-10-02 修正）
+    #   原写法把 T0 也走 `case()` -> 缺产物时先打一行 `**FAIL** T0 前置`
+    #   再打 SKIP，**看起来像失败**。而"前置不满足"与"判据不成立"是两回事:
+    #   报告称 FAIL 会让读者以为状态错配 —— 实测 CI 上正是如此。
+    #   现在: 前置不满足 -> 只打 SKIP 说明 + `return 2`（未验证 != 通过）。
     if not (win_ok and lin_ok):
-        print()
-        print('[check_state_platform-selftest] SKIP: 产物未就绪'
-              '（未验证 != 通过）')
+        miss = []
+        if not win_ok:
+            miss.append('win（build/demo.exe + demo/gen/win/）')
+        if not lin_ok:
+            miss.append('linux（build/demo_linux + demo/gen/linux/）')
+        print('')
+        print('[check_state_platform-selftest] SKIP: %s 产物未就绪 —— '
+              '需先构建（未验证 != 通过）' % ' 与 '.join(miss))
         return 2
+    case('T0 前置: 两平台产物与生成物存在', True)
 
     # T1 正向: linux 产物 + linux 生成物
     ok, det = check(ll, al)

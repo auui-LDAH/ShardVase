@@ -299,8 +299,13 @@ def main():
 
 def selftest():
     """自检: **含负向**（证明"缺失产物会如实标 NA"而不是编数据）。"""
+    # `_exe_for` 在 T1（读）与 T2（临时替换）都要用 —— `global` 声明必须
+    # 在任何引用**之前**，否则 Python 报
+    # `SyntaxError: name '_exe_for' is used prior to global declaration`。
+    global _exe_for
     print('=== perf_baseline 自检 ===')
     fail = 0
+    skip = 0
 
     def case(name, ok, detail=''):
         nonlocal fail
@@ -310,13 +315,34 @@ def selftest():
             print('  **FAIL** %s  %s' % (name, detail[:90]))
             fail += 1
 
-    # T1 正向: 真实产物可测（demo.exe 必须存在）
-    r = measure('full', runs=3, with_mem=False)
-    case('T1 正向: full 组合可测', r['status'] == 'ok'
-         and r.get('cold_ms') is not None, str(r)[:90])
+    # T1 正向: 真实产物可测 —— **需要 `build/perf/full.exe`**。
+    #
+    #   ## ⚠️ 2026-10-02 修正: 产物缺失 -> SKIP，**不是 FAIL**
+    #     实测缺陷: 干净克隆（CI 的 Windows runner / 刚 clone 的机器）上
+    #     `build/perf/` 整个不存在 -> 旧写法断言 `status == 'ok'` 失败 ->
+    #     自检 rc=1 -> 门禁报 `[X]` -> **门禁在干净克隆上永远不可能变绿**，
+    #     而"永远红"的门禁与没有门禁等价（本项目反复记名）。
+    #     但**也不能算通过**: 产物不存在时这条正向判据**从未执行**
+    #     （「未验证 != 通过」）。=> 显式 SKIP，rc=2，门禁据此判 SKIP。
+    #
+    #   ## 为什么"产物缺失"由 T2 负向已经证明过，T1 还要单独判
+    #     T2 证明的是"measure() 对缺失产物会**如实标 NA 不编数据**"——
+    #     那是**工具行为**的正确性。T1 证明的是"**这台机器上真的有可测产物**"
+    #     ——那是**环境就绪性**。两者是不同命题，缺产物时只有后者不成立。
+    full_exe = _exe_for('full')
+    if not os.path.isfile(full_exe):
+        print('  SKIP T1 正向: full 组合可测 —— 产物缺失（需先构建）')
+        print('      前置不满足: %s 不存在。' % os.path.relpath(full_exe, REPO))
+        print('      补齐方式: 依次 `build.ps1 -Composition full` 并复制到 '
+              'build/perf/full.exe（或直接跑完整基准以免只测最后一个组合）。')
+        print('      本项未验证 != 通过。')
+        skip += 1
+    else:
+        r = measure('full', runs=3, with_mem=False)
+        case('T1 正向: full 组合可测', r['status'] == 'ok'
+             and r.get('cold_ms') is not None, str(r)[:90])
 
     # T2 **负向**: 不存在的产物 -> **必须标 NA**（不编造数据）
-    global _exe_for
     orig = _exe_for
     _exe_for = lambda c: os.path.join(REPO, 'build', '__no_such_exe__.exe')
     try:
@@ -342,6 +368,11 @@ def selftest():
     if fail:
         print('[perf_baseline-selftest] FAIL: %d 项' % fail)
         return 1
+    if skip:
+        # 退出码 2 = 前置不满足 -> 门禁判 SKIP（**绝不等于通过**）
+        print('[perf_baseline-selftest] SKIP: %d 项因前置产物缺失未验证（未验证 != 通过）'
+              % skip)
+        return 2
     print('[perf_baseline-selftest] PASS: 1 正向 + **2 负向** + 1 映射校验')
     return 0
 

@@ -67,13 +67,24 @@ def _read(path, enc='utf-8'):
 
 # ============================================================================
 # 探针（每个返回 (ok, detail)；**不抛异常**由调用方兜底为 FAIL）
+#   ok 的取值有三态:
+#     True / False -> 判据成立 / 不成立（**真判据**）
+#     None         -> **前置不满足**（产物/文件本就不存在，判据从未执行）
+#   `None` 走 SKIP，**绝不算通过**（本项目反复记名的「未验证 != 通过」）。
+#   ⚠️ 为什么必须是显式的 None 而不是"文件缺失返回 False":
+#     `False` 与"产物含调试串"是同一种返回值 -> 调用方无从区分
+#     「我检查了，产物是脏的」和「我根本没检查」，两者都被报成 FAIL。
+#     干净克隆上没有任何 Platform 产物，于是 `docclaim` 永远红 ——
+#     而"永远红"的门禁与没有门禁等价。（实测: 2026-10-02 CI 五次失败，
+#     其中本项 `scdbg-absent-linux` 就是这条。）
 # ============================================================================
 
 def probe_no_scdbg_in(artifact):
     """产物中**不得**含 SCDBG 自解密日志（泄漏 RVA/密钥/CRC）。"""
     p = _p(artifact)
     if not os.path.isfile(p):
-        return False, 'missing %s' % artifact
+        # 前置不满足 -> SKIP（本项未验证 != 通过）
+        return None, 'missing %s（前置不满足，本项未验证）' % artifact
     data = open(p, 'rb').read()
     bad = [m for m in (b'[SCDBG]', b'PRE-VP', b'CRC got', b'VP-OK')
            if m in data]
@@ -359,8 +370,10 @@ CLAIMS = [
 # ============================================================================
 
 def run_claim(c):
-    """执行一条断言 -> (status, detail)。status ∈ ok/fail"""
+    """执行一条断言 -> (status, detail)。status ∈ ok/fail/skip"""
     # ① 来源文档必须存在（**防悬空断言**）
+    #    ⚠️ 来源文档缺失是**硬的错误**（断言悬空 = 文档被删/改名而断言还在），
+    #    不是"前置产物没构建" —— 所以这里是 `fail` 而非 `skip`。
     src = _p(*c['source'].split('/'))
     if not os.path.exists(src):
         return 'fail', '来源文档不存在: %s（断言悬空）' % c['source']
@@ -369,6 +382,10 @@ def run_claim(c):
         ok, detail = c['probe']()
     except Exception as e:                           # noqa: BLE001
         return 'fail', '探针异常: %s: %s' % (type(e).__name__, e)
+    # ③ 前置不满足 -> SKIP（判据从未执行，**不计入通过**）
+    #    探针用 `None` 显式表达"我没能检查"，与"检查了、不成立"（False）分开。
+    if ok is None:
+        return 'skip', detail
     holds = (ok == c['expect'])
     return ('ok' if holds else 'fail'), detail
 
@@ -394,8 +411,10 @@ def main():
         st, det = run_claim(c)
         results.append((c, st, det))
         if not args.json and not args.quiet:
-            print('  %-4s %-22s %s'
-                  % ('ok' if st == 'ok' else 'FAIL', c['id'], det[:80]))
+            # 三态逐条标注: `ok` / `SKIP` / `FAIL`（SKIP 必须是**显式可辨**的，
+            #   否则"没检查"会被读成"检查了、过了"）
+            tag = {'ok': 'ok', 'skip': 'SKIP'}.get(st, 'FAIL')
+            print('  %-4s %-22s %s' % (tag, c['id'], det[:80]))
 
     if args.list:
         for c in CLAIMS:
@@ -406,13 +425,27 @@ def main():
         print(json.dumps([{'id': c['id'], 'status': st, 'detail': d}
                           for c, st, d in results],
                          ensure_ascii=False, indent=2))
-    bad = [c['id'] for c, st, _ in results if st != 'ok']
-    n_ok = len(results) - len(bad)
+    # ## 三态汇总（2026-10-02）
+    #   原来只有 ok/fail 两态，于是"产物没构建因此没检查"被算成 FAIL ——
+    #   干净克隆上本项**永远**红，而"永远红"的门禁与没有门禁等价。
+    #   现在: skip 单列并**明确写出"未验证 != 通过"**；
+    #   只有 `skip` 无 `fail` 时退出码 = 2（前置不满足，门禁据此判 SKIP）。
+    bad = [c['id'] for c, st, _ in results if st == 'fail']
+    skipped = [c['id'] for c, st, _ in results if st == 'skip']
+    n_ok = len(results) - len(bad) - len(skipped)
     if not args.json:
-        print('[docclaim_check] %s (%d/%d)'
+        print('[docclaim_check] %s (%d/%d%s)'
               % ('PASS' if not bad else 'FAIL: ' + ','.join(bad),
-                 n_ok, len(results)))
-    return 0 if not bad else 1
+                 n_ok, len(results),
+                 '' if not skipped else '，跳过 %d' % len(skipped)))
+        if skipped:
+            print('[docclaim_check] SKIP: %s —— 前置不满足，'
+                  '本项未验证（未验证 != 通过）' % ','.join(skipped))
+    if bad:
+        return 1
+    if skipped:
+        return 2
+    return 0
 
 
 # ============================================================================
@@ -431,14 +464,25 @@ def selftest():
             print('  **FAIL** %s  %s' % (name, detail[:90]))
             fail += 1
 
-    # T1 正向: 真实断言应全过（依赖当前仓库状态）
-    bad = []
+    # T1 正向: 真实断言**不得有 FAIL**（依赖当前仓库状态）
+    #   ## 为什么允许 skip 通过本项（2026-10-02）
+    #     有些断言依赖**平台产物**（`build/demo_linux` 等）。本机/CI 未必构建过
+    #     全部平台，此时判据从未执行 -> 正确的结局是 SKIP 而非 FAIL
+    #     （见 `run_claim` 的 ③）。若把 skip 也算作 T1 失败，则"没构建 Linux
+    #     产物"就等价于"断言被违反"，本自检又变成永远红。
+    #     **但 fail 一个都不许有** —— 那才是判据真的不成立。
+    bad, skipped = [], []
     for c in CLAIMS:
         st, det = run_claim(c)
-        if st != 'ok':
+        if st == 'fail':
             bad.append('%s: %s' % (c['id'], det))
-    case('T1 正向: %d 条真实断言全过' % len(CLAIMS), not bad,
-         '; '.join(bad))
+        elif st == 'skip':
+            skipped.append(c['id'])
+    case('T1 正向: %d 条真实断言无 FAIL%s'
+         % (len(CLAIMS),
+            '' if not skipped else '（%d 条因前置不满足 SKIP: %s）'
+            % (len(skipped), ','.join(skipped))),
+         not bad, '; '.join(bad))
 
     # T2 **负向**: 来源文档不存在 -> 必须 FAIL（悬空断言）
     fake = dict(CLAIMS[0])
@@ -574,8 +618,20 @@ def selftest():
     case('T7 正向对照: 非锚定正则**确实**会多算（证明本用例有判别力）',
          _count_naive(fake_ps) == 5, '非锚定得 %d，期望 5' % _count_naive(fake_ps))
 
-    # 对**真实脚本**断言: 静态项数 == 运行期 [ok] 证据行数这一不变量。
+    # 对**真实脚本**断言: 静态项数 == 运行期证据行数这一不变量。
     #   运行期证据来自门禁日志（gate_log 落盘）；若无日志则跳过并**明确标注**。
+    #
+    #   ## ⚠️ 2026-10-02 修正: 不变量必须**按三态对账**
+    #     实测缺陷: 本不变量原来断言
+    #        静态 `Check` 数(33) == `PASS:` 的 N(30) == `[ok]` 行数(30)
+    #     它**曾经为真**只是因为历史上 `Check` 恰好 30 个；加法一改就假了 ——
+    #     而修正方向不是把 N 凑成 33（那会变成谎报"33 项全通过"）。
+    #     正确的对账式（三态，与环境无关）:
+    #        静态 `Check` 数 == `[ok]` + `[X]` + `[skip]` + `[info] 未运行` 行数
+    #     即: **每一个静态调用点在运行期都必须留下恰好一枚证据行**
+    #     （通过 / 失败 / 跳过 / 未运行）。这条比旧式更强 —— 旧的只对 PASS 轮
+    #     成立且把"未运行"的 3 项算作缺失。
+    #     N（`PASS:` 的分子）**只数 `[ok]`**，不再与静态项数比较。
     items7 = _gate_items()
     if items7 is None:
         case('T7 **负向**: 无 release_check.ps1（跳过）', True)
@@ -586,27 +642,47 @@ def selftest():
         logs = sorted(glob.glob(_p('build', 'logs', 'release_check_*.log')))
         src = _p('tools', 'release_check.ps1')
         src_mt = os.path.getmtime(src) if os.path.isfile(src) else 0
-        # 只看**已完成 PASS 轮**的日志，且拒绝"早于被测脚本"的日志。
+        # 只看**已完成**轮次的日志，且拒绝"早于被测脚本"的日志。
         #   ## 为什么必须比时间戳（本项目「归档产物必须自带 prot_sections.json」同型）
         #     一份在脚本**改动之前**跑出的日志，不能作为**当前脚本**的证据 ——
         #     否则本次修复会被上一轮的旧日志判为失败（"用当前 json 校验旧构建"
         #     的镜像错误）。日志与脚本同代才可对账。
+        #   ## 为什么 PASS 与 FAIL 轮**都可以**对账
+        #     三态不变量对两种结局都成立（失败的轮次里 `[X]` 顶替了 `[ok]`）。
+        #     旧式只认 PASS 轮，恰恰在"门禁正在红"时失去判别力。
         done = []
         for lg in logs:
             lt = _read(lg, enc='utf-8') or ''
-            if re.search(r'PASS:\s*(\d+)\s*项检查全通过', lt) and os.path.getmtime(lg) >= src_mt:
+            finished = re.search(r'\[release_check\] (PASS|FAIL):', lt)
+            if finished and os.path.getmtime(lg) >= src_mt:
                 done.append(lg)
         if not done:
-            case('T7 不变量: 无"与当前脚本同代"的 PASS 日志可对账（未验证 != 通过）', True)
+            case('T7 不变量: 无"与当前脚本同代"的完成日志可对账（未验证 != 通过）', True)
         else:
             lt = _read(done[-1], enc='utf-8') or ''
             nok = len(re.findall(r'(?m)^\[ok\]', lt))
-            npass = re.findall(r'PASS:\s*(\d+)\s*项检查全通过', lt)
-            case('T7 不变量: 静态项数(%d) == 运行期报告项数(%s) == 证据行数(%d)'
-                 % (len(items7), npass[-1], nok),
-                 len(items7) == int(npass[-1]) == nok,
-                 '项数 %d / 报告 %s / [ok] 行 %d 三者不等（%s）'
-                 % (len(items7), npass[-1], nok, os.path.basename(done[-1])))
+            nx = len(re.findall(r'(?m)^\[X\]', lt))
+            # ## 只数**逐项**跳过行（`Check` 的 SKIP 分支打的），**不数汇总行**
+            #   汇总行为 `[skip] N 项因前置不满足未验证`，它**不是**某个调用点
+            #   的证据行；逐项行为 `[skip] <项名> —— 前置不满足，本项未验证`。
+            #   两者用 `—— 前置不满足` vs `项因前置不满足` 区分 ——
+            #   若误把汇总行也算进来，静态 33 就会对上一个多出来的 1。
+            nskip = len(re.findall(r'(?m)^\[skip\] .*—— 前置不满足', lt))
+            ninfo = len(re.findall(r'(?m)^\[info\] .*未运行', lt))
+            total = nok + nx + nskip + ninfo
+            case('T7 不变量(三态): 静态 Check %d == [ok]%d + [X]%d + [skip]%d + [info]%d = %d'
+                 % (len(items7), nok, nx, nskip, ninfo, total),
+                 len(items7) == total,
+                 '每个调用点必须恰好留下一枚证据行；实测静态 %d vs 证据合计 %d（%s）'
+                 % (len(items7), total, os.path.basename(done[-1])))
+            # N 只数 `[ok]`: 若某轮 `PASS:` 的 N 与 `[ok]` 行数不等 -> 谎报。
+            npass = re.findall(r'(?m)^\[release_check\] PASS:\s*(\d+)\s*项检查全通过', lt)
+            if npass:
+                case('T7 不变量: PASS 分子(%s) == [ok] 行数(%d)'
+                     % (npass[-1], nok),
+                     int(npass[-1]) == nok,
+                     'PASS 声称 %s 项而 [ok] 只有 %d 行 —— **通过必须留下证据行**'
+                     % (npass[-1], nok))
 
     print()
     if fail:

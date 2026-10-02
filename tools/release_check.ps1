@@ -68,7 +68,45 @@ if (-not $py) {
 if (-not $py) { foreach ($p in @('D:\environment\PYTHON\python.exe','C:\Python313\python.exe')) { if (Test-Path -LiteralPath $p) { $py = $p; break } } }
 
 $checks = @()
-$pass = 0; $fail = 0
+$pass = 0; $fail = 0; $skip = 0
+
+# ── 诊断打印（`Check` 的失败/跳过分支共用）────────────────────────────────
+#
+# ## 为什么必须有（2026-10-02 实测事故）
+#   CI 上本门禁报 `FAIL: 5/30 未通过`，而五项失败**一行原因都没有** ——
+#   日志里只有五个孤零零的 `[X]  <名字>`。原因（被测进程的 stdout）在
+#   `Check` 里被 `$out[-1]` 截断丢掉了，而 `tools/gate_log.ps1` 的转录
+#   只忠实记录"被打印出来的东西"。
+#   => 拿到"哪一项失败"，拿不到"为什么失败"，**无法定位**。检查项本身
+#      大多用 `--quiet` 或 `| Out-Null` 抑制了输出，于是现场彻底空白。
+#   这与 `tools/gate_log.ps1` 文件头记名的「失败项名与详情**永久丢失**」
+#   是**同型事故** —— 只是这次丢的恰好是详情。
+#
+# ## 判据
+#   `$out` 的**末值就是判据本身**（布尔或 `'SKIP'`），其余全部是被测进程
+#   的输出 -> 逐行缩进打印。**限长**（最多 12 行、每行 400 字符）以免一个
+#   失败的构建把日志刷爆 —— 但**绝不静默**（无输出时明确说明）。
+function Show-Diag($out, [string]$prefix = '      | ') {
+    $diag = @()
+    if ($out.Count -gt 1) { $diag = @($out[0..($out.Count - 2)]) }
+    $diag = @($diag | Where-Object { $null -ne $_ } |
+              ForEach-Object { ([string]$_).TrimEnd() } |
+              Where-Object { $_ -ne '' })
+    if ($diag.Count -eq 0) {
+        Write-Host '      (该项无额外诊断输出 —— 它只返回了判据本身)' -ForegroundColor DarkGray
+        return
+    }
+    $shown = @($diag | Select-Object -Last 12)
+    if ($diag.Count -gt $shown.Count) {
+        Write-Host ("      ... 省略前 {0} 行诊断 ..." -f ($diag.Count - $shown.Count)) -ForegroundColor DarkGray
+    }
+    foreach ($d in $shown) {
+        foreach ($ln in ([string]$d -split "`r?`n")) {
+            if ($ln.Length -gt 400) { $ln = $ln.Substring(0, 400) + ' …' }
+            Write-Host ($prefix + $ln) -ForegroundColor DarkGray
+        }
+    }
+}
 
 function Check([string]$name, [scriptblock]$cond) {
     try {
@@ -90,6 +128,35 @@ function Check([string]$name, [scriptblock]$cond) {
         # 修法: 收集 scriptblock 输出，**只取最后一个值**作为判定结果。
         $out = @(& $cond)
         $ok = if ($out.Count -gt 0) { $out[-1] } else { $null }
+
+        # ── SKIP 判据（2026-10-02）────────────────────────────────────────
+        #
+        # ## 为什么需要第三态
+        #   CI（Windows-only runner，无 WSL 发行版）上四项检查**必然**因为
+        #   "前置产物不存在"而失败: `check_state_platform`（要 linux 产物）、
+        #   `docclaim`（要 build/demo_linux）、`perf_baseline`（要
+        #   build/perf/full.exe）、`linux_compile_check`（要 WSL 发行版）。
+        #   它们报的是 `[X]` —— 于是**门禁在干净克隆上永远不可能变绿**，
+        #   而"永远红"的门禁与没有门禁等价（都会被无视）。
+        #
+        #   但**不能改成通过**: 前置不存在时判据从未执行，"未运行"必须与
+        #   "已通过"可区分（本项目反复记名的「未验证 != 通过」）。
+        #   => 第三态 `'SKIP'`: 单独计数、单独文案、**不计入 PASS 项数**，
+        #      且**只有在明确标注理由时**才允许（见下面的纪律）。
+        #
+        # ## 纪律（防止 SKIP 变成新的静默通道）
+        #   ① 检查项必须**显式** `return 'SKIP'` —— 不按退出码隐式映射
+        #      （隐式映射会把"工具坏掉返回 2"也算成跳过）。
+        #   ② 跳过时**必须**先 `Write-Host` 说明缺什么、怎么补（下面强制）。
+        #   ③ SKIP 计入独立的 `$skip` 计数，并在总结里**单独列出**，
+        #      与 `[info] 未运行 — 未验证 != 通过` 同纪律。
+        if ($ok -is [string] -and $ok -eq 'SKIP') {
+            $script:skip++
+            Write-Host ("[skip] {0} —— 前置不满足，本项未验证（未验证 != 通过）" -f $name) -ForegroundColor DarkYellow
+            Show-Diag $out
+            return
+        }
+
         # 末值必须是布尔；若拿到字符串（说明 scriptblock 末句不是布尔判断）
         # 则视为检查写法错误 -> **失败而非静默通过**（P3: 不设可绕过的门禁）。
         if ($ok -isnot [bool]) {
@@ -99,7 +166,11 @@ function Check([string]$name, [scriptblock]$cond) {
             return
         }
         if ($ok) { $script:pass++; Write-Host ("[ok]  {0}" -f $name) -ForegroundColor Green }
-        else { $script:fail++; Write-Host ("[X]  {0}" -f $name) -ForegroundColor Red }
+        else {
+            $script:fail++
+            Write-Host ("[X]  {0}" -f $name) -ForegroundColor Red
+            Show-Diag $out
+        }
     } catch {
         $script:fail++; Write-Host ("[X]  {0}: {1}" -f $name, $_.Exception.Message) -ForegroundColor Red
     }
@@ -240,19 +311,66 @@ Check '协议兼容性 (conformance)' {
 #
 # 含**负向自检**（能报出 windows.h 失败 / 语法错误 / 不误报合法文件）。
 Check 'Linux 编译覆盖 (linux_compile_check)' {
-    # 先确认 WSL 可用；不可用则**明确跳过**（不静默通过）
+    # ── 前置探测（2026-10-02 修正）────────────────────────────────────────
+    #
+    # ## 修什么（实测：CI 上本项必然 FAIL）
+    #   原判据 `& wsl.exe --version; $LASTEXITCODE -eq 0` 只证明 **wsl.exe
+    #   二进制在**，**不证明发行版可用**。在 Windows-only runner 上:
+    #     · `wsl.exe --version` 能跑（WSL 组件随 runner 镜像存在）
+    #     · 但**没有安装任何发行版** -> 后续 `--selftest` / `--min 18`
+    #       因无法进入 Ubuntu-24.04 而失败 -> 报 `[X]`
+    #   => 门禁在干净克隆 / 干净 runner 上**永远不可能变绿**。
+    #      "永远红的门禁" == 没有门禁（会被无视，实测 CI 已连续两次因此变红）。
+    #
+    # ## 为什么改成探测 `-d <发行版>`
+    #   实测（本机）:
+    #     `wsl.exe --version`            rc=0   （只证明二进制在）
+    #     `wsl.exe -l -q`                `[Ubuntu-24.04]`
+    #     `wsl.exe -d Ubuntu-24.04 -- true`  rc=0
+    #     `wsl.exe -d NoSuchDistro_zzz -- true` rc=-1 + `WSL_E_DISTRO_NOT_FOUND`
+    #   => 只有 `-d <distro>` 才真正回答"能不能跑 Linux 编译"。
+    #   必须设 `$env:WSL_UTF8='1'`，否则 `wsl.exe -l` 输出 UTF-16 会乱码。
+    #
+    # ## 为什么跳过而不是通过
+    #   发行版不存在时**本项从未执行** —— "未运行"必须与"已通过"可区分
+    #   （本项目反复记名的「未验证 != 通过」）。
+    #   => `return 'SKIP'`（第三态，见 `Check` 的 SKIP 判据与纪律）。
+    #
+    # ## 为什么跳过不会留下覆盖空白
+    #   Linux 编译覆盖在 CI 上由**独立 job `linux-portability`** 真正验证
+    #   （`.github/workflows/ci.yml:244-297`: gcc 编纯逻辑模块 + 平台层
+    #   conformance + 合同检查，ubuntu-latest）。Windows runner 上的本项
+    #   只是**重复**且需要 WSL，跳过不产生无覆盖的空白。
+    #
+    # ## ⚠️ `$LASTEXITCODE` 陈旧值陷阱（实测）
+    #   进程**不存在**时 `& unknownExe` 抛非终止错误 -> 被 catch；
+    #   而 `$LASTEXITCODE` **保持上一次的值**（实测: `exit 3` 后跑不存在的
+    #   exe 再读 -> 仍是 3）。=> 绝不能只看 `$LASTEXITCODE` 判"可用"，
+    #   必须先确认命令存在（`Get-Command`），并且**每次调用前显式置
+    #   `$LASTEXITCODE = 0`**。
+    $distro = 'Ubuntu-24.04'
     $wslOk = $false
-    try {
-        & wsl.exe --version 2>&1 | Out-Null
+    if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+        $env:WSL_UTF8 = '1'
+        $LASTEXITCODE = 0
+        try { & wsl.exe -d $distro -- true 2>&1 | Out-Null } catch { }
         $wslOk = ($LASTEXITCODE -eq 0)
-    } catch { $wslOk = $false }
-    if (-not $wslOk) {
-        Write-Host '[skip] WSL 不可用 —— Linux 覆盖检查无法执行（未验证 != 通过）' -ForegroundColor DarkYellow
-        return $true
     }
+    if (-not $wslOk) {
+        Write-Host ("      前置不满足: WSL 发行版 '{0}' 不可用（`wsl.exe -d {0} -- true` 非 0）。" -f $distro, $distro) -ForegroundColor DarkGray
+        Write-Host ("      补齐方式: `wsl --install -d {0}`；或此环境本就不跑 Linux 编译 -> 由 CI 的 linux-portability job 覆盖。" -f $distro) -ForegroundColor DarkGray
+        return 'SKIP'
+    }
+    # ## 为什么下面每一步都要显式判 2
+    #   工具自身也有同样的前置探测（`wsl_distro_ok`），两处**互为冗余**:
+    #   上面这段负责"门禁这一侧的诚实"（打印补齐方式），工具那侧负责
+    #   "任何人直接调用时也诚实"。任何一环判出前置不满足 -> SKIP。
+    #   **显式判 2，不做全局隐式映射**（隐式映射会把"工具坏掉返回 2"也算跳过）。
     & $py tools\linux_compile_check.py --selftest --quiet
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     if ($LASTEXITCODE -ne 0) { return $false }
     & $py tools\linux_compile_check.py --quiet --min 18
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     $LASTEXITCODE -eq 0
 }
 
@@ -422,9 +540,13 @@ if ($WithMigration) {
 #
 # ## 自检: 正向 + 4 负向（每个负向**断言失败原因**，防"因错误原因通过"）
 Check '构建状态自检 (check_state_platform)' {
+    # 退出码 2 = **前置不足（本平台产物未构建）** -> SKIP（见 Check 的 SKIP 纪律）。
+    # 显式判 2，**不做全局隐式映射**（否则"工具坏掉返回 2"也会被当跳过）。
     & $py tools\check_state_platform.py --selftest --quiet
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     if ($LASTEXITCODE -ne 0) { return $false }
     & $py tools\check_state_platform.py
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     $LASTEXITCODE -eq 0
 }
 
@@ -481,7 +603,11 @@ Check '验证互斥锁自检 (verify_lock)' {
 #     （pending/TBD/—/todo/空/HEAD）+ 3 个真 sha 做正负对照，并**先证明
 #     修复前的形态会 FAIL**（不是自说自话）。
 Check '文档断言一致性 (docclaim)' {
+    # 退出码 2 = 有断言因**前置产物缺失**未执行（如干净克隆上无 build/demo_linux）
+    #   -> SKIP，**不谎报通过**（判据从未执行）。CI 的 Windows runner 上这条
+    #   必然触发，若按 FAIL 处理则门禁在干净克隆上永远红。
     & $py -X utf8 tools\docclaim_check.py --quiet
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     $LASTEXITCODE -eq 0
 }
 
@@ -505,7 +631,12 @@ Check '部署加固自检 (deploy_harden)' {
 #   > **注意**: 这里只跑自检，**不跑完整基准**（需 3 次组合构建，太慢）；
 #   > 完整数据由发版前手工执行并将结果写入 `USABILITY §1.2`。
 Check '性能基准自检 (perf_baseline)' {
+    # 退出码 2 = T1 正向因 `build/perf/full.exe` 缺失未验证 -> SKIP。
+    #   CI 的 Windows runner 从不构建 perf 产物（该项只在发版前手工跑），
+    #   若按 FAIL 处理则门禁在 CI 上永远红。T2/T3/T4（负向 + 映射）仍会执行，
+    #   它们的通过**不**被这条 SKIP 掩盖 —— SKIP 单列且不计入 PASS 分子。
     & $py -X utf8 tools\perf_baseline.py --selftest | Out-Null
+    if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     $LASTEXITCODE -eq 0
 }
 
@@ -652,6 +783,15 @@ Write-Host ''
 # 门禁落日志: 把路径再报一次（人读的是结尾；失败时尤其关键）
 $__log = [string](Get-Variable -Name '__GateLogPath' -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
 if ($__log) { Write-Host ("[log] 本轮完整输出: {0}" -f $__log) -ForegroundColor DarkGray }
+# ## 总结必须**如实分开**三态（2026-10-02）
+#   `[skip]` 项既不是通过也不是失败: 它的判据**从未执行**。
+#   若把它算进 PASS 的分子，"N 项检查全通过"就会**谎报**（`docclaim` 的
+#   T7 不变量正是拿这句话与 `[ok]` 行数对账的）。
+#   => `PASS: N 项检查全通过` 的 N **只数 `[ok]`**；跳过项单独一行列出，
+#      并保留「未验证 != 通过」的定性。
+if ($skip -gt 0) {
+    Write-Host ("[skip] {0} 项因前置不满足未验证（未验证 != 通过）" -f $skip) -ForegroundColor DarkYellow
+}
 if ($fail -gt 0) {
     Write-Host ("[release_check] FAIL: {0}/{1} 未通过" -f $fail, ($pass + $fail)) -ForegroundColor Red
     exit 1

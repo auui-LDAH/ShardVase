@@ -90,7 +90,23 @@ jobs:
         run: python tools\migration_gate.py --quiet
 
       # 完整门禁（**阻塞式**）。CI 里跳过"工作区干净"检查 ——
-      # 上游步骤已产生构建产物，该项在 CI 中恒失败；但其余 13 项必须全绿。
+      # 上游步骤已产生构建产物，该项在 CI 中恒失败。
+      #
+      # ## 项数口径（2026-10-02 更新，此前写的是过期的「其余 13 项」）
+      #   静态 `Check` 调用点 **33** 个；默认运行 **30** 项（3 项 `-With*`
+      #   门禁默认不跑，会打印 `[info] … 未运行 — 未验证 != 通过`）。
+      #   运行期每项留下一枚证据行: `[ok]` / `[X]` / `[skip]` / `[info]`。
+      #
+      # ## 为什么允许 `[skip]` 而不是要求"30 项全绿"
+      #   Windows runner 上**没有 WSL 发行版**，也**从不构建 linux/perf 产物**
+      #   -> 4 项跨平台/产物依赖的检查（`linux_compile_check`、
+      #   `check_state_platform`、`docclaim` 的 linux 断言、`perf_baseline`）
+      #   的前置不满足。它们**必须**报 `[skip]`（退出码 2）而非 `[X]`:
+      #   前置不存在时判据从未执行，"未运行"必须与"已通过"可区分
+      #   （「未验证 != 通过」），但把"环境没装"报成 FAIL 则会让门禁
+      #   在干净 runner 上**永远红** —— "永远红"的门禁与没有门禁等价。
+      #   `[skip]` **不计入** `PASS:` 的分子，故不会被伪装成通过。
+      #   Linux 覆盖由本 workflow 的 `linux-portability` job 真实验证。
       # 注意: **不要**用 continue-on-error —— 那会让门禁变成"可绕过的门禁",
       # 正是本项目 P3 教训所反对的（曾因此让 smoke 缺陷藏了一个月）。
       - name: Full release gate

@@ -221,6 +221,32 @@ def check_all(distro='Ubuntu-24.04', quiet=False):
             'rates': '%d/%d' % (n_ok, len(srcs)), 'results': results}
 
 
+def wsl_distro_ok(distro=DEFAULT_DISTRO):
+    """该 WSL **发行版**是否真的可用（而不是仅 `wsl.exe` 二进制存在）。
+
+    ## ⚠️ 为什么必须是这个判据（2026-10-02 CI 实测教训）
+      原判据是 `wsl.exe --version` 返回 0 —— 它只证明**二进制存在**，不证明
+      **能跑 Linux 编译**。CI 的 Windows runner 上 `wsl.exe` 在 PATH 里
+      （检测"通过"）但**没有任何发行版** -> 每个文件的 `check_one` 都
+      返回 `INVOKE_FAILED` -> 覆盖率 0/19 -> `--min 18` 失败 -> 门禁永远红。
+      实测（本机）:
+        `wsl.exe --version`                    rc=0   （二进制在）
+        `wsl.exe -l -q`                        -> [Ubuntu-24.04]
+        `wsl.exe -d Ubuntu-24.04 -- true`      rc=0   （**真正可用**）
+        `wsl.exe -d NoSuchDistro_zzz -- true`  rc=-1 + WSL_E_DISTRO_NOT_FOUND
+      => 只有探 `-d <distro>` 才回答"能不能跑 Linux 编译"。
+    `WSL_UTF8=1` 必设，否则 wsl.exe 输出 UTF-16 在本控制台成乱码。
+    """
+    env = dict(os.environ)
+    env['WSL_UTF8'] = '1'
+    try:
+        r = winproc.run(['wsl.exe', '-d', distro, '--', 'true'],
+                        capture_output=True, timeout=120, env=env)
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(prog='linux_compile_check.py')
     ap.add_argument('--distro', default=DEFAULT_DISTRO)
@@ -233,6 +259,22 @@ def main():
 
     if args.selftest:
         return selftest()
+
+    # ## 前置: 无该发行版 -> **SKIP（退出 2）**，不是 FAIL（2026-10-02）
+    #   "这台机器没有 WSL 发行版"与"源码编不过"是**完全不同的命题**。
+    #   前者之下判据从未执行（未验证 != 通过），却会被报成覆盖率 0/19 失败 ——
+    #   一个把"环境没装"当成"代码有错"的报告，只会训练人忽略门禁。
+    #   退出码 2 = 前置不满足；门禁据此报 `[skip]` 且**不计入 PASS 分子**。
+    if not wsl_distro_ok(args.distro):
+        msg = ('[linux_compile_check] SKIP: WSL 发行版 %s 不可用 ——'
+               ' 本项未验证（未验证 != 通过）；补齐: `wsl --install -d %s`'
+               % (args.distro, args.distro))
+        if args.json:
+            print(json.dumps({'skipped': True, 'reason': msg},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(msg, file=sys.stderr)
+        return 2
 
     r = check_all(args.distro, quiet=(args.quiet or args.json))
 
@@ -276,19 +318,15 @@ def selftest():
     print('=== linux_compile_check 自检 ===')
     print()
 
-    # T1: WSL 可用
-    env = dict(os.environ)
-    env['WSL_UTF8'] = '1'
-    try:
-        r = winproc.run(['wsl.exe', '--version'], capture_output=True,
-                           timeout=120, env=env)
-        wsl_ok = (r.returncode == 0)
-    except (subprocess.TimeoutExpired, OSError):
-        wsl_ok = False
-    case('T1 WSL 可用', wsl_ok)
+    # T1: WSL **发行版**可用（判据见 `wsl_distro_ok` 的 docstring）
+    wsl_ok = wsl_distro_ok(DEFAULT_DISTRO)
+    case('T1 WSL 发行版 %s 可用' % DEFAULT_DISTRO, wsl_ok)
     if not wsl_ok:
         print()
-        print('[linux_compile_check-selftest] SKIP: WSL 不可用（无法自检）')
+        print('[linux_compile_check-selftest] SKIP: WSL 发行版 %s 不可用'
+              '（无法自检，未验证 != 通过）' % DEFAULT_DISTRO)
+        print('      补齐方式: `wsl --install -d %s`；或本环境本就不跑 Linux'
+              ' 编译 -> 由 CI 的 linux-portability job 覆盖。' % DEFAULT_DISTRO)
         return 2
 
     # T2: 源文件收集非空

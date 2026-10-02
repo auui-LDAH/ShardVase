@@ -84,8 +84,28 @@ if ($Selftest) {
     if ($outer -and -not $env:__GATE_LOG_CHILD) {
         $env:__GATE_LOG_CHILD = '1'
         Write-Host '[gate_log] 检测到外层转录 -> 自检改在子进程会话运行（不干扰门禁日志）' -ForegroundColor DarkGray
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Selftest
-        exit $LASTEXITCODE
+        # ## ⚠️ 子进程的诊断**必须显式回显到父会话**（2026-10-02 修正）
+        #
+        #   实测缺陷: CI 上报 `[X]  门禁日志自检 (gate_log)`，而门禁日志里
+        #   **只有上面那一行 + `[X]` 行**，T1..T5 的逐项结果**一行都没有** ——
+        #   即"失败了，但失败理由永久丢失"。这与本文件头记录的那次事故同型。
+        #
+        #   机制: 子进程的 `Write-Host` 写在**子进程自己的宿主**上。调用方
+        #   `Check` 把它包成 `@(& $cond)` 并把 `| Out-Null` 接在后面
+        #   （`release_check.ps1` 的门禁项正是这么写的），于是子进程的输出
+        #   既不进 `$out`（`Write-Host` 走**信息流**，不是成功流），
+        #   也不进父会话的 `Start-Transcript`（转录只记录**本会话**的宿主输出）。
+        #   => 子进程静默，父会话只看到冷冰冰的 `[X]`。
+        #
+        #   修法: 把子进程的输出**捕获后由父会话重新 `Write-Host`** ——
+        #   这样它同时进入 ① 控制台 ② 父会话的转录（= 门禁日志）。
+        #   并且**先取出退出码再回显**: 回显过程里的任何写入都不会污染
+        #   `$LASTEXITCODE`（早先依赖 `exit $LASTEXITCODE` 直接读全局变量，
+        #   在多一层管道/包装时不可靠）。
+        $childOut = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Selftest 2>&1)
+        $rc = $LASTEXITCODE
+        foreach ($line in $childOut) { Write-Host ([string]$line) }
+        exit $rc
     }
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('gate_log_st_{0}' -f (Get-Date -Format 'HHmmssfff'))
     $npass = 0; $nfail = 0
