@@ -1049,3 +1049,170 @@ tools/mojibake_check.py      : PASS: 白名单外无 mojibake（豁免 3 行）
 ```
 ⚠️ 过程中 `doccheck` 一度因我自己写的一个**不存在的相对路径**（把根目录的
 `CONTRIBUTING.md` 误加成 `docs/` 前缀）报 1 条 error —— **写文档时引路径必须核对存在性**。
+
+### 2.15 增量（2026-10-02）：Q6 —— CI 真实跑通 + T11 根因 + 缺陷 7/8（**三个"从没被执行过的步骤"**）
+
+**① Q6 的结论先行**
+
+CI 已在**真实 GitHub Actions** 上跑通 `build-and-verify` 与 `linux-portability`
+两个 job（22/22 与 5/5 步全绿）。累计 **9 轮** run，每轮把失败前沿往前推一格:
+
+```
+1 36949863969  f6202d8  linux-portability : gcc 缺 -D_GNU_SOURCE
+2 36957960288  5d601c5  vmc_tests : "vcvars not found"（三处各写各的探测器）
+5 37010899200  f9285bf  门禁 : [skip] 被当成 [X]（三态缺失）
+6 37038553576  38bc671  step17 变异测试 : 变异打偏 -> 假阳性"盲检查器"
+7 37043872931  18d29da  step19 门禁 : 唯一失败项 = e2e T11
+8 37055147715  e6917a2  ✅ **build-and-verify + linux-portability 全绿**
+                        ❌ 但 reproducible 与 sdk-package **首次真正执行** -> 双失败
+```
+
+**② 🔑 本轮最重要的一条教训（三个"没跑过的步骤"）**
+
+`reproducible` 与 `sdk-package` 两个 job 带 `needs: build-and-verify`，
+而前 7 轮 `build-and-verify` 一直是红的 ⇒ 这两个 job **每一轮都是 `skipped`**，
+里面的命令**从未在真实 CI 上执行过一次**。于是它们各自埋着一个**必然失败**:
+
+```
+缺陷 7 (reproducible, 第 5 步) : 产物路径少了一层目录
+缺陷 8 (sdk-package,  第 6 步) : SDK 包缺 winproc.py / mapfile.py
+两者互不相关, 但都会在"第一次真跑"时同时引爆。
+```
+=> **"跳过的步骤"与"没写的步骤"在证据上是等价的。**
+CI 里任何 `needs:` 造成的连锁 skip，都必须**在依赖修好后确认它真的跑过一次**；
+"绿了 7 轮"里可能一行都没执行。这与缺陷 5（`-SeedsFile` 从未生效）**同型**。
+
+**③ T11 根因（唯一一个"只在 CI 崩、本机 62 次不崩"的缺陷）**
+
+*现象*: `T11 watchdog-stable FAIL (exit=3221225477)` = `0xC0000005`，且**只在 CI 上**。
+
+*根因*: `src/integrity.c` 的 A5 反附加周期复查原写在
+`prot_selfcrypt_leave(PROT_SELFCRYPT_GROUP_EXT)` **之后**，而它通过
+`g_ad_scan_fn` 间接调用的 `prot_antidebug_scan` **本身就是组 1 的 selfcrypt
+加密目标**（`tools/selfcrypt_proto.py` 的 `EXT_TARGETS`）。`leave()` 用同一
+密钥流 XOR 还原 ⇒ 内存**精确回到磁盘密文状态** ⇒ 那次调用执行的是**密文**。
+
+*为什么本机长期不暴露（决定性的字节算术）*: 8 个 selfcrypt 条目的 `key0`
+**完全相同**（`0x4E31504245474D21`，`selfcrypt_proto.py:339` 的硬编码 seed）
+⇒ 密钥流与构建无关，`ks[0] = 0x8f` 恒定 ⇒
+`磁盘首字节 = 明文首字节 ^ 0x8f`。
+本机 MSVC **14.44.35207** 下该函数明文首字节是 `0x4C`（x64 帧序言）
+⇒ 密文首字节 **`0xC3` = `ret`** ⇒ 调用**静默空转**（复查失效但不崩）。
+CI 的 MSVC **14.51.36231** 序言字节不同 ⇒ 非 `ret` ⇒ 执行垃圾指令 ⇒ AV。
+**这是编译器版本决定的"字节彩票"，与并发/布局随机化无关。**
+
+*决定性复现（隔离手法 = 只改密钥、不改明文）*: 取 `key0=0x7b` 使
+`ks[0]=0x83`，用新密钥流重新加密 ⇒ 磁盘首字节 `0x4c ^ 0x83 = 0xcf`
+（`iretq`，用户态执行必 #GP），**明文与明文 CRC 完全不变**（启动路径不受影响）:
+
+```
+对照 (改前 demo.exe,     密文首字节 0xc3=ret)    rc=0        (0x00000000)
+处理 (_t11_repro2.exe,   密文首字节 0xcf=iretq)  rc=3221225477 (0xC0000005)
+修复后再施加同一危险密文                         rc=0        未崩 -> 修复生效
+VERDICT fix_immunizes=True
+```
+
+*修法*: 把整个 A5 块**上移到 `leave(EXT)` 之前**。修复在二进制层确证 ——
+反汇编里该 `call rax` 现落在配对 `enter`/`leave` **之间**。
+
+*⚠️ 诚实边界*: 该约束**至今没有任何静态门禁覆盖**。
+P5 只判"不得出现直接 `E8` 调用加密目标"，而这里是
+`volatile` 函数指针调用（`call rax`），**字面判据天然看不见**；
+"调用点是否落在解密窗口内"从来不在任何检查器的射程内。
+**加一条"解析反汇编、断言每个加密目标调用点都在配对 enter/leave 之间"的静态检查
+属于后续工作**（记为待办）。
+
+**④ 缺陷 7：产物保留目录结构**
+
+`actions/upload-artifact@v4` 取所有 path 的**最近公共祖先**作为根。
+本 job 上传的 7 个路径横跨 `build\...` 与 `demo\...`，公共祖先是**工作区根**
+⇒ 解压出来是 `build_artifacts\build\demo.exe`，**不是** `build_artifacts\demo.exe`:
+
+```
+Copy-Item: Cannot find path
+  'D:\a\shardvase\shardvase\build_artifacts\seeds.json' because it does not exist.
+```
+修法 = 三条 `Copy-Item` 与两条 `Get-FileHash` 各补上一层 `build\` / `demo\`。
+
+**为什么"修好路径能不能过"当时毫无证据**: 该 job 在第 5 步就死了，
+**第 6 步 `Compare SHA-256` 从未执行过**。故写探针
+`build/_def7_repro_sim.py`，用**该轮 CI 真实上传的产物**
+（`gh run download 37055147715 -n build-artifacts`）+ 修正后的命令逐步复演:
+
+```
+步骤 3 跨编译器 (本机 14.44 vs runner 14.51): demo.exe MISMATCH, vm.blob identical
+步骤 4 同机同种子重建 (真正判据):              demo.exe identical, vm.blob identical
+[defect7] PASS: 修正路径后 reproducible job 的比对**会通过**
+```
+⇒ **重要预期**: `vm.blob` 跨编译器字节一致（由 Python 工具生成），
+`demo.exe` 跨编译器不一致（C 编译产物）。这**不影响** CI ——
+该 job 的两次构建都在**同一 runner** 上，跨编译器一致**从来不是**它的判据。
+
+**⑤ 缺陷 8：SDK 包缺两个传递依赖**
+
+`tools/sdk_pack.py` 的 `TOOLS_KEEP` 是**手写清单**，而手写清单必然漏。
+实测静态依赖闭包 = **22** 个模块，清单只有 **20** 个:
+
+```
+winproc.py   <- vmcalc_build.py:46 `import winproc`
+mapfile.py   <- selfcrypt_proto.py:47 的惰性 `import mapfile`
+               （它在本仓库能 import 成功只因仓库根在 sys.path —— 一直是"靠环境侥幸可用"）
+```
+*决定性验证*: 把这两个文件手工塞进包内 → `verify_sdk_standalone.py` 由 rc=1 转 **rc=0**；
+单独把 `mapfile.py` 改名 → 从包内 `import selfcrypt_proto` 立刻
+`ModuleNotFoundError: No module named 'mapfile'`。
+
+*修法（三条一起）*:
+1. `TOOLS_KEEP` 补 `winproc.py` / `mapfile.py`；
+2. 新增**闭包守卫** `_local_imports()` / `_tools_closure()` / `missing_closure_modules()`；
+3. selftest 加**根因级**断言（原先只有"含 tools/vmenc.py"这种**点抽查**，
+   点抽查不可能覆盖闭包 —— 缺陷 8 正是从两次点抽查之间漏过去的）。
+
+*⚠️ 一个自己踩的坑*: 首版 `_local_imports` 用**正则**抓 import，结果把
+`winproc.py` **文档字符串里**的示例 `from winproc import run` 当成了真导入，
+输出里出现它"自己依赖自己"。**注释与文档里的示例代码不是依赖 ——
+词法匹配分不清，`ast` 分得清。**改用 `ast` 后闭包精确。
+
+*负向对照*（证明守卫不是装饰品）: 临时从 `TOOLS_KEEP` 抽掉成员再调
+`missing_closure_modules()`，三个对照**全部报警**且互不误报:
+
+```
+抽掉 winproc.py -> ['winproc.py']（不误报 mapfile.py）
+抽掉 mapfile.py -> ['mapfile.py']
+抽掉两个        -> ['mapfile.py','winproc.py']
+恢复后          -> 闭包完整
+```
+
+**⑥ 顺带修掉的一个"假绿"（`tools/repro_check.ps1`）**
+
+原文 `if (-not $h1.ContainsKey($f)) { continue }` ——
+**产物缺失 = 静默跳过 = 判 PASS**，即"什么都没建出来"也算可复现。
+已改为缺失即 FAIL 并列出目录实际内容；同时新增 `-BaselineDir` 形态，
+使本机判定与 CI 的"与既有产物比对"形态一致。
+负向对照: 传一个空目录 → `FAIL (基线缺文件 ...)` + 目录内容清单，rc=1。
+
+**⑦ 本机构建四件套（本轮全部实跑）**
+
+```
+tools/sdk_pack.py --selftest                : PASS（含新的"依赖闭包无缺口"）
+tools/sdk_pack.py --force --zip             : rc=0（zip 372.0 KB）
+tools/verify_sdk_standalone.py              : rc=0  构建 ✓ smoke ✓ DONE ✓ license:1 ✓
+门禁（release_check.ps1 -SkipDirtyCheck）   : **PASS: 30 项检查全通过**（[skip] 0, [info] 3）
+```
+
+**⑧ 本轮新增的"本机应覆盖但原先没覆盖"的东西**
+
+`tools/ci_sim.ps1` 是本地 CI 模拟器，此前它**只映射了 `build-and-verify` 与
+`reproducible` 两个 job**，`sdk-package` 一个字都没有 ⇒
+**缺陷 8 在本机根本没有暴露面**（`tools/release_check.ps1` 同样不含 SDK 打包）。
+已补入 `job sdk-package` 的三步（`--selftest` / `--force --zip` /
+`verify_sdk_standalone.py`），并加 `-SkipSdk` 开关。
+=> **"CI 里有的 job，本机模拟器必须也有"**，否则本地全绿不能推出 CI 全绿。
+
+**⑨ 本轮仍未验证的**
+
+- **CI 第九跑尚未发生**。缺陷 7/8 的修法在本机复演通过，
+  但 `reproducible` 与 `sdk-package` **两个 job 尚未在真实 CI 上绿过一次**。
+- 上述**静态门禁缺口**（加密目标调用点是否落在解密窗口内）**未实施**。
+- `tools/release_check.ps1` 仍不含 SDK 打包（`ci_sim.ps1` 已含，门禁未含）。
+

@@ -196,24 +196,37 @@ jobs:
       #   实测差异 **276571 字节 / 14365 簇**（`build/_repro_5d_ci_out.txt`），
       #   恒 MISMATCH，与 `/Brepro` 无关。Release 隐含 `/Brepro`，故无需再传。
       #   （`docs/CI_PLAN.md:67` 原本就写的 `Build (Release, -SeedsFile …)`。）
+      # ## 缺陷 7（2026-10-02 CI 第八跑实测）: 产物**保留目录结构**
+      #   `actions/upload-artifact@v4` 取所有 path 的**最近公共祖先**作为根;
+      #   本 job 上传的三个路径分别是 `build\...` 与 `demo\...`，
+      #   公共祖先是**工作区根** -> 解压出来是
+      #     build_artifacts\build\demo.exe
+      #     build_artifacts\demo\vm_build.json
+      #   而不是 `build_artifacts\demo.exe`。
+      #   实测报错（CI 第八跑，本 job 第 5 步）:
+      #     Copy-Item: Cannot find path
+      #       'D:\a\shardvase\shardvase\build_artifacts\seeds.json' because it does not exist.
+      #   ⚠️ 本 job 在此前**每一轮**都是 skipped（`needs: build-and-verify` 红），
+      #      所以这个错**从未被执行过** —— 与缺陷 5 同型: "没跑过的代码 = 没验证"。
+      #   下载后可实测确认结构（`gh run download <id> -n build-artifacts -D <dir>`）。
       - name: Reproducible rebuild (same seeds + key, no signing)
         run: |
           New-Item -ItemType Directory -Force -Path build\keys | Out-Null
-          Copy-Item build_artifacts\seeds.json build\seeds.json
-          Copy-Item build_artifacts\vm_build.json demo\vm_build.json
-          Copy-Item build_artifacts\license_priv.json build\keys\license_priv.json
+          Copy-Item build_artifacts\build\seeds.json build\seeds.json
+          Copy-Item build_artifacts\demo\vm_build.json demo\vm_build.json
+          Copy-Item build_artifacts\build\keys\license_priv.json build\keys\license_priv.json
           powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release -MachineId auto -SkipSign -SkipSmoke -SeedsFile build\seeds.json
 
       - name: Compare SHA-256 with first build
         shell: pwsh
         run: |
-          $a = (Get-FileHash build_artifacts\demo.exe -Algorithm SHA256).Hash
+          $a = (Get-FileHash build_artifacts\build\demo.exe -Algorithm SHA256).Hash
           $b = (Get-FileHash build\demo.exe -Algorithm SHA256).Hash
           if ($a -ne $b) {
             Write-Host "MISMATCH demo.exe`n  first=$a`n  second=$b"
             exit 1
           }
-          $c = (Get-FileHash build_artifacts\vm.blob -Algorithm SHA256).Hash
+          $c = (Get-FileHash build_artifacts\build\vm.blob -Algorithm SHA256).Hash
           $d = (Get-FileHash build\vm.blob -Algorithm SHA256).Hash
           if ($c -ne $d) {
             Write-Host "MISMATCH vm.blob`n  first=$c`n  second=$d"

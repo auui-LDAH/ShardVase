@@ -32,6 +32,7 @@
   python tools/sdk_pack.py --selftest      # 负向测试
 """
 import argparse
+import ast
 import glob
 import hashlib
 import json
@@ -65,7 +66,70 @@ TOOLS_KEEP = {
     # 编译器环境探测 (build_skeleton.ps1 委托它; 2026-10-02)
     # 缺了它, 包内骨架构建会回退到最小探测 —— 在 CI 的 MSVC 布局下找不到
     'vcvars.py',
+    # 传递依赖的**传递依赖** (缺陷 8, 2026-10-02 CI 第八跑实测)
+    #   · winproc.py   <- vmcalc_build.py:46 `import winproc`
+    #                     (原先只在 CI 的不独立验证里暴露:
+    #                      `ModuleNotFoundError: No module named 'winproc'`)
+    #   · mapfile.py   <- selfcrypt_proto.py:47 的惰性 `import mapfile`
+    #                     (原先靠"本仓库根在 sys.path"侥幸可用;
+    #                      一旦脱离仓库, 打包阶段就会 ImportError)
+    # 教训: TOOLS_KEEP 是**手写清单**, 而手写清单必然漏。
+    #   本文件的 selftest 已加 `_tools_closure()` 断言 (见下方"依赖闭包完整"),
+    #   让它由**实测**兜住, 而不是靠人记得。
+    'winproc.py', 'mapfile.py',
 }
+
+# ---- tools/ 依赖闭包守卫 (缺陷 8) ----
+# `TOOLS_KEEP` 是人写的; 闭包是**算出来的**。二者必须一致, 否则包在
+# 脱离仓库时会 `ModuleNotFoundError` —— 而这一点直到 CI 的
+# `verify_sdk_standalone.py`(第 6 步) 才暴露, 代价是一整轮 CI。
+#
+# ⚠️ 必须用 `ast` 而不是正则: 首版我用 `^\s*import\s+(\w+)` 抓, 结果把
+#    `winproc.py` **文档字符串里**的示例 `from winproc import run` 当成了真导入,
+#    于是它"自己依赖自己"。**注释与文档里的示例代码不是依赖** —— 词法匹配
+#    分不清, `ast` 分得清。
+def _local_imports(path):
+    """该文件**真实** import 的**同目录 tools/ 内**模块名 (顶层, 去重)。"""
+    try:
+        tree = ast.parse(open(path, encoding='utf-8').read())
+    except (OSError, SyntaxError):
+        return set()
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            cands = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            cands = [node.module or '']
+        else:
+            continue
+        for c in cands:
+            name = c.split('.')[0]
+            if name and os.path.isfile(os.path.join(REPO, 'tools',
+                                                    name + '.py')):
+                out.add(name)
+    return out
+
+
+def _tools_closure(seeds):
+    """从 seeds 出发算 tools/ 内模块的静态依赖闭包。"""
+    seen, stack = set(), list(seeds)
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        for d in _local_imports(os.path.join(REPO, 'tools', n + '.py')):
+            if d not in seen:
+                stack.append(d)
+    return seen
+
+
+def missing_closure_modules():
+    """TOOLS_KEEP 覆盖不到的**闭包内**模块 (必须为空, 否则打包是坏的)。"""
+    seeds = sorted(f[:-3] for f in TOOLS_KEEP
+                   if os.path.isfile(os.path.join(REPO, 'tools', f)))
+    cl = _tools_closure(seeds)
+    return sorted(n + '.py' for n in cl if n + '.py' not in TOOLS_KEEP)
 
 # prot_sdk/ 需要的内容
 SDK_FILES = [
@@ -286,6 +350,17 @@ def selftest():
                  % len(names), names == enum)
         else:
             case('包内含 strings.txt 与 strcrypt.h', False)
+
+        print()
+        print('=== 依赖闭包完整 (缺陷 8 防复发) ===')
+        # 这一条才是**根因级**断言: 前面那条"含 tools/vmenc.py"是**点抽查**,
+        # 点抽查不可能覆盖闭包 —— 缺陷 8 正是从两次点抽查之间漏过去的。
+        miss = missing_closure_modules()
+        case('tools/ 依赖闭包无缺口 (%s)' % (', '.join(miss) if miss
+                                              else '闭包完整'), not miss)
+        for mod in ('winproc.py', 'mapfile.py'):
+            case('含 %s' % ('tools/' + mod),
+                 os.path.exists(os.path.join(tmp, 'tools', mod)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

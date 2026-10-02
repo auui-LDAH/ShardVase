@@ -10,11 +10,21 @@
 #     protchain P1-P6 / py_compile
 #   job reproducible:
 #     用 seeds.json 同种子重建 (Release, SkipSign) + SHA-256 比对 demo.exe/vm.blob
+#   job sdk-package:
+#     sdk_pack --selftest / --force --zip / verify_sdk_standalone (缺口 #4)
+#
+# ⚠️ 缺陷 8 的教训 (2026-10-02 CI 第八跑): `sdk-package` 与 `reproducible`
+#    此前**每一轮都是 skipped** (needs: build-and-verify 红) —— 里面的命令
+#    **从未被执行过**, 于是同时埋着两个必然失败 (缺陷 7 的产物路径 + 缺陷 8 的
+#    缺 winproc.py/mapfile.py)。"没跑过的步骤"与"没写的步骤"等价。
+#    故这里把 **本机可等效执行** 的 job 全部纳入 (linux-portability 需要
+#    gcc/WSL, 仍由 Linux runner 负责)。
 #
 # 用法:
-#   powershell -ExecutionPolicy Bypass -File tools\ci_sim.ps1 [-SkipTest] [-Python <path>]
+#   powershell -ExecutionPolicy Bypass -File tools\ci_sim.ps1 [-SkipTest] [-SkipSdk] [-Python <path>]
 param(
     [switch]$SkipTest,   # 跳过测试步骤 (只验证 build + repro)
+    [switch]$SkipSdk,    # 跳过 SDK 打包/独立可用性 (耗时数分钟)
     [string]$Python = ''
 )
 
@@ -89,6 +99,20 @@ Step 'Reproducible rebuild (same seeds + key, no signing)' {
     }
     # 统一判定用 repro_check.ps1 (INFRA_PLAN I2): 同种子两次构建 SHA-256 比对
     powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1 -SeedsFile build\seeds.json
+}
+
+Write-Host '[ci_sim] === job sdk-package ===' -ForegroundColor Yellow
+
+if ($SkipSdk) {
+    Write-Host '[ci_sim] (跳过: -SkipSdk)' -ForegroundColor DarkGray
+} else {
+    # 缺陷 8 的防复发就在这里: `--selftest` 内含"依赖闭包完整"断言
+    Step 'SDK packer selftest' { & $py tools\sdk_pack.py --selftest }
+
+    Step 'Build SDK package' { & $py tools\sdk_pack.py --force --zip }
+
+    # **关键**: 证明包**脱离仓库**也能构建 (缺陷 8 的唯一暴露点)
+    Step 'Verify SDK is standalone' { & $py tools\verify_sdk_standalone.py }
 }
 
 Write-Host ''

@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
-> 版本：2026-10-02 v6 · 状态：**🚧 实施中**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / **Q4 ✅** / **Q5 ✅** / Q6 待办）
-> **最后核实**: 2026-10-02 · 方法: `tools/docclaim_check.py` + 门禁默认 **30** 项实跑 + 逐文件行号复核 + 全库普查探针 · 提交 `2f20512`（Q4 文档漂移清理后）
+> 版本：2026-10-02 v7 · 状态：**✅ 全部完成**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / Q4 ✅ / Q5 ✅ / **Q6 ✅**）
+> **最后核实**: 2026-10-02 · 方法: `tools/docclaim_check.py` + 门禁默认 **30** 项实跑 + 逐文件行号复核 + 全库普查探针 · 提交 `e6917a2`（CI 第八跑 build-and-verify 全绿后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
@@ -38,7 +38,7 @@
 | 4 | **Q3** | `doccheck` 盲区消除（扫描范围 + 历史快照豁免） | 工具 | 中 | **中**（易误报） | 需先定豁免机制 |
 | 5 | **Q4** | 文档漂移批量清理（门禁项数 11/15/22/26/31 → **33**）+ 门面文档对齐 + **量化 doccheck 覆盖缺口** | 文档 | 中 | 低 | 依赖 Q3 的判据 ✅ **已完成** |
 | 6 | **Q5** | `R3.2-d` / DRILL9 端到端实证 | 实证 | **大** | 中 | — ✅ **已完成** |
-| 7 | **Q6** | CI 实跑（配 remote、触发 4 个 job） | 运维 | 小 | 低 | **用户提供仓库地址** |
+| 7 | **Q6** | CI 实跑（配 remote、触发 4 个 job） | 运维 | 小 | 低 | — ✅ **已完成** |
 
 **不做**（明确排除，理由记录在此以防将来重复讨论）:
 - 调试控制台第 3 步 `run` / 诊断构建 —— 用户 2026-09-30 已降级为**可选**；
@@ -588,17 +588,42 @@ stdout 原文（因 `build/` 被 `.gitignore:2` 忽略，证据必须内嵌）�
 
 ---
 
-## 8. Q6 CI 实跑（**阻塞于用户输入**）
+## 8. Q6 CI 实跑 —— ✅ **已完成**（2026-10-02）
 
-- `.github/workflows/ci.yml`（297 行）**4 个 job**: `build-and-verify`（windows-latest，
+- `.github/workflows/ci.yml`（**370 行**）**4 个 job**: `build-and-verify`（windows-latest，
   30 min，含 `release_check -SkipDirtyCheck`）/ `reproducible` / `sdk-package` / `linux-portability`。
-- **从未实跑**：`git remote -v` **为空**。
-- 仓库内提到的目标组织: **`auui-LDAH`**（`ShardVase-docs` / `ShardVase-demo` 等）。
 
-**Q6 前置**: **需要用户提供或确认目标仓库地址**（本仓库无 remote，
-不能替用户决定推到哪个仓库）。确认后：配 remote → push → 观察 4 个 job →
-回填 `docs/CI_PLAN.md` §8 的「CI 远程运行待首次 push 后回填」。
-另：`ci.yml:52` 的注释 `release_check 覆盖 14 项` 已过期（现 **33** / 默认 **30**），Q4 一并改。
+**① 前置已解除**（原文写"阻塞于用户输入"，已过期）: 用户 2026-10-02 决定
+**先建到 gh 账号名下（`jurecoasertkrocket777`）私库试跑**；
+remote = `https://github.com/jurecoasertkrocket777/shardvase.git`（**PRIVATE**）。
+原文的「`git remote -v` 为空」与「目标组织 `auui-LDAH`」**均已作废**。
+
+**② 实跑结果**: 累计 **9 轮** run，每轮把失败前沿推前一格 ——
+
+| 轮 | run id | 提交 | 首个失败点 |
+|----|--------|------|-----------|
+| 1 | 36949863969 | f6202d8 | linux-portability: gcc 缺 `-D_GNU_SOURCE` |
+| 2 | 36957960288 | 5d601c5 | `vmc_tests.py`: "vcvars not found" |
+| 5 | 37010899200 | f9285bf | 门禁: `[skip]` 被当成 `[X]`（三态缺失） |
+| 6 | 37038553576 | 38bc671 | step 17 变异测试: 变异打偏 ⇒ **假阳性"盲检查器"** |
+| 7 | 37043872931 | 18d29da | step 19 门禁: 唯一失败项 = e2e **T11** |
+| **8** | **37055147715** | **e6917a2** | ✅ **`build-and-verify` 22/22 全绿 + `linux-portability` 5/5 全绿**；❌ `reproducible` / `sdk-package` **首次真正执行** ⇒ 双失败（缺陷 7 / 8） |
+
+**③ 一条比"绿了"更重要的发现**: `reproducible` 与 `sdk-package` 带
+`needs: build-and-verify`，前 7 轮 `build-and-verify` 一直红 ⇒
+**这两个 job 每一轮都是 `skipped`，里面的命令从未在真实 CI 上执行过一次**，
+于是各自埋着一个必然失败，在"第一次真跑"时同时引爆。
+**"跳过的步骤"与"没写的步骤"在证据上等价** —— 与缺陷 5 同型。
+详见 `docs/HANDOVER.md` §2.15 ②。
+
+**④ 已回填**: `docs/CI_PLAN.md` §8 的「CI 远程运行待首次 push 后回填」已按上表更新。
+
+**⑤ 仍未验证（诚实边界）**: 缺陷 7 / 8 的修法在本机复演通过
+（`build/_def7_repro_sim.py` 用**该轮 CI 真实产物**复演比对逻辑 = PASS；
+`verify_sdk_standalone.py` 由 rc=1 转 rc=0），但
+**两个 job 尚未在真实 CI 上绿过一次** —— 待**第九跑**。
+
+**⑥ 另**: `ci.yml:52` 的注释 `release_check 覆盖 14 项` 已在 Q4 改为 **33**（默认 30）。
 
 ---
 
@@ -611,7 +636,7 @@ Q0（文档回填，零风险）
            └─> Q3（doccheck 扩范围 + 豁免机制 + 负向测试）
                 └─> Q4（文档漂移清理 + 门面对齐 + 覆盖缺口量化）  ✅
                      └─> Q5（DRILL9 端到端）                      ✅
-Q6（CI 实跑）—— **独立轨道，阻塞于用户提供仓库地址**
+Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动        ✅
 ```
 
 **提交约定**（沿用本仓库既有纪律）:
