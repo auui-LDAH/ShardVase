@@ -113,16 +113,71 @@ def mut_modules_json():
         raise
 
 
+def pick_unmasked_text_off(p, exe_rel):
+    """在 `p` 的 `.text` 内挑一个**非掩码**字节 -> 返回其文件偏移。
+
+    ## 为什么必须按布局选字节（**缺陷 6**, 2026-10-02 实测）
+      win 侧原先**硬编码 `0x2000`**（"避开 PE 头"的经验偏移）。但
+      `.text` 里的 selfcrypt **掩码区随每次构建随机化**（节名/填充/盐都随机）,
+      一旦 `0x2000` 落进掩码区 -> `protchain` 的 P2（`.text` CRC,
+      **掩码字节先清零**）**设计上**看不到这次翻转 -> 判"盲检查器"。
+      **这不是 protchain 缺陷, 是变异打偏**（与 linux 侧 D1 同类）。
+
+      实测: 5 次全新随机构建中 `0x2000` **命中掩码区 1/5**
+      （`build/_mut_scan_out.txt`）。CI 第六跑（38bc671）正是踩中该分支,
+      报 `盲: 1 ['protchain']` -> `[mutate_check] FAIL`。
+
+    ## 判据来源（**复用既有, 不引入新解析**）
+      按 `protchain_check.sections_of`（**自动分派 PE/ELF**）定位 `.text`,
+      再用 `selfcrypt_meta` 的掩码区排除, 取 CRC 覆盖范围内的非掩码字节。
+    """
+    sys.path.insert(0, os.path.join(REPO, 'tests'))
+    import protchain_check as _pc                # noqa: WPS433
+
+    # ## ⚠️ **必须设 `_CURRENT_EXE`**（实测漏设的代价, 2026-09-29）
+    #
+    # `selfcrypt_meta` 内部走 `cry_section_names()` ->
+    # 读**由 `_CURRENT_EXE` 决定的平台 json**。
+    # **不设 -> 默认 Windows json -> Linux 掩码算成 0** ->
+    # 选的"非掩码"字节**其实在掩码区内** -> 打进去被 P2 的清零掩盖
+    # -> **假报"盲"**（实测正是如此: rel=17157 落在 16160..17231 内）。
+    #
+    # 教训: 复用某模块的函数时，**连同它的隐式上下文一起设**——
+    # 否则"同一个函数在两个调用点算出不同结果"。
+    _pc._CURRENT_EXE = exe_rel
+
+    data = open(p, 'rb').read()
+    secs = _pc.sections_of(data)
+    text = next(s for s in secs if s['name'] == '.text')
+    crc_len = min(text['virtual_size'], text['size_raw'])
+    masks = [(mrva - text['virtual_addr'], mlen)
+             for mrva, mlen, _grp in _pc.selfcrypt_meta(data, secs)]
+
+    rel = None
+    for cand in range(crc_len // 2, crc_len):
+        if not any(o <= cand < o + ml for o, ml in masks):
+            rel = cand
+            break
+    if rel is None:
+        # 理论不可达（掩码不覆盖整节）—— 兜底仍打中部
+        rel = crc_len // 2
+    return text['ptr_raw'] + rel
+
+
 def mut_demo_exe():
-    """e2e/attacks/vmc/protchain: 改产物一个字节 -> 应报失败。"""
+    """e2e/attacks/vmc/protchain: 改产物一个字节 -> 应报失败。
+
+    ⚠️ 偏移**按布局选取**（缺陷 6）—— 原先是硬编码 `0x2000`，
+    落进随机化的掩码区时会让 P2 假报"盲"。
+    """
     p = os.path.join(REPO, 'build', 'demo.exe')
     restore = _backup(p)
     try:
+        off = pick_unmasked_text_off(p, os.path.join('build', 'demo.exe'))
         with open(p, 'r+b') as f:
-            # 改 .text 中部一个字节（避开 PE 头，避免直接崩溃无法执行）
-            f.seek(0x2000)
+            f.seek(off)
             b = f.read(1)
-            f.seek(0x2000)
+            f.seek(off)
             f.write(bytes([b[0] ^ 0xFF]))
         return restore
     except Exception:
@@ -131,7 +186,7 @@ def mut_demo_exe():
 
 
 def mut_demo_linux():
-    """变异 `build/demo_linux` 的 **.text 中部**（D1, 2026-09-29）。
+    """变异 `build/demo_linux` 的 **.text 非掩码字节**（D1, 2026-09-29）。
 
     ## 为什么不能照搬 win 的 `0x2000`
       `0x2000` 是**针对 PE 布局**的经验偏移（避开 PE 头）——
@@ -139,58 +194,15 @@ def mut_demo_linux():
       固定 `0x2000` 可能落进**头部/动态符号区** -> 变异**打偏**
       （"变异打偏 -> 假阳性'盲检查器'"，与 §24 的教训同类）。
 
-    ## 判据来源（**复用既有**）
-      按 `protchain_check.sections_of`（**自动分派 PE/ELF**）定位 `.text`
-      -> 取其中部偏移。**不引入新的解析**。
+      ⚠️ 缺陷 6（2026-10-02）: 该教训**同样适用于 win 侧** —— `.text` 里的
+      selfcrypt 掩码区**每次构建随机化**，硬编码偏移会命中掩码区
+      （实测 1/5），使 P2 设计上不可见。win 侧已改用同一判据。
+      两侧现共用 `pick_unmasked_text_off()`，**单一实现**。
     """
     p = os.path.join(REPO, 'build', 'demo_linux')
     restore = _backup(p)
     try:
-        sys.path.insert(0, os.path.join(REPO, 'tests'))
-        import protchain_check as _pc                # noqa: WPS433
-
-        # ## ⚠️ **必须设 `_CURRENT_EXE`**（实测漏设的代价, 2026-09-29）
-        #
-        # `selfcrypt_meta` 内部走 `cry_section_names()` ->
-        # 读**由 `_CURRENT_EXE` 决定的平台 json**。
-        # **不设 -> 默认 Windows json -> Linux 掩码算成 0** ->
-        # 选的"非掩码"字节**其实在掩码区内** -> 打进去被 P2 的清零掩盖
-        # -> **假报"盲"**（实测正是如此: rel=17157 落在 16160..17231 内）。
-        #
-        # 教训: 复用某模块的函数时，**连同它的隐式上下文一起设**——
-        # 否则"同一个函数在两个调用点算出不同结果"。
-        _pc._CURRENT_EXE = os.path.join('build', 'demo_linux')
-        data = open(p, 'rb').read()
-        secs = _pc.sections_of(data)
-        text = next(s for s in secs if s['name'] == '.text')
-
-        # ## ⚠️ 必须选**非掩码**字节（D1 盲检的根因, 2026-09-29）
-        #
-        # `p2_mask_consistent` 的 CRC 计算是:
-        #     raw = .text 字节 -> **掩码区先清零** -> zlib.crc32 -> 与烧录值比
-        # 所以 **掩码区内的翻转会被清零掩盖**（设计如此 —— 那些区的完整性
-        # 由**运行期解密后**校验，静态 CRC 不承诺它们）。
-        #
-        # 我原先取 `.text 中部` -> 恰落进掩码区 -> P2 **设计上**不覆盖 ->
-        # 被判"盲"。**这不是 protchain 缺陷，是域错配**（测试打到了
-        # 检查器声明范围之外）。
-        #
-        # 修: 取 CRC 覆盖范围、且**不在任何掩码区**的字节（中部向后扫描）
-        #     -> 必然在 P2 的检测域内 -> 必被检出。
-        crc_len = min(text['virtual_size'], text['size_raw'])
-        masks = []
-        for mrva, mlen, _grp in _pc.selfcrypt_meta(data, secs):
-            masks.append((mrva - text['virtual_addr'], mlen))
-        rel = None
-        for cand in range(crc_len // 2, crc_len):
-            if not any(o <= cand < o + ml for o, ml in masks):
-                rel = cand
-                break
-        if rel is None:
-            # 理论不可达（掩码不覆盖整节）—— 兜底仍打中部
-            rel = crc_len // 2
-        off = text['ptr_raw'] + rel
-
+        off = pick_unmasked_text_off(p, os.path.join('build', 'demo_linux'))
         with open(p, 'r+b') as f:
             f.seek(off)
             b = f.read(1)
@@ -361,12 +373,12 @@ MUTATIONS = {
     'protchain': {
         'cmd': [PY, '-X', 'utf8', 'tests/protchain_check.py'],
         'mut': mut_demo_exe,
-        'desc': '改 build/demo.exe 一个字节',
+        'desc': '改 build/demo.exe 一个字节 (按布局取非掩码偏移)',
     },
     'e2e': {
         'cmd': [PY, '-X', 'utf8', 'tests/e2e.py'],
         'mut': mut_demo_exe,
-        'desc': '改 build/demo.exe 一个字节',
+        'desc': '改 build/demo.exe 一个字节 (按布局取非掩码偏移)',
     },
     'vmc': {
         # 判据: `out.startswith('RESULT 1')`（见 vmc_tests.py:176）。
@@ -395,9 +407,10 @@ MUTATIONS = {
 # | vmc | **不含** | `vmc_tests` 依赖 MSVC + Windows 产物；Linux 侧的 vmc 检查器是 `tools/vmc_linux.py`（**被 verify_linux_runtime 调用，但不依赖 demo_linux**，故不纳入）|
 #
 # ## 变异目标
-#   `mut_demo_linux()` —— 按 `sections_of` 定位 `.text` 中部
+#   `pick_unmasked_text_off()` —— 按 `sections_of` 定位 `.text`，再排除
+#   **selfcrypt 掩码区**，取 CRC 覆盖范围内的非掩码字节。
 #   （**不照搬 win 的 0x2000**：ELF 布局不同，固定偏移会打偏 ->
-#    "变异打偏 -> 假阳性'盲检查器'"）。
+#    "变异打偏 -> 假阳性'盲检查器'"。缺陷 6 证实该规律对 win 侧同样成立。）
 MUTATIONS_LINUX = {
     'modcheck': MUTATIONS['modcheck'],
     'drills':   MUTATIONS['drills'],
@@ -407,17 +420,17 @@ MUTATIONS_LINUX = {
                 '--exe', os.path.join('build', 'demo_linux'),
                 '--blob', os.path.join(REPO, 'build', 'linux', 'vm.blob')],
         'mut': mut_demo_linux,
-        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+        'desc': '改 build/demo_linux 一个字节 (按布局取非掩码偏移)',
     },
     'e2e': {
         'cmd': [PY, '-X', 'utf8', 'tests/e2e.py', '--platform', 'linux'],
         'mut': mut_demo_linux,
-        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+        'desc': '改 build/demo_linux 一个字节 (按布局取非掩码偏移)',
     },
     'attacks': {
         'cmd': [PY, '-X', 'utf8', 'tests/attacks.py', '--platform', 'linux'],
         'mut': mut_demo_linux,
-        'desc': '改 build/demo_linux 一个字节 (.text 中部)',
+        'desc': '改 build/demo_linux 一个字节 (按布局取非掩码偏移)',
     },
 }
 
