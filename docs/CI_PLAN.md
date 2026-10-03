@@ -88,6 +88,15 @@ job reproducible (新增, 可复现门禁):
 - 复现构建 `-SeedsFile` 同种子 → 比对 demo.exe + vm.blob SHA-256；
 - **注意**：签名（signtool）会引入差异——CI 用 `-SkipSign`（无 pfx）。
 
+**本地门禁同步（缺陷 ⑥，2026-10-03）**：`tools/release_check.ps1` 的第 3/4 项
+原先是两个各建各的 `Check`，一次门禁做 **3 次** Release 构建，且**第 3 项的
+`demo.exe` 从未与任何东西比过**（实测 A=`3EBCDE6D…` ≠ B=C=`197550898…`）。
+现改为：第 3 项是**唯一权威构建**（`-RecordSeeds -SkipSign`）并把产物快照到
+`build\_gate_baseline`，第 4 项以 `repro_check.ps1 -BaselineDir build\_gate_baseline`
+只重建**一次**、断言 `A' == Y` —— 即「`-RecordSeeds` 记下的种子表足以重建出
+记下它的那个产物」，这正是本 job（§2.1 步骤 4）所依赖的前提。
+净效果 3 次 → 2 次构建，**两次的产物都承重**。详见 `docs/HANDOVER.md` §2.18。
+
 ---
 
 ## 3. 兼容矩阵扩展（COMPAT.md + compat-matrix.csv）

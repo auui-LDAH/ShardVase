@@ -1,16 +1,24 @@
 ﻿# tools/repro_check.ps1 — 可复现构建判定 (INFRA_PLAN I2)
 #
-# 统一: verify.ps1 -Reproducible 与 CI reproducible job 的判定逻辑.
-# 用 seeds.json 同种子两次构建 (Release, SkipSign), 比对 demo.exe + vm.blob
-# 的 SHA-256. 一致 = PASS.
+# 统一: 门禁第 4 项 / verify.ps1 -Reproducible / CI reproducible job 的判定逻辑.
+#
+# 两种形态:
+#   形态 A（无 -BaselineDir）: 用 seeds.json 同种子**自己构建两次**, 断言 B == C.
+#     判据较弱 —— 只证明"同命令跑两次一致", 与"第一次构建"无关.
+#     仍被 verify.ps1 -Reproducible 与 ci_sim 使用.
+#   形态 B（-BaselineDir <dir>，**现为门禁第 4 项的默认形态**）: 与一个**既有产物**
+#     比对 —— 拿 build\seeds.json 重建一次, 再跟 <dir> 里快照的 demo.exe/vm.blob 比.
+#     判据更强: 它证明的是「`-RecordSeeds` 记下的种子表, 足以重建出记下它的那个
+#     产物」（CI reproducible job 依赖的正是这条前提）.
+#
+# ⚠️ 形态 B 会**覆盖** build\demo.exe —— 所以基线必须由调用方事先快照, 门禁里
+#    由第 3 项复制到 build\_gate_baseline 再传进来（缺陷 ⑥, 见 release_check.ps1）。
 #
 # 用法:
 #   powershell -ExecutionPolicy Bypass -File tools\repro_check.ps1 [-SeedsFile build\seeds.json]
 #   powershell -ExecutionPolicy Bypass -File tools\repro_check.ps1 -BaselineDir build_artifacts\build
 #
-# -BaselineDir: 与一个**既有产物**比对 (CI reproducible job 的真实形态:
-#   下载第一构建 -> 同种子重建 -> 比对), 而不是自己建两次.
-#   CI 的 `Compare SHA-256 with first build` 步与本开关判据一致.
+# CI 的 `Compare SHA-256 with first build` 步与形态 B 判据一致.
 param(
     [string]$SeedsFile = 'build\seeds.json',
     [string]$BaselineDir = ''

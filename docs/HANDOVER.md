@@ -1413,3 +1413,110 @@ build/_wc_negctl.py（负向，真实修复前代码） rc=0   4/4 项
 - `window_check` **只看"调用点在不在窗口内"，不看 `exit` 是否漏了 `leave`** ——
   `demo/main.c:540-543` 与 `app_main.c:632-637` 的 `exit` 先于 `leave`
   属**已知可接受**写法（进程即将终止），门禁不报，这是**有意为之的判据边界**。
+
+---
+
+### 2.18 增量（2026-10-03）：缺陷 ⑥ —— 门禁里"没人比对的产物"
+
+**性质**：**冗余 + 语义混乱**，不是正确性漏洞。但"白烧一次构建"掩盖了
+一条**从未被任何断言覆盖**的前提。定位靠实测，不靠读代码。
+
+**原形态**（`tools/release_check.ps1` 第 3/4 项）：
+
+```
+:250  Check 'Release 构建'  -> build.ps1 -Config Release -RecordSeeds -SkipSmoke
+                              （无 -SeedsFile ⇒ 随机盐，且**会签名** ⇒ 产物 A）
+:254  Check '可复现'        -> repro_check.ps1（无参）
+                              （形态 A: 自己再建两次 -SeedsFile -SkipSign ⇒ B, C，
+                               **只断言 B == C**）
+```
+
+一次门禁做 **3 次** Release 构建，其中 **A 的 `demo.exe` 从未与任何东西比过**。
+
+**A/B/C 对照实测**（`build/_def6_abc.py`，三次真实构建）：
+
+| | 命令 | 用时 | `demo.exe` SHA-256（前 24） |
+|---|---|---|---|
+| A | 门禁第 3 项原样（`-RecordSeeds`，签名） | 97.8s | `3EBCDE6D065520432268257D` |
+| B | `-SeedsFile build\seeds.json -SkipSign` | 79.1s | `197550898E83063A977B4D61` |
+| C | 同 B（repro_check 的第二次） | 78.4s | `197550898E83063A977B4D61` |
+
+`A == B` **False** / `A == C` **False** / `B == C` **True**；
+`vm.blob` A==B==C **True**；`seeds.json` A==B==C **True**（B/C 用 `-SeedsFile`
+**不改写**它 ⇒ **A 写的那份才是被 CI 上传的**）；`manifest.json` 三者各不相同（含 timestamp）。
+
+**先排除"正确性漏洞"**：把门禁跑完留在磁盘的 `build\` 产物 + 它留下的
+`seeds.json` 拿去重放 CI reproducible job 的形态
+（`repro_check.ps1 -BaselineDir build\_gateart\build`）→ `REPRO-RC=0`，
+`demo.exe: identical` / `vm.blob: identical`。⇒ 留在磁盘上的那份**自洽**
+（因为留下的本来就已经是 `-SeedsFile` 重建的产物）。**⑥ 不是错，是浪费 + 混乱。**
+
+**D1–D4：找到那条没人管的前提**。问"`-RecordSeeds` 记下的种子表，
+能否重建出记下它的**那个**产物" —— 这正是 CI reproducible job 依赖的前提
+（它拿上传的 `seeds.json` 重建，再跟上传的 `demo.exe` 比），而**此前无任何断言覆盖**：
+
+| | 命令 | 用时 | 结论 |
+|---|---|---|---|
+| D1 | `-RecordSeeds -SkipSign -SkipSmoke` | 99.7s | exe `D96D11B8…`，种子表 S1 |
+| D2 | `-SeedsFile S1 -SkipSign -SkipSmoke` | 116.0s | exe **与 D1 完全相同** ⇒ **★ D1 == D2** |
+| D3 | `-SeedsFile S1 -SkipSmoke`（**不 SkipSign**） | 128.0s | exe `CAA4164D…` ⇒ D1 != D3（签名因子） |
+| D4 | `-RecordSeeds -SkipSmoke` | 197.8s | exe `16DF2FAE…` ⇒ D4 != D1（盐每次随机） |
+
+**签名开销实测 ≈ +98s**（D1 99.7s vs D3 128.0s 是同一份种子的带/不带签名之差；
+D4 197.8s 另含随机盐分支）。附带发现：`build/keys/codesign.pfx` **本机存在** ⇒
+第 3 项在本机会真的走 signtool，但**它的产物马上被 repro_check 覆盖**，
+而第 14 项 `签名 (Authenticode)` 看到的一直是**未签名**产物
+（`Test-Path` 为真 ⇒ 进 `Get-AuthenticodeSignature` 分支 ⇒ 报
+「未签名 — 可复现构建产物」，恒 PASS）⇒ **签名路径在门禁里被演练了但结果被丢弃**。
+
+**修法**（`tools/release_check.ps1`）：让第 3 项成为**唯一权威构建**，
+第 4 项拿它当基线。
+
+```powershell
+Check 'Release 构建 (build.ps1 -Config Release)' {
+    powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -RecordSeeds -SkipSign -SkipSmoke
+    if ($LASTEXITCODE -ne 0) { return $false }
+    # 快照本次产物当第 4 项的基线 —— repro_check 会用 -SeedsFile 重建并
+    # **覆盖** build\demo.exe, 所以必须先存下来。
+    $snap = 'build\_gate_baseline'
+    Remove-Item -LiteralPath $snap -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $snap | Out-Null
+    Copy-Item -LiteralPath 'build\demo.exe' -Destination (Join-Path $snap 'demo.exe')
+    Copy-Item -LiteralPath 'build\vm.blob'  -Destination (Join-Path $snap 'vm.blob')
+    return $true
+}
+Check '可复现 (repro_check)' {
+    powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1 -BaselineDir build\_gate_baseline
+    $LASTEXITCODE -eq 0
+}
+```
+
+- 第 3 项加 `-SkipSign`。**这不改变上传物** —— 原形态下 A 签出来的 exe
+  本来就会被 repro_check 的第一次构建 100% 覆盖，磁盘上留的一直是未签名产物。
+- 第 4 项改 `-BaselineDir build\_gate_baseline`（CI reproducible job 的**同一种形态**）
+  ⇒ 只重建**一次**，断言 A' == Y。
+- 断言由此换成**更强**的那条：不只是"同命令跑两次一致"，
+  而是「`-RecordSeeds` 记下的种子表足以重建出记下它的那个产物」（实测 D1 == D2）。
+- 纯"同命令两次一致"（旧 B==C）在 CI 由 reproducible job 独立覆盖。
+- **净效果：3 次构建 → 2 次，且两次的产物都承重（0 个无人比对的产物）。**
+- **代价（如实记）**：门禁内**不再演练 signtool 路径**。签名验证改由
+  第 14 项 `签名 (Authenticode)` 观测 + 发版流程"确认可复现后单独签名"承担。
+  CI runner 无 pfx，本就不演练。
+
+`tools/repro_check.ps1` 头注释同步改写：明确区分**形态 A**（无 `-BaselineDir`，
+自建两次，判据较弱，仍被 `verify.ps1 -Reproducible` 与 `ci_sim` 使用）与
+**形态 B**（`-BaselineDir`，**现为门禁第 4 项的默认形态**，判据更强），
+并警示形态 B 会**覆盖** `build\demo.exe`、故基线必须由调用方事先快照。
+
+**验证**：门禁实跑 `GATE-RC=0`，用时 **487.9s**；
+`[release_check] PASS: 31 项检查全通过`；`[ok]` 31 / `[X]` 0 / `[skip]` 0 / `[info]` 3。
+日志里 `基线快照 -> build\_gate_baseline（供下一项比对）`，
+第 3/4 项均 `[ok]`。构建次数由"3 次 Release"降为"2 次"的**旁证**：
+快照 `demo.exe` mtime **14:47:02** vs 重建后 `build\demo.exe` mtime **14:48:46**
+（两者内容相同 ⇒ `snapshot==current = True`，`vm.blob` 亦然）。
+门禁外回归全绿：`doccheck` rc=0 · `docclaim_check` rc=0 · `window_check --selftest` rc=0 ·
+`sdk_pack --selftest` rc=0 · `mutate_check` rc=0 · `skeleton_check` rc=0 ·
+`tests/vmc_tests.py` rc=0 · `comment_lint` rc=0 · `git diff --check` rc=0。
+
+**仍未验证的**：门禁的这次改动尚未在 CI 上跑过
+（CI 上 `reproducible` job 仍走**形态 B 对 `build_artifacts`**，与本改动正交）。

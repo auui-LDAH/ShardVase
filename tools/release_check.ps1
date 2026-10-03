@@ -246,12 +246,51 @@ Check 'manifest.json 版本非占位' {
 }
 
 if (-not $SkipTest) {
+    # ## 缺陷 ⑥（2026-10-03 修）: 下面两项原本各建各的, 且**第 3 项的产物无人比对**。
+    #
+    #   原形态:
+    #     :250 `-Config Release -RecordSeeds -SkipSmoke`   (无 -SeedsFile -> 随机盐,
+    #                                                      且**签名** -> A)
+    #     :254 `repro_check.ps1`（形态 A, 自建两次 -SeedsFile -SkipSign -> B, C,
+    #                                                      **只断言 B == C**）
+    #   => 一次门禁做 **三次** Release 构建, 其中 A 的 demo.exe **从未与任何东西比过**
+    #      （实测 A=3EBCDE6D… / B=C=197550898… ⇒ A != B）, 纯白烧; 且 A 写了
+    #      `build\seeds.json`（**这份才是被 CI 上传的**）, 而留在磁盘上的是 C 的
+    #      demo.exe —— 上传物来自哪次构建全靠"顺序的副产品"。
+    #
+    #   修法（本次）: 让第 3 项成为**唯一权威构建**, 第 4 项拿它当基线去比。
+    #     · 第 3 项加 `-SkipSign`。**这不改变上传物** —— 原形态下 A 签出来的 exe
+    #       本来就会被 repro_check 的第一次构建 100% 覆盖掉, 磁盘上留的一直是
+    #       未签名产物（实测 :319 的 Authenticode 项看到的也一直是"未签名"）。
+    #       加 -SkipSign 只是不再白烧一次 signtool（实测签名路径约 +98s）。
+    #       ⚠️ 代价（如实记）: 门禁内**不再演练 signtool 路径**。签名验证改由
+    #       :319 `签名 (Authenticode)` 观测 + 发版流程"确认可复现后单独签名"
+    #       承担（见 :306-308）。CI runner 无 pfx, 本就不演练。
+    #     · 第 4 项改 `-BaselineDir build\_gate_baseline`（CI reproducible job 的
+    #       同一种形态）=> 只重建**一次**, 断言 A' == Y。
+    #     · 由此断言换成**更强**的那条: 不只是"同命令跑两次一致", 而是
+    #       **「`-RecordSeeds` 记下的种子表, 足以重建出记下它的那个产物」** ——
+    #       这正是 CI reproducible job 依赖的前提（它拿上传的 seeds.json 重建
+    #       再跟上传的 demo.exe 比）。实测 D1(-RecordSeeds -SkipSign) == D2
+    #       (-SeedsFile -SkipSign) 成立。
+    #     · 纯"同命令两次一致"（旧 B==C）在 CI 由 reproducible job 独立覆盖:
+    #       它拿本次门禁留在磁盘上的产物当基线, 在自己机器上重建再比。
+    #   净效果: 3 次构建 -> 2 次, **且两次的产物都承重**（0 个无人比对的产物）。
     Check 'Release 构建 (build.ps1 -Config Release)' {
-        powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -RecordSeeds -SkipSmoke
-        $LASTEXITCODE -eq 0
+        powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -RecordSeeds -SkipSign -SkipSmoke
+        if ($LASTEXITCODE -ne 0) { return $false }
+        # 快照本次产物当第 4 项的基线 —— repro_check 会用 -SeedsFile 重建并
+        # **覆盖** build\demo.exe, 所以必须先存下来。
+        $snap = 'build\_gate_baseline'
+        Remove-Item -LiteralPath $snap -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $snap | Out-Null
+        Copy-Item -LiteralPath 'build\demo.exe' -Destination (Join-Path $snap 'demo.exe')
+        Copy-Item -LiteralPath 'build\vm.blob' -Destination (Join-Path $snap 'vm.blob')
+        Write-Host ("      基线快照 -> {0}（供下一项比对）" -f $snap) -ForegroundColor DarkGray
+        return $true
     }
     Check '可复现 (repro_check)' {
-        powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1
+        powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1 -BaselineDir build\_gate_baseline
         $LASTEXITCODE -eq 0
     }
     Check 'e2e T1-T28' { & $py tests\e2e.py; $LASTEXITCODE -eq 0 }
