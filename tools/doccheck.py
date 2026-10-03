@@ -146,12 +146,13 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   docs/DEBUG_CONSOLE_PLAN.md:224       「已交付并入库门禁（30 / 32)」
 # 语义上门禁项数**只可能是分母**。旧实现比较 `m.group(2)` —— 方向本就对。
 #
-# ## 容差 {34, 31}
-# 总数 34 / 默认调用 31 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
+# ## 容差 {35, 32}
+# 总数 35 / 默认调用 32 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
 # 沿用轮次规则的先例: 允许"全量"与"默认"两种口径。
 # 2026-10-02: 33/30 -> 34/31 (新增 `加密封装窗口 (window_check)`, §2.16/T11)。
-GATE_TOTAL = 34
-GATE_DEFAULT = 31
+# 2026-10-03: 34/31 -> 35/32 (新增 `判定多副本等价性 (replica_check)`, R3.2-c)。
+GATE_TOTAL = 35
+GATE_DEFAULT = 32
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
@@ -803,12 +804,14 @@ def selftest():
         cases.append((name, text, n))
 
     # --- 数字漂移: `N/N` 与 `N 项` 两种形态都必须抓到 ---
-    case('N/N 漂移', '门禁 32/32 全通过\n', 1)
-    case('N 项漂移', 'release_check 32 项全通过\n', 1)
-    case('N 项 + 强调漂移', '门禁 **32** 项\n', 1)
-    case('正确值不报', '门禁 34/34 全通过\nrelease_check 31 项\n', 0)
-    # 比分母, 不是分子: `门禁 21/34` 是"通过 21 / 共 34", 分母对即放行
-    case('分母正确/分子是失败数 -> 放行', '门禁 21/34（唯一失败=未提交）\n', 0)
+    # 注: 漂移用例的值必须**不在** {GATE_TOTAL, GATE_DEFAULT} 里 —— 32 曾是
+    # 合法默认值, 34/31 之后 32 变成漂移; 每轮项数递增都要重挑这些字面量。
+    case('N/N 漂移', '门禁 31/31 全通过\n', 1)
+    case('N 项漂移', 'release_check 34 项全通过\n', 1)
+    case('N 项 + 强调漂移', '门禁 **34** 项\n', 1)
+    case('正确值不报', '门禁 35/35 全通过\nrelease_check 32 项\n', 0)
+    # 比分母, 不是分子: `门禁 21/35` 是"通过 21 / 共 35", 分母对即放行
+    case('分母正确/分子是失败数 -> 放行', '门禁 21/35（唯一失败=未提交）\n', 0)
     case('分母错误 -> 必报', '门禁 33/22\n', 1)
     # 豁免必须仍然生效 (否则"多报"也是判据失效)
     case('代码块内 -> 豁免', '```\n门禁 11/11\n```\n', 0)
@@ -854,13 +857,13 @@ def selftest():
     if real is None:
         fails.append('%s 不可读 —— 负向用例失去锚点' % rel)
     else:
-        for good, bad in (('34/34', '32/32'), ('34 项', '32 项')):
+        for good, bad in (('35/35', '33/33'), ('35 项', '33 项')):
             if good in real:
                 real_case = ('真实文档 %s: %s -> %s 必须报' % (rel, good, bad),
                              real.replace(good, bad))
                 break
         else:
-            fails.append('%s 里既无 `34/34` 也无 `34 项` —— '
+            fails.append('%s 里既无 `35/35` 也无 `35 项` —— '
                          '负向用例失去锚点, 请改用其他已声明现值的文档' % rel)
     if real_case:
         cases.append(real_case + (1,))

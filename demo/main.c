@@ -544,7 +544,7 @@ int main(int argc, char** argv)
     prot_antidebug_scan(&rep);
     sc_ext_leave();
     printf("反调试扫描: %s\n",
-           prot_antidebug_detected(&rep) ? "发现可疑" : "通过");
+           prot_antidebug_detected_multi(&rep) ? "发现可疑" : "通过");
     if (selftest) {
         print_selftest(&rep);
     }
@@ -603,14 +603,14 @@ int main(int argc, char** argv)
      * 该调用不冲刷 stdout (stdout 重定向到管道时为全缓冲, 数据会丢失)。
      * 因此先把 MSG_DBG 打印并冲刷, 再触发策略, 保证 §9.1 要求的提示可见。
      */
-    if (prot_antidebug_detected(&rep)) {
+    if (prot_antidebug_detected_multi(&rep)) {
         printf("%s\n", prot_str_get(PROT_STR_MSG_DBG));
         fflush(stdout);
     }
     if (sc_ext_enter() == PROT_OK) {
         prot_antidebug_apply_policy(PROT_POLICY_EXIT);
         sc_ext_leave();
-    } else if (prot_antidebug_detected(&rep)) {
+    } else if (prot_antidebug_detected_multi(&rep)) {
         /*
          * §2.16: 窗口打不开时**不能**再调 apply_policy —— 它内部要调
          * prot_antidebug_scan (组 1 加密目标), 而 D2b 下窗口外执行的是
@@ -620,7 +620,7 @@ int main(int argc, char** argv)
          */
         exit(PROT_EXIT_DEBUG_DETECTED);
     }
-    if (prot_antidebug_detected(&rep)) {
+    if (prot_antidebug_detected_multi(&rep)) {
         exit(PROT_EXIT_DEBUG_DETECTED); /* 兜底: 若策略未终止进程则显式退出 */
     }
 #endif /* PROT_MOD_ANTIDEBUG */   /* 反调试策略段 */

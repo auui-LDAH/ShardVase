@@ -214,7 +214,7 @@ static void watchdog_thread(void* param) {
          *   P5 只判"加密函数不得被直接 E8 调用", 不判"调用点是否在窗口内"。
          *   间接调用绕过了 P5 的字面判据。 */
         if (g_ad_scan_fn != NULL && g_ad_scan_fn(&ad) == PROT_OK &&
-            prot_antidebug_detected(&ad) != 0u) {
+            prot_antidebug_detected_multi(&ad) != 0u) {
             switch (g_wd_policy) {
                 case PROT_POLICY_EXIT:
                     prot_plat_terminate(PROT_EXIT_DEBUG_DETECTED);
@@ -608,6 +608,8 @@ prot_status prot_integrity_check_iat(void)
  *
  * ## 覆盖范围（第 1 组）
  *   ① `prot_antidebug_detected`（DRILL7 步骤 4 实证的要害）
+ *   ①b R3.2-c 的 3 个等价副本（patch 单个副本不再足够 -> 每个副本各自被守护）
+ *   ①c R3.2-c 的聚合器 `prot_antidebug_detected_multi`（宿主实际调用的入口）
  *   ③ `prot_integrity_check_self`（自我指涉缺口）
  *   本模块 deps = [antidebug, selfcrypt] -> **无新增跨模块依赖**。
  *   ② dbiguard / ④ license / ⑤ vmdetect 需注册式扩展（后续组）。
@@ -622,8 +624,12 @@ typedef struct prot_guard_entry {
 /* 判定点表（**函数地址编译期已知**） */
 /* 编译期已知的判定点（integrity 自身 + antidebug，deps 内） */
 static const prot_guard_entry g_guard_static[] = {
-    { "prot_antidebug_detected",   (const void*)&prot_antidebug_detected },
-    { "prot_integrity_check_self", (const void*)&prot_integrity_check_self },
+    { "prot_antidebug_detected",       (const void*)&prot_antidebug_detected },
+    { "prot_antidebug_detected_r2",    (const void*)&prot_antidebug_detected_r2 },
+    { "prot_antidebug_detected_r3",    (const void*)&prot_antidebug_detected_r3 },
+    { "prot_antidebug_detected_r4",    (const void*)&prot_antidebug_detected_r4 },
+    { "prot_antidebug_detected_multi", (const void*)&prot_antidebug_detected_multi },
+    { "prot_integrity_check_self",     (const void*)&prot_integrity_check_self },
 };
 #define PROT_GUARD_N \
     (sizeof(g_guard_static) / sizeof(g_guard_static[0]))

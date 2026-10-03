@@ -21,6 +21,10 @@
       "exports": [
         "prot_antidebug_scan",
         "prot_antidebug_detected",
+        "prot_antidebug_detected_r2",
+        "prot_antidebug_detected_r3",
+        "prot_antidebug_detected_r4",
+        "prot_antidebug_detected_multi",
         "prot_antidebug_apply_policy",
         "prot_antidebug_fake_active",
         "prot_antidebug_hide_thread"
@@ -30,7 +34,8 @@
       "verifies_text": false,
       "needs_writable_dir": false,
       "known_limits": [
-        "函数头 patch 可使判定失效 (DRILL7 步骤 4, 3 字节 31 C0 C3)",
+        "R3.2-c 后**单点** patch 判定副本不再足够 (host 调用 prot_antidebug_detected_multi); 但把 4 个副本全 patch 仍然能关闭判定 — 冗余提高成本, 不是不可破",
+        "副本语义等价性靠 tools/replica_check.py 差分判据守护, 该判据覆盖 7 关键位 + 5 咨询位全域, 不覆盖未来新增字段",
         "S3 平坦化只提高静态阅读成本, 不阻止函数头替换",
         "计时检测固定消耗 250ms (5x20ms + 150ms)"
       ],

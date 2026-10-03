@@ -1662,6 +1662,138 @@ CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），
   `Select-String '副本|聚合|replica|aggregate' src/integrity.c` **零命中**；
   `git log --all --grep='R3.2-c'` 无提交。`:196` 指出的单点失效
   （「patch **1 处**判定副本**不再足够**」）至今成立。
+  > **⚠️ 此条已被 §2.20 更新（2026-10-03）**：R3.2-c 当日交付 ——
+  > 3 副本 + 非短路 OR 聚合器 + 门禁第 35 项；单点失效**已解除**（6 组单点变异漏报 0 例）。
+  > 本节保留复核当时（2026-10-03 早些时候）的原结论，以便对照。
 - Q4 建议的「把门面纳入 `PUBLIC_MATERIAL`」**仍未实施**（复核确认仍为真）。
 - §2.17/§2.18 里那三条「仍未验证」（机制 D 概率性、§2.16 第二处可达性、
   `window_check` 不看 `exit` 是否漏 `leave`）**状态不变**。
+
+---
+
+## 2.20 增量（2026-10-03）：**R3.2-c 判定多副本 + 交叉聚合**落地 —— 单点 patch 不再足够
+
+> 本节是 `docs/DECISION_REDUNDANCY_PLAN.md` 的**最后一项未交付子项**（§3 R3.2-c）。
+> 它在 §2.19 的复核里还被明确记为「❌ 仍未做」——**本节即对该结论的更新**。
+> 计划侧完整记录见该文档 **§12「R3.2-c 落地实证」**。
+
+### 缘起：DRILL7 步骤 4 的单点失效
+
+`docs/ATTACK_DRILL7.md` 步骤 4 实证：`prot_antidebug_detected` 函数头被 3 字节
+`31 C0 C3`（`xor eax,eax; ret`）覆盖后，**盾永久失效**（DETECTED → clean，持续）。
+R3.2-b 的序言快照守卫堵住了「patch 后重算 CRC」这条链，但**没改变单点性质**：
+攻击者只要把判定函数打成恒 0，判定就不再发生。R3.2-c 解决的就是这个。
+
+### 修法：3 个逐位等价副本 + 非短路 4 路 OR 聚合
+
+| 部件 | 位置 | 说明 |
+|------|------|------|
+| 副本 `r2` | `src/antidebug.c`（文件尾追加段）| 展开式顺序 OR（无状态机）|
+| 副本 `r3` | 同上 | 状态机但**逆序**遍历、状态编号不同 |
+| 副本 `r4` | 同上 | 归约式 `(acc \| (0u - acc)) >> 31`（**无分支**）|
+| 聚合器 | `prot_antidebug_detected_multi`（`src/antidebug.c:686-705`）| **非短路** 4 路位或 |
+
+**为什么必须非短路**：写成 `a \|\| b \|\| c \|\| d` 会让后续副本永不执行 ——
+攻击者只需让**先执行的那个**返回 0 即跳过其余副本，冗余归零。
+故用 `hit \|= f(rep);` 连续四次（`\|\|` 被 `tools/replica_check.py` 静态拒绝）。
+
+**为什么四个调用不会被优化掉**：每个副本首条语句是**局部 `volatile` 写入**
+（`volatile uint32_t k = PROT_AD_R*_SALT;`），volatile 访问是副作用，
+编译器不得消除/合并/跨副本复用。
+
+**抗 `/OPT:ICF`**：Release 的 `$linkHard` 含 `/OPT:ICF`（`build.ps1:526`），
+会把等价函数折叠成同一地址 —— 那样副本就白做了。故每个副本绑**各自专属的立即数**：
+`PROT_AD_R2_SALT 0x5A17C3E9u` / `PROT_AD_R3_SALT 0x1B873593u` /
+`PROT_AD_R4_SALT 0x9E3779B9u`。
+**注意 `PROT_BUILD_SALT` 做不到这件事** —— 它是全局同一值（`prot_noise.h:59`），
+所有副本会一起变，彼此仍等价。
+
+### 接线：6 处宿主调用点 + 守卫表 2→6 条
+
+宿主统一改调**契约入口** `prot_antidebug_detected_multi`：
+
+| 文件 | 位置 |
+|------|------|
+| `src/antidebug.c` | `:549`（`prot_antidebug_apply_policy` 内）|
+| `src/integrity.c` | `:217`（看门狗 A5 复查，在 EXT 窗口内）|
+| `demo/main.c` | 3 处 |
+| `prot_sdk/skeleton/app_main.c` | 3 处 |
+| `examples/tool_demo/main.c` | `:261` |
+| `prot_sdk/dotnet/Native/gate.c` | `:64` |
+
+`src/integrity.c` 的 `g_guard_static[]` 由 **2 条扩为 6 条**
+（本体 + r2/r3/r4 + multi + `prot_integrity_check_self`）；
+`PROT_GUARD_N` 由 `sizeof` 自动跟随，**未改容量**（`PROT_GUARD_CAPACITY 12u` 仍够）。
+
+### 验收实证（这是本节的核心，数字全为实测）
+
+**① 单点 patch 不再足够**（`tools/replica_check.py` 判据 4）——
+对 3 个副本各用 2 种手法打掉，共 **6 组单点变异**：
+
+| 手法 | 含义 |
+|------|------|
+| `stub-ret0` | 函数体换成 `{ (void)rep; return 0u; }` —— 与 DRILL7 的 `31 C0 C3` **同效** |
+| `drop-key-bit` | 把某个关键位读取换成 `0u` —— 该副本对那个位**失明** |
+
+结果：**6 组全部「契约入口漏报 = 0」**（输入域 12325 例，其中阳性样本 **12276** 例）。
+**对照（判据必须能失败）**：把 4 个入口 + 聚合器**全**换成 `return 0u` 后，
+漏报 **12276** 例 ⇒ 判据不是恒真。
+
+**② P1 语义等价有机械判据**（判据 1）——借 `antidebug.h` 只依赖 `protdef.h`，
+把副本区独立切片编译成差分 harness：
+
+```
+cases=12325 mismatch=0 oracle_bad=0 entry_bad=0 range_bad=0 folded=0
+```
+
+- `mismatch=0`：4 个实现**逐位同输出**；
+- `oracle_bad=0`：本体与**独立 oracle**（`any(7 个关键位) != 0`）一致 ——
+  **纯差分对「全体一起错」是盲的**，故必须有独立 oracle；
+- `folded=0`：harness 自身的函数指针两两不同（防差分退化成「一个函数和自己比」）。
+
+**头文件漂移防护**：关键位/咨询位的归属靠 `antidebug.h` 里字段行尾的 `(咨询项)`
+标注解析，解析结果**必须 7 关键 / 5 咨询**，否则报错 —— 不静默接受漂移。
+
+**③ 抗 ICF**（判据 2）——`build/demo.map` 里 5 个符号 VA 两两不同：
+`prot_antidebug_detected 0x140005fe0` / `_r2 0x140006180` / `_r3 0x1400061c0` /
+`_r4 0x140006290` / `_multi 0x1400060b0`。
+
+**④ 负向对照**（判据 3）——摘掉 r2 的 `debug_object` 后差分报 **35** 处不一致
+（证明判据有判别力，不是「只会通过的检查器」）。
+
+**⑤ 活体复核**（`tools/prot_dbg.py watch g_guard_hits --patch <符号>`）——
+**5 个符号逐个**单独 patch 序言，`g_guard_hits` 均 `0 -> 1`：
+
+| 被 patch 的符号 | hits | 命中耗时 |
+|----------------|------|----------|
+| `prot_antidebug_detected`（本体）| `0 -> 1` | 3.84s |
+| `prot_antidebug_detected_r2` | `0 -> 1` | 3.67s |
+| `prot_antidebug_detected_r3` | `0 -> 1` | 3.23s |
+| `prot_antidebug_detected_r4` | `0 -> 1` | 3.08s |
+| `prot_antidebug_detected_multi` | `0 -> 1` | 4.26s |
+
+⇒ **每个副本各自被守卫快照守护**。这一点**不能**由 `guard_selftest` 证明 ——
+它默认只挑**第一个**掩码区外候选（即本体）去 patch。
+
+### 门禁与回归
+
+- **新增门禁第 35 项**「判定多副本等价性 (replica_check)」（`tools/release_check.ps1`）；
+  项数 **34/31 → 35/32**（`tools/doccheck.py:149-155` 已同步，全库现值文档同批更新）。
+- `tools/ci_sim.ps1` 同步接线（`Step '判定多副本等价性 (replica_check)'` + `py_compile` 列表）；
+  `.github/workflows/ci.yml` 的 `py_compile` 列表也已加入。
+- **门禁实跑**：`[release_check] PASS: 32 项检查全通过`（35 顶层 = 32 ok + 0 X + 0 skip + 3 info），
+  含新增的 `[ok] 判定多副本等价性 (replica_check)`。
+- **3 连建**：build 1/2/3 各 `rc=0`、日志均 `DONE` 且 **0 warning / 0 error**（`/W4 /WX`）。
+
+### 诚实边界（不掩饰）
+
+- **4 个副本全 patch 仍能关闭判定** —— 判据 4 的「全打掉对照」正是这一点的实证
+  （漏报 12276 例）。**冗余提高成本，不是不可破。**
+- **「副本位置由构建期 seed 决定」未实现**：三个副本是源文件里固定位置的独立函数，
+  地址**不随** `--shuffle-seed` 变化。原设计（`DECISION_REDUNDANCY_PLAN.md` §3 R3.2-c
+  关键设计③）的这条留作后续。
+- **等价性判据覆盖当前 12 个字段**（7 关键 + 5 咨询）；**未来新增字段不在覆盖内** ——
+  已写入 `modules.json` 的 `known_limits`。
+- **聚合下沉进 VM（`// @vmcalc`）未做**（原计划即标为「可选，先不做」）。
+- §5 风险表预留的「只加函数**不重排**已有函数」**已遵守**：新代码全部追加在
+  `src/antidebug.c` 文件尾，未移动任何既有函数。

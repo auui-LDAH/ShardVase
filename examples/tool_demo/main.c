@@ -256,9 +256,9 @@ int main(int argc, char** argv)
 
     SetConsoleOutputCP(65001);
 
-    /* 1. 反调试 + 策略 */
+    /* 1. 反调试 + 策略 (R3.2-c: 走非短路多副本聚合入口) */
     prot_antidebug_scan(&rep);
-    if (prot_antidebug_detected(&rep)) {
+    if (prot_antidebug_detected_multi(&rep)) {
         printf("tool: debugger detected - exiting\n");
         return PROT_EXIT_DEBUG_DETECTED;
     }

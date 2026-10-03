@@ -854,6 +854,39 @@ Check '调试控制台活体自检 (prot_dbg live)' {
     $LASTEXITCODE -eq 0
 }
 
+# 判定多副本等价性（R3.2-c, 2026-10-03）
+#
+# ## 为什么入门禁（**防"副本悄悄退化成不等价"**）
+#   R3.2-c 把 `prot_antidebug_detected` 复制成 4 份（本体 + r2/r3/r4）并把宿主
+#   切到非短路聚合器 `prot_antidebug_detected_multi`。于是"副本与本体等价"从
+#   一句注释变成了**必须被机器检查的不变量**（MODULE_GUIDE P1）:
+#     一次顺手编辑若让某个副本漏掉一个关键位，**所有其它测试仍会全绿**
+#     —— 攻击者只需挑那个副本 patch 即可，冗余归零而无人察觉。
+#   同 `guard_selftest` 的理由: 冗余的价值全靠等价性，故等价性必须入门禁。
+#
+# ## 三条判据（缺一不可; 详见 `tools/replica_check.py` 文件头）
+#   ① 差分等价 + 独立 oracle + 非空洞性
+#      本体与副本区逐字提取后独立编译，2^12 穷举 + 逐字段边界 + 8192 组 fuzz，
+#      断言 5 个实现同输入同输出；用独立 oracle（任一关键位非 0）校验**本体
+#      本身**（纯差分对"全体一起错"是盲的）；并断言函数指针两两不同 —— 否则
+#      harness 自己被 /OPT:ICF 折叠，差分退化成"一个函数和自己比"（判据空洞）。
+#   ② 地址互异（抗 /OPT:ICF）
+#      释放构建带 `/OPT:ICF`，等价函数会被折叠成同一地址 -> 副本白做。
+#      判据: `build/demo.map` 里 5 个符号 VA 两两不同。
+#   ③ 负向对照（判据必须有判别力）
+#      摘掉 r2 的一个关键位 -> 差分**必须**报出不一致；否则判 FAIL，
+#      不静默通过（这是本项目反复记名的「只会通过的检查器比没有更危险」）。
+#
+# ## 为什么能安全地跑
+#   只读 `src/antidebug.c` + `include/protect/antidebug.h` + `build/demo.map`；
+#   编译与运行的临时产物落在 gitignored 的 `build/`（`replica_real.*` 等），
+#   不触碰 demo.exe / seeds.json / 掩码文件。缺 demo.exe 时判据 ② 走 SKIP 并
+#   打印「未验证 != 通过」，判据 ①③ 仍会执行。
+Check '判定多副本等价性 (replica_check)' {
+    & $py -X utf8 tools\replica_check.py
+    $LASTEXITCODE -eq 0
+}
+
 
 
 

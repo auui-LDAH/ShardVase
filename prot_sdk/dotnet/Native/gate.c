@@ -61,5 +61,6 @@ int prot_gate_check(void)
     if (prot_antidebug_scan(&rep) != PROT_OK) {
         return 2;
     }
-    return prot_antidebug_detected(&rep) ? 1 : 0;
+    /* R3.2-c: 走非短路多副本聚合入口, 单点 patch 一个副本不再足够 */
+    return prot_antidebug_detected_multi(&rep) ? 1 : 0;
 }

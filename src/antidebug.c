@@ -546,7 +546,7 @@ prot_status prot_antidebug_apply_policy(prot_policy pol) {
     uint32_t st;
 
     prot_antidebug_scan(&rep);
-    if (prot_antidebug_detected(&rep) == 0u) {
+    if (prot_antidebug_detected_multi(&rep) == 0u) {
         return PROT_OK;
     }
     st = (uint32_t)pol;
@@ -579,4 +579,127 @@ prot_status prot_antidebug_hide_thread(void) {
     PROT_NOISE();   /* W1.6 序言噪声 */
     /* M5: 平台层（Windows: NtSetInformationThread；Linux: 如实不支持）*/
     return prot_plat_hide_thread();
+}
+
+/* ================================================================== *
+ * R3.2-c: 判定多副本 + 交叉聚合
+ *
+ * 缘起 (docs/DECISION_REDUNDANCY_PLAN.md §3 R3.2-c):
+ *   DRILL7 步骤 4 实证 —— patch prot_antidebug_detected 的函数头
+ *   (3 字节 31 C0 C3) 即让「盾」的判定被永久关闭。单点判定 = 单点失效。
+ *
+ * 修法:
+ *   同一语义的 3 个独立副本 (不同名 / 不同机器码 / 不同位置) + 一个
+ *   「非短路多路 OR」聚合器 —— 任一副本报 1 即视为检测到。
+ *
+ * P1 (语义等价必须可验证, MODULE_GUIDE P1):
+ *   副本与本体在「7 个关键位 × 5 个咨询位 + NULL」的全组合域上逐位同输出;
+ *   由 tools/replica_check.py 机械判据守护:
+ *     (a) 差分等价 —— 同输入同输出, 全域穷举 + 定向 fuzz;
+ *     (b) 地址互异   —— map 中各副本 VA 两两不同 (抗 /OPT:ICF 折叠);
+ *     (c) 负向对照   —— 改动任一副本语义必须被 (a) 抓到。
+ *
+ * 抗 ICF 为什么需要每副本各自的立即数:
+ *   释放构建带 /OPT:ICF (build.ps1 $linkHard), 等价函数会被折叠成同一
+ *   地址 —— 那样副本就白做了。故每个副本注入各自不同的立即数使机器码
+ *   不同。注意 PROT_NOISE 的 PROT_BUILD_SALT 是全局同一值, 做不到这点。
+ * ================================================================== */
+
+#define PROT_AD_R2_SALT 0x5A17C3E9u
+#define PROT_AD_R3_SALT 0x1B873593u
+#define PROT_AD_R4_SALT 0x9E3779B9u
+
+/* 副本 r2: 展开式顺序 OR (无状态机) */
+PROT_NOINLINE
+uint32_t prot_antidebug_detected_r2(const prot_antidebug_report* rep) {
+    volatile uint32_t k = PROT_AD_R2_SALT;
+    uint32_t acc = 0u;
+
+    if (k == 0xDEADBEEFu) { PROT_NOP(); }   /* 抗 ICF: 本副本专属立即数 */
+    if (rep == NULL) {
+        return 0u;
+    }
+    acc |= rep->peb_being_debugged;
+    acc |= rep->debug_port;
+    acc |= rep->debug_flags;
+    acc |= rep->debug_object;
+    acc |= rep->hardware_breakpoints;
+    acc |= rep->timing_suspicious;
+    acc |= rep->ppid_blacklist;
+    return acc ? 1u : 0u;
+}
+
+/* 副本 r3: 状态机, 但**逆序**遍历且状态编号不同 (与本体同构不同码) */
+PROT_NOINLINE
+uint32_t prot_antidebug_detected_r3(const prot_antidebug_report* rep) {
+    volatile uint32_t k = PROT_AD_R3_SALT;
+    uint32_t v[7];
+    uint32_t st;
+    uint32_t acc = 0u;
+
+    if (k == 0xDEADBEEFu) { PROT_NOP(); }   /* 抗 ICF: 本副本专属立即数 */
+    if (rep == NULL) {
+        return 0u;
+    }
+    v[0] = rep->ppid_blacklist;
+    v[1] = rep->timing_suspicious;
+    v[2] = rep->hardware_breakpoints;
+    v[3] = rep->debug_object;
+    v[4] = rep->debug_flags;
+    v[5] = rep->debug_port;
+    v[6] = rep->peb_being_debugged;
+    st = 6u;
+    for (;;) {
+        switch (st) {
+        case 6: acc |= v[6]; st = 5u; continue;
+        case 5: acc |= v[5]; st = 4u; continue;
+        case 4: acc |= v[4]; st = 3u; continue;
+        case 3: acc |= v[3]; st = 2u; continue;
+        case 2: acc |= v[2]; st = 1u; continue;
+        case 1: acc |= v[1]; st = 0u; continue;
+        case 0: acc |= v[0]; st = 0xFFFFFFFFu; continue;
+        default: break;
+        }
+        break;
+    }
+    return acc ? 1u : 0u;
+}
+
+/* 副本 r4: 归约式 —— (acc | -acc) >> 31 等价于 acc != 0
+ * 证明: acc == 0 -> 0; acc != 0 时, 若 acc 最高位为 1 则已完成,
+ *       否则 acc < 2^31 故 -acc = 2^32 - acc > 2^31, 最高位必为 1。 */
+PROT_NOINLINE
+uint32_t prot_antidebug_detected_r4(const prot_antidebug_report* rep) {
+    volatile uint32_t k = PROT_AD_R4_SALT;
+    uint32_t acc;
+
+    if (k == 0xDEADBEEFu) { PROT_NOP(); }   /* 抗 ICF: 本副本专属立即数 */
+    if (rep == NULL) {
+        return 0u;
+    }
+    acc  = rep->peb_being_debugged | rep->debug_port | rep->debug_flags;
+    acc |= rep->debug_object | rep->hardware_breakpoints;
+    acc |= rep->timing_suspicious | rep->ppid_blacklist;
+    return (acc | (0u - acc)) >> 31;
+}
+
+/* 非短路多路 OR 聚合器 (契约入口: 宿主应调用本函数, 而非任一副本)
+ *
+ * 为什么**非短路**: 用 || 会让后续副本永不执行 —— 攻击者只需让先执行的
+ * 那个副本返回 0 即跳过其余副本, 冗余归零。此处四个调用**全部发生**,
+ * 再由 | 位或合并 (| 对 uint32_t 无短路语义)。
+ *
+ * 为什么四个调用不会被优化掉: 每个副本首条语句是局部 volatile 的写入
+ * (PROT_NOISE / 副本专属立即数), volatile 访问是副作用, 编译器不得
+ * 消除、合并或跨副本复用。 */
+PROT_NOINLINE
+uint32_t prot_antidebug_detected_multi(const prot_antidebug_report* rep) {
+    uint32_t hit = 0u;
+
+    PROT_NOISE();   /* W1.6 序言噪声 */
+    hit |= prot_antidebug_detected(rep);
+    hit |= prot_antidebug_detected_r2(rep);
+    hit |= prot_antidebug_detected_r3(rep);
+    hit |= prot_antidebug_detected_r4(rep);
+    return hit ? 1u : 0u;
 }
