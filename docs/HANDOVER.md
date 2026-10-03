@@ -1784,6 +1784,18 @@ cases=12325 mismatch=0 oracle_bad=0 entry_bad=0 range_bad=0 folded=0
 - **门禁实跑**：`[release_check] PASS: 32 项检查全通过`（35 顶层 = 32 ok + 0 X + 0 skip + 3 info），
   含新增的 `[ok] 判定多副本等价性 (replica_check)`。
 - **3 连建**：build 1/2/3 各 `rc=0`、日志均 `DONE` 且 **0 warning / 0 error**（`/W4 /WX`）。
+- **CI 实跑（`d6f1f8d` + 回填 `7da95f1` → run `37158617592`）四个 job 全绿**：
+  `build-and-verify` 24/24（含用本次改过的 `release_check.ps1` 跑的 `Full release gate`，
+  其 `[ok]` 里可见 **`判定多副本等价性 (replica_check)`**）、
+  `linux-portability` 8/8、`reproducible` 8/8（含 `Compare SHA-256 with first build`）、
+  `sdk-package` 9/10（唯一 skipped 仍是 tag 门控的 `Publish GitHub Release`）。
+  ⇒ 新增的门禁项在 **CI 上真跑并通过**（不是"只在本地生效的门禁"）。
+  该跑的门禁行：`[release_check] PASS: 28 项检查全通过`；
+  35 个顶层项 = **28 `[ok]` + 0 `[X]` + 4 `[skip]` + 3 `[info]`**
+  （CI 环境没有 WSL 发行版也不构建 linux/perf 产物，故 4 项按前置不满足 SKIP，
+  与既有的 `[skip]` 口径一致；SKIP 不计入 PASS 分子。另有 1 行
+  `[skip] 4 项因前置不满足未验证` 是收尾汇总，不是检查项本身）。
+  （本行不复用「第 N 跑」编号 —— 上文的跑次编号沿用本轮之前的写法，此处只引 run id。）
 
 ### 诚实边界（不掩饰）
 
