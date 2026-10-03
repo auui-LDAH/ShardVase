@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **34** 项（默认 31）· 提交 `36b38d6`（Q6 回填 §2.15/§2.16 后更新）
+> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）+ window_check 负向对照（4/4）+ 门禁 **34** 项（默认 31）· 提交 `c8a4799`（§2.17 落地 + CI 第十跑四 job 全绿后更新）
 
 
 ## 1. 项目是什么
@@ -1385,6 +1385,17 @@ build/_wc_negctl.py（负向，真实修复前代码） rc=0   4/4 项
 **验证**：`build.ps1 -Config Dev -SkipSign` rc=0（`selfcrypt_proto: patched build\demo.exe
 (8 fns in-place, meta@0x33e00 hdr=196)`；`prot_vm_run` rva=0x1e80 crc=0xdc691b32 /
 `prot_antidebug_scan` rva=0x7f30 crc=0x4c9463cf group=1）；`tests/e2e.py` rc=0。
+
+**本地门禁实跑**：`powershell -ExecutionPolicy Bypass -File .\tools\release_check.ps1
+-SkipDirtyCheck` → `[release_check] PASS: 31 项检查全通过`，含 `[ok] 加密封装窗口
+(window_check)`；`[skip]` 0 / `[info]` 3（三个 `-With*` 开关项）。
+另 `tools/mutate_check.py` rc=0、`tests/vmc_tests.py` rc=0、`git diff --check` clean。
+
+**CI 第十跑（`c8a4799` → run `37096941944`）四 job 全绿**：
+`linux-portability` 5/5、`build-and-verify` **22/22**（`Full release gate` 步在同一份
+`release_check.ps1` 下通过）、`reproducible` 6/6、`sdk-package` 7/7；
+唯一 `skipped` 仍是 `Publish GitHub Release`（`ci.yml:283` tag 门控，设计如此）。
+⇒ 新门禁在真实 CI 上生效且不误报。
 
 **门禁项数随之 33/30 → 34/31**（新项插在 `protchain P1-P6` 之后 ⇒ 其后项序号 +1）：
 `tools/doccheck.py` 的 `GATE_TOTAL = 34` / `GATE_DEFAULT = 31`，并同步

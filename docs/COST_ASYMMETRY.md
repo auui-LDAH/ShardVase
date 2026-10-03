@@ -7,7 +7,7 @@
 > （符号表补丁实证）、`docs/DEFENSE_DEEPEN_PLAN.md`（S1-S5）、
 > `publish/06-诚实边界.md`（对外口径）。
 
-> **最后核实**: 2026-10-03 · 方法: `docs/ATTACK_DRILL9.md`（EXIT 策略下 patch + CRC 重算实测）· 提交 `36b38d6`
+> **最后核实**: 2026-10-03 · 方法: `docs/ATTACK_DRILL9.md`（EXIT 策略下 patch + CRC 重算实测）· 提交 `c8a4799`
 
 ---
 
