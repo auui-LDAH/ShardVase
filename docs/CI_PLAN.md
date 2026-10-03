@@ -192,3 +192,8 @@ protchain_check.py 独立脚本，删除即回退。
       其判据为 `if: startsWith(github.ref, 'refs/tags/v')` —— tag 门控，设计如此。
       ⇒ **Q6 的验收条件（两 job 至少绿一次）已达成。**
       详见 `docs/HANDOVER.md` §2.15 / §2.16。
+8. [x] **本地门禁缺陷 ⑥（2026-10-03）**：第 3/4 项原各建各的（一次门禁 3 次
+      Release 构建，第 3 项的 `demo.exe` 无人比对）。改为第 3 项唯一权威构建
+      + 快照 `build\_gate_baseline`，第 4 项 `-BaselineDir` 只重建一次并断言
+      「`-RecordSeeds` 记下的种子表足以重建出记下它的那个产物」。
+      净效果 3 → 2 次构建，两次产物都承重。详见 `docs/HANDOVER.md` §2.18。

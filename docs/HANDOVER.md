@@ -1526,3 +1526,6 @@ Check '可复现 (repro_check)' {
 （唯一 `skipped` 仍是 `Publish GitHub Release`，tag 门控，设计如此）。
 ⇒ 门禁内"第 3 项快照 → 第 4 项比对"这条新链路在真实 CI 上生效且不误报；
 CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），两条路径同时绿。
+随后的回填提交（`c32c59f` → run `37109031897`，第十四跑）同为四 job 全绿
+（`build-and-verify` 24/24、`linux-portability` 8/8、`reproducible` 8/8、
+`sdk-package` 9/10）。
