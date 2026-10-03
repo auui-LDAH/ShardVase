@@ -1404,7 +1404,7 @@ build/_wc_negctl.py（负向，真实修复前代码） rc=0   4/4 项
 `.github/PULL_REQUEST_TEMPLATE.md:16`、`.github/workflows/ci.yml:67`、
 `publish/01-关于ShardVase.md:63`、`publish/02-项目档案.md:116`/`:168`、
 `docs/DEBUG_CONSOLE_PLAN.md:8`、`docs/CONTINUATION_PLAN.md`（含 §6.3 ③ 表后补的位移说明）。
-`doccheck` 实跑：`检查数字 456 处, 错误 0, 警告 0`；`docclaim_check` 8/8 PASS
+`doccheck` 实跑：`检查数字 474 处, 错误 0, 警告 0`；`docclaim_check` 8/8 PASS
 （`gate-count 文档声称与实际一致: **34 项**（2 份文档）`）。
 
 **仍未验证的**：
