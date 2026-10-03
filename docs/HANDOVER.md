@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）+ window_check 负向对照（4/4）+ 门禁 **34** 项（默认 31）· 提交 `c8a4799`（§2.17 落地 + CI 第十跑四 job 全绿后更新）
+> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）+ window_check 负向对照（4/4）+ 门禁 **34** 项（默认 31）· 提交 `82011fe`（缺陷 ⑥ 落地 + CI 第十三跑四 job 全绿后更新）
 
 
 ## 1. 项目是什么
@@ -1518,5 +1518,11 @@ Check '可复现 (repro_check)' {
 `sdk_pack --selftest` rc=0 · `mutate_check` rc=0 · `skeleton_check` rc=0 ·
 `tests/vmc_tests.py` rc=0 · `comment_lint` rc=0 · `git diff --check` rc=0。
 
-**仍未验证的**：门禁的这次改动尚未在 CI 上跑过
-（CI 上 `reproducible` job 仍走**形态 B 对 `build_artifacts`**，与本改动正交）。
+**仍未验证的**：无。门禁的这次改动已在 CI 上验证 ——
+**CI 第十三跑（`82011fe` → run `37107965249`）四个 job 全绿**：
+`build-and-verify` **24/24**（含 `Full release gate` 步，用的就是本次改过的
+`release_check.ps1`）、`linux-portability` 8/8、`reproducible` **8/8**
+（含 `Compare SHA-256 with first build`）、`sdk-package` 9/10
+（唯一 `skipped` 仍是 `Publish GitHub Release`，tag 门控，设计如此）。
+⇒ 门禁内"第 3 项快照 → 第 4 项比对"这条新链路在真实 CI 上生效且不误报；
+CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），两条路径同时绿。
