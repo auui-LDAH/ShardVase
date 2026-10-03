@@ -37,7 +37,7 @@ jobs:
       #   那一侧两侧都是 Release（Release 隐含 /Brepro），见下方 5d 说明。
       #
       # ⚠️ 本步的 seeds.json **不会**被 reproducible job 复用（缺陷 5d）：
-      #   门禁 `release_check.ps1:250` 的 `-Config Release -RecordSeeds` 覆盖了
+      #   门禁 `tools/release_check.ps1:279` 的 `-Config Release -RecordSeeds` 覆盖了
       #   `build\demo.exe` 与 `build\seeds.json`，上传的是那份 Release 产物。
       - name: Build (Dev), record seeds
         run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -RecordSeeds -SkipSign -Brepro
@@ -188,8 +188,9 @@ jobs:
 
       # ## 缺陷 5d（2026-10-02 实测）: 必须 `-Config Release`，不能沿用默认 Dev
       #   本 job 下载的 `build\demo.exe` **不是** build-and-verify 步骤 1 的产物：
-      #   门禁 `tools\release_check.ps1:250` 用 `-Config Release` 覆盖了它，
-      #   紧跟的 `:253` `repro_check.ps1`（`:24`/`:34`，同样是 Release）又覆盖一次
+      #   门禁 `tools\release_check.ps1:279` 用 `-Config Release` 覆盖了它，
+      #   紧跟的 `:292` `repro_check.ps1`（`-Config Release` 在 `:52`/`:92`/`:102`，
+      #   同样是 Release）又覆盖一次
       #   -- 上传的正是**门禁遗留的 Release 产物**，其 `build\seeds.json` 也是
       #   门禁那次 `-RecordSeeds` 写的。
       #   若这里用 Dev 重建，比对的是"同种子、不同配置"的两个二进制：

@@ -191,7 +191,12 @@ freq_orig >= 5` —— 「像字符的**每一次**出现都落在硬验证候�
    源码修好后跑 `tools/sdk_pack.py` 重新打包。
    ⚠️ **实测**: 未重打包前 `dist/.../app_main.c` 仍是 **108 行坏行**、
    `dist/.../src/crc32.c` 仍是 **1 行** —— 打包产物会带着旧损坏出厂。
-6. 必须过 `tools/comment_lint.py`（门禁默认第 20 项，`release_check.ps1:257`）。
+6. 必须过 `tools/comment_lint.py`（门禁第 19 项，`tools/release_check.ps1:513`）。
+   > **行号/序号更正（2026-10-03）**：原文写「默认第 20 项，`release_check.ps1:257`」，
+   > 均为当时（新增 `window_check` 之前）的值。现值由
+   > `Select-String "^\s*Check '"` 实测 —— `comment_lint` 在 34 项枚举里是**第 19 项**
+   > （`window_check` 插在第 11 位使其 +1），定义在 **`:513`**；`:257` 现在是缺陷 ⑥
+   > 注释块内的文字。
 7. **新增门禁项**必须**负向实证**: 注入真实 mojibake 后该项**必须 exit != 0**，
    还原后**必须 exit == 0**（证明可证伪、非装饰、非常红）。
    ⚠️ 注入夹具**必须用与真实损坏同一编解码器**（`M.damage`）生成 ——
@@ -498,7 +503,8 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 
 ### 6.4 🔑 本轮量化出的**覆盖缺口**（比逐条漂移更重要）
 
-写了探针 `build/_q4_census.py` 做全库普查（**不是**只扫 doccheck 的 24 个文件）:
+写入探针 `build/_q4_census.py` 做全库普查（**不是**只扫 doccheck 的 24 个文件）。
+下面代码块是**当时的实测输出**（保留为沿革，不改数）：
 
 ```
 基准: 门禁 33 项 (默认 30), 轮次 9 个
@@ -512,6 +518,14 @@ TARGETS 24 个文件 (doccheck 扫描范围)
 `docs/OSS_TAIL_PLAN.md`(13)、`docs/阶段总结-2026-09-30.md`(12)、
 `docs/PORTABILITY_ASSESSMENT.md`(10)、`docs/BLUEPRINT.md`(9) … `README.md`(3)、
 `ShardVase-展示文档.md`(3)。
+
+> **现值复测（2026-10-03）**：同一探针重跑（`build/_q4_census.py` → `build/_audit_census.txt`，rc=0），
+> 基准已是「门禁 34 项 / 默认 31」。口径不变（机械计数，含历史快照类文档），但数字因
+> **门禁项数增长 + 后续各节新增引用**而变大：探针输出「非现值断言总数」现在是
+> **169 / 123 / 56**（分别是项数口径、N/N 口径、轮次口径），三项相加 **348 处**（原记 288 处）；
+> 「不在扫描范围内的文件」**31 个文件 / 166 处**（原记 33 个文件 —— 此栏只统计**有命中的**文件，
+> 故会随豁免/改写而增减，`CHANGELOG.md`/`prot_sdk/README.md` 等仍在列）。
+> 本节原有的 288/33 两个数字**保持为当时的实测原文**，现值见本注。
 
 **缺口根因（`tools/doccheck.py:36-57` 的注释自己承认了）**:
 `build_targets()` @`:72` 只纳入**头部块显式自声明 `最后核实`** 的 `docs/**/*.md`，
@@ -570,14 +584,21 @@ TARGETS 24 个文件 (doccheck 扫描范围)
 
 ### 7.3 实现落点（前 4 组已实施，DRILL9 用的是它们）
 
-`src/integrity.c`:
-- `static prot_guard_entry g_guard_dyn[PROT_GUARD_CAPACITY]`（L609）
-- `static volatile int g_guard_dyn_n = 0`（L610）
-- `prot_status prot_integrity_register_guard(const char* name, const void* fn)`（L630，容量不足 L645 判）
-- `for (i = 0u; i < (uint32_t)g_guard_dyn_n; i++)`（L684）
-- `prot_status prot_integrity_check_guards(void)`（L696）
-- `uint32_t ntot = (uint32_t)PROT_GUARD_N + (uint32_t)g_guard_dyn_n;`（L704）
-- L814 `(void)prot_integrity_check_guards();   /* 首次调用即建立快照 */`
+`src/integrity.c`（**行号已于 2026-10-03 按现值复核**；括号内为原记的旧值）:
+- `static prot_guard_entry g_guard_dyn[PROT_GUARD_CAPACITY]`（**L637**，旧记 L609）
+- `static volatile int g_guard_dyn_n = 0`（**L638**，旧记 L610）
+- `prot_status prot_integrity_register_guard(const char* name, const void* fn)`（**L658**，旧记 L630；
+  容量不足判在 **L673-674** `if (g_guard_dyn_n >= (int)PROT_GUARD_CAPACITY) return PROT_ERR_INVALID_ARG;`，旧记 L645）
+- `for (i = 0u; i < (uint32_t)g_guard_dyn_n; i++)`（**L712**，旧记 L684）
+- `prot_status prot_integrity_check_guards(void)`（**L724**，旧记 L696）
+- `uint32_t ntot = (uint32_t)PROT_GUARD_N + (uint32_t)g_guard_dyn_n;`（**L732**，旧记 L704）
+- **L842** `(void)prot_integrity_check_guards();   /* 首次调用即建立快照 */`（旧记 L814）
+
+> **漂移说明（2026-10-03）**：以上行号整体 +28 —— 因 `src/integrity.c` 在本轮
+> T11 根因修复（`e6917a2`，A5 反调试复核上移到 `prot_selfcrypt_leave(EXT)` 之前）
+> 之后插入了注释块与语句。原记的 L609/L610/L630/L645/L684/L696/L704/L814 **均已失效**。
+> 另注：`prot_integrity_check_guards()` 还有一处调用在 `src/integrity.c:253`（A5 复核路径），
+> 以及 `:760` 附近注释提到惰性建立快照的旧实现。
 
 **工具就绪**: `tools/guard_selftest.py`（判据 `g_guard_hits`，含 `VirtualProtectEx` + 写后读回）、
 `tools/prot_dbg.py`（`patch` / `watch` 活体，第 2 步已交付）——
@@ -672,9 +693,9 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
 | **Q1 改动触发构建差异** | 若真有行为影响会暴露 | 构建 + 门禁 + `repro_check` 验证（固定 seed 下 SHA 一致） |
 | **Q3 扩范围引入误报** | 门禁变红，团队开始无视它 | 先写**负向测试**（注入错数字必须被抓）；豁免靠**标记**不靠清单 |
 | **Q4 改历史文档 = 篡改历史** | 丢掉"当时是什么样"的信息 | 历史快照类**豁免而非改写**（Q3 §5.3 第 1 条）；**实测 13 处归档全部保留未改** |
-| **doccheck 覆盖有结构性缺口**（Q4 量化） | **33 个文件 / 288 处断言无门禁保护**；门面 `README.md` 与 `ShardVase-展示文档.md` 过期数字对外可见 | 本轮已手工修正，但**"靠人记得"不是机制**；建议把门面纳入 `PUBLIC_MATERIAL`（**未实施，留独立排程**）|
+| **doccheck 覆盖有结构性缺口**（Q4 量化） | **31 个文件 / 348 处断言无门禁保护**（2026-10-03 复测现值；当时记 33/288）；门面 `README.md` 与 `ShardVase-展示文档.md` 过期数字对外可见 | 本轮已手工修正，但**"靠人记得"不是机制**；建议把门面纳入 `PUBLIC_MATERIAL`（**未实施，留独立排程**）|
 | **Q5 可能做不出"CRC 已重算"的二进制** | DRILL9 无结论 | 允许**如实报告"未能构造"**并记录尝试路径 —— 不接受编造结论 |
-| **Q6 无 remote** | CI 永远不实跑 | 已明确**阻塞于用户**；不替用户决定目标仓库 |
+| ~~**Q6 无 remote**~~ | ~~CI 永远不实跑~~ | ✅ **已解除（2026-10-02）**：仓库建为 `jurecoasertkrocket777/shardvase`（私库），CI 已实跑并十四跑四 job 全绿；见 §8 |
 
 **本计划明确不做**（重复记录以防将来重开）:
 - 调试控制台第 3 步（用户已降级为可选）
@@ -684,7 +705,9 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
 
 ---
 
-*2026-10-02 v6 · Q0/Q1/Q2/Q3/Q4/Q5 全部完成（Q6 阻塞于用户提供仓库地址）·
+*2026-10-03 v7 · Q0/Q1/Q2/Q3/Q4/Q5/**Q6** 全部完成（Q6 已于 2026-10-02 解除阻塞：
+仓库 `jurecoasertkrocket777/shardvase`，CI 十四跑四 job 全绿）·
 依据现场勘查（门禁 **34** 项=默认 31 项实跑 / doccheck 盲区实测 /
 mojibake **216** 行定位与修复实测 + **Q2 的 4 行单字符盲区** / DRILL9 8 用例实测 /
-**Q4 全库普查 288 处无保护断言**· 判据 v5）· 按 §9 顺序推进中*
+**Q4 全库普查 288 处无保护断言**（2026-10-03 复测 348 处，见 §6.4 注）· 判据 v5）·
+§1–§9 各项均已执行完毕，本计划无未排程的后续动作 —— 后续增量记在 `docs/HANDOVER.md` §2.11+*
