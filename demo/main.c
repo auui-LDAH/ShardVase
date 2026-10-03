@@ -610,8 +610,15 @@ int main(int argc, char** argv)
     if (sc_ext_enter() == PROT_OK) {
         prot_antidebug_apply_policy(PROT_POLICY_EXIT);
         sc_ext_leave();
-    } else {
-        prot_antidebug_apply_policy(PROT_POLICY_EXIT);
+    } else if (prot_antidebug_detected(&rep)) {
+        /*
+         * §2.16: 窗口打不开时**不能**再调 apply_policy —— 它内部要调
+         * prot_antidebug_scan (组 1 加密目标), 而 D2b 下窗口外执行的是
+         * **磁盘密文**: 密文首字节恰为 0xC3(ret) 时静默空转, 否则
+         * 0xC0000005 (这正是 T11)。此处退化为直接终止, 与
+         * PROT_POLICY_EXIT 的语义一致, 且不执行任何密文。
+         */
+        exit(PROT_EXIT_DEBUG_DETECTED);
     }
     if (prot_antidebug_detected(&rep)) {
         exit(PROT_EXIT_DEBUG_DETECTED); /* 兜底: 若策略未终止进程则显式退出 */

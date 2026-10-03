@@ -552,7 +552,13 @@ int main(int argc, char** argv)
 
 #ifdef PROT_MOD_ANTIDEBUG
     /* §9.1-4: 反调试扫描 -> 摘要 -> (--selftest 逐项) -> EXIT 策略 */
+    /* §2.16: prot_antidebug_scan 是组 1(EXT) 加密目标, 必须在 enter/leave 之间 */
+    if (sc_ext_enter() != PROT_OK) {
+        printf("%s\n", prot_str_get(PROT_STR_MSG_FAIL));
+        exit(1);
+    }
     prot_antidebug_scan(&rep);
+    sc_ext_leave();
     printf("反调试扫描: %s\n",
            prot_antidebug_detected(&rep) ? "发现可疑" : "通过");
     if (selftest) {
@@ -621,7 +627,15 @@ if (prot_dbiguard_suspicious(&drep)) {
         printf("%s\n", prot_str_get(PROT_STR_MSG_DBG));
         fflush(stdout);
     }
-    prot_antidebug_apply_policy(PROT_POLICY_EXIT); /* 检测到 -> TerminateProcess(0xDB) */
+    /* §2.16: prot_antidebug_apply_policy 内部要调 prot_antidebug_scan
+     * (组 1/EXT 加密目标), 必须在 enter/leave 之间; 窗口打不开时退化为
+     * 直接终止 (与 PROT_POLICY_EXIT 同义), 不执行任何密文 */
+    if (sc_ext_enter() == PROT_OK) {
+        prot_antidebug_apply_policy(PROT_POLICY_EXIT); /* 检测到 -> TerminateProcess(0xDB) */
+        sc_ext_leave();
+    } else if (prot_antidebug_detected(&rep)) {
+        exit(PROT_EXIT_DEBUG_DETECTED);
+    }
     if (prot_antidebug_detected(&rep)) {
         exit(PROT_EXIT_DEBUG_DETECTED); /* 兜底: 若策略未终止进程则显式退出 */
     }

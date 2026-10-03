@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **33** 项（默认 30）· 提交 `36b38d6`（Q6 回填 §2.15/§2.16 后更新）
+> **最后核实**: 2026-10-03 · 方法: tools/docclaim_check.py（8/8 PASS）· 门禁 **34** 项（默认 31）· 提交 `36b38d6`（Q6 回填 §2.15/§2.16 后更新）
 
 
 ## 1. 项目是什么
@@ -1228,8 +1228,11 @@ tools/verify_sdk_standalone.py              : rc=0  构建 ✓ smoke ✓ DONE �
 **⑩ 本轮仍未验证的**
 
 - 上述**静态门禁缺口**（加密目标调用点是否落在解密窗口内）**未实施**。
+  > **已于 2026-10-03 补上**（见 §2.17）：建成 `tools/window_check.py` 并入库为门禁第 11 项。
 - `tools/release_check.ps1` 仍不含 SDK 打包（`ci_sim.ps1` 已含，门禁未含）。
 - **同型第二处调用点（见 §2.16）仅静态判定，未实施修复、未动态复现**。
+  > **已于 2026-10-03 修掉**（见 §2.17）：`demo/main.c` 与 SDK 骨架共 3 处违规全部修复，
+  > 并已负向对照证明门禁能抓住修复前的代码。**仍未动态复现**（可达性依赖 D2b + 部分解密状态）。
 
 ---
 
@@ -1289,4 +1292,113 @@ D2a 下 `prot_selfcrypt_enter` 首行即 `return PROT_OK`，`else` 分支不可�
 （那是 P5 的字面判据，`main.c:544` 的直接调用一直合法存在），而是
 **「每一处对加密目标的调用都必须在配对 `enter`/`leave` 之间」** ——
 该不变量**目前仍无任何静态门禁覆盖**，且它已经产生了 **2 处**违规。
+（另 1 处在 `demo/main.c:614` 的 `else` 分支，合计 3 处。）
 
+> **已于 2026-10-03 补上并清零**（见 §2.17）：门禁 `window_check` 已入库为第 11 项，
+> 上述 3 处违规全部修复，并有负向对照证明它抓得住修复前的代码。
+
+---
+
+### 2.17 增量（2026-10-03）：**把那条不变量做成门禁** —— `window_check` + 3 处违规清零
+
+**性质**：§2.15 ⑩ 与 §2.16 末尾都把「加密目标调用点须落在配对 `enter`/`leave` 之间」
+列为**没有静态门禁覆盖**的缺口。本轮把它补上，并顺手清掉已知的 3 处违规。
+
+**判据（`tools/window_check.py`，入库为门禁第 11 项）**：
+对每个对 selfcrypt 加密目标的调用点，断言执行它时该目标所在的组必须已解密。
+**为什么 P5 挡不住**：P5（`tests/protchain_check.py` 的 `p5_indirect_no_direct_call`，
+`scan_e8_calls` @`tests/protchain_check.py:285`）**只扫 `0xE8` 直接调用**，
+而 T11 那处是 `call rax`（经 `g_ad_scan_fn` 函数指针）。
+**声明式的组清单来自单一事实来源**：`tools/selfcrypt_proto.py` 的
+`DEFAULT_TARGETS`（组 0 = VM 4 个）/ `EXT_TARGETS`（组 1 = EXT 4 个），
+用 `ast.parse` 抽取，**不硬编码**。
+
+**三类"看似不是目标调用、实际是"的形态**（判据必须展开）：
+1. **宿主窗口包装**：`demo/main.c:91-94` `sc_ext_enter` = 恰好一次
+   `prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT)`，`:96-99` `sc_ext_leave` 同形；
+   `prot_sdk/skeleton/app_main.c:140-148` 同形。识别判据 = 体内恰好一次 enter
+   （或 leave）、参数是组常量、**`{` 之后无其它调用**。
+2. **函数指针别名**：`src/integrity.c:141-142`
+   `typedef prot_status (*prot_ad_scan_fn)(prot_antidebug_report*); static prot_ad_scan_fn volatile g_ad_scan_fn = prot_antidebug_scan;`
+   ⇒ `:216 g_ad_scan_fn(&ad)` 就是**组 1 目标调用**（T11 本体）。
+3. **间接槽位**：`PROT_INDIRECT_CALL(PROT_INDIRECT_LICENSE, …)` 经
+   `modules.json` 的 `indirect_slots` 解析到真实符号。
+   ⚠️ **键名没有 `PROT_INDIRECT_` 前缀**（实测 = `LICENSE` / `VM_RUN` / `REVOKE` /
+   `HOSTID`）—— 首版按全名查恒 None，**所有间接站点被静默丢弃**
+   ⇒ 被间接调用的宿主函数不在 `called_names` ⇒ 其内部合法调用被误报 3 处。
+
+**必须区分"取地址"与"调用"**：`src/integrity.c:624-627` 的 `g_guard_static[]`
+装 `(const void*)&prot_integrity_check_self`、`demo/main.c:658` 的 `host_hooks` 装
+`(const void*)&prot_license_verify` —— 两张表只被快照
+（`guard_snapshot_init()` @`src/integrity.c:682`），**从不 call**。
+⇒ 判据在**挖掉签名与函数体之后**的文件文本上搜 `\bname\b(?!\s*\()` 判"取地址"。
+
+**解析范式的三条硬教训**（全部由实测假阳性逼出来）：
+1. **先清注释**：注释里的示例代码会被词法匹配当成真代码 ——
+   与缺陷 8 的 `tools/winproc.py` docstring 造出"自己依赖自己"同型。
+2. **单行函数**：`src/vm.c:643 static prot_status vm_h_add(prot_vm_rt* s)  { return vm_rt_binop(s, 0x06); }`
+   正文与 `{` 同行 ⇒ 若按"整行挖签名"会把正文一起挖掉，`vm_rt_binop`
+   于是从未出现在 `called_names` 里、被判成"真入口"。
+   必须用 `body_only(func)`（按 `body_ln`/`body_col` 精确截）。
+3. **跨行的间接调用**：`demo/main.c:793` 是 `PROT_INDIRECT_CALL(\n    PROT_INDIRECT_LICENSE, …`
+   ⇒ 逐行扫会漏**全部**间接站点。改为在函数体全文上 `finditer` 再换算行号。
+
+**🔴 负向对照抓出的假阴性（本轮最重要的发现）**：
+`build/_wc_negctl.py`（不入库）把 `git show 18d29da:src/integrity.c`
+（= `e6917a2` 的父提交，A5 块仍在 `leave(EXT)` 之后）放进仓库副本跑同一判据。
+**首跑：修复前的树也只报同样 3 处 §2.16 违规，`src/integrity.c` 一处都没报** ——
+即门禁**不可能**发现 T11。机制：`indirect_call_groups()` 的返回键是**文件**，
+`src/integrity.c` 因定义了组 1 目标且有函数指针调用而**整个文件**被标记；
+`watchdog_thread`（`src/integrity.c:144-292`，`static`，唯一引用是
+`:805 prot_plat_thread_create(watchdog_thread, NULL, &g_wd_thread)` 传**实参**）
+同时满足"static + 不在 called_names + 取过地址 + 文件有派发表" ⇒
+整个函数体获得组 1 ambient ⇒ 那处**真正执行密文的**调用被无条件赦免。
+**教训**：把**文件**级的粗筛当成**对象**级的豁免依据，就会让门禁对
+"恰好与合法目标同处一个文件"的真实违规完全失明。豁免必须落到
+"这个函数名真的在表里"这一粒度 —— 新增 `file_scope_table_names()`
+（清掉所有函数体后取文件作用域聚合初始化表里的标识符）。
+`src/vm.c` 实测：表内标识符 ∩ 本文件函数 = **47 个**（全部 `vm_h_*`/`vm_store_h*`），
+`vm_rt_binop` / `vm_wfetch32` **不在表里** ⇒ 修法精确无损。
+
+**修完之后的实测（三份对照全部通过）**：
+
+```
+tools/window_check.py --selftest         rc=0   12/12 项
+tools/window_check.py                    rc=0   0 违规
+build/_wc_negctl.py（负向，真实修复前代码） rc=0   4/4 项
+  修复前 watchdog_thread: enter<163> scan<226> leave<189>  => enter<scan<leave = False
+  当前   watchdog_thread: enter<163> scan<216> leave<231>  => enter<scan<leave = True
+  修复前报出 T11 那处 [X] src/integrity.c:226 watchdog_thread() -> prot_antidebug_scan() [fptr:g_ad_scan_fn]
+  违规总数 修复前 - 修复后 = 1 (只有 T11)   1 -> 0
+```
+负向对照的**唯一自变量**就是 `integrity.c` 的新旧（两棵树其余部分完全相同，
+含已修好的 §2.16 三处）⇒ 违规数之差只能归因于 T11。
+
+**修掉的 3 处违规（判据在修复前恰好报出这 3 处）**：
+
+| 位置 | 形态 | 修法 |
+|---|---|---|
+| `demo/main.c:614` | `if (sc_ext_enter()==PROT_OK) { apply_policy; leave(); } **else** { apply_policy; }` | `else` 分支改为 `else if (prot_antidebug_detected(&rep)) exit(PROT_EXIT_DEBUG_DETECTED);` —— **窗口打不开就不再调 `apply_policy`**（它内部要调 `prot_antidebug_scan`，组 1 加密目标） |
+| `prot_sdk/skeleton/app_main.c:555` | 裸调 `prot_antidebug_scan(&rep)` | 加窗口（与 `demo/main.c:540-545` 同形）：`sc_ext_enter() != PROT_OK` 即 `exit(1)`，成功则 scan + `sc_ext_leave()` |
+| `prot_sdk/skeleton/app_main.c:624` | 裸调 `prot_antidebug_apply_policy(PROT_POLICY_EXIT)` | 同上改为窗口包住 + `else if (detected) exit(...)` 兜底 |
+
+**验证**：`build.ps1 -Config Dev -SkipSign` rc=0（`selfcrypt_proto: patched build\demo.exe
+(8 fns in-place, meta@0x33e00 hdr=196)`；`prot_vm_run` rva=0x1e80 crc=0xdc691b32 /
+`prot_antidebug_scan` rva=0x7f30 crc=0x4c9463cf group=1）；`tests/e2e.py` rc=0。
+
+**门禁项数随之 33/30 → 34/31**（新项插在 `protchain P1-P6` 之后 ⇒ 其后项序号 +1）：
+`tools/doccheck.py` 的 `GATE_TOTAL = 34` / `GATE_DEFAULT = 31`，并同步
+`README.md`（badge `:9` / 命令注释 `:107` / `:132-153` 示意块）、`CONTRIBUTING.md:67`/`:95`、
+`ShardVase-展示文档.md:140`/`:163`、`docs/BLUEPRINT.md:128`、
+`.github/PULL_REQUEST_TEMPLATE.md:16`、`.github/workflows/ci.yml:67`、
+`publish/01-关于ShardVase.md:63`、`publish/02-项目档案.md:116`/`:168`、
+`docs/DEBUG_CONSOLE_PLAN.md:8`、`docs/CONTINUATION_PLAN.md`（含 §6.3 ③ 表后补的位移说明）。
+`doccheck` 实跑：`检查数字 456 处, 错误 0, 警告 0`；`docclaim_check` 8/8 PASS
+（`gate-count 文档声称与实际一致: **34 项**（2 份文档）`）。
+
+**仍未验证的**：
+- **机制 D（跨线程 enter/leave 互拆窗口）代码级成立，但因概率性未动态复现。**
+- **§2.16 第二处的可达性未动态复现**（要求 D2b + `sc_do_range` 部分失败）。
+- `window_check` **只看"调用点在不在窗口内"，不看 `exit` 是否漏了 `leave`** ——
+  `demo/main.c:540-543` 与 `app_main.c:632-637` 的 `exit` 先于 `leave`
+  属**已知可接受**写法（进程即将终止），门禁不报，这是**有意为之的判据边界**。

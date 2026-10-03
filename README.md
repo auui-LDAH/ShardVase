@@ -6,7 +6,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Commercial](https://img.shields.io/badge/license-commercial%20available-green.svg)](LICENSE.md)
-[![Gate](https://img.shields.io/badge/release__check-30%2F30-brightgreen.svg)](#质量门禁)
+[![Gate](https://img.shields.io/badge/release__check-31%2F31-brightgreen.svg)](#质量门禁)
 
 ---
 
@@ -104,7 +104,7 @@ powershell -File <工程>\build_skeleton.ps1 -Project <工程>
 
 ```powershell
 powershell -File build.ps1 -Config Release
-powershell -File tools\release_check.ps1     # 30 项门禁（默认；共 33 项）
+powershell -File tools\release_check.ps1     # 31 项门禁（默认；共 34 项）
 ```
 
 ---
@@ -129,8 +129,8 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 
 ## 质量门禁
 
-`tools/release_check.ps1` 跑 **30 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
-后共 **33 项**），全绿才算通过。默认跑的全部 30 项：
+`tools/release_check.ps1` 跑 **31 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
+后共 **34 项**），全绿才算通过。默认跑的全部 31 项：
 
 ```
 [ok] git 工作区干净               [ok] Linux 编译覆盖 (linux_compile_check)
@@ -143,11 +143,12 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 [ok] vmc                          [ok] 验证互斥锁自检 (verify_lock)
 [ok] example E1-E7                [ok] 文档断言一致性 (docclaim)
 [ok] protchain P1-P6              [ok] 部署加固自检 (deploy_harden)
-[ok] 模块契约 (modcheck)          [ok] 性能基准自检 (perf_baseline)
-[ok] 攻防记录 (drills lint)       [ok] 判定点快照校验自检 (guard_selftest)
-[ok] 对外材料 (doccheck)          [ok] 调试控制台自检 (prot_dbg)
-[ok] 签名 (Authenticode)          [ok] 门禁日志自检 (gate_log)
-[ok] 协议兼容性 (conformance)     [ok] 调试控制台活体自检 (prot_dbg live)
+[ok] 加密封装窗口 (window_check)  [ok] 性能基准自检 (perf_baseline)
+[ok] 模块契约 (modcheck)          [ok] 判定点快照校验自检 (guard_selftest)
+[ok] 攻防记录 (drills lint)       [ok] 调试控制台自检 (prot_dbg)
+[ok] 对外材料 (doccheck)          [ok] 门禁日志自检 (gate_log)
+[ok] 签名 (Authenticode)          [ok] 调试控制台活体自检 (prot_dbg live)
+[ok] 协议兼容性 (conformance)
 ```
 
 默认不跑的 3 项（各约 1-4 分钟，发版前用 `-With*` 启用）：

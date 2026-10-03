@@ -264,6 +264,19 @@ if (-not $SkipTest) {
         & $py examples\tool_demo\test_example.py; $LASTEXITCODE -eq 0
     }
     Check 'protchain P1-P6' { & $py tests\protchain_check.py; $LASTEXITCODE -eq 0 }
+    # §2.16 (T11 教训): 「加密目标的调用点必须落在配对 enter/leave 之间」。
+    #
+    # **为什么必须入门禁**: D2b 下 enter/leave 之外执行的是**磁盘密文** ——
+    #   密文首字节恰为 0xC3(`ret`) 时静默空转(不崩、不报错、行为改变),
+    #   否则 0xC0000005。T11 就是这样在生产构建里崩的, 而 P5
+    #   (`indirect-no-direct-call`) 只扫 `0xE8` 直接调用, **看不见 `call rax`**,
+    #   所以这条不变量此前**没有任何静态检查**。
+    # 负向对照 (`build/_wc_negctl.py`, 不入库): 把 e6917a2 之前的
+    #   `src/integrity.c` 放回仓库副本, 判据必须报出那处 A5 间接调用;
+    #   当前树必须 0 报。判据自证能抓错。
+    Check '加密封装窗口 (window_check)' {
+        & $py tools\window_check.py; $LASTEXITCODE -eq 0
+    }
     # 模块化框架 (docs/MODULAR_ARCH.md): 注册表须与源码一致 + 参考组合自洽。
     # 放在门禁内而非可选脚本 —— P3 教训: 可绕过的门禁会掩盖缺陷。
     Check '模块契约 (modcheck)' { & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0 }
@@ -280,7 +293,7 @@ if (-not $SkipTest) {
     #    发现判据失效的, **一个恒返回空的检查器同样 PASS**。
     #    `--selftest` 逐条注入缺陷并要求报错(8 项负向), 且要求合规写法
     #    不被误报(13 项), 其中一项直接改真实文档 `publish/01-关于ShardVase.md`
-    #    的 `33/33` -> 必须 FAIL。
+    #    的 `34/34` -> 必须 FAIL。
     #    失败时才打印自检明细, 成功时静默 —— 门禁日志不被 21 行 [ok] 淹没。
     Check '对外材料 (doccheck)' {
         $st = & $py tools\doccheck.py --selftest
@@ -773,8 +786,8 @@ Check '门禁日志自检 (gate_log)' {
 
 # ── 32. 调试控制台**活体**自检（`docs/DEBUG_CONSOLE_PLAN.md` 第 2 步, 2026-10-01）──
 #
-# ## 为什么单独一项（不与第 30 项合并）
-#   第 30 项是**纯只读**的（只读产物/map/C 头，不启进程）—— 那是它敢进门禁的前提。
+# ## 为什么单独一项（不与第 32 项合并）
+#   第 32 项是**纯只读**的（只读产物/map/C 头，不启进程）—— 那是它敢进门禁的前提。
 #   第 2 步新增的 `read`/`patch`/`watch` 会 **OpenProcess + WriteProcessMemory**，
 #   性质完全不同（需要权限、会拉起进程、会改目标内存），必须**分开**评估与记录。
 #

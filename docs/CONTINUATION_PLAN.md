@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
 > 版本：2026-10-02 v7 · 状态：**✅ 全部完成**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / Q4 ✅ / Q5 ✅ / **Q6 ✅**）
-> **最后核实**: 2026-10-03 · 方法: `tools/docclaim_check.py` + 门禁默认 **30** 项实跑 + 逐文件行号复核 + 全库普查探针 · 提交 `36b38d6`（CI 第九跑四 job 全绿后）
+> **最后核实**: 2026-10-03 · 方法: `tools/docclaim_check.py` + 门禁默认 **31** 项实跑 + 逐文件行号复核 + 全库普查探针 · 提交 `36b38d6`（CI 第九跑四 job 全绿后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
@@ -370,14 +370,14 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
    静默豁免 = 无人复查的后门；豁免数突然变多说明判据正被削弱。
 4. **新增负向自检 `--selftest`（21 项）**: 8 项负向注入（注入缺陷必须报错）
    + 13 项合规豁免（合规写法不得误报），其中一项**直接改真实文档
-   `publish/01-关于ShardVase.md` 的 `33/33` → `32/32`，必须 FAIL**。
+   `publish/01-关于ShardVase.md` 的 `34/34` → `32/32`，必须 FAIL**。
    **为什么必需**: 本判据含 7 类豁免，豁免越多越容易"宽到什么都不报"；
    只验"仓库当前 PASS"是不够的 —— **一个恒返回空的检查器同样 PASS**。
-   该自检已接入门禁第 13 项（失败才打印明细，成功静默）。
+   该自检已接入门禁第 14 项（失败才打印明细，成功静默）。
 
 **Q3 验收（已达成）**: ① 扩范围后 `错误 0, 警告 0` → `[doccheck] PASS`
 （范围 24 文件、`检查数字 401 处`、`豁免 79 处`）② `--selftest` 21 项全通过
-（8 项负向注入 + 13 项合规豁免，含改真实文档 `33/33`→`32/32` 必须 FAIL）
+（8 项负向注入 + 13 项合规豁免，含改真实文档 `34/34`→`32/32` 必须 FAIL）
 ③ 范围**由自声明元数据决定**，豁免**由语境决定**，均不写死文件名清单
 ④ 连带修掉 4 条真缺陷（`docs/DEBUG_CONSOLE_PLAN.md:8`、
 `docs/HANDOVER.md:349`/`:351`/`:355`）。
@@ -433,7 +433,7 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 **不会被门禁抓到** —— 属"有意为之的覆盖边界"，须人工复核。
 
 **Q4 验收**: ① 逐条复核 §6.2 的 13 处归档，确认每一处都确有历史依据
-② `doccheck` + `docclaim_check` PASS ③ 门禁默认 30 项 PASS。
+② `doccheck` + `docclaim_check` PASS ③ 门禁默认 31 项 PASS。
 
 ### 6.3 ✅ 执行结果（2026-10-02）
 
@@ -479,6 +479,14 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 | `CONTRIBUTING.md:67` / `:95` | `13 项` / `release_check 13/13 PASS` | `30 项（发版前加 -With* 共 33 项）` / `30/30 PASS（默认）` |
 | `.github/PULL_REQUEST_TEMPLATE.md:16` | `14/14 PASS` | `30/30 PASS（默认；发版前 `-WithSkeleton -WithMutation -WithMigration` 共 33 项）` |
 | `.github/workflows/ci.yml:52` | `release_check 覆盖 14 项` | `覆盖 33 项 (默认 30)` |
+
+> **📌 2026-10-03 后续位移（§2.16 / T11 后）**: 上表是 Q4 当时的快照。此后新增门禁项
+> `加密封装窗口 (window_check)`（插在 `protchain P1-P6` 之后 ⇒ 其后所有项序号 +1），
+> 故**现值口径已由 33/30 变为 34/31**。`README.md`（`:9` badge、`:107` 命令注释、
+> `:132-151` 示意块）、`CONTRIBUTING.md:67`/`:95`、`ShardVase-展示文档.md:140`/`:163`、
+> `docs/BLUEPRINT.md:128`、`.github/PULL_REQUEST_TEMPLATE.md:16`、
+> `.github/workflows/ci.yml:67` 已同步为 34/31。上表**改前列与改后列保留原样**，
+> 以存 Q4 沿革。
 
 **⚠️ 未改的（有意保留）**: `docs/BLUEPRINT.md:640`/`:641`/`:667`/`:670`（历史漂移记录表与沿革叙述）、
 `docs/MODULAR_ARCH.md:309`（阶段 3 待做项的历史描述）、
@@ -584,7 +592,7 @@ DRILL9 可以直接用 `watch g_guard_hits --patch <target>` 做观测。
 `ATTACK_MATRIX` / `COST_ASYMMETRY` 已回填；`docclaim_check` PASS。
 **实测结论: ✅ 三项全部满足**（2026-10-02）—— `ATTACK_DRILL9.md` 内嵌 8 用例
 stdout 原文（因 `build/` 被 `.gitignore:2` 忽略，证据必须内嵌）；
-`doccheck` 409 条 / 错误 0 / 警告 0; `docclaim_check` 8/8 PASS; 门禁默认 30 项全过。
+`doccheck` 409 条 / 错误 0 / 警告 0; `docclaim_check` 8/8 PASS; 门禁默认 31 项全过。
 
 ---
 
@@ -650,7 +658,7 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
    本轮已**再次踩到**：`edit` 又一次剥掉 `tools/release_check.ps1` 的 BOM）。
 3. 写文件后**检查 BOM**：`edit` 剥掉、`Set-Content -Encoding UTF8` 加上 ——
    **两个方向都会出事**，不限 `.ps1`。
-4. 每轮结束**重跑门禁**（默认 30 项）并记录日志路径。
+4. 每轮结束**重跑门禁**（默认 31 项）并记录日志路径。
 5. 回填 `docs/HANDOVER.md` 新增一节（照 §2.10 的格式），
    并更新 L18 的「最后核实」元数据。
 
@@ -677,6 +685,6 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
 ---
 
 *2026-10-02 v6 · Q0/Q1/Q2/Q3/Q4/Q5 全部完成（Q6 阻塞于用户提供仓库地址）·
-依据现场勘查（门禁 **33** 项=默认 30 项实跑 / doccheck 盲区实测 /
+依据现场勘查（门禁 **34** 项=默认 31 项实跑 / doccheck 盲区实测 /
 mojibake **216** 行定位与修复实测 + **Q2 的 4 行单字符盲区** / DRILL9 8 用例实测 /
 **Q4 全库普查 288 处无保护断言**· 判据 v5）· 按 §9 顺序推进中*
