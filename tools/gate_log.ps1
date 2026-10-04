@@ -21,6 +21,9 @@
 #     不落状态文件 -> 无陈旧状态可残留
 #   · 日志目录在 `build/` 下（已 gitignore -> 不污染 git）
 #   · 文件名带**时间戳** -> 多次运行不互相覆盖（失败可回溯到当时那一轮）
+#   · **转录文件是异步落盘的**: `Start-Transcript` 返回后文件可能还不可见
+#     （实测可见延迟 0..28 毫秒）-> 任何'开启后立刻检查文件'的断言必须
+#     用**有界等待**，否则就是拿调度抖动当缺陷（T1 曾因此间歇性 FAIL）
 #   · 为什么用 `Start-Transcript` 而不是自己 tee:
 #     实测（%TEMP%\z5_transcript_probe2.ps1）**忠实复刻门禁的 `Check` 函数**
 #     （`$out = @(& $cond); $ok = $out[-1]`）后验证: `Write-Host` 裸调用、
@@ -109,6 +112,18 @@ if ($Selftest) {
     }
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('gate_log_st_{0}' -f (Get-Date -Format 'HHmmssfff'))
     $npass = 0; $nfail = 0
+    # 有界等待路径出现（仅 T1 用）
+    #   见 T1 注释: `Start-Transcript` 的转录文件是**异步**落盘的,
+    #   立即 `Test-Path` 测的是调度抖动, 不是缺陷。
+    function Wait-Path([string]$Path, [int]$TimeoutMs = 2000) {
+        if (-not $Path) { return $false }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $Path)) {
+            if ($sw.ElapsedMilliseconds -ge $TimeoutMs) { return $false }
+            Start-Sleep -Milliseconds 20
+        }
+        return $true
+    }
     function Chk([string]$name, [scriptblock]$cond) {
         $out = @(& $cond)
         $ok = $out[-1]
@@ -117,10 +132,21 @@ if ($Selftest) {
     }
     try {
         # T1 正向: 开启
+        #   ⚠️ `Start-Transcript` 的转录文件是**异步**落盘的 —— 紧跟其后 `Test-Path`
+        #   测到的是调度抖动，不是缺陷。实测（build/_glP2.ps1, 紧接调用即断言）:
+        #   40 次里 38 次报"文件不存在"，而目录里 `st.log` **确实已经在了**；
+        #   文件可见延迟实测 0,18,7,25,25,25,25,23,28,20,21,2 毫秒（build/_glRace.ps1）。
+        #   真 T1 里中间隔了一次脚本调用 + `Get-Variable`，通常已够时间刷出
+        #   -> 本地几乎总是通过，但它是**间歇性**失败: CI 第 16 跑就是这么红的
+        #   （`exists=False` 而 `p` 非空、T2..T5 全 ok —— 同型签名已在本地复现）。
+        #   => 用**有界等待**替代立即断言。判据不变（文件最终还是得出现）；
+        #      真正"开启失败"的路径由 `$p -ne ''` 挡住（Start-Transcript 抛错时
+        #      `$p` 不会被赋值），故判别力不受影响。T6 守住等待本身不空转。
         Chk 'T1 开启转录 rc=0 且返回文件已创建' {
             & $PSCommandPath -Dir $tmp -Name st -Quiet
+            $rc1 = $LASTEXITCODE
             $p = [string](Get-Variable -Name $STATE_VAR -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
-            ($LASTEXITCODE -eq 0) -and ($p -ne '') -and (Test-Path -LiteralPath $p)
+            ($rc1 -eq 0) -and ($p -ne '') -and (Wait-Path -Path $p -TimeoutMs 2000)
         }
         # T2 **正向对照**: 开启后写的行必须落进文件（证"链路是通的"）
         #    没有这一条，"日志里没有"就无法区分「没写」与「没记」
@@ -159,12 +185,23 @@ if ($Selftest) {
             & $PSCommandPath -Dir $asFile -Name st3 -Quiet
             $LASTEXITCODE -eq 0
         }
+        # T6 **负向**: 有界等待不得"永远返回真"
+        #   否则 T1 的等待等于把断言取消掉（本仓库反复记名的
+        #   "看似在测、其实没测"）。同时守住空串路径不抛异常。
+        Chk 'T6 负向: 有界等待对不存在的路径返回假且空串不抛' {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $absent = Join-Path $tmp ('absent_{0}.log' -f [guid]::NewGuid().ToString('N'))
+            $r1 = Wait-Path -Path $absent -TimeoutMs 300
+            $el = $sw.ElapsedMilliseconds
+            $r2 = Wait-Path -Path '' -TimeoutMs 50
+            (-not $r1) -and (-not $r2) -and ($el -ge 250)
+        }
     } finally {
         $null = & $PSCommandPath -Stop -Quiet
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }
     Write-Host ''
-    Write-Host ("[gate_log-selftest] {0}: {1} 项（含 3 负向）" -f $(if ($nfail -eq 0) { 'PASS' } else { 'FAIL' }), ($npass + $nfail)) -ForegroundColor $(if ($nfail -eq 0) { 'Green' } else { 'Red' })
+    Write-Host ("[gate_log-selftest] {0}: {1} 项（含 4 负向）" -f $(if ($nfail -eq 0) { 'PASS' } else { 'FAIL' }), ($npass + $nfail)) -ForegroundColor $(if ($nfail -eq 0) { 'Green' } else { 'Red' })
     exit $(if ($nfail -eq 0) { 0 } else { 1 })
 }
 

@@ -578,8 +578,8 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
       · 新增 VirtualProtectEx + 写入读回验证）
       tools/prot_dbg.py（**调试控制台第 1 步**: doctor/sym/mask/exit，纯只读；
       **第 2/4 步 2026-10-01 已交付**: read/patch/watch + 反调试提示，见 §2.10）
-      tools/gate_log.ps1（**门禁落日志**: start/-Stop/-Selftest；自检 5 项含 3 负向；
-      检测到外层转录时自检自动换子进程）
+      tools/gate_log.ps1（**门禁落日志**: start/-Stop/-Selftest；自检 6 项含 4 负向；
+      检测到外层转录时自检自动换子进程；T1 用**有界等待**替代立即断言，见 §2.22）
 修改: tools/release_check.ps1（26–32 项 + **结构修复**: 补回 `abc5edc` 吃掉的
       `} else {`，见教训 ⑧）
       tools/doccheck.py（**新增门禁结构断言**: 每个 `Check` 必须在顶层）
@@ -1876,3 +1876,78 @@ cases=12325 mismatch=0 oracle_bad=0 entry_bad=0 range_bad=0 folded=0
 **诚实边界**：判据 5 度量的是「间距**是否**随盐变化」，**不度量熵的大小** —— 若将来
 填充被削弱到只剩 1 bit，本判据仍可能通过（每次构建的盐是随机 4 字节，实际空间远大于
 判据里用的 3 个）。
+
+## 2.22 增量（2026-10-04）：CI 第 16 跑红项 —— `gate_log` T1 是**拿调度抖动当缺陷**
+
+> **缘起**：`04340f4`（位置抖动）推送后，CI 第 16 跑 `37164875743` 的
+> `build-and-verify` job 报 `Full release gate` 失败，门禁 `FAIL: 1/28`。
+> 唯一失败项 = `[X] 门禁日志自检 (gate_log)`，且**只有 T1 红**（T2..T5 全 ok）：
+> `[X] T1 开启转录 rc=0 且返回文件已创建`。
+> **本轮新加的 `replica_check` 在 CI 上是通过的**（`[ok] 判定多副本等价性`），
+> 即这次失败与 R3.2-c 无关，而是一个**既有的间歇性缺陷**恰在此轮暴露。
+
+### 根因（实测，不是推测）
+
+`Start-Transcript -Path P` **返回时文件可能还不存在** —— 转录文件是**异步**落盘的。
+T1 的判据是「开启后立刻 `Test-Path`」，于是它测到的是**文件系统/会话调度的抖动**，
+不是「开启失败」。
+
+决定性证据（`build/_glP2.ps1`，把 T1 依赖的原语单独拿出来，紧接 `Start-Transcript`
+就 `Test-Path`）：
+
+```
+iter 36: rc=0 exists=False msg=[] files=[st.log]
+=== primitive (plain) fails: 38/40 ===     # 有外层转录时 40/40
+```
+
+注意 `exists=False` **但 `files=[st.log]`** —— 文件明明已经在了，只是 `Test-Path`
+那一刻还没看见。可见延迟实测（`build/_glRace.ps1`）：
+
+```
+=== delays(ms): 0,18,7,25,25,25,25,23,28,20,21,2 ===
+```
+
+即 **0..28 毫秒**。真 T1 里在 `Start-Transcript` 与本断言之间还隔了一次脚本调用 +
+`Get-Variable`，通常已足够刷出 ⇒ **本机几乎总是通过**，但它是**间歇性**的：
+CI 上命中一次就红一整轮。
+
+**为什么此前没被发现**：这是「本地几乎总是过、失败无现场」的典型形态。本项目的
+门禁日志工具（本文件 §2.9/§2.10）存在的理由正是「判据失败要留下证据」；而
+T1 失败时留下的证据只有 `[X]` 一行，看不到 `exists=False` 这个关键字段。本轮
+靠**插桩副本**（`build/_mk_dbg.py` 从 `tools/gate_log.ps1` 生成 `build/_gl_dbg.ps1`，
+在 T1 体内打印 `rc`/`p`/`exists`）才把签名抓出来，用**同一个签名**在本地复现：
+第 4 次迭代 `rc=0 p=[…] exists=False`。
+
+### 修法
+
+- 新增有界等待 `Wait-Path`（默认 2000 ms，20 ms 轮询）。
+- T1 改为 `($rc1 -eq 0) -and ($p -ne '') -and (Wait-Path -Path $p -TimeoutMs 2000)`。
+  **判据没有放松**：真正「开启失败」的路径由 `$p -ne ''` 挡住 ——
+  `Start-Transcript` 抛错时 `$p` 根本不会被赋值（`gate_log.ps1:180-181` 在
+  `try` 内、赋值在 `Start-Transcript` 之后）。
+- 顺带修掉一个**潜在陷阱**：原 T1 在同一 scriptblock 里用 `$LASTEXITCODE`，
+  中间还夹着 `Get-Variable`；改为**立刻**取 `$rc1 = $LASTEXITCODE` 再断言。
+- 新增 **T6 负向**：把「等待」本身也证伪一次 ——
+  `Wait-Path` 对**不存在的**路径必须返回假（且耗时 ≥ 阈值）、对**空串**必须返回假
+  且不抛异常。没有这一条，T1 的等待就等于**把断言取消掉**（本仓库反复记名的
+  「看似在测、其实没测」）。自检从 **5 项（含 3 负向）** 增至 **6 项（含 4 负向）**。
+- 文件头「设计要点」补一条：转录文件异步落盘，任何「开启后立刻检查文件」的断言
+  必须用有界等待。
+
+### 验证
+
+```
+A) powershell -File tools\gate_log.ps1 -Selftest            -> rc=0
+   ok T1 / ok T2 / ok T3 / ok T4 / ok T5 / ok T6
+   [gate_log-selftest] PASS: 6 项（含 4 负向）
+
+B) build\_glprobe.ps1（同一进程 12 次 fork，改前 12/12 FAIL）-> 12/12 全部
+   `ok T1 开启转录 rc=0 且返回文件已创建`
+```
+
+> 探针 B 打印的 `T1=?` 是**探针自身的产物**（它用 `@(& …)` 捕获成功流，而子进程的
+> 逐项结果走 `Write-Host`＝信息流）；`=== T1 failures: 12/12 ===` 因此是**陈旧计数**，
+> 判读须看逐次回显的 `ok T1` 行。修好后不再出现 `[X] T1` 行。
+
+**未验证**：本轮修复尚未在 CI 上跑过（下次推送观察）；`Wait-Path` 的 2000 ms 上限
+是从实测最大 28 ms 留了约 70× 余量，**不是**从原理推导出来的上界。
