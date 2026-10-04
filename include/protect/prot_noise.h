@@ -74,6 +74,56 @@
     } while (0)
 
 /*
+ * 盐驱动惰性填充步（R3.2-c 位置抖动，2026-10-04）。
+ *
+ * 语义恒等：只对局部 volatile 做读-改-写，结果丢弃。
+ * 与 PROT_NOISE 的区别：PROT_NOISE 让**立即数**随构建变化；本宏由调用方
+ * 用 `#if` 阶梯控制**语句条数**，于是机器码**长度**随构建变化。
+ *
+ * ## 为什么需要（实测缺口）
+ *   R3.2-c 的副本都在 `src/antidebug.c` 一个编译单元里，其相互距离由编译器
+ *   在该 TU 内的函数排布决定，**与链接顺序（--shuffle-seed）无关**。
+ *   实测 3 个不同 shuffle seed 下，副本相对本体的偏移恒为
+ *   `+208 / +416 / +480 / +688` —— 攻击者定位到任一副本后，用固定偏移即可
+ *   找到其余副本。把填充量绑定到**每构建都变**的 PROT_BUILD_SALT，相对偏移
+ *   就不再是常量（详见 tools/replica_check.py 判据 5）。
+ *
+ * ## ⚠️ 为什么必须用 `#if` 阶梯（而不是 switch / 循环）
+ *   · `switch` 的**所有 case 体都会被编译出来** —— 执行走哪条分支不影响
+ *     代码长度，机器码长度恒定，起不到作用；
+ *   · 常量界循环是否展开由优化器决定 —— 不可控，不能作为不变量；
+ *   · 只有**预处理期**的条件编译才真正改变"被编译的代码量"。
+ *
+ * 为什么不会被优化掉：每次操作都是对局部 volatile 的读-改-写；volatile
+ * 访问是副作用，编译器不得消除或合并。
+ */
+#define PROT_PAD_STEP()                                                    \
+    do {                                                                   \
+        volatile uint32_t prot_pad1_ = 0u;                                 \
+        volatile uint32_t prot_pad2_ = (PROT_BUILD_SALT);                  \
+        prot_pad1_ += prot_pad2_;                                          \
+        (void)prot_pad1_;                                                  \
+    } while (0)
+
+/*
+ * R3.2-c 位置抖动的**位分解阶梯**：把 3 个 bit 分解成 4+2+1，恰好给出 0..7 步。
+ * 位分解（而非 8 段 `#if` 阶梯）让调用点只有 3 个条件块：
+ *     #if ((PROT_BUILD_SALT) >> N) & 4u
+ *         PROT_PAD_4();
+ *     #endif
+ *     #if ((PROT_BUILD_SALT) >> N) & 2u
+ *         PROT_PAD_2();
+ *     #endif
+ *     #if ((PROT_BUILD_SALT) >> N) & 1u
+ *         PROT_PAD_1();
+ *     #endif
+ * 每个调用点取**不同**的位段 N，使各函数的尺寸扰动互相独立。
+ */
+#define PROT_PAD_4()  do { PROT_PAD_STEP(); PROT_PAD_STEP(); PROT_PAD_STEP(); PROT_PAD_STEP(); } while (0)
+#define PROT_PAD_2()  do { PROT_PAD_STEP(); PROT_PAD_STEP(); } while (0)
+#define PROT_PAD_1()  do { PROT_PAD_STEP(); } while (0)
+
+/*
  * 加强版：让 salt 参与两条独立的立即数（扩大敏感面，抗"部分位碰撞"）。
  * 用于**非热路径**的关键检测函数。
  */

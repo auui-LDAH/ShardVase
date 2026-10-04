@@ -514,6 +514,17 @@ uint32_t prot_antidebug_detected(const prot_antidebug_report* rep) {
     if (rep == NULL) {
         return 0;
     }
+    /* R3.2-c 位置抖动: 独立位段 9..11 —— 本体自身长度也随构建变化,
+     * 否则后面所有副本的"相对本体的偏移"仍含一个固定基线。 */
+#if (((PROT_BUILD_SALT) >> 9) & 4u)
+    PROT_PAD_4();
+#endif
+#if (((PROT_BUILD_SALT) >> 9) & 2u)
+    PROT_PAD_2();
+#endif
+#if (((PROT_BUILD_SALT) >> 9) & 1u)
+    PROT_PAD_1();
+#endif
     mask[0] = rep->peb_being_debugged;
     mask[1] = rep->debug_port;
     mask[2] = rep->debug_flags;
@@ -619,6 +630,16 @@ uint32_t prot_antidebug_detected_r2(const prot_antidebug_report* rep) {
     if (rep == NULL) {
         return 0u;
     }
+    /* R3.2-c 位置抖动: 代码长度随 PROT_BUILD_SALT 变化 (位段 0..2, 0..7 步) */
+#if (((PROT_BUILD_SALT) >> 0) & 4u)
+    PROT_PAD_4();
+#endif
+#if (((PROT_BUILD_SALT) >> 0) & 2u)
+    PROT_PAD_2();
+#endif
+#if (((PROT_BUILD_SALT) >> 0) & 1u)
+    PROT_PAD_1();
+#endif
     acc |= rep->peb_being_debugged;
     acc |= rep->debug_port;
     acc |= rep->debug_flags;
@@ -641,6 +662,16 @@ uint32_t prot_antidebug_detected_r3(const prot_antidebug_report* rep) {
     if (rep == NULL) {
         return 0u;
     }
+    /* R3.2-c 位置抖动: 独立位段 3..5 (与 r2 的 0..2 不重叠) */
+#if (((PROT_BUILD_SALT) >> 3) & 4u)
+    PROT_PAD_4();
+#endif
+#if (((PROT_BUILD_SALT) >> 3) & 2u)
+    PROT_PAD_2();
+#endif
+#if (((PROT_BUILD_SALT) >> 3) & 1u)
+    PROT_PAD_1();
+#endif
     v[0] = rep->ppid_blacklist;
     v[1] = rep->timing_suspicious;
     v[2] = rep->hardware_breakpoints;
@@ -677,6 +708,16 @@ uint32_t prot_antidebug_detected_r4(const prot_antidebug_report* rep) {
     if (rep == NULL) {
         return 0u;
     }
+    /* R3.2-c 位置抖动: 独立位段 6..8 (与 r2/r3 均不重叠) */
+#if (((PROT_BUILD_SALT) >> 6) & 4u)
+    PROT_PAD_4();
+#endif
+#if (((PROT_BUILD_SALT) >> 6) & 2u)
+    PROT_PAD_2();
+#endif
+#if (((PROT_BUILD_SALT) >> 6) & 1u)
+    PROT_PAD_1();
+#endif
     acc  = rep->peb_being_debugged | rep->debug_port | rep->debug_flags;
     acc |= rep->debug_object | rep->hardware_breakpoints;
     acc |= rep->timing_suspicious | rep->ppid_blacklist;
@@ -697,6 +738,16 @@ uint32_t prot_antidebug_detected_multi(const prot_antidebug_report* rep) {
     uint32_t hit = 0u;
 
     PROT_NOISE();   /* W1.6 序言噪声 */
+    /* R3.2-c 位置抖动: 独立位段 12..14 */
+#if (((PROT_BUILD_SALT) >> 12) & 4u)
+    PROT_PAD_4();
+#endif
+#if (((PROT_BUILD_SALT) >> 12) & 2u)
+    PROT_PAD_2();
+#endif
+#if (((PROT_BUILD_SALT) >> 12) & 1u)
+    PROT_PAD_1();
+#endif
     hit |= prot_antidebug_detected(rep);
     hit |= prot_antidebug_detected_r2(rep);
     hit |= prot_antidebug_detected_r3(rep);

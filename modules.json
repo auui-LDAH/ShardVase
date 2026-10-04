@@ -36,6 +36,7 @@
       "known_limits": [
         "R3.2-c 后**单点** patch 判定副本不再足够 (host 调用 prot_antidebug_detected_multi); 但把 4 个副本全 patch 仍然能关闭判定 — 冗余提高成本, 不是不可破",
         "副本语义等价性靠 tools/replica_check.py 差分判据守护, 该判据覆盖 7 关键位 + 5 咨询位全域, 不覆盖未来新增字段",
+        "副本间距随构建盐变化 (PROT_PAD_STEP 阶梯, tools/replica_check.py 判据 5 守护); 但 4 份副本仍同处一个 .text 段与同一编译单元 — 位置抖动提高定位成本, 拿到 PDB 或做全段扫描仍可一次找出全部 4 份",
         "S3 平坦化只提高静态阅读成本, 不阻止函数头替换",
         "计时检测固定消耗 250ms (5x20ms + 150ms)"
       ],

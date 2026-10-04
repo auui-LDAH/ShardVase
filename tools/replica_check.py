@@ -15,7 +15,7 @@ tools/replica_check.py — **判定多副本等价性机械判据** (R3.2-c / MO
 R3.2-c 把判定复制成 4 份, 于是"副本与本体等价"从一句注释变成**必须被机器检查的
 不变量** —— 一旦某次编辑让某个副本漏掉一个关键位, 攻击者只需挑那个副本下手。
 
-## 三条判据 (缺一不可)
+## 五条判据 (缺一不可)
 
 1. **差分等价 + 独立 oracle + 非空洞性**
    把 `src/antidebug.c` 的本体与副本区**逐字提取出来单独编译**, 对一个
@@ -37,6 +37,19 @@ R3.2-c 把判定复制成 4 份, 于是"副本与本体等价"从一句注释变
    把 r2 的一个 `acc |= rep->X;` 摘掉 -> 差分**必须**报出不一致。
    若负向对照也"通过", 说明判据没有判别力 -> **判 FAIL** (不是静默通过)。
 
+4. **单点 patch 不再足够 (R3.2-c 的核心验收)**
+   对 3 个副本 x 2 种手法 (`stub-ret0` / `drop-key-bit`) 各做一次**单点**变异, 断言
+   契约入口 `prot_antidebug_detected_multi` 对每个 oracle=1 的输入**仍报 1**;
+   再把 3 副本 + 聚合器**全打掉**做对照, 断言那时**必须**漏报 (判据可失败)。
+
+5. **副本间距随构建盐变化 (R3.2-c 关键设计③)**
+   5 个符号同属一个编译单元, `cl /O2` 在该 TU 内的函数排布**与链接顺序无关**
+   (`--shuffle-seed` 只打乱源文件顺序) ⇒ 若代码长度恒定, 攻击者定位任意一个副本
+   后, 其余副本的偏移就是**可预测常量** (填充前实测恒为 `+208/+416/+480/+688`),
+   多副本对"定位成本"的贡献接近零。`PROT_PAD_STEP()` 阶梯让代码长度随
+   `PROT_BUILD_SALT` 变化 ⇒ 用 3 个不同盐编译, 偏移向量**必须**互不相同; 负向对照
+   (摘掉填充阶梯) **必须**退化为恒定, 否则本判据测的不是填充, 不得据此宣称已生效。
+
 ## 为什么用"提取源码编译"而不是链 demo.exe
 
 `include/protect/antidebug.h` **只依赖 protdef.h** ⇒ 本体与副本区可独立编译, 对
@@ -48,6 +61,9 @@ R3.2-c 把判定复制成 4 份, 于是"副本与本体等价"从一句注释变
 · 判据覆盖 `prot_antidebug_report` 的 **12 个字段全域**; 未来新增字段必须重跑本
   判据 (7+5 的归属检查会先报错, 不会静默放过)。
 · 判据 2 需要先构建 `build/demo.exe`; 缺失时 SKIP (不等于通过)。
+· 判据 5 度量的是"间距**是否**随盐变化"这一事实, **不度量熵的大小**: 3 个盐给出
+  3 个不同向量即通过; 若将来填充被削弱到只剩 1 bit, 本判据仍可能通过 —— 那时应
+  把盐数调大。每次构建的盐是随机 4 字节 ⇒ 发布构建的实际间距空间远大于 3。
 · 判据证明的是"**同输入同输出**"; 它不能证明副本在二进制里真的被**分别执行**
   (那是 docs/ATTACK_DRILL 的活体实证, 与静态判据互补)。
 
@@ -391,8 +407,12 @@ def gen_harness(base_src, region, fields, keys):
     return out
 
 
-def compile_and_run(src_text, tag, verbose):
-    """编译并运行 harness。返回 (rc, output); rc=None 表示无法编译/运行。"""
+def compile_and_run(src_text, tag, verbose, salt='0x12345678u', map_out=None):
+    """编译并运行 harness。返回 (rc, output); rc=None 表示无法编译/运行。
+
+    `map_out` 给定时不运行 harness, 只编译并把 /MAP 写到该路径 (判据 5 用) ——
+    返回 (0, map 路径)。
+    """
     tools = os.path.join(REPO, 'tools')
     if tools not in sys.path:
         sys.path.insert(0, tools)
@@ -408,10 +428,13 @@ def compile_and_run(src_text, tag, verbose):
     io.open(c_path, 'w', encoding='utf-8', newline='\n').write(src_text)
 
     # /OPT:NOICF = 双保险 (判据 1 自己也断言函数指针互异)
+    link = ' /link /SUBSYSTEM:CONSOLE /OPT:REF,NOICF'
+    if map_out:
+        link += ' /MAP:"%s"' % map_out
     clcmd = ('cl /nologo /O2 /W4 /WX /std:c11 /utf-8 '
-             '/I "%s" /DPROT_BUILD_SALT=0x12345678u '
-             '/Fe:"%s" "%s" /link /SUBSYSTEM:CONSOLE /OPT:REF,NOICF'
-             % (os.path.join(REPO, 'include'), exe_path, c_path))
+             '/I "%s" /DPROT_BUILD_SALT=%s '
+             '/Fe:"%s" "%s"%s'
+             % (os.path.join(REPO, 'include'), salt, exe_path, c_path, link))
     try:
         vc = vcvars.find_vcvars()
     except vcvars.VcVarsNotFound as e:
@@ -424,6 +447,10 @@ def compile_and_run(src_text, tag, verbose):
     out = (p.stdout or '') + (p.stderr or '')
     if p.returncode != 0 or not os.path.exists(exe_path):
         return None, out
+    if map_out:
+        if not os.path.exists(map_out):
+            return None, 'MAP 未生成:\n' + out
+        return 0, map_out
     if verbose:
         sys.stdout.write('[replica_check] cl(%s) ok\n' % tag)
     q = winproc.run([exe_path], capture_output=True, text=True,
@@ -725,6 +752,139 @@ def negative_control(verbose=False):
                   % res['mismatch'])
 
 
+# ------------------------------------------------------- 判据 5: 位置抖动
+
+# 三个确定性盐: 实测其偏移向量互不相同 (见 docs/DECISION_REDUNDANCY_PLAN.md §12.5)。
+PAD_SALTS = ('0x12345678u', '0xFF00FF00u', '0x0F0F0F0Fu')
+# 填充阶梯的源码形态 (本体 + 3 副本 + 聚合器 = 5 处):
+#     #if (((PROT_BUILD_SALT) >> N) & 4u)
+#         PROT_PAD_4();
+#     #endif
+PAD_LADDER_RE = re.compile(
+    r'[ \t]*#if \(\(\(PROT_BUILD_SALT\) >> \d+\) & [124]u\)\n'
+    r'[ \t]*PROT_PAD_[124]\(\);\n'
+    r'[ \t]*#endif\n')
+
+
+def _offset_vector(src_text, salt, tag, verbose):
+    """用指定盐编译该源码, 返回 (以本体为基准的偏移向量, None) 或 (None, 错误)。
+
+    向量顺序 = (BASE, r2, r3, r4, ENTRY)。**不依赖 demo.exe** —— 用 harness
+    自带的一份编译, 因此本判据在干净树上也能跑 (只要 MSVC 可用)。
+    """
+    try:
+        fields, keys, _ = parse_report_fields(HEADER)
+        region = extract_region(src_text)
+        base_src = extract_base(src_text)
+    except ValueError as e:
+        return None, str(e)
+    harness = gen_harness(base_src, region, fields, keys)
+    map_path = os.path.join(BUILD, 'replica_%s.map' % tag)
+    if os.path.exists(map_path):
+        try:
+            os.remove(map_path)
+        except OSError:
+            pass
+    rc, out = compile_and_run(harness, tag, verbose, salt=salt, map_out=map_path)
+    if rc is None:
+        return None, '位置抖动判据编译失败 (%s): %s' % (salt, str(out)[-300:])
+    mtxt = io.open(map_path, encoding='utf-8', errors='replace').read()
+    names = (BASE,) + REPLICAS + (ENTRY,)
+    va = {}
+    for n in names:
+        v = map_symbol_va(n, mtxt)
+        if v is None:
+            return None, 'MAP 里找不到 %s (%s)' % (n, salt)
+        va[n] = int(v, 16)
+    base = va[BASE]
+    return tuple(va[n] - base for n in names), None
+
+
+def check_position_jitter(verbose):
+    """判据 5: 副本之间的相对距离必须随构建盐变化 (R3.2-c 关键设计③)。
+
+    为什么需要它: 5 个符号同属一个编译单元, `cl /O2` 在该 TU 内的函数排布
+    **与链接顺序无关** ⇒ 若代码长度是常量, 攻击者只需定位任意一个副本, 其余
+    副本的偏移就是可预测常量 (实测旧值恒为 +208/+416/+480/+688), 多副本对
+    "定位成本"的贡献接近零。`PROT_PAD_STEP()` 阶梯让代码长度随
+    `PROT_BUILD_SALT` 变化 ⇒ 间距不再可预测。
+
+    判据必须能失败: 去掉填充阶梯后, 偏移向量**必须**退化为恒定 —— 否则说明
+    本判据测的不是填充, 结论不成立。
+    """
+    src_text = io.open(SRC, encoding='utf-8', errors='replace').read()
+    try:
+        extract_region(src_text)
+    except ValueError as e:
+        return None, str(e)
+
+    # 5 处调用点 x 3 个 #if 块 (4/2/1 步) = 15 个阶梯块
+    n_ladders = len(PAD_LADDER_RE.findall(src_text))
+    if n_ladders != 15:
+        return False, ('填充阶梯应出现 15 处 (5 个函数 x 3 个 #if 块), 实得 %d 处'
+                       ' —— 源码变了就必须同步判据, 不得静默通过' % n_ladders)
+    groups = {b // 3 for b in
+              (int(m) for m in re.findall(
+                  r'#if \(\(\(PROT_BUILD_SALT\) >> (\d+)\) & [124]u\)', src_text))}
+    if len(groups) != 5:
+        return False, ('填充位段应分成 5 个互不重叠的三位组 (每函数独立扰动), '
+                       '实得 %d 组 —— 否则各副本尺寸会同步变化, 间距仍可能恒定'
+                       % len(groups))
+
+    vectors = []
+    lines = []
+    for i, salt in enumerate(PAD_SALTS):
+        vec, err = _offset_vector(src_text, salt, 'pos%d' % i, verbose)
+        if vec is None:
+            return None, err
+        vectors.append(vec)
+        lines.append('    %-14s -> %s' % (salt, vec))
+
+    distinct = list(dict.fromkeys(vectors))
+    if verbose:
+        for ln in lines:
+            sys.stdout.write('[replica_check] %s\n' % ln)
+
+    # 残余可预测性: 哪些符号对的间距在所有盐下都相同
+    names = (BASE,) + REPLICAS + (ENTRY,)
+    fixed_pairs = []
+    for a in range(len(names)):
+        for b in range(a + 1, len(names)):
+            gaps = {v[b] - v[a] for v in vectors}
+            if len(gaps) == 1:
+                fixed_pairs.append('%s<->%s 恒为 %+d'
+                                   % (names[a], names[b], gaps.pop()))
+
+    if len(distinct) < 2:
+        return False, ('%d 个盐得到同一个偏移向量 %s —— 副本间距仍是常量, '
+                       '位置抖动未生效 (攻击者定位一次即可推算全部副本)'
+                       % (len(PAD_SALTS), distinct[0]))
+
+    # ---- 负向对照: 去掉填充阶梯后必须退化为恒定 ----
+    stripped = PAD_LADDER_RE.sub('', src_text)
+    if stripped == src_text:
+        return False, '填充阶梯一处都没匹配到 —— 判据没有判别力'
+    neg = []
+    for i, salt in enumerate(PAD_SALTS[:2]):
+        vec, err = _offset_vector(stripped, salt, 'posneg%d' % i, verbose)
+        if vec is None:
+            return None, err
+        neg.append(vec)
+    if len(set(neg)) != 1:
+        return False, ('负向对照失败: 摘掉填充阶梯后偏移向量仍随盐变化 (%s) —— '
+                       '说明本判据测的不是填充, 不得据此宣称位置抖动已生效'
+                       % (neg,))
+
+    detail = ('%d 个盐得到 %d 个不同偏移向量 -> %s; 负向对照 (摘掉填充) 退化为'
+              '恒定 %s (判据有判别力)'
+              % (len(PAD_SALTS), len(distinct), distinct, neg[0]))
+    if fixed_pairs:
+        detail += '; ⚠️ 残余可预测性: ' + '; '.join(fixed_pairs)
+    else:
+        detail += '; 任意两符号的间距都随构建盐变化 (无残余常量间距)'
+    return True, detail
+
+
 # --------------------------------------------------------------------- 自检
 
 def selftest():
@@ -828,13 +988,32 @@ def selftest():
     except ValueError:
         case('无 marker 的源码被拒', True)
 
+    # 判据 5: 填充阶梯的形态识别
+    ladders = PAD_LADDER_RE.findall(real)
+    case('填充阶梯识别出 15 块 (5 函数 x 3 #if)', len(ladders) == 15,
+         repr(len(ladders)))
+    case('填充阶梯覆盖 PROT_PAD_4/2/1',
+         {'PROT_PAD_4();', 'PROT_PAD_2();', 'PROT_PAD_1();'}
+         <= set(re.findall(r'PROT_PAD_[124]\(\);', real)))
+    bits = [int(m) for m in re.findall(
+        r'#if \(\(\(PROT_BUILD_SALT\) >> (\d+)\) & [124]u\)', real)]
+    case('填充位段互不重叠 (每个函数独立扰动)',
+         len(bits) == 15 and len({b // 3 for b in bits}) == 5,
+         repr(sorted(set(b // 3 for b in bits))))
+    case('摘掉填充阶梯后判定不再匹配',
+         not PAD_LADDER_RE.search(PAD_LADDER_RE.sub('', real)))
+    # 负向: 一个"没有填充"的源码必须被认出 (否则判据 5 是纸面结论)
+    case('无填充的源码里阶梯数为 0',
+         len(PAD_LADDER_RE.findall('uint32_t f(void) { return 0u; }\n')) == 0)
+
     print()
     if fails:
         print('[replica_check-selftest] FAIL: %d 项' % len(fails))
         for f in fails:
             print('   - ' + f)
         return 1
-    print('[replica_check-selftest] PASS: 提取/解析/聚合器形态/抗折叠判别均已自证')
+    print('[replica_check-selftest] PASS: 提取/解析/聚合器形态/抗折叠/位置抖动'
+          '判别均已自证')
     return 0
 
 
@@ -931,10 +1110,24 @@ def main(argv=None):
         return 1
     print('[replica_check]   %s' % d4)
 
+    print('[replica_check] 判据 5: 副本间距随构建盐变化 (R3.2-c 关键设计③)')
+    ok5, d5 = check_position_jitter(args.verbose)
+    if ok5 is None:
+        print('[replica_check] SKIP: %s — 未验证 != 通过' % d5)
+        payload['position_jitter'] = {'ok': None, 'detail': d5}
+        _write_json(args.json, payload)
+        return 2
+    payload['position_jitter'] = {'ok': ok5, 'detail': d5}
+    if not ok5:
+        print('[replica_check] FAIL: %s' % d5)
+        _write_json(args.json, payload)
+        return 1
+    print('[replica_check]   %s' % d5)
+
     payload['ok'] = True
     _write_json(args.json, payload)
-    print('[replica_check] PASS: 四条判据全通过 '
-          '(等价 + 地址互异 + 负向对照有判别力 + 单点 patch 不再足够)')
+    print('[replica_check] PASS: 五条判据全通过 '
+          '(等价 + 地址互异 + 负向对照有判别力 + 单点 patch 不再足够 + 间距随构建变化)')
     return 0
 
 
