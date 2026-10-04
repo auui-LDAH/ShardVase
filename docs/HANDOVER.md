@@ -1941,13 +1941,23 @@ A) powershell -File tools\gate_log.ps1 -Selftest            -> rc=0
    ok T1 / ok T2 / ok T3 / ok T4 / ok T5 / ok T6
    [gate_log-selftest] PASS: 6 项（含 4 负向）
 
-B) build\_glprobe.ps1（同一进程 12 次 fork，改前 12/12 FAIL）-> 12/12 全部
-   `ok T1 开启转录 rc=0 且返回文件已创建`
+B) build\_glStress.ps1（外层转录 + 40 次 fork，改后）-> ok T1 行 40 / [X] T1 行 0
+   PASS 行 40 / FAIL 行 0
 ```
 
-> 探针 B 打印的 `T1=?` 是**探针自身的产物**（它用 `@(& …)` 捕获成功流，而子进程的
-> 逐项结果走 `Write-Host`＝信息流）；`=== T1 failures: 12/12 ===` 因此是**陈旧计数**，
-> 判读须看逐次回显的 `ok T1` 行。修好后不再出现 `[X] T1` 行。
+> **一处须更正的说法**：`build\_glprobe.ps1` 打印的 `T1=?` 与
+> `=== T1 failures: 12/12 ===` 都是**探针自身的产物** —— 它用 `@(& …)` 捕获成功流，
+> 而子进程的逐项结果走 `Write-Host`＝信息流，故 `$t1` 恒为 `'?'`、计数永不刷新。
+> 因此「改前 12/12 FAIL」**不能作为缺陷复现的证据**，判读须看逐次回显的 `ok T1` 行。
+> 改前真正站得住的证据是 §A 的原语隔离探针（`38/40`，有外层转录时 `40/40`）与
+> `exists=False` 而 `files=[st.log]` 的并存现象；改后证据是 B 的 `40/40`。
+> 教训：**探针与被测对象都要各自被证伪一次** —— 失败形态与 CI 一致，不等于探针正确。
 
-**未验证**：本轮修复尚未在 CI 上跑过（下次推送观察）；`Wait-Path` 的 2000 ms 上限
-是从实测最大 28 ms 留了约 70× 余量，**不是**从原理推导出来的上界。
+C) CI 第 17 跑 `37167298806`（head `cc6fbb0`）-> 四个 job 全绿；
+   `Full release gate` step 19 success（第 16 跑即败于此步），
+   `[gate_log-selftest] PASS: 6 项（含 4 负向）` / `[ok] 门禁日志自检 (gate_log)`
+   / `[ok] 判定多副本等价性 (replica_check)` / `[release_check] PASS: 28 项检查全通过`。
+
+**未验证**：`Wait-Path` 的 2000 ms 上限是从实测最大 28 ms 留了约 70× 余量，
+**不是**从原理推导出来的上界；T6 也没有构造「文件超 2000 ms 才出现」的真实场景
+（那需要人为制造远超实测的落盘延迟）。
