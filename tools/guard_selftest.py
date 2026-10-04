@@ -115,7 +115,8 @@ MASK_TXT = os.path.join(REPO, 'build', 'selfcrypt_mask.txt')
 PREF = 0x140000000                      # 链接时首选基址（见 build.ps1）
 PATCH = (0x31, 0xC0, 0xC3)              # xor eax,eax; ret（DRILL7 步骤 4 原样）
 OBSERVE_S = 18.0                        # 观察窗口（>= 2 个看门狗周期）
-SETTLE_S = 1.2                          # 启动后等待（进程已完成登记 + 预热快照）
+SETTLE_S = 1.2                          # 进程启动后**最短**等待（只为让 PE 加载完成）
+READY_TIMEOUT_S = 25.0                  # 等 `start_watchdog` 就绪的上限（见 _wait_ready）
 KEEP_MS = 30000                         # 让 demo 活得比观察窗口长
 
 PROCESS_ALL = 0x1F0FFF
@@ -125,6 +126,11 @@ PAGE_EXECUTE_READWRITE = 0x40
 HITS_SYM = 'g_guard_hits'
 POLICY_SYM = 'g_wd_policy'
 TAMPER_SYM = 'g_wd_tamper'
+# 就绪哨兵: `start_watchdog` 校验通过后写它（`src/integrity.c:828`），
+# 零初始化 -> **非 0 即已就绪**。选它而非 POLICY_SYM 的原因:
+# 本工具会改 `g_wd_policy`（写 CONTINUE = 0），若拿它当信号则**自毁证据**
+# （见 `_wait_ready` 注释）。`g_wd_interval` 我们不碰。
+READY_SYM = 'g_wd_interval'
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +292,8 @@ def run_by_hits(target, verbose=True):
     va_fn = _sym_va(target)
     va_hits = _sym_va(HITS_SYM)
     va_pol = _sym_va(POLICY_SYM)
-    if va_fn is None or va_hits is None or va_pol is None:
+    va_rdy = _sym_va(READY_SYM)
+    if va_fn is None or va_hits is None or va_pol is None or va_rdy is None:
         return None
 
     k32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -328,6 +335,49 @@ def run_by_hits(target, verbose=True):
         back = _rd(h, va, len(data))
         return ok and n.value == len(data) and back == bytes(data), back
 
+    def _wait_ready(h, proc, va_rdy):
+        """等 `prot_integrity_start_watchdog` **确实执行过**再动目标。
+
+        ## 为什么必须等（2026-10-05 实测缺陷 —— 本文件曾因此假红）
+          旧版只有一句 `time.sleep(SETTLE_S=1.2)`，**赌**宿主已调完
+          `prot_integrity_start_watchdog`。而该函数末尾（`src/integrity.c:827`）
+          会执行 `g_wd_policy = pol;` —— **把本工具刚写入的 CONTINUE 覆盖回
+          demo 传入的 EXIT**。于是:
+            段 CRC 失败 -> EXIT 分支 -> `prot_plat_terminate(0xBAD)`
+            -> 进程在同一个 tick 内死亡, `g_guard_hits` **从未自增**
+            -> 自检报 `negative exit=2989 hits=0` = **假的"守卫失效"**
+          慢机器（如 CI runner）上 1.2s 不够 => 间歇性假红。
+          本机用 `--wait-ms 5000` 把启动推后即 1/1 稳定复现该签名。
+
+        ## 就绪信号 = `g_wd_interval != 0`（**不是** `g_wd_policy`）
+          `start_watchdog` 里 `g_wd_policy = pol; g_wd_interval = interval_ms;`
+          是相邻两句（`:827`/`:828`），且两者都零初始化。
+          但 `g_wd_policy` **本工具自己要写**（CONTINUE = 0）-> 拿它当信号会
+          **自毁证据**: 若宿主已就绪（真实值 EXIT），我们先把 0 写进去，
+          信号就与"未就绪"无法区分（第一版修法正是踩了这个坑，12/12 恒报
+          "未就绪"）。`g_wd_interval` 我们从不写 => 单调、无歧义。
+         顺带得到**加固判据**: `start_watchdog` 里 `g_wd_interval` 仅在
+         策略合法性校验（`:817-820`）**之后**才赋值，故 `g_wd_interval != 0`
+          还额外证明"宿主已通过参数校验"。
+
+        返回 `(ready, seen, waited_s)`；`seen` 记录观测到的不同值，
+        供未就绪时诊断（区分"进程已死"与"只是慢"）。
+        """
+        t0 = time.time()
+        seen = []
+        while time.time() - t0 < READY_TIMEOUT_S:
+            if proc.poll() is not None:
+                return False, seen, time.time() - t0
+            v = _rd_i32(h, va_rdy)
+            if v is not None and v not in seen:
+                seen.append(v)
+            if v:
+                return True, seen, time.time() - t0
+            time.sleep(0.1)
+        return False, seen, time.time() - t0
+
+    # 缺省值与 `include/protect/protdef.h:49-51` 的枚举一致
+    # （CONTINUE=0, EXIT=1, FAKE=2）；解析存在时以头文件为准。
     cont = _policy_value('PROT_POLICY_CONTINUE', 0)
 
     def _case(do_patch):
@@ -341,11 +391,31 @@ def run_by_hits(target, verbose=True):
         rec['dyn_n'] = None
         rec['policy_set'] = None
         rec['wrote'] = None
+        rec['ready'] = None
         peak = 0
         code = None
         if h and base:
             A = lambda va: base + (va - PREF)
-            # 观测手段: 策略 -> CONTINUE（见文件头"为什么要改策略"）
+            # ## ⚠️ 信号与写入的**顺序无关**（2026-10-05 实测教训）
+            #   就绪哨兵用 `g_wd_interval`（本工具从不写它），
+            #   故这里**先读哨兵再写 CONTINUE** 只是可读性选择，不再
+            #   承担"自毁证据"的风险（用 `g_wd_policy` 当信号的旧版正是
+            #   因此恒报"未就绪"）。
+            ready, seen, waited = _wait_ready(h, p, A(va_rdy))
+            rec['ready'] = ready
+            rec['ready_seen'] = [hex(v) for v in seen]
+            rec['waited_s'] = round(waited, 3)
+            if not ready:
+                rec['wrote'] = False
+                rec['exit'] = None
+                rec['hits'] = 0
+                if h:
+                    k32.CloseHandle(h)
+                if p.poll() is None:      # 别把宿主进程漏在后台
+                    p.kill()
+                    p.wait()
+                return rec
+            # 就绪后再写：覆盖 `g_wd_policy = pol;`（见文件头"为什么要改策略"）
             rec['policy_set'], _ = _wr(h, A(va_pol), bytes([cont, 0, 0, 0]))
             rec['dyn_n'] = _rd_i32(h, A(_sym_va('g_guard_dyn_n') or 0))
             if do_patch:
@@ -376,10 +446,12 @@ def run_by_hits(target, verbose=True):
     if verbose:
         for k in ('positive', 'negative'):
             r = out[k]
-            print('    [%s] 打开=%s 基址=%s dyn_n=%s 策略置CONTINUE=%s wrote=%s '
-                  '序言=%s 退出=%s hits=%d'
-                  % (k, r['opened'], r['base'], r['dyn_n'], r['policy_set'],
-                     r['wrote'], r.get('prologue'), r['exit'], r['hits']))
+            print('    [%s] 打开=%s 基址=%s 就绪=%s(等了%.1fs, %s 观测值=%s) '
+                  'dyn_n=%s 策略置CONTINUE=%s wrote=%s 序言=%s 退出=%s hits=%d'
+                  % (k, r['opened'], r['base'], r.get('ready'),
+                     r.get('waited_s') or 0.0, READY_SYM, r.get('ready_seen'),
+                     r['dyn_n'], r['policy_set'], r['wrote'],
+                     r.get('prologue'), r['exit'], r['hits']))
     return out
 
 
@@ -447,9 +519,10 @@ def main():
                 print('  [!] 警告: 指定的 %s **在掩码区内** -> 预期 hits=0'
                       '（selfcrypt enter 会先失败并 continue）' % target)
 
-    if _sym_va(HITS_SYM) is None or _sym_va(POLICY_SYM) is None:
-        print('[guard_selftest] SKIP: map 缺 %s 或 %s（无法在检测域内观测）'
-              % (HITS_SYM, POLICY_SYM))
+    if _sym_va(HITS_SYM) is None or _sym_va(POLICY_SYM) is None \
+            or _sym_va(READY_SYM) is None:
+        print('[guard_selftest] SKIP: map 缺 %s / %s / %s（无法在检测域内观测）'
+              % (HITS_SYM, POLICY_SYM, READY_SYM))
         return 0
 
     if not args.quiet:
@@ -465,10 +538,29 @@ def main():
             okc = (r['hits'] == 0) if want == 0 else (r['hits'] > 0)
             if case == 'negative' and r.get('wrote') is False:
                 okc = False
+            # 未就绪 => **两个方向都无判别力**。正向尤其危险: 未就绪时
+            # `hits` 必然 0, 若不在此拦截就会被读成"正向通过"（假绿）。
+            if r.get('ready') is False:
+                okc = False
             results.append((label, r, okc))
             print('  %s %-34s exit=%-6s hits=%-4d %s'
                   % ('ok  ' if okc else '**FAIL**', label, r['exit'], r['hits'],
                      '' if okc else '<- 判据未满足'))
+            # 未就绪是**环境/时序**问题，不是"守卫失效" —— 必须说清
+            # （2026-10-05: 旧版把它误报成"守卫未命中", 误导排查方向）
+            if r.get('ready') is False:
+                # 注意: 这里**不能**用 `run_by_hits` 里的 `cont`/`exit_pol`
+                # —— 它们是那个函数的局部名（2026-10-05 由 `build/_undef.py`
+                # 抓到: "UNDEF :557 exit_pol / :559 cont"）。就地解析。
+                print('        ^ 原因: 未能等到看门狗启动（等了 %.1fs, %s 观测值=%s）'
+                      % (r.get('waited_s') or 0.0, READY_SYM,
+                         r.get('ready_seen')))
+                print('          宿主稍后执行 `%s = %d`（src/integrity.c:827）会覆盖'
+                      % (POLICY_SYM, _policy_value('PROT_POLICY_EXIT', 1)))
+                print('          本工具写入的 CONTINUE(%d) -> 段 CRC 失败即 0x%X 终止,'
+                      % (_policy_value('PROT_POLICY_CONTINUE', 0), tamper))
+                print('          `%s` 从未自增 => 两个方向都**无判别力**, 非守卫失效。'
+                      % HITS_SYM)
 
     ok = bool(results) and all(x[2] for x in results)
     if args.json_out:
@@ -478,9 +570,14 @@ def main():
                       f, ensure_ascii=False, indent=2)
 
     print()
-    print('[guard_selftest] %s'
-          % ('PASS（守卫命中计数可自证: 正向 0 / 负向 > 0）' if ok else
-             'FAIL: 守卫未命中或写入失败（见 docs/DECISION_REDUNDANCY_PLAN.md §10-§11）'))
+    if ok:
+        print('[guard_selftest] PASS（守卫命中计数可自证: 正向 0 / 负向 > 0）')
+    elif hitrec and any(r.get('ready') is False for r in hitrec.values()):
+        print('[guard_selftest] FAIL: 未能等到看门狗就绪（自检无判别力）——'
+              ' 见上方原因行；**不要**读成"守卫失效"')
+    else:
+        print('[guard_selftest] FAIL: 守卫未命中或写入失败'
+              '（见 docs/DECISION_REDUNDANCY_PLAN.md §10-§11）')
     return 0 if ok else 1
 
 

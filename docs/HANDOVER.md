@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-04 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **35** 项（默认 32）· 提交 `8ff9adb`（gate_log T1 调度抖动修复 + 12/12 说法更正后）
+> **最后核实**: 2026-10-04 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **36** 项（默认 33）· 提交 `8ff9adb`（gate_log T1 调度抖动修复 + 12/12 说法更正后）
 
 
 ## 1. 项目是什么
@@ -1961,3 +1961,257 @@ C) CI 第 17 跑 `37167298806`（head `cc6fbb0`）-> 四个 job 全绿；
 **未验证**：`Wait-Path` 的 2000 ms 上限是从实测最大 28 ms 留了约 70× 余量，
 **不是**从原理推导出来的上界；T6 也没有构造「文件超 2000 ms 才出现」的真实场景
 （那需要人为制造远超实测的落盘延迟）。
+
+---
+
+## 2.23 增量（2026-10-04）：`.protxec` 盲区**收口** —— 第 4 个段 CRC 目标 + 门禁第 36 项
+
+> **缘起**：`docs/ATTACK_DRILL9.md` §5（2026-10-02）实测发现 —— 守卫检查器
+> `prot_integrity_check_guards` 落在 **`.protxec`** 节（不是 `.text`），
+> 而段 CRC 只覆盖 `.text`/`.rdata`/`.pdata` ⇒ **直接 patch 检查器函数头即可恒返回
+> `PROT_OK`，且无需任何 CRC 重算**（用例 F/G/H 全链复现）。当时只提了三个建议方向，
+> 未实施。本轮按**建议 ②** 实施并收口。
+
+### 决策：为什么选 ② 而不是 ①
+
+| 方案 | 做法 | 否决/采纳理由 |
+|------|------|----------------|
+| ① | 把检查器（或整个守卫快照实现）移进 `.text` | **否决**：会把已稳定的 `.text` 布局整体挪动。本仓库有硬约束「**只增函数、不重排**」（R3.2-c 刚把副本间距抖动做成不变量，`docs/DECISION_REDUNDANCY_PLAN.md:184` 已记 `.text` 布局漂移风险）。代价真实且立即 |
+| ② | 把 `.protxec` 加为**第 4 个段 CRC 目标** | **采纳**：**零搬移**，且覆盖面更大 —— `.protxec` 里除检查器外还有 `iat_snapshot_init` / `check_iat` / `register_guard` / `start_watchdog` |
+
+关键判断：自引用问题在 ② 下**并未新增**（`prot_crc32_step` 本就在 `.text` 内，
+既有实现已接受该残余；`.protcrc` 烧录表自身不被覆盖是**刻意**设计）。
+Linux/ELF 侧**刻意保持 3 个目标**：`include/protect/prot_compiler.h:273-276` 的
+`PROT_CODE_SEG()` 在非 MSVC 下展开为空 ⇒ ELF 侧检查器本就落在 `.text`、已被下标 0 覆盖
+⇒ 不对称是**显式设计**，不是漏配。
+
+### 改动落点（5 处契约必须同步）
+
+| 文件 | 改动 |
+|------|------|
+| `tools/hashpatch.py` | `MAGICS` 加 `b'PROTCRCX'`；`TARGET_NAMES` 加 `.protxec`；**新增 `TARGET_LOGICAL = (None, None, None, 'protxec')`** 与 `resolve_target_names()`；`load_magics` 由 3 元组改 4 元组；`ELF_TARGET_NAMES` **刻意保持 3 项** |
+| `src/integrity.c` | `g_prot_baked_crc[3]` → `[4]`，追加 `{ PROT_MAGIC_XEC_BYTES, 0, 0 }`；两处 `j < 3u` → `j < 4u` |
+| `include/protect/prot_sections.h` | 新增 `PROT_MAGIC_XEC` / `PROT_MAGIC_XEC_BYTES` |
+| `tools/gen_sections.py` | magics 3 元组 → 4 元组 + 头文件写入顺序 |
+| `src/platform/prot_platform_win.c` | `prot_plat_crc_target_name()` 第 4 节 = `PROT_SEC_XEC` |
+
+### ⚠️ 本轮**最重要的坑**：静默 skip（`TARGET_LOGICAL` 的必要性）
+
+阶段 1 起 `.protxec` 的**节名每构建随机**（`tools/gen_sections.py` 写
+`#undef PROT_SEC_XEC` + `#define PROT_SEC_XEC ".xxxxxxxx"`）。
+若 `tools/hashpatch.py` 只用常量名 `.protxec` 去找节，生成路径下 `next(...)` **永远返回
+None** ⇒ 走 `print('hashpatch: %s section absent — skip' % target_names[i]); continue`
+分支 ⇒ **CRC 字段恒为 0、不报错、构建成功、门禁全绿**。
+
+> **这比不修更危险**：形态是「**表的条数对得上，语义对不上**」——
+> 只数条数的检查器（`doccheck` / `docclaim_check`）看不见，人工也看不见。
+> 与「门禁项数看起来完全正确」属同一类事故。
+
+### 防漂移：新增门禁**第 36 项** `tools/check_crc_targets.py`
+
+被检查的不变量 = 「下标 → 节名 → magic」映射在**四处**一致：
+① `tools/hashpatch.py`（`MAGICS`/`TARGET_NAMES`/`TARGET_LOGICAL`/`ELF_TARGET_NAMES`）
+② `src/integrity.c`（`g_prot_baked_crc[]` + 两处 `j<N` 循环上界）
+③ `src/platform/prot_platform_{win,linux}.c`（`prot_plat_crc_target_name()` 的 `names[]`）
+④ `include/protect/prot_sections.h`（`PROT_MAGIC_*` / `_BYTES`）+ `tools/gen_sections.py` 生成顺序。
+
+- **全纯文本正则解析，不 import 被测文件**（自检要对文本做变异）。
+- **13 条判据** + **8 条负向自检**（`--selftest`，实测 `8/8 变异被抓`）。
+- 平台不对称**被判据显式接受**：Linux 侧 3 项不含 `PROT_SEC_XEC`，或 4 项末位为它。
+- 接入 `tools/release_check.ps1`（两段式，与 `attackcheck` 同形）；
+  `tools/ci_sim.ps1` 同步加一步；`.github/workflows/ci.yml` 的 py_compile 列表追加。
+- **教训（已写进代码注释）**：**数量类判据必须比「实际元素个数」，声明长度是可被说谎的
+  元数据** —— 自检变异 M8（「`names[]` 声称 4 项却塞 4 个别的元素」）首跑未被抓，
+  根因就是判据比的是声明长度 `names[N]` 而不是 `len(items)`。
+
+### 实测证据
+
+**用例翻转**（同一探针 `build/_drill9_probe.py --verbose`，`rc=0`）：
+
+```
+             收口前(2026-10-02)   收口后实测
+F_checker_recalc   exit=1(成功)    exit=2989 (0xBAD，被段 CRC 拦)
+G_checker_no_recalc exit=1(成功)   exit=2989
+H_full_chain       exit=1(盾失效)  exit=2989
+A 基线 exit=1 / B exit=2989 / D exit=1 (证明重算确实生效) / E hits=3   全 [ok]
+```
+
+**构建实测**（3 连建均 `rc=0`，第 4 个目标每次都烧录，节名每次不同）：
+
+```
+#1 protxec -> .fpmhwjo  crc=0xa6347550  raw [141312, +2573)
+#2 protxec -> .b7ogh7p  crc=0xf51f5c76  raw [141824, +2573)
+#3 protxec -> .lf7t0q3  crc=0x5ba64a79  raw [141312, +2562)
+```
+
+首建 `merge_baseline` 报 `protcrc vsize 0x30 -> 0x40`（烧录表 3×16 → 4×16 字节），
+属**预期的节尺寸变化**（`tools/gen_padding.py:211` 基线只增不减，自动提升）。
+烧录表自身仍住 `.protcrc` 且**不被任何段 CRC 覆盖**（避免自引用），该设计未变。
+
+### 门禁项数口径同步（35/32 → **36/33**）
+
+`tools/doccheck.py:149-155` 的 `GATE_TOTAL = 36` / `GATE_DEFAULT = 33` 及其 6 处自检用例；
+另同步 `docs/CONTINUATION_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、`publish/01-关于ShardVase.md`、
+`publish/02-项目档案.md`、`.github/workflows/ci.yml`、`tools/ci_sim.ps1`。
+另新增 `docs/ATTACK_DRILL9.md` §5.4/§5.5、更新 `docs/ATTACK_MATRIX.md` DRILL9 行、
+`docs/COST_ASYMMETRY.md` 杠杆表第 10 行、`docs/OPEN_SOURCE_COMPENSATION.md:78-91` 覆盖清单。
+
+### ⚠️ 收口后的**残余边界**（不可过度声称）
+
+```
+=> F/G/H 被拦住 != "第二道不可移除"。
+=> 攻击者若**同时中和段 CRC**（使 .protxec 的校验失效，例如 patch 比对逻辑
+   或直接改烧录表），仍可关掉检查器。
+=> prot_crc32_step 自身在被校验段内（自引用边界），与 .text 同理，属既有残余。
+=> 本条把攻击成本从"patch 一个函数头"提高到"必须同时中和第 4 个段的 CRC"
+   —— 是**成本提高**，不是**不可破**。
+```
+
+**未验证**：未在 **Linux/ELF** 侧跑过（本轮改动不触及 ELF 的 3 目标路径，
+仅由门禁第 36 项的判据 ⑥/⑥' 在**文本层**守护其不对称性）；
+未做**运行期**攻击复现「同时中和第 4 段 CRC」（残余边界是从代码结构推导，非实测）。
+## 2.24 增量（2026-10-05）：e2e T3 的**孤儿调用** —— `DebugAttacher` 被删但调用点留着
+
+> **缘起**：门禁实跑（`build/logs/release_check_20261004_200612.log`）报
+> `[X] e2e T1-T28`，诊断行 `| T3 debug-detect  FAIL  (NameError("name 'DebugAttacher' is not defined"))`。
+> 此前该用例在本机**一直是 SKIP**（`env denies process debugging (winerror 5/0x5)`），
+> 本轮环境允许调试 ⇒ 首次走进真实附加分支 ⇒ 暴露一个**潜伏 7 天**的缺陷。
+
+### 根因（git 定案，非推测）
+
+```
+e5ea2d5            init baseline      -> tests/e2e.py:120 class DebugAttacher(object) 存在
+22826c5 (09-28)    feat(C-3) e2e 全量移植 …… C 阶段完成
+                   -> 整块删除 DebugAttacher，但 调用点 :515 未同步删除  => 孤儿调用
+15a0dd5 (S6)       只改同区域附近的 preflight，未恢复该类
+```
+
+- **为何一直没被发现**：`22826c5` 之后 T3 的 preflight 是
+  `DebugActiveProcess(os.getpid())` —— Windows **禁止进程调试自身** ⇒ preflight
+  必然失败 ⇒ 一直走 SKIP，`:509 else:` 分支（`:515 dbg = DebugAttacher()`）
+  **从未被执行过**。`15a0dd5` 把 preflight 改成对**派生子进程**
+  (`cmd /c timeout /t 3 /nobreak`) 附加后，只要环境允许调试就**必然**走到 `:515`。
+  `git log -G DebugAttacher` 全历史只有 `e5ea2d5`（加）与 `22826c5`（删）两个提交。
+
+### 修法：从删它的那个提交的父提交逐字恢复
+
+`git show 22826c5^:tests/e2e.py:216-255` 取回 `class DebugAttacher`，插入
+`tests/e2e.py:389 def main():` **之前**（与历史位置一致），并在前置块注释里写明
+六点（被谁误删 / 调用点未同步删 / `py_compile` 抓不到 / S6 改 preflight 后才暴露 /
+恢复来源 / 守护工具）。依赖已具备：`:108-121` 已有模块级 `KERNEL32 = ctypes.WinDLL(...)`
+及 5 个 argtypes/restype 预设。
+
+### ⚠️ 为什么 `py_compile` 抓不到，以及本轮的补救
+
+`py_compile` **只查语法**，未定义名要**运行到那一行**才炸。本轮因此新增
+**全库静态「未定义全局名」审计** `build/_undef.py`（`ast` 逐作用域建模：
+模块 / 函数 / 类体 / lambda / 推导式；绑定含 import、形参、赋值、
+`except ... as`、`global`/`nonlocal`；类作用域对方法体**不可见**）。
+在 86 个 `.py` 上跑出**恰好 1 处命中**（就是 `tests/e2e.py:515 DebugAttacher`），
+零假阳；修复后复跑 **0 处**。
+
+> **该工具随后立刻抓到本轮自己引入的第二个缺陷**（见 §2.25）——
+> 它值这一次的存在。
+
+### 4 个迭代教训（假阳根源，全部已写进代码注释）
+
+1. **绑定列表混入不同元数** ⇒ 打印时 `ValueError: not enough values to unpack`。
+2. **`ast.arg` 的属性是 `node.arg` 而非 `node.id`**。
+3. **`split_scope` 必须把嵌套作用域节点本身也当作本作用域的绑定** ——
+   否则 `try:` 内 `class OSVERSIONINFOEXW` 的名字不被绑定，后续
+   `OSVERSIONINFOEXW()` 被误报。**一次性消掉 18 处假阳**。
+4. **必须 `encoding='utf-8-sig'` 读文件** —— `tests/attacks.py` / `tests/e2e.py`
+   带 BOM，否则报 `invalid non-printable character U+FEFF`。
+
+**未验证**：`build/_undef.py` **尚未接入门禁**（仍是一次性探针）。
+`tests/e2e.py:104-107` 有一条残留注释称「Linux 侧用 ptrace（DebugAttacher / C-1 的
+tracer）」，但**该 tracer 从未存在**；本轮只恢复 Windows 路径（T3 在
+`tests/e2e.py:442 if _PLATFORM != 'win'` 已被 PLATFORM_NA 守卫）。
+
+
+## 2.25 增量（2026-10-05）：`guard_selftest` 的**假红** —— 拿固定 `sleep` 赌宿主就绪
+
+> **缘起**：CI 第 16 跑（`37164875743`，head `04340f4`）唯一红项
+> `[X] 判定点快照校验自检 (guard_selftest)`，诊断
+> `| **FAIL** 负向(patch -> hits 必须 > 0)  exit=2989  hits=0  <- 判据未满足`。
+> 本机连跑 **12/12 + 4/4 全绿**（负向 `hits=2/3/4`），**稳定不复现**。
+
+### 根因（用可证伪实验锁定，非推测）
+
+探针 `build/_gs_race.py` 用 `importlib` 装载被测工具、只替换 `_spawn`
+以追加 `--wait-ms N`（把 demo 的看门狗启动推后），**逐位复现红项签名**：
+
+```
+=== 基线(不推迟, --wait-ms 0) ===
+  negative … dyn_n=3  wrote=True 序言=31 c0 c3  exit=None  hits=3
+=== 推迟 start_watchdog (--wait-ms 5000) ===
+  negative … dyn_n=0  wrote=True 序言=31 c0 c3  exit=2989  hits=0   <== 红项签名
+```
+
+**机制**：工具在固定 `SETTLE_S = 1.2` 秒后就把 `g_wd_policy` 写成
+`PROT_POLICY_CONTINUE(0)`，**赌**宿主已调完 `prot_integrity_start_watchdog`。
+而该函数在 `src/integrity.c:827 g_wd_policy = pol;`（demo 传
+`PROT_POLICY_EXIT`，见 `demo/main.c:679`）会把 CONTINUE **覆盖回 EXIT**。
+若覆盖发生在工具写之后（**慢机器如 CI runner 上 1.2s 不够**）⇒ patch 破坏
+`.text` 段 CRC ⇒ 看门狗首轮 `src/integrity.c:200 prot_integrity_check_self()`
+失败 ⇒ EXIT 分支 `:203 prot_plat_terminate(PROT_EXIT_TAMPERED = 0xBAD = 2989)`
+⇒ 进程在同一 tick 内死亡 ⇒ `g_guard_hits` **从未自增** ⇒
+自检报 `exit=2989 hits=0` = **假的「守卫失效」**。
+
+### 修法：把「固定 sleep」换成**可观测的就绪哨兵**
+
+```c
+/* src/integrity.c:810 prot_integrity_start_watchdog() */
+:815  if (interval_ms == 0) return PROT_ERR_INVALID_ARG;
+:818-821  策略合法性校验
+:822  if (g_wd_thread != NULL) return PROT_OK;
+:826  atomic_exchange(&g_wd_stop, 0)
+:827  g_wd_policy = pol;          <-- 会把工具的 CONTINUE 冲掉
+:828  g_wd_interval = interval_ms; <-- 就绪哨兵（工具从不写它）
+:833  prot_integrity_check_iat();
+:836  prot_plat_thread_create(watchdog_thread, NULL, &g_wd_thread)
+```
+
+- 新增 `READY_SYM = 'g_wd_interval'` + `READY_TIMEOUT_S = 25.0`，`_wait_ready()`
+  轮询至哨兵非 0（或进程退出）后才动目标。
+- **为什么不用 `g_wd_policy` 当哨兵**（第一版修法正踩此坑，12/12 恒报"未就绪"）：
+  该变量零初始化且 `PROT_POLICY_CONTINUE == 0`
+  （`include/protect/protdef.h:48-52`），**而本工具自己要写它** ⇒
+  拿它当信号等于**自毁证据**：宿主已就绪（真实值 EXIT）时先把 0 写进去，
+  "已就绪"与"未就绪"就无法区分。`g_wd_interval` 工具从不写 ⇒ **单调、无歧义**。
+- **附带加固**：`:828` 只在参数校验**之后**执行 ⇒ `g_wd_interval != 0`
+  还额外证明「宿主已通过参数校验」。
+
+### 顺手修掉的**假绿**
+
+原判据只拦负向的 `wrote is False`。**未就绪时正向 `hits` 必然为 0** ⇒
+若不拦，正向会被读成「通过」。现改为：`ready is False` ⇒ **两个方向都判 FAIL**，
+并打印「未能等到看门狗就绪（自检无判别力）—— **不要**读成"守卫失效"」。
+
+### 验证
+
+| 场景 | 结果 |
+|------|------|
+| 修复后 `--wait-ms 0 / 5000`（原红项签名） | 两者都 `exit=None hits=3` ⇒ **红转绿** |
+| 夹具 `build/_gs_fixture.py`（`--wait-ms 30000` + 就绪超时 3s） | rc=1，输出「未能等到看门狗就绪」且两方向均 FAIL，**诊断正确 = True** |
+| `build/_gl_loop.ps1` 12 连跑 | **12/12 rc=0 PASS**，`exe`/`map` 时间戳全程未变（同一构建） |
+| 全门禁 `tools/release_check.ps1 -Quiet` | `[ok] 判定点快照校验自检 (guard_selftest)`；仅剩 `[X] git 工作区干净`（改动未提交，预期） |
+
+### ⚠️ 好教训：本工具自己抓出了本轮的第二个缺陷
+
+修完诊断输出后用 `build/_undef.py` 复跑，报：
+
+```
+UNDEF    :557   exit_pol
+UNDEF    :559   cont
+```
+
+`cont`/`exit_pol` 是 `run_by_hits()` 的**局部名**，却在 `main()` 的诊断分支里被引用
+（未就绪时才炸 ⇒ **又是一条只在失败路径上执行的代码**，与 §2.24 同型）。
+改为就地 `_policy_value(...)`，复跑 **0 处**。
+
+> **通用教训**：**「只在失败路径上执行的代码」是最难测的一类** ——
+> 正常路径永远不碰它。静态审计（而非运行测试）才是它的正确防线。
+
+**未验证**：未在 **CI runner** 上复跑验证（本地已 12/12 绿 + 红项签名已复现并转绿）；
+未改 `SETTLE_S`（保留为「PE 加载完成的最短等待」，语义已改正）。
