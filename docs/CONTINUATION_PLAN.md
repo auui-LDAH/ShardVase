@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
 > 版本：2026-10-02 v7 · 状态：**✅ 全部完成**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / Q4 ✅ / Q5 ✅ / **Q6 ✅**）
-> **最后核实**: 2026-10-04 · 方法: `tools/docclaim_check.py` + 门禁默认 **32** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `8ff9adb`（R3.2-c 位置抖动 + gate_log T1 调度抖动修复后）
+> **最后核实**: 2026-10-04 · 方法: `tools/docclaim_check.py` + 门禁默认 **33** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `8ff9adb`（R3.2-c 位置抖动 + gate_log T1 调度抖动修复后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
@@ -438,7 +438,7 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 **不会被门禁抓到** —— 属"有意为之的覆盖边界"，须人工复核。
 
 **Q4 验收**: ① 逐条复核 §6.2 的 13 处归档，确认每一处都确有历史依据
-② `doccheck` + `docclaim_check` PASS ③ 门禁默认 32 项 PASS。
+② `doccheck` + `docclaim_check` PASS ③ 门禁默认 33 项 PASS。
 
 ### 6.3 ✅ 执行结果（2026-10-02）
 
@@ -520,7 +520,7 @@ TARGETS 24 个文件 (doccheck 扫描范围)
 `ShardVase-展示文档.md`(3)。
 
 > **现值复测（2026-10-03）**：同一探针重跑（`build/_q4_census.py` → `build/_audit_census.txt`，rc=0），
-> 基准已是「门禁 35 项 / 默认 32」。口径不变（机械计数，含历史快照类文档），但数字因
+> 基准已是「门禁 36 项 / 默认 33」。口径不变（机械计数，含历史快照类文档），但数字因
 > **门禁项数增长 + 后续各节新增引用**而变大：探针输出「非现值断言总数」现在是
 > **169 / 123 / 56**（分别是项数口径、N/N 口径、轮次口径），三项相加 **348 处**（原记 288 处）；
 > 「不在扫描范围内的文件」**31 个文件 / 166 处**（原记 33 个文件 —— 此栏只统计**有命中的**文件，
@@ -613,7 +613,7 @@ DRILL9 可以直接用 `watch g_guard_hits --patch <target>` 做观测。
 `ATTACK_MATRIX` / `COST_ASYMMETRY` 已回填；`docclaim_check` PASS。
 **实测结论: ✅ 三项全部满足**（2026-10-02）—— `ATTACK_DRILL9.md` 内嵌 8 用例
 stdout 原文（因 `build/` 被 `.gitignore:2` 忽略，证据必须内嵌）；
-`doccheck` 409 条 / 错误 0 / 警告 0; `docclaim_check` 8/8 PASS; 门禁默认 32 项全过。
+`doccheck` 409 条 / 错误 0 / 警告 0; `docclaim_check` 8/8 PASS; 门禁默认 33 项全过。
 
 ---
 
@@ -679,7 +679,7 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
    本轮已**再次踩到**：`edit` 又一次剥掉 `tools/release_check.ps1` 的 BOM）。
 3. 写文件后**检查 BOM**：`edit` 剥掉、`Set-Content -Encoding UTF8` 加上 ——
    **两个方向都会出事**，不限 `.ps1`。
-4. 每轮结束**重跑门禁**（默认 32 项）并记录日志路径。
+4. 每轮结束**重跑门禁**（默认 33 项）并记录日志路径。
 5. 回填 `docs/HANDOVER.md` 新增一节（照 §2.10 的格式），
    并更新 L18 的「最后核实」元数据。
 
@@ -707,7 +707,7 @@ Q6（CI 实跑）—— **独立轨道**，用户提供仓库地址后启动    
 
 *2026-10-03 v7 · Q0/Q1/Q2/Q3/Q4/Q5/**Q6** 全部完成（Q6 已于 2026-10-02 解除阻塞：
 仓库 `jurecoasertkrocket777/shardvase`，CI 十四跑四 job 全绿）·
-依据现场勘查（门禁 **35** 项=默认 32 项实跑 / doccheck 盲区实测 /
+依据现场勘查（门禁 **36** 项=默认 33 项实跑 / doccheck 盲区实测 /
 mojibake **216** 行定位与修复实测 + **Q2 的 4 行单字符盲区** / DRILL9 8 用例实测 /
 **Q4 全库普查 288 处无保护断言**（2026-10-03 复测 348 处，见 §6.4 注）· 判据 v5）·
 §1–§9 各项均已执行完毕，本计划无未排程的后续动作 —— 后续增量记在 `docs/HANDOVER.md` §2.11+*

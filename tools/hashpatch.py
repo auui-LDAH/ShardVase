@@ -39,7 +39,30 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 
 # 与 src/integrity.c g_prot_baked_crc 顺序一致
-MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP')
+#
+# DRILL9 盲区修复（2026-10-04）: 新增第 4 个目标 `PROTCRCX` = `.protxec`
+#   （守卫检查器自身所在段）。**顺序即 CRC 表下标顺序**，与
+#   src/integrity.c g_prot_baked_crc[] 及平台层 prot_plat_crc_target_name()
+#   必须一致；tools/check_crc_targets.py 交叉核对。
+MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP', b'PROTCRCX')
+
+# 与 TARGET_NAMES 逐位对齐的**逻辑名**（None = 标准节名, 不参与随机化）。
+#
+# 为什么需要它（2026-10-04, DRILL9 盲区修复时踩到的坑）:
+#   阶段1 起 `.protxec` 的节名也是**每构建随机**的（gen_sections.py 写
+#   `#undef PROT_SEC_XEC` + `#define PROT_SEC_XEC ".xxxxxxxx"`）。
+#   若这里只用 TARGET_NAMES 的默认名 `.protxec` 去找节，生成路径下
+#   `next(...)` 永远返回 None -> 走下方的 "section absent — skip" 分支
+#   -> **静默不校验**（CRC 字段恒为 0, 不报错）。这比不修更危险，故必须映射。
+TARGET_LOGICAL = (None, None, None, 'protxec')
+
+
+def resolve_target_names(target_names, section_names):
+    """把默认节名按逻辑名替换为本次构建的实际（随机）节名。"""
+    out = []
+    for default, logical in zip(target_names, TARGET_LOGICAL):
+        out.append((section_names.get(logical) or default) if logical else default)
+    return tuple(out)
 
 
 def load_section_names(path):
@@ -63,7 +86,7 @@ def load_section_names(path):
 def load_magics(path):
     """从 gen_sections.py 的 JSON 读取随机 magic（阶段3: 去自解释标记）。
 
-    返回 (magic_text, magic_rdata, magic_pdata) 的 bytes 元组；
+    返回 (magic_text, magic_rdata, magic_pdata, magic_xec) 的 bytes 元组；
     未提供或读取失败时返回 None -> 调用方回退硬编码 MAGICS（向后兼容）。
 
     实测依据: src/integrity.c **不检查 magic**（只用 g_prot_baked_crc[]
@@ -76,7 +99,7 @@ def load_magics(path):
             data = json.load(f)
         mg = data.get('magics', {})
         out = []
-        for k in ('text', 'rdata', 'pdata'):
+        for k in ('text', 'rdata', 'pdata', 'xec'):
             v = mg.get(k)
             if not isinstance(v, str) or len(v) != 16:
                 return None
@@ -86,7 +109,7 @@ def load_magics(path):
         return None
 
 
-TARGET_NAMES = ('.text', '.rdata', '.pdata')
+TARGET_NAMES = ('.text', '.rdata', '.pdata', '.protxec')
 ENTRY_SIZE = 16
 
 
@@ -405,6 +428,9 @@ def main(argv=None):
         # 阶段1(第二支柱): 节名每构建随机, 由 gen_sections.py 生成。
         # 未提供 --sections-json 时回退旧名 .protcrc (向后兼容)。
         section_names = load_section_names(sections_json)
+        # 阶段1(第二支柱) 补充（2026-10-04）: 节名随机化后**必须**把默认名
+        #   换成实际名（`.protxec` 亦随机），否则静默跳过（见 TARGET_LOGICAL）。
+        target_names = resolve_target_names(target_names, section_names)
         # 阶段3: magic 随机化（替代硬编码 PROTCRCP/D/P）。
         # 实测: integrity.c 不检查 magic（只用 g_prot_baked_crc[] 的符号顺序），
         # 故 magic 随机化对 C 侧零影响。

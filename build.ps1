@@ -711,13 +711,22 @@ if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
     }
 }
 
-# 6. 烧录 .text CRC32 到二进制 (integrity 自检依赖; 带 selfcrypt 掩码)
+# 6. 烧录段 CRC32 到二进制 (integrity 自检依赖; 带 selfcrypt 掩码)
 #
-#     阶段 2 (组合): .protcrc 段与三段 CRC 烧录表由 **src/integrity.c** 定义。
+#     阶段 2 (组合): .protcrc 段与 CRC 烧录表由 **src/integrity.c** 定义。
 #     组合排除 integrity 时该段不存在 -> hashpatch 无目标可写 (实测
 #     "no .protcrc section found")。此时**跳过烧录**并明确报告 ——
 #     因为该组合本就不含完整性校验, 没有 CRC 需要烧录。
 #     这是 integrity 与 hashpatch 的**构建级耦合**, 属预期而非缺陷。
+#
+#     DRILL9 (2026-10-04): 目标由 3 个增至 **4 个**
+#     (TARGET_NAMES = .text/.rdata/.pdata/**.protxec**)。
+#     第 4 个 `.protxec` 承载守卫检查器自身 (check_iat/register_guard/
+#     start_watchdog/iat_snapshot_init), 此前不在任何段 CRC 覆盖内 ->
+#     运行期改写它可静默关掉检测。注意 `.protxec` 的节名也**每构建随机**
+#     (gen_sections.py), 故 hashpatch.py 用 TARGET_LOGICAL 把它映射为实际名;
+#     映射缺失会走 "section absent — skip" 而**静默不校验**, 必须由
+#     tools/check_crc_targets.py 与判据守护。
 $hasIntegrity = $compSrcs -match 'integrity\.c$'
 if ($hasIntegrity) {
     & $py tools\hashpatch.py build\demo.exe @maskArgs --sections-json "$sectionsJson"
@@ -736,7 +745,7 @@ if ($hasIntegrity) {
 # **为什么安全**:
 #   · PE 加载器只按 PE 头声明的长度映射，尾部多余字节被忽略
 #     （阶段2 早期实测: 追加 4096 字节后 rc=0 正常输出）
-#   · 完整性 CRC 只覆盖**节**（TARGET_NAMES = .text/.rdata/.pdata）
+#   · 完整性 CRC 只覆盖**节**（TARGET_NAMES = .text/.rdata/.pdata/.protxec）
 #     -> 尾部不参与校验（已核实 tools/hashpatch.py）
 #
 # **插入顺序**: 必须在 hashpatch **之后**（否则 CRC 与最终字节不符）、

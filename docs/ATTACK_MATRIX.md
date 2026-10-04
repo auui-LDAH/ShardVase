@@ -122,8 +122,8 @@ license_message: struct.pack('<I', expires & 0xFFFFFFFF)
 |----|------|
 | `DECISION_REDUNDANCY §11.5:516`"EXIT 策略下的端到端演示" | **已完成** —— 重算 `.text` CRC 并写回（`2087216295 -> 3467459129`）后，patch 守卫 `prot_antidebug_detected` 仍被 **`0xBAD`(2989)** 终止 |
 | 守卫是否只是段 CRC 的副本 | **不是** —— 对照用例 D（patch 非守卫 + 重算 -> `exit 1`）反证重算**确实生效**，故 C 的 `0xBAD` 只能由 `check_guards` 解释；CONTINUE 下 `g_guard_hits=4` 独立佐证 |
-| ⚠️ **附带发现（真漏洞）** | **守卫检查器自身 `prot_integrity_check_guards` 在 `.protxec` 节（rva `0x14d0`），不在段 CRC 覆盖内**（CRC 只覆盖 `.text`/`.rdata`/`.pdata`）-> 直接 patch 其函数头即可恒返回 `PROT_OK`，**无需任何 CRC 重算**；再 patch 守卫 -> **盾失效**（用例 H）|
-| 该缺口的记录状态 | `docs/OPEN_SOURCE_COMPENSATION.md:87` 已列 `.protxec` 为"未覆盖"，但**从未评估"守卫自身不在覆盖内"这一后果** —— 本轮首次实测 |
+| ✅ **附带发现（2026-10-04 已收口）** | **守卫检查器自身 `prot_integrity_check_guards` 在 `.protxec` 节（rva `0x14d0`），原不在段 CRC 覆盖内**（CRC 只覆盖 `.text`/`.rdata`/`.pdata`）-> 原可直接 patch 其函数头恒返回 `PROT_OK`，**无需任何 CRC 重算**；再 patch 守卫 -> **盾失效**（用例 H）。**收口后** `.protxec` 成为**第 4 个 CRC 目标**，F/G/H 三条由 `exit=1` 翻转为 **`exit=2989`(`0xBAD`)**；残余边界：**须同时中和第 4 段 CRC** 仍可关闭检查器（成本提高，非不可破）|
+| 该缺口的记录状态 | `docs/OPEN_SOURCE_COMPENSATION.md:87` 已列 `.protxec` 为"未覆盖"，但**从未评估"守卫自身不在覆盖内"这一后果** —— DRILL9 首次实测，2026-10-04 按建议 ② 修复（否决 ①"搬进 .text"因布局漂移代价；Linux 侧刻意保持 3 目标，`include/protect/prot_compiler.h:273-276` 的 `PROT_CODE_SEG()` 在 ELF 为空）|
 | 诚实边界 | ① 测试工具自身用 `OpenProcess`/`WriteProcessMemory`（会被产品反调试看到）② 仅 `E` 用例改策略，**A/B/C/D/F/G/H 全部保持出厂 EXIT** ③ `demo.exe` 为 `NotSigned`，不覆盖 Authenticode ④ 仅 Windows ⑤ 守卫快照对**内存当前字节**建立 -> 离线文件级 patch 无效 |
 
 详见 `docs/ATTACK_DRILL9.md`。

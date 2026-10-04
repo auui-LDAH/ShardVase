@@ -104,7 +104,7 @@ powershell -File <工程>\build_skeleton.ps1 -Project <工程>
 
 ```powershell
 powershell -File build.ps1 -Config Release
-powershell -File tools\release_check.ps1     # 31 项门禁（默认；共 34 项）
+powershell -File tools\release_check.ps1     # 33 项门禁（默认；共 36 项）
 ```
 
 ---
@@ -129,8 +129,8 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 
 ## 质量门禁
 
-`tools/release_check.ps1` 跑 **31 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
-后共 **34 项**），全绿才算通过。默认跑的全部 31 项：
+`tools/release_check.ps1` 跑 **33 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
+后共 **36 项**），全绿才算通过。默认跑的全部 33 项：
 
 ```
 [ok] git 工作区干净               [ok] Linux 编译覆盖 (linux_compile_check)
@@ -148,7 +148,7 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 [ok] 攻防记录 (drills lint)       [ok] 调试控制台自检 (prot_dbg)
 [ok] 对外材料 (doccheck)          [ok] 门禁日志自检 (gate_log)
 [ok] 签名 (Authenticode)          [ok] 调试控制台活体自检 (prot_dbg live)
-[ok] 协议兼容性 (conformance)
+[ok] 协议兼容性 (conformance)      [ok] CRC 目标表一致性 (crc_targets)
 ```
 
 默认不跑的 3 项（各约 1-4 分钟，发版前用 `-With*` 启用）：

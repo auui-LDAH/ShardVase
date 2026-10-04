@@ -75,16 +75,22 @@
 
 ### 3.1 完整性覆盖范围**固定且被标注**
 
-实测 `.protcrc` 内容（512 字节，VSize=48）：
+实测 `.protcrc` 内容（VSize 现为 64 = 4 条 × 16 字节）：
 
 ```
-magic "PROTCRC" + 'P' + crc    <- .pdata
-magic "PROTCRC" + 'D' + crc    <- .rdata
-magic "PROTCRC" + 'P' + crc    <- .text
+magic "PROTCRCP" + crc   <- .text      (索引 0)
+magic "PROTCRCD" + crc   <- .rdata     (索引 1)
+magic "PROTCRDP" + crc   <- .pdata     (索引 2)
+magic "PROTCRCX" + crc   <- .protxec   (索引 3, 2026-10-04 新增)
 ```
 
-- 覆盖：**`.text` / `.rdata` / `.pdata`** 共 3 段
-- **未覆盖**：`.protxec` `.data` `.protcrc` `.protcry` `.protpad` `.fptable` `.rsrc` `.reloc`
+- 覆盖：**`.text` / `.rdata` / `.pdata` / `.protxec`** 共 4 段
+- **未覆盖**：`.data` `.protcrc` `.protcry` `.protpad` `.fptable` `.rsrc` `.reloc`
+
+> `.protxec` 于 2026-10-04 纳入覆盖（`docs/ATTACK_DRILL9.md` §5 的"守卫检查器自身
+> 不在 CRC 覆盖内"缺口收口）。烧录表自身（`.protcrc`）**刻意**不覆盖以避免自引用；
+> Linux/ELF 侧**刻意**保持 3 段（`PROT_CODE_SEG()` 在 ELF 下为空 ⇒ 检查器本就落在
+> `.text`，已被索引 0 覆盖）。
 
 > **完全开源后**，攻击者读源码即知"改哪个区域不会被校验发现"。
 > 尤其 `.data` 与 `.protcry`（可写区）**未被覆盖** —— 这是可利用面。

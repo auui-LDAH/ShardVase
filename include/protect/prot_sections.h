@@ -64,6 +64,23 @@
 #ifndef PROT_MAGIC_PDATA
 #define PROT_MAGIC_PDATA  "PROTCRDP"
 #endif
+/* DRILL9 盲区修复（2026-10-04）: `.protxec` 成为**第 4 个** CRC 目标。
+ *
+ *   在此之前 CRC 只覆盖 `.text` / `.rdata` / `.pdata`，而守卫检查器自身
+ *   （`prot_integrity_check_guards` 等，见 src/integrity.c 的 PROT_CODE_SEG）
+ *   住在 `.protxec` 里 —— 攻击者改完检查器，段 CRC 纹丝不动（DRILL9 用例 F
+ *   观测到 `crc_unchanged_by_patch = True`）。
+ *
+ *   为什么选「加第 4 个目标」而不是「把检查器搬进 .text」: 本仓库有
+ *   「只增函数、不重排」的 `.text` 布局约束（R3.2-c 刚把副本间距抖动做成
+ *   不变量），搬移会引入布局漂移；加目标零搬移，且覆盖面更大
+ *   （check_iat / register_guard / start_watchdog 一并纳入）。
+ *
+ *   边界（诚实入册）: CRC 引擎 `prot_crc32_step` 自身也在被校验段内，
+ *   完全自引用的校验器不在本轮范围 —— 该边界与 `.text` 同级，**非新增**。 */
+#ifndef PROT_MAGIC_XEC
+#define PROT_MAGIC_XEC    "PROTCRCX"
+#endif
 
 /* magic 的**字节数组形式**（供聚合初始化用）。
  * C 不允许用字符串字面量初始化 uint8_t[8] 成员，故展开为字节表。
@@ -79,6 +96,10 @@
 #ifndef PROT_MAGIC_PDATA_BYTES
 #define PROT_MAGIC_PDATA_BYTES \
     { 'P', 'R', 'O', 'T', 'C', 'R', 'D', 'P' }
+#endif
+#ifndef PROT_MAGIC_XEC_BYTES
+#define PROT_MAGIC_XEC_BYTES \
+    { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'X' }
 #endif
 
 /* 可选覆盖: 由 build.ps1 定义 PROT_USE_GENERATED_SECTIONS 并 -I 生成目录。

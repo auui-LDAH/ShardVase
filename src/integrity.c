@@ -44,7 +44,7 @@
 
 /* 烧录结构 (契约 §7.1; hashpatch.py 依赖其名字与布局) */
 typedef struct prot_baked_crc {
-    uint8_t magic[8];    /* 标记: PROTCRCP(.text)/PROTCRCD(.rdata)/PROTCRDP(.pdata) */
+    uint8_t magic[8];    /* 标记: PROTCRCP(.text)/PROTCRCD(.rdata)/PROTCRDP(.pdata)/PROTCRCX(.protxec) */
     uint32_t crc;        /* 段 CRC32, 构建期由 hashpatch.py 写入 */
     uint32_t reserved;   /* 保留 */
 } prot_baked_crc;
@@ -52,18 +52,43 @@ typedef struct prot_baked_crc {
 /* A3: 专用只读段 .protcrc —— 烧录表自身不被任何段 CRC 覆盖 (避免自引用)。
  * 下标顺序必须与 tools/hashpatch.py 的 MAGICS 完全一致。 */
 /* 阶段1(第二支柱): 节名每构建随机, 消除自解释线索 (见 tools/gen_sections.py) */
+/*
+ * DRILL9 盲区修复（2026-10-04）: 新增第 4 项 `.protxec`。
+ *
+ * ## 为什么
+ *   `.protxec`（`PROT_CODE_SEG(PROT_SEC_XEC)` 辖域内的函数，见本文件 :502
+ *   与 src/antidebug.c / src/crc32.c / src/selfcrypt.c）承载的正是
+ *   **守卫检查器自身**（iat_snapshot_init / check_iat /
+ *   check_guards / register_guard / start_watchdog）。
+ *   它此前不在任何段 CRC 覆盖内 -> 攻击者运行期改写这些函数体可以
+ *   "关掉检测器", 而 .text/.rdata/.pdata 的 CRC 全程不动
+ *   （ATTACK_DRILL9 用例 F 实测: 内存 patch 后 `crc_unchanged_by_patch = True`,
+ *    且 G/H 全链复现 -> 判定被静默关闭）。
+ *
+ * ## 为什么是"加目标"而不是"把函数搬进 .text"
+ *   搬函数会改变 .text 布局, 而本仓库有"只增函数、不重排"的硬约束
+ *   （R3.2-c 刚把副本间距抖动做成受门禁守护的不变量）-> 布局漂移是真实成本。
+ *   加目标零搬移, 且覆盖面更大（check_iat / register_guard / start_watchdog
+ *   一并在内, 而非只堵 check_guards）。
+ *
+ * ## 诚实边界
+ *   CRC 引擎（src/crc32.c 的 prot_crc32_step）本身也在 .protxec 内
+ *   -> 校验器无法完全自校验。这与既有 `.text` 校验是**同一量级**的
+ *   残余边界, 不是本次新增；彻底自引用超出本轮范围, 如实入册。
+ */
 #include "protect/prot_sections.h"
 PROT_SECTION_BEGIN(PROT_SEC_CRC, read)
 PROT_ALLOCATE(PROT_SEC_CRC)
-const prot_baked_crc g_prot_baked_crc[3] = {
+const prot_baked_crc g_prot_baked_crc[4] = {
     /* 阶段3(第二支柱): magic 每构建随机，消除 'PROTCRCP' 这类自解释标记。
      * 值来自 include/protect/prot_sections.h（默认）+ 生成头（随机覆盖）；
      * 写入侧 tools/hashpatch.py 从同一 JSON 读同样的值，两侧保持一致。
      * 注意: magic 仅作**写入侧定位标记**，运行期校验用的是本数组的符号
-     *       顺序（下标 0/1/2 = .text/.rdata/.pdata），故随机化是安全的。 */
-    { PROT_MAGIC_TEXT_BYTES,  0, 0 }, /* 0: .text  */
-    { PROT_MAGIC_RDATA_BYTES, 0, 0 }, /* 1: .rdata */
-    { PROT_MAGIC_PDATA_BYTES, 0, 0 }, /* 2: .pdata */
+     *       顺序（下标 0/1/2/3 = .text/.rdata/.pdata/.protxec），故随机化是安全的。 */
+    { PROT_MAGIC_TEXT_BYTES,  0, 0 }, /* 0: .text    */
+    { PROT_MAGIC_RDATA_BYTES, 0, 0 }, /* 1: .rdata   */
+    { PROT_MAGIC_PDATA_BYTES, 0, 0 }, /* 2: .pdata   */
+    { PROT_MAGIC_XEC_BYTES,   0, 0 }, /* 3: .protxec */
 };
 /*
  * 读取烧录 CRC。必须用 volatile 指针: 否则 /O2 会把 const 全局的
@@ -457,12 +482,12 @@ prot_status prot_integrity_check_self(void) {
                  (unsigned)secs[_k].rva, (unsigned)secs[_k].size);
     }
 
-    for (j = 0u; j < 3u; j++)
+    for (j = 0u; j < 4u; j++)
         IDBG("[IDBG]   target[%u] = %s\n", (unsigned)j,
              prot_plat_crc_target_name(j) ? prot_plat_crc_target_name(j)
                                           : "(null)");
     for (i = 0u; i < nsec && i < sizeof(secs) / sizeof(secs[0]); i++) {
-        for (j = 0u; j < 3u; j++) {
+        for (j = 0u; j < 4u; j++) {
             uint32_t crc;
             const char* tname = prot_plat_crc_target_name(j);
             uint32_t len;

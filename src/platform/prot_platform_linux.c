@@ -73,6 +73,7 @@
 #if PROT_PLATFORM == PROT_PLATFORM_LINUX
 
 #include <stdio.h>
+#include "protect/prot_sections.h"   /* DRILL9: PROT_SEC_XEC 作为第 4 个 CRC 目标 */
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -1135,7 +1136,17 @@ const char* prot_plat_crc_target_name(unsigned idx)
      *          —— PE 的 `.pdata` 是异常处理表；ELF 的 `.eh_frame` 是
      *             展开信息表。**两者用途相近但格式不同**，
      *             故这是"**替代**"而非"等价"。
-     */
+     *
+     * ## DRILL9 盲区修复（2026-10-04）: idx 3 = 守卫检查器所在段
+     *   与 Windows 侧的**关键不对称（如实标注）**:
+     *     · PE 侧 `PROT_CODE_SEG(PROT_SEC_XEC)` 真正把函数放进一个独立段，
+     *       故 idx 3 是 `.protxec`（`PROT_SEC_XEC`，每构建随机名）。
+     *     · ELF 侧 `PROT_CODE_SEG()` 展开为**空**（见 prot_compiler.h:
+     *       "PE 段布局是平台概念"）-> 那些函数落在 **`.text`** 里，
+     *       本来就已经被 idx 0 覆盖 -> **无需第 4 个目标**。
+     *   故 Linux 仍只报 3 个名字。这不是"少配了一个目标"，而是
+     *   "Linux 没有这个待覆盖的段"。**若将来 ELF 侧也做函数段分离，
+     *   必须回来把这里改成 4 个。** */
     static const char* const names[3] = { ".text", ".rodata", ".eh_frame" };
     return (idx < 3u) ? names[idx] : NULL;
 }

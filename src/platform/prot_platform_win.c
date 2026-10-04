@@ -38,6 +38,7 @@
 #include <stdlib.h>   /* C3: malloc */
 #include <string.h>
 #include <stdio.h>
+#include "protect/prot_sections.h"   /* DRILL9: PROT_SEC_XEC 作为第 4 个 CRC 目标 */
 
 #pragma comment(lib, "psapi.lib")
 
@@ -677,9 +678,22 @@ int prot_plat_iat_range(prot_range* out)
 
 const char* prot_plat_crc_target_name(unsigned idx)
 {
-    /* Windows: PE 节名（与 hashpatch.py 的 TARGET_NAMES 一致） */
-    static const char* const names[3] = { ".text", ".rdata", ".pdata" };
-    return (idx < 3u) ? names[idx] : NULL;
+    /* Windows: PE 节名（与 hashpatch.py 的 TARGET_NAMES 一致）
+     *
+     * DRILL9 盲区修复（2026-10-04）: 由 3 个增为 **4 个**，idx 3 = `.protxec`。
+     *   此前守卫检查器自身（`src/integrity.c` 中 PROT_CODE_SEG(PROT_SEC_XEC)
+     *   辖域内的 check_iat / check_guards / register_guard / start_watchdog
+     *   等函数）不在任何段 CRC 覆盖内 —— 攻击者改完检查器，段 CRC 纹丝不动
+     *   （DRILL9 用例 F 实测 `crc_unchanged_by_patch = True`）。
+     *
+     *   下标顺序 = CRC 烧录表下标，必须与以下两处**严格一致**:
+     *     · `tools/hashpatch.py` 的 MAGICS / TARGET_NAMES
+     *     · `src/integrity.c` 的 `g_prot_baked_crc[]` 初始化顺序
+     *   `tools/check_crc_targets.py` 交叉核对以上四处（防再次漂移）。 */
+    static const char* const names[4] = {
+        ".text", ".rdata", ".pdata", PROT_SEC_XEC
+    };
+    return (idx < 4u) ? names[idx] : NULL;
 }
 
 /* ------------------------------------------------------------------ *

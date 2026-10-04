@@ -115,7 +115,15 @@ def main():
             return 1
 
     # 生成 magic（每个被校验的节一个）
-    magics = {k: gen_magic(rng).hex() for k in ('text', 'rdata', 'pdata')}
+    #
+    # DRILL9 盲区修复（2026-10-04）: 从 3 个（text/rdata/pdata）增为 4 个，
+    #   新增 'xec' —— `.protxec` 段（守卫检查器自身所在段）此前不在 CRC 覆盖内。
+    #   顺序即 **CRC 表下标顺序**，必须与以下三处保持一致:
+    #     · tools/hashpatch.py 的 MAGICS / TARGET_NAMES / ELF_TARGET_NAMES
+    #     · src/integrity.c 的 g_prot_baked_crc[] 初始化顺序
+    #     · 平台层 prot_plat_crc_target_name()
+    #   校验脚本 tools/check_crc_targets.py 会交叉核对这四处（防再次漂移）。
+    magics = {k: gen_magic(rng).hex() for k in ('text', 'rdata', 'pdata', 'xec')}
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -159,11 +167,14 @@ def main():
         f.write('#define PROT_MAGIC_RDATA  "%s"\n' % magics['rdata'])
         f.write('#undef PROT_MAGIC_PDATA\n')
         f.write('#define PROT_MAGIC_PDATA  "%s"\n' % magics['pdata'])
+        f.write('#undef PROT_MAGIC_XEC\n')
+        f.write('#define PROT_MAGIC_XEC    "%s"\n' % magics['xec'])
         # 字节数组形式（供 src/integrity.c 的聚合初始化使用）
         f.write('\n/* magic 的字节数组形式（聚合初始化用）*/\n')
         for key, macro in (('text', 'PROT_MAGIC_TEXT_BYTES'),
                            ('rdata', 'PROT_MAGIC_RDATA_BYTES'),
-                           ('pdata', 'PROT_MAGIC_PDATA_BYTES')):
+                           ('pdata', 'PROT_MAGIC_PDATA_BYTES'),
+                           ('xec', 'PROT_MAGIC_XEC_BYTES')):
             raw = bytes.fromhex(magics[key])
             body = ', '.join('0x%02X' % b for b in raw)
             f.write('#undef %s\n' % macro)

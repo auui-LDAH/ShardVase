@@ -887,6 +887,51 @@ Check '判定多副本等价性 (replica_check)' {
     $LASTEXITCODE -eq 0
 }
 
+# CRC 目标表下标一致性（2026-10-04，DRILL9 收口）: 防止「条数对得上、语义对不上」的静默失效。
+#
+# **为什么是门禁的一部分**: 修 `docs/ATTACK_DRILL9.md` §5 的 `.protxec` 盲区时,
+#   把 `.protxec` 加为第 4 个 CRC 目标, 踩到一个**静默失效**的形态:
+#   `.protxec` 的节名自阶段1 起每构建随机（`gen_sections.py` 写
+#   `#undef PROT_SEC_XEC` + `#define PROT_SEC_XEC ".xxxxxxxx"`），而
+#   `tools/hashpatch.py` 的 `TARGET_NAMES` 里写的是默认名 `.protxec`
+#   -> `next((s for s in secs if s['name'] == target_names[i]), None)` 永远
+#   返回 None -> 走 `hashpatch: %s section absent — skip` 分支
+#   -> 烧录字段恒为 0, **不报错、构建成功、门禁全绿**。
+#   若不修, 这次「加第 4 目标」会变成**纯粹的装饰**: 段 CRC 看着有 4 项,
+#   实际只校验 3 项, 攻击面比改动前一点没变, 而所有既有检查器都发现不了。
+#
+#   这和本项目记名的另一类事故同型: 「门禁项数 32 看起来完全正确,
+#   但其中一项的语义已经空了」。只数条数的检查（doccheck / docclaim）看不见,
+#   必须有一项**跨文件比对下标语义**的判据。
+#
+# ## 被检查的不变量
+#   CRC 目标表的 `下标 -> 节名 -> magic` 在**四处**必须一致:
+#     ① `tools/hashpatch.py`  MAGICS / TARGET_NAMES / TARGET_LOGICAL
+#     ② `src/integrity.c`     g_prot_baked_crc[] + 两处 `j < N` 循环上界
+#     ③ `src/platform/prot_platform_win.c` / `prot_platform_linux.c`
+#                             prot_plat_crc_target_name() 的 names[]
+#     ④ `include/protect/prot_sections.h` 的 PROT_MAGIC_* / _BYTES 默认值
+#        （+ `tools/gen_sections.py` 的生成与写入顺序）
+#
+# ## 平台不对称是**显式**的, 不是漏配
+#   Linux 侧刻意只有 3 个目标: ELF 下 `PROT_CODE_SEG()` 展开为空
+#   （`include/protect/prot_compiler.h`: PE 段布局是平台概念），检查器本来就落在
+#   `.text` 里, 已被下标 0 覆盖 -> 不需要第 4 个目标。判据要求这个不对称
+#   **写在代码里**（3 项不含它, 或 4 项末位是它），而不是"恰好少一个"。
+#
+# ## 含负向自检
+#   8 条变异（改节名 / 删 magic / 删在位调用 / 改声明长度 / 改循环上界 /
+#   字节数组不一致 / win 退回 3 项 / linux 谎报 4 项）必须全部被抓;
+#   抓不住任何一条即 FAIL（这是本项目反复记名的「只会通过的检查器比没有更危险」）。
+#
+# ## 为什么能安全地跑
+#   纯文本解析, 只读源码、**不编译、不写任何产物**（`--selftest` 只在内存里变异文本）。
+Check 'CRC 目标表一致性 (crc_targets)' {
+    & $py -X utf8 tools\check_crc_targets.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\check_crc_targets.py --quiet; $LASTEXITCODE -eq 0
+}
+
 
 
 

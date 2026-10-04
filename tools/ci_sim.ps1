@@ -7,7 +7,7 @@
 #   job build-and-verify:
 #     Build (Release) + RecordSeeds
 #     e2e T1-T28 / attacks A1-A12 / vm_unit / vmc / example E1-E7
-#     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / py_compile
+#     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / py_compile
 #   job reproducible:
 #     用 seeds.json 同种子重建 (Release, SkipSign) + SHA-256 比对 demo.exe/vm.blob
 #   job sdk-package:
@@ -83,11 +83,18 @@ if (-not $SkipTest) {
     Step 'protchain P1-P6' { & $py tests\protchain_check.py }
     Step '加密封装窗口 (window_check)' { & $py tools\window_check.py }
     Step '判定多副本等价性 (replica_check)' { & $py tools\replica_check.py }
+    Step 'CRC 目标表一致性 (crc_targets)' {
+        & $py -X utf8 tools\check_crc_targets.py --selftest --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'crc_targets selftest failed' }
+        & $py -X utf8 tools\check_crc_targets.py --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'crc_targets check failed' }
+    }
     Step 'py_compile all' {
         & $py -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py `
             tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\mock_server.py `
             tools\selfcrypt_elf.py tools\vm_reduce.py tools\procdump_like.py `
             tools\residency_guard.py tools\window_check.py tools\replica_check.py `
+            tools\check_crc_targets.py `
             tests\e2e.py tests\attacks.py tests\vmc_tests.py `
             tests\protchain_check.py examples\tool_demo\test_example.py
     }
