@@ -386,6 +386,60 @@ def make_tampered_copy(sec_name='.text', rel_off=0, from_end=0):
     return dst
 
 
+# ---------------------------------------------------------------------------
+# 调试器附加: kernel32.DebugActiveProcess + WaitForDebugEvent 事件泵
+# ## 2026-10-04 恢复（真缺陷修复）: 本类被 `22826c5`「feat(C-3): e2e 全量
+#  移植」整块误删，**但 T3 的调用点 `main()` 未同步删除** ->
+#  `DebugAttacher` 成为孤儿调用。`py_compile` 只查语法，抓不到。
+#  **为何潜伏到 2026-10-04**: 该类删除后 T3 一直靠 preflight 必然失败
+#  （旧探针 `DebugActiveProcess(os.getpid())`，Windows 禁止进程调试自身）
+#  走 SKIP，`else` 分支**从未被执行**; S6 把 preflight 改成对**派生子进程**
+#  附加后，只要环境允许调试就必然走到调用点 -> `NameError`。
+#  **恢复来源**: `git show 22826c5^:tests/e2e.py:216-255`（逐字恢复）。
+#  **守护**: `build/_undef.py` 全库静态审计（引用但未绑定的全局名）。
+# ---------------------------------------------------------------------------
+class DebugAttacher(object):
+    DBG_CONTINUE = 2                      # DBG_CONTINUE
+    EXIT_PROCESS_DEBUG_EVENT = 5          # EXIT_PROCESS_DEBUG_EVENT
+    WAIT_TIMEOUT = 0x00000102
+
+    def __init__(self):
+        self._pid = None
+
+    def attach(self, pid):
+        if not KERNEL32.DebugActiveProcess(pid):
+            return False
+        self._pid = pid
+        return True
+
+    def pump(self, timeout=25.0):
+        """
+        泵调试事件直到进程退出 (EXIT_PROCESS_DEBUG_EVENT) 或超时。
+        附加期间必须持续 ContinueDebugEvent, 否则目标进程保持挂起。
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ev = ctypes.create_string_buffer(512)
+            if KERNEL32.WaitForDebugEvent(ev, 200):
+                code = ctypes.c_ulong.from_buffer(ev).value
+                dbg_pid = ctypes.c_ulong.from_buffer(ev, 4).value
+                dbg_tid = ctypes.c_ulong.from_buffer(ev, 8).value
+                if code == self.EXIT_PROCESS_DEBUG_EVENT:
+                    self.detach()
+                    return
+                KERNEL32.ContinueDebugEvent(dbg_pid, dbg_tid, self.DBG_CONTINUE)
+            else:
+                if ctypes.get_last_error() != self.WAIT_TIMEOUT:
+                    break
+        self.detach()
+
+    def detach(self):
+        if self._pid is not None:
+            KERNEL32.DebugActiveProcessStop.argtypes = [ctypes.c_ulong]
+            KERNEL32.DebugActiveProcessStop(self._pid)
+            self._pid = None
+
+
 def main():
     if not os.path.isfile(EXE):
         print('FAIL: %s not found (run build.ps1 first)' % EXE, flush=True)
