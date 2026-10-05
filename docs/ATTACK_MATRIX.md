@@ -19,7 +19,7 @@
 | `vm` | 3 | 2 | 0 | 0 | 5 |
 | `vmdetect` | 0 | 2 | 0 | 0 | 2 |
 | *(未映射)* | 20 | 21 | **0** | 3 | 44 |
-> **最后核实**: 2026-10-05 · 方法: tools/docclaim_check.py (§matrix-breached) + `tools/replica_check.py`（R3.2-c **五条**判据: 单点 patch 不再足够 + 位置抖动）· 提交 `2355820`（e2e T3 真机验证打通后）
+> **最后核实**: 2026-10-05 · 方法: tools/docclaim_check.py (§matrix-breached) + `tools/replica_check.py`（R3.2-c **五条**判据: 单点 patch 不再足够 + 位置抖动）· 提交 `bc68b11`（e2e T3 真机验证打通后）
 
 
 ## 显式 BREACHED（诚实边界）
