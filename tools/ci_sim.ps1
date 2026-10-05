@@ -6,7 +6,7 @@
 # 步骤映射 (保持与 ci.yml 同步; 每次改 ci.yml 必须同步这里):
 #   job build-and-verify:
 #     Build (Release) + RecordSeeds
-#     e2e T1-T29 / attacks A1-A12 / vm_unit / vmc / example E1-E7
+#     e2e T1-T30 / attacks A1-A12 / vm_unit / vmc / example E1-E7
 #     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / 静态未定义名 undef_check / Android 交叉编译 android_compile_check / py_compile
 #   job reproducible:
 #     用 seeds.json 同种子重建 (Release, SkipSign) + SHA-256 比对 demo.exe/vm.blob
@@ -72,7 +72,7 @@ Step 'Build (Release) + RecordSeeds' {
 }
 
 if (-not $SkipTest) {
-    Step 'e2e T1-T29' { & $py tests\e2e.py }
+    Step 'e2e T1-T30' { & $py tests\e2e.py }
     Step 'attacks A1-A12' { & $py tests\attacks.py }
     Step 'vm_unit' { .\build\vm_unit.exe }
     Step 'vmc M2/M3' { & $py tests\vmc_tests.py }

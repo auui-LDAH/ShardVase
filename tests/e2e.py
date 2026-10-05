@@ -15,6 +15,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T4 tamper-detect 翻转 .text 一个字节 -> MSG_TAMPER 文本 + 退出码 0xBAD
   T9/T10          翻转 .rdata/.pdata 一个字节 -> 退出码 0xBAD (A3; 消息可能乱码)
   T29 selfcrypt-meta II-1: 翻 .protcry 元数据 CRC -> 退出码 0xBAD (版面外对照同基线)
+  T30 selfcrypt-body: 翻密文函数体(段 CRC 已掩码剔除) -> 仍退 0xBAD (II-1 解密态 CRC)
   T11 watchdog-stable --wait-after 14s 期间看门狗周期复查零误报 (A5)
   T12 license-tier-forge 改 TIER 行 -> license: 0 / 退出码 1 (Phase 4)
   T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
@@ -461,6 +462,50 @@ def make_meta_tampered_copy(sec_off, rel_off):
     return dst
 
 
+def selfcrypt_covered_ranges():
+    """T30: 读构建期产物 `build/selfcrypt_mask.txt`，返回 selfcrypt 覆盖区间。
+
+    `build.ps1` 步骤 6 调 `tools/selfcrypt_proto.py --mask-out`，把**原位加密的
+    函数区间**写成每行 `0x<rva>,<len>`；`tools/hashpatch.py:383-386` 用**同一份
+    掩码**（`EXCLUDE_MASKS`）把这些区间从**段 CRC** 里排除（运行侧
+    `src/integrity.c build_selfcrypt_mask` 同规则）。
+    ⇒ 落在这些区间内的篡改，**段 CRC 原理上检不出**，只有 II-1 解密态 CRC 能抓。
+
+    返回 `[(rva, len), ...]`；文件缺失返回 `None`（调用方记 SKIP）。
+    """
+    p = os.path.join(BUILD, 'selfcrypt_mask.txt')
+    if not os.path.isfile(p):
+        return None
+    out = []
+    with open(p, 'r', encoding='utf-8') as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln or ln.startswith('#'):
+                continue
+            head, _, tail = ln.partition(',')
+            out.append((int(head, 0), int(tail.strip())))
+    return out
+
+
+def make_selfcrypt_body_tampered_copy(sec_off, rel_off):
+    """T30: 复制产物并翻转 `.text` 内相对偏移 `rel_off` 的一个字节。
+
+    与 `make_meta_tampered_copy` 的区别只在**目标语义**：本函数的偏移指向
+    **密文函数体内部**（由 `selfcrypt_covered_ranges()` 的区间算出），落到
+    `demo_selfcrypt_body_tampered.exe`，便于与 T29 的副本并存。
+    """
+    dst = os.path.join(BUILD, 'demo_selfcrypt_body_tampered.exe')
+    shutil.copyfile(EXE, dst)
+    ro = sec_off + rel_off
+    with open(dst, 'r+b') as f:
+        f.seek(ro)
+        b = f.read(1)
+        if not b:
+            raise RuntimeError('tamper offset %d out of file' % ro)
+        f.seek(ro)
+        f.write(bytes([b[0] ^ 0xFF]))
+    return dst
+
 # ---------------------------------------------------------------------------
 # 调试器附加: kernel32.DebugActiveProcess + WaitForDebugEvent 事件泵
 # ## 2026-10-04 恢复（真缺陷修复）: 本类被 `22826c5`「feat(C-3): e2e 全量
@@ -853,6 +898,116 @@ def main():
                             'WDAC blocked tampered copy (winerror 4551)'))
         else:
             results.append(('T29 meta-crc', 'FAIL', repr(e)))
+
+    # ---- T30: selfcrypt 密文态篡改 (N1 二期计划里的 T30) -----------------
+    # ## 为什么 T30 必须与 T29 分开存在
+    #   `build.ps1` 步骤 6 把引擎函数**原位加密**（`.text` 里落的是密文），
+    #   步骤 7 才烧录段 CRC；而 `tools/hashpatch.py:383-386` 会把**这些密文
+    #   区间从段 CRC 里排除**（掩码来自 `--mask-out`，运行侧
+    #   `src/integrity.c build_selfcrypt_mask` 同规则）。
+    #   ⇒ **落在这几段密文函数体内的篡改，段 CRC 原理上检不出**；唯一能抓住
+    #     它的是 II-1 的**解密态 CRC**（`src/selfcrypt.c:125-240`
+    #     `sc_do_range(idx, 1)` 解密后重算 CRC，与 meta 明文 CRC 比对）。
+    #   T29 翻 **meta 里存的 CRC 字段**（验"存的值被信任"）；
+    #   T30 翻**密文函数体本身**（验"密文确实被解密并按 CRC 重算了"）。
+    #
+    # ## 判据（2026-10-06 实测确立）
+    #   · **结构性断言（本用例的承重点）**: 目标偏移必须落在掩码区间内
+    #     （读 `build/selfcrypt_mask.txt` 核对）。少了这条，本用例只是 T4 的
+    #     另一个副本，证明不了"段 CRC 覆盖不到"。
+    #   · 翻该字节 -> `0xBAD` + `MSG_TAMPER`（被 II-1 抓住）。
+    #   · 对照: 翻 `.text` 内**不在掩码区间**的末尾字节 -> 也 `0xBAD`
+    #     （被段 CRC 抓住，即 T4 那条路径）—— 证明两条机制都活着，
+    #     分开它们的**只有掩码结构**。
+    #   · 顺序佐证（条件式）: 基线若打印过 `反调试扫描` 行（= 该模块已编入），
+    #     则密文态篡改必须在**它之前**被抓住 —— `demo/main.c:525` 的
+    #     `prot_selfcrypt_init()` 早于 `:544` 的 `prot_antidebug_scan()`。
+    #
+    # ## 诚实边界
+    #   · 掩码是**构建产物**；未跑 selfcrypt 的构建（meta count=0）或掩码缺失
+    #     时记 SKIP 并写明（**未验证 != 通过**）。
+    #   · 本用例证明"密文区间**也**被 II-1 覆盖"，**不**证明加密不可逆 ——
+    #     密钥 `key0` 仍以明文存于 meta（`tools/selfcrypt_proto.py:442-444`）。
+    try:
+        ranges = selfcrypt_covered_ranges()
+        if not ranges:
+            results.append(('T30 cipher-crc', 'SKIP',
+                            'build/selfcrypt_mask.txt 缺失或为空（该构建未跑 '
+                            'selfcrypt；未验证 != 通过）'))
+        else:
+            sec = cry_section_name()
+            prot_off, _prot_len = section_bounds(EXE, sec)
+            with open(EXE, 'rb') as f:
+                f.seek(prot_off)
+                n = struct.unpack('<I', f.read(4))[0]
+            if n == 0 or n > 16:
+                results.append(('T30 cipher-crc', 'SKIP',
+                                'selfcrypt meta count=%d（PROT_SELFCRYPT_DISABLE '
+                                '或该构建未接 selfcrypt；未验证 != 通过）' % n))
+            else:
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(REPO, 'tests'))
+                from protchain_check import sections_of
+                with open(EXE, 'rb') as f:
+                    _secs = sections_of(f.read())
+                _text = next((s for s in _secs if s['name'] == '.text'), None)
+                if _text is None:
+                    raise RuntimeError('.text not found（RVA 无法换算成文件偏移）')
+                t_va = _text['virtual_addr']
+                t_ptr = _text['ptr_raw']
+                t_crc = min(_text['virtual_size'], _text['size_raw'])
+                # 取最长的一段密文函数体，中点作为篡改目标
+                rva0, len0 = max(ranges, key=lambda r: r[1])
+                off0 = rva0 - t_va
+                # 承重断言 ①: 目标落在掩码区间内（= 段 CRC 不覆盖它）
+                if not any(mrva <= rva0 and rva0 + len0 <= mrva + mlen
+                           for mrva, mlen in ranges):
+                    raise RuntimeError('掩码区间不自洽: rva=0x%x len=%d not in %r'
+                                       % (rva0, len0, ranges))
+                # 承重断言 ②: 该区间确实在 .text 段 CRC 的跨度内
+                if off0 < 0 or off0 + len0 > t_crc:
+                    raise RuntimeError('selfcrypt 区间 off=0x%x len=%d 超出 '
+                                       '.text CRC 跨度 %d' % (off0, len0, t_crc))
+                tgt_off = off0 + len0 // 2
+                ctl_off = t_crc - 1     # 同 T4: .text 末字节，在 CRC 内、未掩码
+                if any(mrva <= t_va + ctl_off < mrva + mlen
+                       for mrva, mlen in ranges):
+                    raise RuntimeError('对照偏移 0x%x 落在掩码区间内' % ctl_off)
+
+                code_b, out_b, _ = run_demo(
+                    args=['--license-file', LICENSE],
+                    stdin=(serial + '\n').encode('utf-8'))
+                body = make_selfcrypt_body_tampered_copy(t_ptr, tgt_off)
+                code_t, out_t, _ = run_demo(
+                    exe=body, args=['--license-file', LICENSE],
+                    stdin=(serial + '\n').encode('utf-8'))
+                ctrl = make_selfcrypt_body_tampered_copy(t_ptr, ctl_off)
+                code_c, out_c, _ = run_demo(
+                    exe=ctrl, args=['--license-file', LICENSE],
+                    stdin=(serial + '\n').encode('utf-8'))
+
+                base_ok = (code_b == 0) and (msg_ok in out_b)
+                ctl_ok = (_norm_exit(code_c) == _norm_expect(PROT_EXIT_TAMPERED)
+                          and msg_tamper in out_c)
+                hit = (_norm_exit(code_t) == _norm_expect(PROT_EXIT_TAMPERED)
+                       and msg_tamper in out_t)
+                early_ok = True
+                early = 'n/a'
+                if '反调试扫描' in out_b:
+                    early_ok = ('反调试扫描' not in out_t)
+                    early = 'yes' if early_ok else 'no'
+                ok = base_ok and ctl_ok and hit and early_ok
+                results.append(
+                    ('T30 cipher-crc', 'PASS' if ok else 'FAIL',
+                     'exit=%d ctrl=%d base=%d n=%d off=0x%x early=%s%s' % (
+                         code_t, code_c, code_b, n, tgt_off, early,
+                         '' if (base_ok and ctl_ok) else ' (对照不成立)')))
+    except Exception as e:
+        if wdac_blocked(e):
+            results.append(('T30 cipher-crc', 'SKIP',
+                            'WDAC blocked tampered copy (winerror 4551)'))
+        else:
+            results.append(('T30 cipher-crc', 'FAIL', repr(e)))
 
     # ---- T5: VM 指令集单测 (Phase 1d 新增指令) ------------------------
     vm_unit = (os.path.join(BUILD, 'vm_unit.exe')

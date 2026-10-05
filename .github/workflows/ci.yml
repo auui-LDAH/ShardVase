@@ -42,7 +42,7 @@ jobs:
       - name: Build (Dev), record seeds
         run: powershell -ExecutionPolicy Bypass -File build.ps1 -MachineId auto -RecordSeeds -SkipSign -Brepro
 
-      - name: Run e2e suite (T1-T29)
+      - name: Run e2e suite (T1-T30)
         run: python tests\e2e.py
 
       - name: Run attack-simulation suite (A1-A12)

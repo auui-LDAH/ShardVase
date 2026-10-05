@@ -290,10 +290,10 @@ def run_all(skip_build=False, quiet=False, readonly=False):
                      ('PASS %s / FAIL %s / NA %s' % m6.groups()[1:])
                      if m6 else ''))
 
-    # ③f **端到端用例 e2e T1-T29**（C-3）—— 第 11 项
+    # ③f **端到端用例 e2e T1-T30**（C-3）—— 第 11 项
     #
     # ## 与前几项的区别
-    #   e2e 是**最全的端到端套件**（29 项: 正常流程 / 篡改检测 / 吊销 /
+    #   e2e 是**最全的端到端套件**（30 项: 正常流程 / 篡改检测 / 吊销 /
     #   授权到期 / 在线验证 …）—— C-3 移植后在 Linux 跑。
     #
     # ## 平台差异（**如实标注**，见 e2e 的 PLATFORM_NA 逻辑）
@@ -317,9 +317,9 @@ def run_all(skip_build=False, quiet=False, readonly=False):
                    % (tot, np_, nf, ns, nna))
         else:
             det = '无法解析（尾部: %s）' % o7.strip()[-60:]
-        results.append(('端到端 e2e T1-T29', ok7, det))
+        results.append(('端到端 e2e T1-T30', ok7, det))
         if not quiet:
-            print('  %s 端到端 e2e T1-T29 %s'
+            print('  %s 端到端 e2e T1-T30 %s'
                   % ('ok  ' if ok7 else 'FAIL', det))
 
     # ③g **HTTP 平台层单测**（W3, 2026-09-25）—— 第 12 项
