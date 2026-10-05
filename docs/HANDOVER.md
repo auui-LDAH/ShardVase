@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（686 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T29 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `80db8ba`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（694 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
 
 
 ## 1. 项目是什么
@@ -3211,4 +3211,126 @@ T29 落地后，「T1-T28」字样成为陈旧值。全库普查命中 41 处，
   `tools/release_check.ps1` 因保留历史注释而误报），写盘已在断言之前完成，
   不影响结果 —— 但这是一个**应当记下的脚本缺陷样本**。
 
-*2026-10-06 v1*
+
+---
+
+### 2.34 e2e T30 补齐 —— 「密文态篡改」≠「密文态 CRC」（2026-10-06）
+
+#### 2.34.1 缘起：`docs/N1_PLAN.md` 里的 T30 一直只是编号
+
+§2.33 闭合了 T29（II-1 解密态 CRC 的 meta 篡改回归）。当时 `docs/N1_PLAN.md`
+§11 如实写着「`T30` 仍只是计划里的编号」。本节的目的是把 T30 也变成真用例。
+
+难点在于**先要弄清 T30 与已有的 T4 有什么不同** —— 如果答案只是「再翻一个
+字节」，那 T30 就只是 T4 的副本，没有存在价值。这个区别不在测试代码里，
+而在**构建期的掩码**里。
+
+#### 2.34.2 承重机制：selfcrypt 区间被段 CRC 掩码剔除
+
+`tools/hashpatch.py:383-386`：
+
+```python
+# N1 (D1b): selfcrypt 加密段同样掩码 (与运行侧 build_selfcrypt_mask 一致)
+for (mrva, mlen) in EXCLUDE_MASKS:
+```
+
+`build.ps1` 的步骤 6（selfcrypt 原位加密）会把被加密的函数区间写进
+`build/selfcrypt_mask.txt`；步骤 7（烧录段 CRC32）把同一份掩码以 `--mask rva,len`
+传给 `hashpatch.py`，于是**这些区间被从 `.text` 段 CRC 的覆盖范围里排除**。
+
+实测 `build/selfcrypt_mask.txt` 8 行与 `.protcry` meta 的 8 条 `rva/len`
+**逐字一致**（`0x7a00,125` / `0x81a0,977` / `0x8970,290` / `0x8870,248` /
+`0x50a0,212` / `0x5040,95` / `0x1a60,62` / `0x48a0,154`）。
+
+⇒ 结论：**落在这些区间内的篡改，段 CRC 原理上检不出，唯一能抓住它的是
+II-1 的解密态 CRC**。这就是 T30 与 T4 的分界线：
+
+| 用例 | 翻什么 | 谁抓住它 | 拒止点 |
+|------|--------|----------|--------|
+| T4 | `.text` 末字节（CRC 覆盖内） | 段 CRC | `demo/main.c:631 prot_integrity_check_self()` |
+| T29 | `.protcry` meta 的 crc32 字段 | II-1 解密态 CRC | `demo/main.c:525 prot_selfcrypt_init()` |
+| **T30** | **密文函数体本身**（掩码剔除区） | **II-1 解密态 CRC** | **`demo/main.c:525`（同上）** |
+
+T29 验的是「**meta 里存的那个值被信任**」；T30 验的是「**密文确实被解密、
+并且按 meta 的明文 CRC 重算了一遍**」。两者都不能由对方替代。
+
+#### 2.34.3 判据：三跑 + 一个顺序判别器
+
+T30（`T30 cipher-crc`，`tests/e2e.py`）跑三次：
+
+1. **基线** → `exit=0`，stdout 含 `反逆向保护套件演示`；
+2. **本体**：选掩码区间里**最大**的那条，翻它的中点 → 期望 `0xBAD` + `MSG_TAMPER`；
+3. **对照**：翻 `.text` 末字节（走 T4 的段 CRC 路径）→ **也**是 `0xBAD`。
+
+对照也返回 `0xBAD`，所以**仅凭退出码无法区分两者** —— 这正是本节最值得记的
+一点。真正的判别器是**拒止点的先后**：
+
+- `demo/main.c:520-521` 打印 BANNER；
+- `:525 prot_selfcrypt_init()` ← **II-1 在这里就能拒止**；
+- `:544 prot_antidebug_scan()` → `:546` 打印 `反调试扫描: …`；
+- `:631 prot_integrity_check_self()` ← 段 CRC 在这里才拒止。
+
+⇒ **若密文态篡改在 `反调试扫描` 之前就被抓住，说明拦它的是 II-1，不是段 CRC。**
+实测：
+
+```
+T30 cipher-crc  PASS   (exit=2989 ctrl=2989 base=0 n=8 off=0x7388 early=yes)
+```
+
+`early=yes` = stdout 里**没有** `反调试扫描`（基线里有）。退一步说，即使退出码
+相同，这个顺序差也把两条路径分开了。
+
+代码里还加了两条**结构性断言**，防止用例悄悄退化成 T4 副本：
+
+```python
+if not any(mrva <= rva0 and rva0 + len0 <= mrva + mlen for mrva, mlen in ranges):
+    raise RuntimeError('掩码区间不自洽: rva=0x%x len=%d not in %r' % ...)
+if any(mrva <= t_va + ctl_off < mrva + mlen for mrva, mlen in ranges):
+    raise RuntimeError('对照偏移 0x%x 落在掩码区间内' % ...)
+```
+
+`early_ok` 是**条件式**断言：只有当基线 stdout 里确实出现过 `反调试扫描`
+时才要求本体里没有它 —— 不去硬编码「antidebug 模块一定已编入」这个假设。
+
+#### 2.34.4 验证
+
+| 项 | 实测 |
+|----|------|
+| 全量 e2e | `[e2e] 平台=win  总计 30: PASS 30 / FAIL 0 / SKIP 0 / NA 0`（28 → 29 → **30**） |
+| T30 明细 | `exit=2989 ctrl=2989 base=0 n=8 off=0x7388 early=yes` |
+| 变异验证 | 把 `tgt_off = off0 + len0 // 2` 退回 `tgt_off = t_crc - 1`（即退化成 T4 路径）⇒ **`T30 cipher-crc  FAIL   (exit=2989 ctrl=2989 base=0 n=8 off=0x2235f early=no)`**，`总计 30: PASS 29 / FAIL 1`，e2e rc=1；`finally` 逐字节恢复（`bytes=75493 bom=True 一致=True`） |
+| 掩码一致性 | `build/selfcrypt_mask.txt` 8 行 == meta 8 条 `rva/len` |
+| 门禁 | `[release_check] PASS: 35 项检查全通过`，含 `[ok] e2e T1-T30` |
+| 卫生 | `build/_hygiene.py` 15 文件 0 异常；`py_compile` rc=0；两个 `.ps1` parse errors 0 |
+| 文档 | `doccheck` PASS（686 处 0 错误）；`docclaim_check` PASS (8/8) |
+
+变异后的 `early` 由 `yes` 变 `no` 是关键：这时拒止点从 `:525` 退到了 `:631`，
+用例立刻变红。⇒ **T30 不是「只会通过的检查器」**（呼应
+`docs/阶段总结-2026-10-06.md` §3.8）。
+
+#### 2.34.5 计数面与诚实边界
+
+计数面同 §2.33.4 的做法：现值 9 处 `T1-T29` → `T1-T30`（`tools/release_check.ps1:296`
+/ `tools/ci_sim.ps1:9,:75` / `.github/workflows/ci.yml:45` /
+`tools/verify_linux_runtime.py:293,:296,:320,:322` / `README.md:140` /
+`CONTRIBUTING.md:76` / `publish/02-项目档案.md:119` /
+`docs/阶段总结-2026-10-06.md:257`），外加 `29 项` → `30 项`（`tools/verify_linux_runtime.py:296`
+/ `publish/02-项目档案.md:119`）。历史记录（30 处 `T1-T28` 和
+`docs/HANDOVER.md:3185` 的 §2.33.4 结论）一律不动。
+
+诚实边界：
+
+- **T30 ≠ 密文态 CRC**。`tools/hashpatch.py:47 MAGICS = (b'PROTCRCP', b'PROTCRCD',
+  b'PROTCRDP', b'PROTCRCX')` 只有 4 个，搜 `PROTCRYP` 全库零命中 ⇒
+  **密文态 CRC 从未实现**，`docs/N1_PLAN.md` §4 阶段 3 如实保留未勾。
+  「T30 密文态篡改」= 篡改密文、由**解密态** CRC 抓住；「密文态 CRC」= 对
+  密文形态本身独立校验 —— 两回事，本轮特意在 `docs/N1_PLAN.md` §6 加注分清。
+- **不证明加密不可逆**：密钥 `key0` 仍明文存在 meta 里（`tools/selfcrypt_proto.py:442-444`）。
+- **掩码是构建产物**：`build/selfcrypt_mask.txt` 缺失时 T30 记 **SKIP**
+  （`未验证 != 通过`），该分支**未实测**。
+- **D2c 看门狗周期重加密仍未实现**（`docs/N1_PLAN.md:139` 的折中方案，`src/` 内零命中）。
+- `tests/e2e.py` 里 `n=8` 而 §2.33 记的 `n=9` 并非矛盾 —— 期间重新构建过
+  （节名也从 `.b3locz1` 变为 `.bmrihpa`）。
+- 与 §2.33 同：**真机 / 企业环境仍未验证**，证据是 Windows x64 本机构建下的。
+
+*2026-10-06 v2*
