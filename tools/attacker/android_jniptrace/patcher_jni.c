@@ -9,18 +9,49 @@
  *
  * 构建: NDK (CMake) 或宿主编译 (Windows 仅验证语法)。
  */
+
+/* `_GNU_SOURCE` 必须先于**任何**系统头: `process_vm_writev` (模式 B) 在 glibc 下
+ * 仅于 `_GNU_SOURCE` 时由 <sys/uio.h> 声明。
+ * 2026-10-06 用真实 Android NDK r28 (aarch64-linux-android21) 交叉编译时暴露 ——
+ * 此前本文件从未在 Android/glibc 目标上编过, 两次所谓"宿主编译验证"实际只
+ * 覆盖了 elfparse.c / elfdump.c。同型教训见 src/platform/prot_platform_linux.c:43-66。 */
+#ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+#endif
+
 #include <jni.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
 
-#include "../elfparse/elfparse.h"  /* 符号解析 (复制进 NDK 工程) */
+#include "elfparse/elfparse.h"  /* 符号解析 (同目录布局; 复制进 NDK 工程时保持) */
+
+/* ---- process_vm_writev 的 API 23 门槛 (2026-10-06 真实 NDK r28 交叉编译暴露) ----
+ * bionic 的 <sys/uio.h> 把它标为 `__INTRODUCED_IN(23)`, 而本项目 Android 侧
+ * 既定下限是 **API 21** (docs/EXTENSION_PLAN.md「NDK r26+ / Clang 17 / API 21+」)。
+ * 在 API 21/22 目标上直接调用 => `error: call to undeclared function`。
+ * 该 **系统调用** 本身在 arm64 内核早已存在 (Linux 3.2+), 缺的只是 libc 声明,
+ * 故低 API 级别改用 `syscall(__NR_process_vm_writev, ...)` 直呼, 保持下限不变。
+ * 注: 宿主 (glibc) 编译不需要此分支 —— glibc 在 `_GNU_SOURCE` 下直接声明。 */
+#if defined(__ANDROID__) && defined(__ANDROID_API__) && (__ANDROID_API__ < 23)
+#  include <sys/syscall.h>
+static ssize_t prot_process_vm_writev(pid_t pid,
+                                      const struct iovec* liov, unsigned long licnt,
+                                      const struct iovec* riov, unsigned long ricnt,
+                                      unsigned long flags)
+{
+    return (ssize_t)syscall(__NR_process_vm_writev, pid, liov, licnt, riov, ricnt, flags);
+}
+#else
+#  define prot_process_vm_writev process_vm_writev
+#endif
 
 /* ---- ARM64 指令: mov w0, #0; ret  (等效 xor w0,w0; ret) ----
  *  mov w0, wzr  = 0x2F0000AA  (orr w0, wzr, wzr 的别名? 实际用 movz)
@@ -64,7 +95,6 @@ static int patch_self(const patch_spec* ps, uint64_t runtime_base)
 {
     uint64_t addr = runtime_base + (ps->target_va - 0x0); /* ELF ET_DYN: VA 是偏移 */
     uintptr_t page = (uintptr_t)addr & ~(uintptr_t)0xFFF;
-    size_t off = (size_t)(addr - page);
 
     if (mprotect((void*)page, 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
         return -1;
@@ -81,7 +111,7 @@ static int ptrace_write_mem(pid_t pid, uint64_t addr, const void* buf, size_t le
 {
     struct iovec local = { .iov_base = (void*)buf, .iov_len = len };
     struct iovec remote = { .iov_base = (void*)(uintptr_t)addr, .iov_len = len };
-    ssize_t n = process_vm_writev(pid, &local, 1, &remote, 1, 0);
+    ssize_t n = prot_process_vm_writev(pid, &local, 1, &remote, 1, 0);
     return (n == (ssize_t)len) ? 0 : -1;
 }
 

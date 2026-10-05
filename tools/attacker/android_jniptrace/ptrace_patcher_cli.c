@@ -5,6 +5,15 @@
  *   arch: 0=arm64 (默认), 1=x86_64
  * 需 root (ptrace 附加)。
  */
+
+/* `_GNU_SOURCE` 必须先于**任何**系统头: `process_vm_writev` 在 glibc 下
+ * 仅于 `_GNU_SOURCE` 时由 <sys/uio.h> 声明。
+ * 2026-10-06 用真实 Android NDK r28 (aarch64-linux-android21) 交叉编译时暴露 ——
+ * 此前本文件从未在任何 Linux/Android 目标上编过。 */
+#ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -16,6 +25,23 @@
 #include <sys/uio.h>
 
 #include "elfparse/elfparse.h"
+
+/* ---- process_vm_writev 的 API 23 门槛 (2026-10-06 真实 NDK r28 交叉编译暴露) ----
+ * bionic 的 <sys/uio.h> 标其为 `__INTRODUCED_IN(23)`; 本项目 Android 侧下限是
+ * API 21 (docs/EXTENSION_PLAN.md), 故低级别走 `syscall(__NR_...)` 直呼。
+ * 系统调用本身在 arm64 内核早已存在 (Linux 3.2+), 缺的只是 libc 声明。 */
+#if defined(__ANDROID__) && defined(__ANDROID_API__) && (__ANDROID_API__ < 23)
+#  include <sys/syscall.h>
+static ssize_t prot_process_vm_writev(pid_t pid,
+                                      const struct iovec* liov, unsigned long licnt,
+                                      const struct iovec* riov, unsigned long ricnt,
+                                      unsigned long flags)
+{
+    return (ssize_t)syscall(__NR_process_vm_writev, pid, liov, licnt, riov, ricnt, flags);
+}
+#else
+#  define prot_process_vm_writev process_vm_writev
+#endif
 
 /* 与 patcher_jni.c 相同的补丁字节 */
 #define AARCH64_MOVZ_X0_0 0xD2800000u
@@ -44,7 +70,7 @@ static int write_mem(pid_t pid, uint64_t addr, const uint8_t* buf, size_t len)
 {
     struct iovec local = { .iov_base = (void*)buf, .iov_len = len };
     struct iovec remote = { .iov_base = (void*)(uintptr_t)addr, .iov_len = len };
-    return (process_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)len) ? 0 : -1;
+    return (prot_process_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)len) ? 0 : -1;
 }
 
 int main(int argc, char** argv)

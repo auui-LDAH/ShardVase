@@ -42,6 +42,8 @@ Java_com_prot_demo_Prot_nativeVerifyLicense(JNIEnv* env, jobject thiz,
     const char* lic = (*env)->GetStringUTFChars(env, jlicense, NULL);
     jint rc = 0;
 
+    (void)thiz;   /* JNI 签名要求, 本函数不使用: 其余 JNI 入口同样显式 (void) */
+
     /* 解析 license 文本 (跨平台): SERIAL/PRODUCT/TIER/EXPIRES/SIGNATURE */
     char s_serial[64] = {0};
     char s_prod[64] = {0};
@@ -185,7 +187,13 @@ Java_com_prot_demo_Prot_nativeStopWatchdog(JNIEnv* env, jobject thiz)
     }
 }
 
-/* ---- CRC32 (标准 0xEDB88320, 与 Windows prot_crc32 同语义) ---- */
+/* ---- CRC32 (标准 0xEDB88320, 与 Windows prot_crc32 同语义) ----
+ * A1 骨架助手: 待 nativeCheckIntegrity 接上 dl_iterate_phdr 自定位后即被调用。
+ * 在此之前无人引用 —— 显式标注, 否则 -Wall -Wextra -Werror 下是硬错误
+ * (2026-10-06 真实 NDK 交叉编译暴露)。`used` 抑制 -Wunused-function。 */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((used))
+#endif
 static uint32_t elf_crc32(const uint8_t* data, size_t len)
 {
     uint32_t crc = 0xFFFFFFFFu;

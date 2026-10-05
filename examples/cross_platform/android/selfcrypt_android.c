@@ -31,12 +31,15 @@ typedef struct sc_entry {
     uint64_t key;
 } sc_entry;
 
-/* 目标函数 (构建期加密; 运行期 init 解密). 用 volatile 防优化.
+/* 目标函数 (构建期加密; 运行期 init 解密).
+ * 防优化靠 `noinline` —— 返回类型上的 `volatile` 已移除: 它对函数返回值
+ * 没有任何语义 (Clang 报 -Wignored-qualifiers), 是 2026-10-06 真实 NDK
+ * 交叉编译暴露的无效装饰。构建脚本按**符号名**定位, 与限定符无关。
  * GCC/Clang (Android NDK) 下会被构建脚本定位加密; MSVC仅验证纯逻辑. */
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
 #endif
-volatile int prot_keycheck(uint64_t v)
+int prot_keycheck(uint64_t v)
 {
     /* 关键校验逻辑 (A3 保护目标) — 构建期变得不可静态读 */
     return (int)((v * 0x9E3779B97F4A7C15u) & 0x1F);
@@ -68,7 +71,7 @@ int prot_elf_selfcrypt(const sc_entry* meta, uint32_t count, uint8_t* base)
 static void host_self_test(void)
 {
     /* 模拟构建期加密 prot_keycheck (XOR 自身 + meta) */
-    extern volatile int prot_keycheck(uint64_t);
+    extern int prot_keycheck(uint64_t);
     uint64_t v = 41;
     int orig = (int)((v * 0x9E3779B97F4A7C15u) & 0x1F);
 
