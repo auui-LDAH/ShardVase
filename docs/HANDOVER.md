@@ -2537,3 +2537,80 @@ case('目标分组仅 0/1 且两组均非空', set(_src.values()) <= {0,1} and 0
 - D2b 下窗口 = 调用周期；窗口外 revoke 仍是密文，符合设计意图。
 - **未做**：revoke 加密后的**真机 Defender 复测**（`docs/DEFENSE_DEEPEN_PLAN.md:231`
   待办末条）仍挂账；本次只覆盖本机 e2e/attacks 与构建门禁。
+
+---
+
+### 2.29 增量（2026-10-06）：**mock 目标的结论不能外推** —— DRILL7 真实 demo.exe 闭环
+
+**性质**：`docs/ATTACK_DRILL7.md` §3 的「patch 判定函数头 → "盾"**永久失效**」
+自 2026-08-30 起被当作既成结论，并在 `tools/attacker/winpe_sympatcher/README.md`
+的「实证结论」里复述。但它成立的**前提**（实证对象 `test_target.c` 是模拟盾：
+无完整性校验、无副本冗余）从未被写进结论本身。§5「后续建议」第 1 条
+「对真实 demo.exe（Dev 构建带 MAP）跑完整闭环（含 watchdog 对抗）」挂了近 5 周。
+
+**工具链成熟度检查（先排除"工具没做成"）**：两个攻击侧工具实际早在
+`c941c9c feat(attacker): WinPE/Android symbol-patcher toolchain + release
+antidebug fix + phase summary` 就已落地（`tools/attacker/winpe_sympatcher/`
+含 `symparse.c` 13799 B + `mempatch.c` + `main.c` + `test_target.c` + `build.ps1`
++ 已构建的 `winpe_sympatcher.exe` 187392 B；`tools/attacker/android_jniptrace/`
+含 `elfparse/elfparse.c` + `patcher_jni.c` + `ptrace_patcher_cli.c`）。
+`docs/MEMPATCH_PLAN.md`（2026-08-30 v1「规划待拍板」）的 **8/8 验收盒全未勾**
+—— 与 §2.28 的 S1 revoke **完全同型**：**实施与销账是两件事**。
+
+**方法**（探针 `build/_drill7_clean.py`，只读诊断未入库）：
+`winpe_sympatcher.exe --map build\demo.map --sym <name>` 定位 →
+`ReadProcessMemory` 确认序言 → `VirtualProtectEx` + `WriteProcessMemory`
+写 `31 C0 C3` → **喂 stdin 使目标自然退出**。
+
+**四组实测**（同一构建，`real_base=0x7ff6d37d0000`，`PREF=0x140000000`）：
+
+| 组 | 操作 | 符号 / 运行时 VA / 序言 | 写入 | 退出码 | `完整性校验失败` |
+|----|------|------------------------|------|--------|------------------|
+| A | 基线（不附加、不写） | — | — | `1` | ✗ |
+| D | 附加 + 定位，**只读不写** | `prot_antidebug_detected` @`0x140001420` → `0x7ff6d37d1420`，序言 `48 83 ec` | ✗ | `1` | ✗ |
+| B | patch `prot_antidebug_detected` 头 | 同上 | ✅ 读回 `31 c0 c3` | **`2989`(0xBAD)** | **✓** |
+| C | patch `prot_antidebug_detected_multi` 头 | `_multi` @`0x1400015b0` → `…15b0`，序言 `48 89 5c` | ✅ 读回 `31 c0 c3` | **`2989`(0xBAD)** | **✓** |
+
+四组均 `natural=True`（**无强杀**）。
+
+**根因（为什么 mock 上的"永久失效"不成立）**：
+`prot_antidebug_detected` / `_multi` 的 `demo.map` 段号都是 `0001` = `.text$mn`，
+而 `.text` 正是 `src/integrity.c` 的 `g_prot_baked_crc[0]`（baked-CRC 第 0 个目标，
+覆盖含调零掩码）。改它**必然**被段 CRC 抓到 ⇒ 看门狗/自检路径以
+`PROT_EXIT_TAMPERED (0xBAD=2989)` 终止。**这是 DRILL3 的罪证在真实目标上的复现**：
+mock 目标没有这一层，所以补丁"生效"了。
+
+**结论（三条，均可外推的判据）**：
+1. **符号定位能力在真实目标上成立** —— MAP 通道给出编译时 VA，
+   `Toolhelp32` 取模块基址做 ASLR 换算后序言与预期一致。
+   ⚠️ **必须走 `Toolhelp32`**：拿 `PREF` 硬读会全部 `err=299
+   (ERROR_PARTIAL_COPY)` ⇒ 采样为空 ⇒ **极易被读成"符号不存在"**
+   （此坑 `tools/guard_selftest.py:256-261` 早有记载，本轮复现）。
+2. **附加本身不再触发检测** —— 组 D 只定位不写，退出码与基线同为 `1`、无
+   `MSG_DBG`。（**旁注**：与 e2e T3 用 `DebugActiveProcess` 附加派生进程得
+   `exit=219`(0xDB) 不矛盾 —— T3 由调试器持有线程、形态不同；此处不深挖，
+   **如实记为观察**而非结论。）
+3. **patch 判定函数在真实目标上不再静默生效** —— 写入成功（读回一致），
+   但目标打印 `完整性校验失败，程序可能已被篡改。` 并以 `2989` 退出。
+   ⇒ §3 的"盾失效"须**限定为"无完整性校验的 mock 目标"**。
+
+**顺带修掉的同型缺陷**：无（本轮未改工具代码）。**已销账**：
+`docs/MEMPATCH_PLAN.md` 状态行 v1「规划待拍板」→ v2「两个工具均已落地」；
+WinPE 四条验收盒勾上（附证据），**Android 四条如实保留未勾**并注明
+"代码就绪、真机未测"（`docs/EXTENSION_PLAN.md` 的 T1 逐行核对后**已如实**，未改）。
+
+**方法论教训（本轮最值钱的一条）**：
+**mock 目标上的攻击结论不能外推** —— 每一条攻击结论都必须问
+「**实证对象的哪些属性是这条结论的前提**」。此处前提是"无完整性校验"，
+而真实目标有 `.text` 段 CRC。这与 §2.28 的「布局类结论不是不变量」互补：
+前者是**对象属性**没写进结论，后者是**结论依赖的机制**被后续改动推翻。
+
+**诚实边界**：
+- 只测**单点 patch**；"同时中和 `.text` 段 CRC + R3.2-c 的 4 副本 + 位置抖动"
+  的完整对抗链**未测**（DRILL9 §5 已记 F/G/H 由此翻转为 `0xBAD`，属另一条线）；
+- **有 `demo.map` 是前提**：无 MAP/PDB 时 MAP 通道失效，`/DEBUG:NONE` 下
+  COFF 通道同样为空（§5 边界表第 1 条）；
+- 组 D「附加不触发检测」只测了一个构建一个时刻，**未做多次/多形态**；
+- Android 侧真机仍未测（需 NDK + root）。
+
+*2026-10-06 v1*
