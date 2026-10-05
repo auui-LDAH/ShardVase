@@ -1,7 +1,10 @@
 # 反逆向纵深增强轮计划 — S1-S5 (DEFENSE_DEEPEN_PLAN)
 
-> 版本：2026-08-29 v2 · **2026-10-05 补记 v8** · 状态：**S1 全数落地（5/5 目标）**；
-> S2 已落地（`src/vm_rekey.c`）；S3-S5 见 §12.5/§12 实施记录 ·
+> 版本：2026-08-29 v2 · **2026-10-06 复核 v9** · 状态：**S1 全数落地（5/5 目标）**；
+> **S2-S5 亦全部落地**（S2 `src/vm_rekey.c` / S3 `prot_antidebug_detected` 平坦化 /
+> S4 33 条串明文 0 / S5 `ppid_blacklist`+`clock_drift_sec`）—— 逐条证据见 §9；
+> ⚠️ **S3 试点函数偏离 D3 决策**（实为 antidebug 而非 integrity），见 §9.1；
+> **仍未做**：真机面验收（S2 双运行密钥取证 / S5 真机 0 误报 / 回归矩阵 + Defender）；
 > v1 规划五项全收；v2 实施记录：meta 24B 组化+EXT 组 + 装载/验签两函数加密
 > 全链通过（含 30s watchdog）；antidebug/integrity 随后落地（§12.5）；
 > **revoke 的"永久排除"结论已于 2026-10-05 证伪并落地 —— 见 §14**。
@@ -242,8 +245,47 @@ S4 字符串收敛 / S5 反调试 +2 维 + 本轮回归（矩阵+Defender）。
 - [x] S1 部分（blob/license 两枚 + 组化基础）
 - [x] S1 剩余（antidebug/integrity 于 §12.5 落地；**revoke 于 2026-10-05 落地**，
       原"0x3940 互扰 / 与 main 同页"阻断经复验为**已解**——见 §14）
-- [ ] S2-S5 实施
+- [x] S2-S5 实施 —— **2026-10-06 复核：S2/S3/S4/S5 均已落地**（逐条见下），
+      但 **S3 的试点函数与 D3 决策不符**（详见 **§9.1** 的偏离记录）
 - [ ] 回归：矩阵 + Defender + 真机闭环
+
+> **2026-10-06 复核（S2-S5 逐条证据）**：
+>
+> | 项 | 状态 | 证据 |
+> |----|------|------|
+> | **S2** 运行时密钥多样性 | ✅ | `src/vm_rekey.c:18 prot_status prot_vm_rekey(prot_vm_image* img, uint64_t new_key)`；调用点 `demo/main.c:731 prot_vm_rekey(&g_vm_imgs[vi], (ent ^ (uint64_t)vi) \| 1u)`，熵源 `:726 prot_plat_monotonic_ns()/1000000 ^ (uintptr_t)bp` ⇒ **每运行密钥域不同**；注册于 `modules.json:604-605`（`"source": "src/vm_rekey.c"`，独立编译单元）|
+> | **S3** 控制流平坦化 | ⚠️ **已落地但偏离 D3** | 实际试点 = `src/antidebug.c:509-548 prot_antidebug_detected`（7 位聚合改 `switch`-dispatch 状态机）+ `:553-575 prot_antidebug_apply_policy`（策略分发）；**不是** D3 推荐的 `prot_integrity_check_self` —— `src/integrity.c` 内**无任何平坦化**（其 `switch (g_wd_policy)` 是原有策略分发，非状态机变换）|
+> | **S4** 字符串收敛 | ✅ | `demo/strings.txt` 33 条语义串全部经 `tools/strgen.py` 加密进 `demo/gen/{win,linux}/strings.c`（243 行）；**本轮实测 `build/demo.exe`（327680 B）对 33 条串的 UTF-8 与 UTF-16LE 两种编码扫描 ⇒ 明文命中 0** |
+> | **S5** 反调试 +2 维 | ✅ | `include/protect/antidebug.h:35 ppid_blacklist`（关键项）/ `:36 clock_drift_sec`（咨询项）；置位处 `src/antidebug.c:302` / `:342`（Linux 侧 `:493`）；已进判定位 `:534 mask[6]`，且 `demo/strings.txt` 有对应 `SELFTEST_PPID` / `SELFTEST_CLOCK` 输出行 |
+>
+> **S2 的原"阻断"已解**：§9 记录的"新增任何编译单元 → `.text` 漂移 → TAMPERED"
+> 最终以**构建期同步布局**绕过（新编译单元纳入同一构建管线，见 §8 的 S2 落地记录）；
+> 本条与 §14 的 revoke 收口属同一类"当时的不可解结论已被后续机制推翻"。
+>
+> ⚠️ **仍未做的部分（保留未勾）**：S5 验收标准第 4 条要求"新维度 selftest
+> **干净环境 0 误报（真机）**"，S2 验收要求"同构建两次运行 dump 密钥不同"的
+> **真机取证**，以及下方 `回归：矩阵 + Defender + 真机闭环` —— 这些需真机，
+> 与 `docs/PHASE2.md` 同属硬件面。
+
+### 9.1 S3 试点函数的偏离（2026-10-06 补记，供后来者核对）
+
+D3 决策（§3）推荐 **`prot_integrity_check_self`**，实施步骤（§4 步骤 3）
+也写"integrity 平坦化试点"。**实际落地在 `prot_antidebug_detected`**
+（提交 `f72f134`，2026-08-30：`feat(s3-pilot): control-flow flattening pilot on
+prot_antidebug_detected - equivalent switch-dispatch state machine (7 key signals
+incl. S5 ppid_blacklist)`，1 file changed / 26 insertions / 7 deletions），
+随后扩展到 `prot_antidebug_apply_policy`。
+
+**该偏离此前未在任何地方记录** —— §12.5 只写"S3 扩展：平坦化推广到
+`prot_antidebug_apply_policy`"，未指出它与 D3 / §4 步骤 3 不一致。
+本轮如实补记，**不修改 D3 的原始文字**（那是当时的决策记录）。
+
+**推测的偏离理由（未取证，故标为推测）**：`prot_antidebug_detected` 是
+7 个独立位的纯聚合函数，语义等价性易于证明（改 `switch`-dispatch 后
+仍逐位 `acc |= mask[i]`，见 `src/antidebug.c:535-547`）；
+而 `prot_integrity_check_self` 含 IAT 快照 / 段 CRC / 掩码重建等副作用，
+等价变换的验证成本高得多。**若确为此因，应当在 §12.5 当时写明** ——
+这正是本阶段反复出现的"结论在、依据不在"的又一例。
 
 ---
 
