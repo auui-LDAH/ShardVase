@@ -70,6 +70,14 @@ EXT_TARGETS = {
     'prot_license_verify': 1,
     'prot_integrity_check_self': 1,
     'prot_antidebug_scan': 1,
+    # 2026-10-05: revoke 补入, S1 的 5/5。2026-08-30 记为"不可解"的
+    # 阻断 (prot_revoke_check 与 main 同页 0x5000 -> VP 切 RW 禁执行
+    # main 自伤) 已由 .protpad 填充节化解 —— src/selfcrypt.c 的
+    # "S1 专项 (2026-08-30)" 注释即该项修复; 实测 revoke 现落 rva=0x2ba0,
+    # 页 0x2 与 main 不同页, 页冲突安全网不触发。
+    # 复验: -ExtraSelfCrypt prot_revoke_check 构建 rc=0 (9 fns),
+    # e2e 28 PASS/0 FAIL/0 SKIP + attacks 12 PASS (含 A11 plaintext-fns=none)。
+    'prot_revoke_check': 1,
 }
 
 BLOB_SIZE = 16384  # 二期 II-3: .protcry 容器扩容 (main.c 同步)
@@ -239,8 +247,9 @@ def parse_map_functions(map_path):
         不再依赖字面前缀。
 
       ## 等价性（**已实测**）
-        · selfcrypt 的 **8 个目标函数**（DEFAULT_TARGETS + EXT_TARGETS）
-          取值**全部一致**
+        · selfcrypt 的**全部目标函数**（DEFAULT_TARGETS + EXT_TARGETS）
+          取值**全部一致**（2026-09-25 实测时是 8 个; 2026-10-05 revoke
+          补入后为 9 个 —— 该等价性结论与**目标个数无关**, 故不写死数字）
         · gcc 侧 178/178 **完全等价**
     """
     return _mapfile.parse(map_path)

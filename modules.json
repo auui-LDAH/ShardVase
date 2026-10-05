@@ -440,7 +440,7 @@
       "verifies_text": false,
       "needs_writable_dir": false,
       "known_limits": [
-        "因与 main 同页, 无法参与 selfcrypt 加密 (永久排除)",
+        "revoke 已于 2026-10-05 纳入 selfcrypt EXT 组 (第 5 枚; .protpad 填充节把 .protxec 推后一页, 原'与 main 同页'阻断已解)",
         "撤销非实时: 依赖黑名单分发, 无在线查询则滞后",
         "v0 黑名单视为损坏 (不阻断)"
       ],

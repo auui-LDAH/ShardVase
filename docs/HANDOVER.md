@@ -2418,3 +2418,121 @@ $ echo $LASTEXITCODE
 - 动态代码（`exec` / `eval` / `globals()` 注入）产生的绑定不在分析范围内；
   若将来引入，需在 `check_undef.py` 里显式豁免并注明理由。
 - 第 37 项在 **CI runner** 上的实跑结论以本轮推送后的 CI 结果为准（本地 rc=0）。
+
+
+---
+
+## 2.28 S1 收口：revoke 纳入 selfcrypt（2026-10-05）
+
+### 2.28.1 缘起：待办清单与实施记录自相矛盾
+
+`docs/DEFENSE_DEEPEN_PLAN.md:229` 长期挂着「S1 剩余（antidebug/integrity/revoke）」，
+而同一文件的 `:184-185` / `:112-113`（§12.5）已记 antidebug/integrity 落地。
+逐项核对代码后确认：**真正未覆盖的只有 revoke 一枚**（`tools/selfcrypt_proto.py`
+的 `EXT_TARGETS` 原为 4 项，含 antidebug/integrity，不含 revoke）。
+
+revoke 的唯一阻力是同一文件 `:108-109` 的「**根因最终闭环**：`prot_revoke_check`
+与 `main` 同页（0x5000）——VP 切 RW 禁执行 main 自伤，**不可解**」。
+
+### 2.28.2 为什么该结论必须重新实证，而不能直接引用
+
+该结论写于 **2026-08-30**。此后 `.text` 布局相关机制又经历了多项改动：
+节名随机化（阶段 1 第二支柱）、`.protpad` 填充节、`.protxec` 第 4 段 CRC（DRILL9）、
+`merge_baseline` 基线提升。**一条写死"不可解"的布局类结论，在布局机制变更后
+即失去效力** —— 它的前提（同页）是一个可由构建改变的偶然事实，不是不变量。
+
+### 2.28.3 证伪实验（零代码改动）
+
+`build.ps1:36` 早已提供 `-ExtraSelfCrypt <逗号分隔函数名>`，`tools/selfcrypt_proto.py`
+的 `--extra` 以 `setdefault(en, 1)` 并入 EXT 组 —— **无需改任何源码**即可复验：
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Config Release `
+    -ExtraSelfCrypt prot_revoke_check
+```
+
+| 观测项 | 结果 |
+|--------|------|
+| 构建 | `rc=0`；`prot_revoke_check rva=0x2ba0 size=154 ... group=1 (in-place)` |
+| 目标数 | `patched build\demo.exe (9 fns in-place, meta@0x34a00 hdr=220)`（8 → **9**） |
+| 页冲突安全网 | **未触发** —— revoke 落页 `0x2`，与 `main` **不同页**（原判断前提已不成立） |
+| smoke | `build: smoke test PASS (correct serial accepted)` |
+| `demo.exe --selftest` | `rc=1`（正常"序列号无效"路径）—— **无 0x5d0d 崩溃、无 0xBAD TAMPERED** |
+| e2e | `总计 28: PASS 28 / FAIL 0 / SKIP 0 / NA 0` |
+| attacks | `总计 12: PASS 12 / FAIL 0 / NA 0`，含 `A11 selfcrypt-dump PASS (plaintext-fns=none)` |
+| window_check | `加密目标 9 个` ⇒ `PASS: 全部加密目标调用点都在配对 enter/leave 窗口内` |
+
+### 2.28.4 阻断已解的真因：修了、也记了，但旧结论无人回收
+
+`src/selfcrypt.c:39-41` 的注释就是修复本身：
+
+```
+/* S1 专项 (2026-08-30): .protpad 填充节 — 把 .protxec 推后一页,
+ * 使其与 .text 尾部加密段 (revoke) 分页, 消除
+ * 页粒度 VP 禁执行自伤。 */
+```
+
+即 §12.5 那次"页冲突安全网"的**同批改动已经解掉了 revoke 的同页问题**，
+只是实施记录没有回头销掉 revoke 的排除结论。
+
+⇒ **通用教训：修复与销账是两件事。** 一条"某目标不可用/永久排除"的结论，
+在它所依赖的机制被改动后，必须由**改动方**主动回收；否则它会以"技术债"的
+形态留在待办里，让后续的人重复排查一个已经不存在的问题。
+本轮的触发器不是新攻击面，而是**待办清单与实施记录自相矛盾**这个信号 ——
+自相矛盾的计划文档本身就是缺陷指示器。
+
+### 2.28.5 落地
+
+- `tools/selfcrypt_proto.py` 的 `EXT_TARGETS` 增加 `'prot_revoke_check': 1`
+  （含复验数据与"为何原判不可解"的注释）。
+- `tools/window_check.py:107-129` 的 `load_targets()` **从该文件动态读清单、
+  不硬编码** ⇒ 新增目标自动进入调用点窗口校验（实测 `加密目标 9 个`，PASS）。
+- `demo/main.c:829-837` 的调用点**本就已在 `sc_ext_enter()/sc_ext_leave()`
+  窗口内**（§8 已为"未来 EXT 加密预留"），**宿主代码零改动**。
+- `modules.json` 中 revoke 的 `known_limits[0]`（原「因与 main 同页, 无法参与
+  selfcrypt 加密 (永久排除)」）与 selfcrypt 模块的同款论断一并更正。
+- `docs/DEFENSE_DEEPEN_PLAN.md`：版本头状态改为 S1 5/5；待办勾除；
+  §12.5 的"不可解"标注为已证伪；新增 §14 复验与收口记录。
+
+### 2.28.6 顺带修掉的同型缺陷（静态自检里的硬编码）
+
+`tools/window_check.py` 的 self-test 原断言：
+
+```python
+case('目标清单 = 8 个', len(r['targets']) == 8)
+case('8 个目标分布 4+4', sorted(r['targets'].values()) == [0,0,0,0,1,1,1,1])
+```
+
+目标增至 9 个后**这两条自检立刻失效**。这与 `load_targets()` 存在的理由
+（其 docstring：「硬编码会在目标增删时**静默失准**」）**完全同型** ——
+判据本体做到了不硬编码，判据的**自检**却硬编码了。
+
+改为与源声明比对 + 只断言结构性质（非空、仅 0/1、两组都出现），
+增删目标时自动跟随：
+
+```python
+case('目标清单与 selfcrypt_proto 声明一致', sorted(r['targets']) == sorted(_src))
+case('目标分组仅 0/1 且两组均非空', set(_src.values()) <= {0,1} and 0 in _src.values() and 1 in _src.values())
+```
+
+`tools/selfcrypt_proto.py` 的 docstring 里「**8 个目标函数**」同样写死，
+已改为"全部目标函数"并注明该等价性结论与个数无关。
+
+### 2.28.7 验证
+
+- 3 连建稳定性门槛（布局敏感纪律，见 §2.7 纪律提醒）：**3/3**
+  `build rc=0` + `smoke PASS` + `e2e 28 PASS/0 FAIL/0 SKIP`。
+  ⚠️ 三轮 exe SHA 各不相同 —— 这是**预期**：阶段 1 起节名每构建随机；
+  可复现性由 `repro_check` 的 `-SeedsFile` 重建单独守护（同轮已 `[ok]`）。
+- 全门禁：`FAIL: 1/34`，**唯一红项 = `git 工作区干净`**（提交前预期）；
+  `[ok] 可复现 (repro_check)` / `[ok] 加密封装窗口 (window_check)` /
+  `[ok] e2e T1-T28` / `[ok] attacks A1-A12` / `[ok] 静态未定义名审计 (undef_check)` 全绿。
+
+### 2.28.8 诚实边界
+
+- revoke 是**低频 + 间接表 + 签名兜底**的模块（`docs/DEFENSE_DEEPEN_PLAN.md`
+  自评"加密收益最低"）。本次纳入的**主要价值是消除一处"已修未销"的陈旧阻断记录**，
+  安全增益有限 —— 不应把它描述成一次能力升级。
+- D2b 下窗口 = 调用周期；窗口外 revoke 仍是密文，符合设计意图。
+- **未做**：revoke 加密后的**真机 Defender 复测**（`docs/DEFENSE_DEEPEN_PLAN.md:231`
+  待办末条）仍挂账；本次只覆盖本机 e2e/attacks 与构建门禁。

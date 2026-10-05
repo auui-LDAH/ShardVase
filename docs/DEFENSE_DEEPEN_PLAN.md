@@ -1,9 +1,10 @@
 # 反逆向纵深增强轮计划 — S1-S5 (DEFENSE_DEEPEN_PLAN)
 
-> 版本：2026-08-29 v2 · 状态：**S1 部分落地（2/5 目标）；S2-S5 待续** ·
+> 版本：2026-08-29 v2 · **2026-10-05 补记 v8** · 状态：**S1 全数落地（5/5 目标）**；
+> S2 已落地（`src/vm_rekey.c`）；S3-S5 见 §12.5/§12 实施记录 ·
 > v1 规划五项全收；v2 实施记录：meta 24B 组化+EXT 组 + 装载/验签两函数加密
-> 全链通过（含 30s watchdog）；antidebug/integrity/revoke 三个目标加密因
-> 运行期布局互扰未落地（诚实边界详见 §8 实施记录）。
+> 全链通过（含 30s watchdog）；antidebug/integrity 随后落地（§12.5）；
+> **revoke 的"永久排除"结论已于 2026-10-05 证伪并落地 —— 见 §14**。
 
 ---
 
@@ -105,8 +106,11 @@
 **S1 突破（4/5 落地）**：
 - antidebug/integrity 加密最终落地：辅助函数（antidebug 的 ad_*/vh_int3、
   integrity 的 build_reloc/iat_snapshot 等）全移 `.protxec` 独立页；
-- **根因最终闭环**：`prot_revoke_check` 与 `main` 同页（0x5000）——
-  VP 切 RW 禁执行 main 自伤，**不可解**（revoke 排除，间接表+签名兜底）；
+- **根因（当时）**：`prot_revoke_check` 与 `main` 同页（0x5000）——
+  VP 切 RW 禁执行 main 自伤。当时判为**不可解**（revoke 排除）。
+  ⚠️ **该结论已于 2026-10-05 证伪**：`.protpad` 填充节（§12.5 下一条的
+  "页冲突安全网"同批引入）把 `.protxec` 推后一页，revoke 现落独立页 ——
+  详见 §14；本条保留为当时记录，勿再作为现状引用；
 - **页冲突安全网**：selfcrypt_proto 检测加密段与 main 同页 → 警告跳过
   （防未来把 main 同页函数加回加密集合）；
 - 最终 S1 = blob_load/license_verify/integrity_check_self/antidebug_scan
@@ -226,6 +230,81 @@ S4 字符串收敛 / S5 反调试 +2 维 + 本轮回归（矩阵+Defender）。
 ## 9. 待办清单
 - [x] 拍板 D1-D5
 - [x] S1 部分（blob/license 两枚 + 组化基础）
-- [ ] S1 剩余（antidebug/integrity/revoke——专项解 0x3940 互扰）
+- [x] S1 剩余（antidebug/integrity 于 §12.5 落地；**revoke 于 2026-10-05 落地**，
+      原"0x3940 互扰 / 与 main 同页"阻断经复验为**已解**——见 §14）
 - [ ] S2-S5 实施
 - [ ] 回归：矩阵 + Defender + 真机闭环
+
+---
+
+## 14. 复验与收口（2026-10-05 · v8）— S1 5/5
+
+### 14.1 缘起
+
+§9 待办长期挂着「S1 剩余（antidebug/integrity/revoke）」，而 §12.5 已记
+antidebug/integrity 落地 —— **待办清单与实施记录自相矛盾**。逐项核对后，
+真正未覆盖的目标只有 **revoke 一枚**，其唯一阻力是 §12.5 的
+「与 main 同页（0x5000）· 不可解」判断。
+
+该判断写于 2026-08-30，此后仓库经历了**节名随机化**（阶段 1，第二支柱）、
+**`.protpad` 填充节**、**`.protxec` 第 4 段 CRC**（DRILL9）、
+**`merge_baseline` 基线提升**等多项布局相关改动。故「revoke 必崩」
+是**可证伪的陈旧结论**，不能直接作为现状引用。
+
+### 14.2 证伪实验（最小改动，利用既有逃生舱）
+
+`build.ps1:36` 早已提供 `-ExtraSelfCrypt <逗号分隔函数名>`，`tools/selfcrypt_proto.py:344-346`
+的 `--extra` 会以 `setdefault(en, 1)` 并入 EXT 组 —— **无需改任何代码**即可复验：
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Config Release `
+    -ExtraSelfCrypt prot_revoke_check
+```
+
+实测：
+
+| 观测项 | 结果 |
+|--------|------|
+| 构建 | `rc=0`；`selfcrypt_proto: prot_revoke_check rva=0x2ba0 size=154 seed=0x4e31504245474d21 crc=0x1a617e16 group=1 (in-place)` |
+| 目标数 | `patched build\demo.exe (9 fns in-place, meta@0x34a00 hdr=220)`（原 8 → **9**） |
+| 页冲突安全网 | **未触发** —— revoke 落页 `0x2`，与 `main` **不同页**（原判断的前提已不成立） |
+| smoke | `build: smoke test PASS (correct serial accepted)` |
+| `demo.exe --selftest` | `rc=1`（正常"序列号无效"路径）—— **无 0x5d0d 崩溃、无 0xBAD TAMPERED** |
+| e2e | `[e2e] 平台=win  总计 28: PASS 28 / FAIL 0 / SKIP 0 / NA 0` |
+| attacks | `[attacks] 平台=win  总计 12: PASS 12 / FAIL 0 / NA 0`，含 `A11 selfcrypt-dump PASS   (plaintext-fns=none (static ciphertext))` |
+| window_check | `作用域 24 文件 / 308 函数; 加密目标 9 个` ⇒ `PASS: 全部加密目标调用点都在配对 enter/leave 窗口内` |
+
+### 14.3 阻断已解的真因
+
+`src/selfcrypt.c:39-41` 的注释即修复本身：
+
+```
+/* S1 专项 (2026-08-30): .protpad 填充节 — 把 .protxec 推后一页,
+ * 使其与 .text 尾部加密段 (revoke) 分页, 消除
+ * 页粒度 VP 禁执行自伤。 */
+```
+
+即 §12.5 记录那次"页冲突安全网"的同批改动**顺带解掉了 revoke 的同页问题**，
+只是当时的实施记录没有回头销掉 revoke 的排除结论 ——
+**修了、也记了，但记在了另一条下面，旧结论无人回收**。
+
+### 14.4 落地
+
+`tools/selfcrypt_proto.py` 的 `EXT_TARGETS` 增加 `'prot_revoke_check': 1`
+（含复验数据注释）。`tools/window_check.py:107-129` 的 `load_targets()`
+**从该文件动态读清单、不硬编码**，故新增目标自动进入调用点窗口校验。
+
+`demo/main.c:829-837` 的调用点**本就已在 `sc_ext_enter()/sc_ext_leave()` 窗口内**
+（§8 已为"未来 EXT 加密预留"），无需改动宿主代码。
+
+`examples/tool_demo/main.c:327` 是直接调用且**无**窗口，但该目录**不在
+`tools/window_check.py:86 SCOPE_DIRS` 内** —— 其 `build_example.ps1`
+**不调** `selfcrypt_proto`（`tools/window_check.py:61` 明载），
+故其 `prot_revoke_check` 是明文函数，无窗口需求。
+
+### 14.5 诚实边界
+
+- revoke 是**低频 + 间接表 + 签名兜底**的模块（§12.5 自评"加密收益最低"）；
+  本次纳入是**消除一处"已修未销"的陈旧阻断记录**，安全增益有限。
+- D2b 下窗口 = 调用周期；窗口外 revoke 仍是密文，符合设计意图。
+- 未做：revoke 加密对**真机 Defender 复测**（§9 待办末条）仍挂账。

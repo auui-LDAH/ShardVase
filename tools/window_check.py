@@ -858,9 +858,20 @@ def selftest():
          not [x for x in fs[0]['sites'] if x['name'] == 'prot_antidebug_scan'])
 
     # 7. 真实代码树: 作用域/目标清单非空
+    #
+    # **不硬编码目标数**(2026-10-05 修): 原为 `len(r['targets']) == 8` +
+    #   `sorted(values) == [0,0,0,0,1,1,1,1]`。S1 把 `prot_revoke_check`
+    #   补入 EXT_TARGETS(8 -> 9)后, 这两条自检即失效 —— 与
+    #   `load_targets()` 存在的理由(§"单一事实来源, 不硬编码, 硬编码会在
+    #   目标增删时静默失准")完全同型。改为**与源声明比对** + 只断言
+    #   分组结构性质(非空、仅 0/1、两组都出现), 增删目标时自动跟随。
     r = analyze()
-    case('目标清单 = 8 个', len(r['targets']) == 8)
-    case('8 个目标分布 4+4', sorted(r['targets'].values()) == [0, 0, 0, 0, 1, 1, 1, 1])
+    _src = load_targets()
+    case('目标清单与 selfcrypt_proto 声明一致',
+         sorted(r['targets']) == sorted(_src))
+    case('目标分组仅 0/1 且两组均非空',
+         set(_src.values()) <= {0, 1} and 0 in _src.values()
+         and 1 in _src.values())
     case('作用域含 demo 与 skeleton',
          any('demo/main.c' in f for f in r['files'])
          and any('prot_sdk/skeleton/app_main.c' in f for f in r['files']))
