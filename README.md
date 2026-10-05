@@ -6,7 +6,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Commercial](https://img.shields.io/badge/license-commercial%20available-green.svg)](LICENSE.md)
-[![Gate](https://img.shields.io/badge/release__check-33%2F33-brightgreen.svg)](#质量门禁)
+[![Gate](https://img.shields.io/badge/release__check-34%2F34-brightgreen.svg)](#质量门禁)
 
 ---
 
@@ -104,7 +104,7 @@ powershell -File <工程>\build_skeleton.ps1 -Project <工程>
 
 ```powershell
 powershell -File build.ps1 -Config Release
-powershell -File tools\release_check.ps1     # 33 项门禁（默认；共 36 项）
+powershell -File tools\release_check.ps1     # 34 项门禁（默认；共 37 项）
 ```
 
 ---
@@ -129,26 +129,27 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 
 ## 质量门禁
 
-`tools/release_check.ps1` 跑 **33 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
-后共 **36 项**），全绿才算通过。默认跑的全部 33 项：
+`tools/release_check.ps1` 跑 **34 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
+后共 **37 项**），全绿才算通过。默认跑的全部 34 项：
 
 ```
-[ok] git 工作区干净               [ok] Linux 编译覆盖 (linux_compile_check)
-[ok] 版本非占位                   [ok] C 注释词法 (comment_lint)
-[ok] Release 构建 (build.ps1)     [ok] mojibake 全库回归 (mojibake_check)
-[ok] 可复现 (repro_check)         [ok] 平台层契约 (platform conformance)
-[ok] e2e T1-T28                   [ok] 攻击技契约 (attackcheck)
-[ok] attacks A1-A12               [ok] 构建状态自检 (check_state_platform)
-[ok] vm_unit                      [ok] 平台层自检 (_platform)
-[ok] vmc                          [ok] 验证互斥锁自检 (verify_lock)
-[ok] example E1-E7                [ok] 文档断言一致性 (docclaim)
-[ok] protchain P1-P6              [ok] 部署加固自检 (deploy_harden)
-[ok] 加密封装窗口 (window_check)  [ok] 性能基准自检 (perf_baseline)
-[ok] 模块契约 (modcheck)          [ok] 判定点快照校验自检 (guard_selftest)
-[ok] 攻防记录 (drills lint)       [ok] 调试控制台自检 (prot_dbg)
-[ok] 对外材料 (doccheck)          [ok] 门禁日志自检 (gate_log)
-[ok] 签名 (Authenticode)          [ok] 调试控制台活体自检 (prot_dbg live)
-[ok] 协议兼容性 (conformance)      [ok] CRC 目标表一致性 (crc_targets)
+[ok] git 工作区干净                        [ok] C 注释词法 (comment_lint)
+[ok] 版本非占位                            [ok] mojibake 全库回归 (mojibake_check)
+[ok] Release 构建 (build.ps1)              [ok] 平台层契约 (platform conformance)
+[ok] 可复现 (repro_check)                  [ok] 攻击技契约 (attackcheck)
+[ok] e2e T1-T28                            [ok] 构建状态自检 (check_state_platform)
+[ok] attacks A1-A12                        [ok] 平台层自检 (_platform)
+[ok] vm_unit                               [ok] 验证互斥锁自检 (verify_lock)
+[ok] vmc                                   [ok] 文档断言一致性 (docclaim)
+[ok] example E1-E7                         [ok] 部署加固自检 (deploy_harden)
+[ok] protchain P1-P6                       [ok] 性能基准自检 (perf_baseline)
+[ok] 加密封装窗口 (window_check)           [ok] 判定点快照校验自检 (guard_selftest)
+[ok] 模块契约 (modcheck)                   [ok] 调试控制台自检 (prot_dbg)
+[ok] 攻防记录 (drills lint)                [ok] 门禁日志自检 (gate_log)
+[ok] 对外材料 (doccheck)                   [ok] 调试控制台活体自检 (prot_dbg live)
+[ok] 签名 (Authenticode)                   [ok] 判定多副本等价性 (replica_check)
+[ok] 协议兼容性 (conformance)              [ok] CRC 目标表一致性 (crc_targets)
+[ok] Linux 编译覆盖 (linux_compile_check)  [ok] 静态未定义名审计 (undef_check)
 ```
 
 默认不跑的 3 项（各约 1-4 分钟，发版前用 `-With*` 启用）：

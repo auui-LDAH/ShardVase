@@ -2341,3 +2341,80 @@ build-and-verify  Full release gate
     `Continue` 成功），未接入任何判据。
   · 本机 T3 用时约 19s（`events=23`），CI 约 21 个事件 —— 事件数随
     环境 DLL/线程数浮动，**判据未依赖事件数**（只依赖退出码与文本）。
+
+
+---
+
+## 2.27 门禁第 37 项：静态未定义名审计（`tools/check_undef.py`，2026-10-05）
+
+### 2.27.1 缘起：两起同型的 `NameError`，都只在失败路径上执行
+
+门禁从 36 项增至 37 项，新增的不是运行期用例，而是**纯静态**审计。它由本轮修 bug 时
+踩到的两起真实事故催生，两起**形态完全相同**：
+
+| # | 事故 | 潜伏期 | 为什么没人发现 |
+|---|---|---|---|
+| 1 | `tests/e2e.py` T3 调用 `DebugAttacher()`，而该类已被 `22826c5`（2026-09-28, C-3）整块删除 | **7 个月** | 旧 preflight 用 `DebugActiveProcess(os.getpid())`，Windows 禁止自附加 ⇒ 那条 `else` 分支从未执行；直到 S6 把 preflight 改成附加派生子进程，它才**第一次**被走到 |
+| 2 | `tools/guard_selftest.py` 的诊断分支引用 `run_by_hits()` 的局部名 `cont` / `exit_pol` | 同轮 | 诊断分支只在"未能就绪"这条失败路径上执行，本地恒绿 ⇒ 永不可达 |
+
+共同点：**代码只在失败路径 / 异常路径上执行**。这解释了为什么既有防线全都漏掉：
+
+- `py_compile` 只查语法 —— `DebugAttacher()` 语法完全合法；
+- 运行测试只覆盖**走到的**路径 —— 失败路径恰恰是"测试全绿时不会走"的分支。
+
+⇒ **唯一有效的防线是静态名字绑定分析**（与是否执行无关）。这就是第 37 项的理由。
+
+### 2.27.2 做法
+
+`tools/check_undef.py`（纯 `ast`，无第三方依赖，396 行）。对每个函数/类/模块作用域收集
+绑定名，再检查每个 `Name` 载入是否可见。**只读源码、不导入被测文件、不执行任何代码、不写产物**
+—— 因此它对恶意或者只是副作用强的模块也安全，可以无条件跑。
+
+实现要点 6 条（每条都对应一次实测踩坑）：
+
+1. **类体的名字对方法体不可见** —— `class C:` 内 `x = 1`，方法里 `x` 是**未定义**（Python 语义）。
+2. **推导式首个 iterable 在外层作用域求值** —— `[i for i in xs]` 的 `xs` 用外层绑定，之后的 `if`/表达式用内层。
+3. **装饰器与默认值在外层求值** —— `@dec` / `def f(a=CONST)` 的 `dec`/`CONST` 在**定义处**作用域解析。
+4. **`global` / `nonlocal` 声明的名字算已绑定**。
+5. **嵌套作用域节点本身也是本作用域的绑定** —— 漏掉这条曾**一次性造成 18 处假阳**（`try:` 内定义的
+   `class OSVERSIONINFOEXW` 名字不被绑定，后续 `OSVERSIONINFOEXW()` 被误报）。
+6. **`ast.arg` 的属性是 `node.arg`，不是 `node.id`**；读文件必须 `encoding='utf-8-sig'`
+   （否则带 BOM 的 `tests/attacks.py` / `tests/e2e.py` 报 `invalid non-printable character U+FEFF`）。
+
+### 2.27.3 负向自检（9 项）
+
+自检 **4 条变异必须全部被抓 + 4 类已知假阳源必须不报**，另有 1 项计数断言：
+
+```
+[check_undef-selftest] PASS: 9 项（4 变异 / 4 假阳防线）
+```
+
+**踩坑记录**：最初第 2 条变异写成"删掉 `total = a + b`"并期望抓到 `total`，但该函数后面有
+`total += r` —— `AugAssign` 的目标本身就是一个 `Store`，名字**仍被绑定** ⇒ 实得 `[]`，
+selftest FAIL（自检抓到了自检自己的错误）。改为 `_NESTED_LOCAL` 样本（内层函数的 `token`
+在外层被引用）后才正确。**教训：断言"某变异必须被抓"时，必须确认该变异真的消除了绑定，
+而不是只消除了某一行文本。**
+
+### 2.27.4 验证
+
+```
+$ python -X utf8 tools\check_undef.py --quiet
+[check_undef] PASS: 扫描 87 个 .py, 疑似未定义引用 0 处
+$ echo $LASTEXITCODE
+0
+```
+
+- 全库 87 个 `.py`，**0 处**疑似未定义引用（两起事故的名字都已被修掉）。
+- 第 37 项已接入 `tools/release_check.ps1`（紧接 `CRC 目标表一致性 (crc_targets)` 之后，
+  两段式：`--selftest --quiet` 再 `--quiet`），并同步进 `tools/ci_sim.ps1` 与
+  `.github/workflows/ci.yml` 的 `py_compile` 显式清单。
+- 项数口径全库同步 **36/33 → 37/34**（含 `tools/doccheck.py` 的 `GATE_TOTAL`/`GATE_DEFAULT`
+  与 selftest 漂移字面量重挑 —— 硬约束：漂移用例的值**不能**等于这两个常量）。
+
+### 2.27.5 仍未验证
+
+- 本审计是**保守**的：它只报"作用域内完全找不到该名字"，不做跨模块名解析，
+  因此**不能**发现"导入了但拼错属性名"或"运行期 `getattr` 才出现的名字"。
+- 动态代码（`exec` / `eval` / `globals()` 注入）产生的绑定不在分析范围内；
+  若将来引入，需在 `check_undef.py` 里显式豁免并注明理由。
+- 第 37 项在 **CI runner** 上的实跑结论以本轮推送后的 CI 结果为准（本地 rc=0）。
