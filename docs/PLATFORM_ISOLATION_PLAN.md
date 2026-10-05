@@ -477,7 +477,7 @@ parse(path, image_base=None, funcs_only=False, exclude_libs=False,
 |--------|------|------|
 | `protchain_check` | MSVC 全符号 | 2973 键一致 |
 | `protchain_check` | gcc | **178/178 完全等价** |
-| `selfcrypt_proto` | **8 个目标函数** | 取值**全部一致** |
+| `selfcrypt_proto` | **全部目标函数**（当时 8 个） | 取值**全部一致** |
 | `selfcrypt_proto` | gcc | **178/178 完全等价** |
 | `migration_cost` | 全符号 | 旧 2971 / 新 2971，**值不同 0** |
 | `migration_cost` | **函数口径（M1 门禁）** | 旧 131 / 新 131，**值不同 0** |
