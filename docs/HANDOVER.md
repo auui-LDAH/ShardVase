@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（694 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（695 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
 
 
 ## 1. 项目是什么
@@ -3333,4 +3333,21 @@ if any(mrva <= t_va + ctl_off < mrva + mlen for mrva, mlen in ranges):
   （节名也从 `.b3locz1` 变为 `.bmrihpa`）。
 - 与 §2.33 同：**真机 / 企业环境仍未验证**，证据是 Windows x64 本机构建下的。
 
-*2026-10-06 v2*
+#### 2.34.6 补记：本节落地后的全门禁与 CI
+
+§2.34 的「未验证」里原写「§2.34 自身落地后的全门禁尚未重跑」。现已重跑，
+结果如下（这正是本仓库反复吃过的「记录会过时」——所以当场回填）：
+
+- **全门禁**：`[release_check] PASS: 35 项检查全通过`（rc=0），日志
+  `build/logs/release_check_20261006_070951.log`，其中逐字含
+  **`[ok]  e2e T1-T30`** —— 证明改名后的门禁标签确实被执行到（不是只改了
+  字符串而用例没跑）。
+- **CI**：run `37386864350`（head `7e02954`）`completed success`，
+  四 job 全绿：`build-and-verify|success` / `linux-portability|success` /
+  `sdk-package|success` / `reproducible|success`。
+- 提交链：`80db8ba`（T29）→ `ed7d838`（§2.33）→ `efb81b7`（T30）→
+  `7e02954`（§2.34），均已推送 `origin/master`。
+- 唯一噪音是 CI 的 Node.js 20 弃用告警
+  （`actions/checkout@v4` 等被迫跑在 Node.js 24 上），与本次改动无关。
+
+*2026-10-06 v3*
