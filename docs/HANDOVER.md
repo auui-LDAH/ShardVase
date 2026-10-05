@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-04 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **36** 项（默认 33）· 提交 `8ff9adb`（gate_log T1 调度抖动修复 + 12/12 说法更正后）
+> **最后核实**: 2026-10-05 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **36** 项（默认 33）· 提交 `2355820`（e2e T3 DBG_CONTINUE 常量修复 + §2.26 记档后）
 
 
 ## 1. 项目是什么
