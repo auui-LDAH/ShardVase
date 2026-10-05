@@ -1,6 +1,10 @@
 # N1 运行时自变形 — 完备实施计划 (N1_PLAN)
 
-> 版本：2026-08-22 v2 · 状态：**阶段 0-3 已完成（方案 B 原位加密落地）** · 关联：`docs/ADVANCED2.md` §2（N1 原定义）·
+> 版本：2026-08-22 v2 · **2026-10-06 复核** · 状态：**阶段 0-3 已完成（方案 B 原位加密落地）；
+> 二期 II-1/II-2/II-3 亦已完成**（2026-08-22 提交 `73f2381`；正式状态见
+> `docs/N1_PHASE2_PLAN.md` 与 `docs/ADVANCED2.md:167`）—— 本文档 v2 的头部与
+> §10 待办清单在二期落地时**未回填**，2026-10-06 复核时修正（见 §11 复核记录）·
+> 关联：`docs/ADVANCED2.md` §2（N1 原定义）·
 > `docs/CONTRACT.md`（完整性/VM 契约）· `docs/THREATMODEL.md`（威胁模型）· `docs/ADVANCED2.md`（N2-N5 已落地）。
 > 本文档是 N1 从"想法"到"可执行"的完整计划：目标、与现有机制的重叠分析、可选技术路线、
 > 决策点、分阶段实施、验收、风险、工作量与回退方案。v2 记录阶段 0 关键结论
@@ -214,17 +218,36 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
 
 - [x] D2a 一次性解密 + FlushInstructionCache + RX + `PROT_SELFCRYPT_DISABLE`；
 - [x] D1b 掩码（`integrity.c build_selfcrypt_mask`，载荷从 .protcry meta 读）；
-- [ ] 二期待办：解密态 CRC 校验、D2c 周期重加密、D2b 调用级 —— 见
-      `docs/N1_PHASE2_PLAN.md`。
-- [ ] demo/main.c 接入：早期调用 `prot_selfcrypt_init()`（✅ 已接入）。
+- [x] 二期待办（部分）：**解密态 CRC 校验** ✅（II-1）、**D2b 调用级** ✅（II-2）
+      —— 见 `docs/N1_PHASE2_PLAN.md`。
+- [ ] 二期待办（仍缺）：**D2c 看门狗周期重加密** ❌ —— **全库无实现**
+      （`src/` 内搜 `D2c|reencrypt|周期重加密` 零命中）。这是本文档列出的
+      三个二期项中**唯一未落地**的一个，如实保留未勾。
+- [x] demo/main.c 接入：早期调用 `prot_selfcrypt_init()`（`demo/main.c:525`，
+      失败即 `:527 MSG_TAMPER` + `:529 exit(PROT_EXIT_TAMPERED)`）。
 
 ### 阶段 3：测试与回归（1 天）— ✅ 已随一期待办完成
 
 - [x] e2e T1-T26 全绿（含 T4 篡改检测 0xBAD）；
 - [x] attacks A1-A7 全绿；
 - [x] Release 可复现验证（同种子两次构建字节一致）。
-- [ ] **二期待办**：解密态 CRC（T29）、密文态篡改（T30）、D2b 运行期 dump 窗口、
-      覆盖更多引擎函数 —— 见 `docs/N1_PHASE2_PLAN.md`。
+- [x] **二期待办（已落地部分，2026-10-06 复核）**：解密态 CRC 校验（II-1，含
+      meta 20B + 校验失败 → `0xBAD`）、D2b 运行期 dump 窗口（II-2，`enter/leave`
+      + SRWLock + 编译开关）、覆盖更多引擎函数（II-3，4 函数）
+      —— 见 `docs/N1_PHASE2_PLAN.md`。
+- [ ] **二期待办（真实缺口）**：本条原写"解密态 CRC（**T29**）、密文态篡改
+      （**T30**）"。**实测：`T29`/`T30` 在全库不存在** —— `tests/e2e.py` 的
+      测试 ID 编号到 T28 为止，`tests/{e2e,attacks,attack_drill,attack_drill2,protchain_check}.py`
+      搜 `T29|T30` **零命中**（`git log -S 'T29'` 只命中本文档的创建提交
+      `80b4ce5`，即**从未实现**）。⇒
+      · **II-1 机制已实现但无回归测试**：`src/selfcrypt.c` 会解密后校验并
+        失败退 `0xBAD`，但**没有任何测试篡改 `.protcry` meta 去触发它**
+        （`tests/` 内搜 `protcry` 的写/篡改动作，只有 `attack_drill.py` 的
+        **读**操作 D2/D3 与 `protchain_check.selfcrypt_meta` 的解析）。
+      · **密文态 CRC（`PROTCRYP` 第 4 标记）从未实现**：`tools/hashpatch.py:47
+        MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP', b'PROTCRCX')` 只有 4 个，
+        搜 `PROTCRYP` 全库零命中。
+      如实保留未勾，**不把"机制在"读成"验收过"**。
 
 ---
 
@@ -236,6 +259,9 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
    非调用时刻 dump 为密文。
 3. **功能**：e2e T1-T26 零回归；attacks A1-A7 零回归；vm_unit PASS。
 4. **完整性**：解密态 CRC 与密文态 CRC 均生效；T4/T9/T10/T29/T30 全 PASS。
+   > **2026-10-06 复核**：本条**未达成**。`T29`/`T30` 不存在（见 §4 阶段 3 记录）；
+   > 解密态 CRC（II-1）机制在但无回归测试；**密文态 CRC（`PROTCRYP`）从未实现**。
+   > 已达成的是 `T4`/`T9`/`T10`（`.text`/`.rdata`/`.pdata` 翻转 → `0xBAD`）。
 5. **可复现**：同种子两次 Release 构建 SHA-256 一致。
 6. **降级开关**：`PROT_SELFCRYPT_DISABLE` 构建后功能全绿（N1 完全旁路）。
 
@@ -285,9 +311,9 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
 |--------|------|---------|
 | N1 阶段 0 原型 | ✅ 通过（方案 B 原位加密；方案 C 搬移证伪；e2e/attacks/vm_unit/vmc 零回归；Release 可复现；静态密文） | 2026-08-22 |
 | N1 阶段 1 构建期加密工具 | ✅ 完成（selfcrypt_proto.py + build.ps1 集成 + hashpatch --mask） | 2026-08-22 |
-| N1 阶段 2 运行期解密器 | ✅ 完成（selfcrypt.c D2a 一次性解密 + D1b 掩码；解密态 CRC 留待增强） | 2026-08-22 |
+| N1 阶段 2 运行期解密器 | ✅ 完成（selfcrypt.c D2a 一次性解密 + D1b 掩码；解密态 CRC 已由二期 II-1 补上） | 2026-08-22 |
 | N1 阶段 3 测试回归 | ✅ 完成（T1-T26/A1-A7/vm_unit/vmc 全绿；Release 可复现） | 2026-08-22 |
-| N1 二期增强（II-1/II-2/II-3） | 计划完成，未开工 —— 见 **`docs/N1_PHASE2_PLAN.md`** | 待定 |
+| N1 二期增强（II-1/II-2/II-3） | ✅ 完成（2026-08-22 提交 `73f2381`）——见 **`docs/N1_PHASE2_PLAN.md`**；**本表原写"计划完成，未开工"是未回填的陈旧值** | 2026-08-22 |
 
 ---
 
@@ -296,6 +322,63 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
 1. [x] 拍板决策点 D1-D5（§4）——D1b/D2a/D3-A/D4/D5 已定。
 2. [x] 阶段 0 原型验证（方案 B 通过，方案 C 证伪）。
 3. [x] 阶段 1-3 落地（selfcrypt_proto.py + selfcrypt.c + 掩码 + 回归）。
-4. [ ] 二期增强（可选）：解密态 CRC 校验（防解密桩被 patch）、D2b/D2c、
-     覆盖更多引擎函数（vm_build_keymaps/vm_wb 等）、看门狗周期重加密。
-5. [ ] 杀软/EDR 跨环境验证（真机、企业环境）。
+4. [x] 二期增强（**II-1/II-2/II-3 于 2026-08-22 落地**，提交 `73f2381`）：解密态
+      CRC 校验（防解密桩被 patch）✅、D2b ✅、覆盖更多引擎函数
+      （`prot_vm_run`/`vm_build_keymaps`/`vm_wb`/`vm_var` 4 个）✅。
+      **仍缺**：D2c 看门狗周期重加密 ❌（全库无实现）、**T29/T30 两个回归测试
+      从未实现**（编号止于 T28）、**密文态 CRC（`PROTCRYP`）从未实现**
+      —— 详见 §4 阶段 3 与 §6 验收标准第 4 条的复核注。
+5. [ ] 杀软/EDR 跨环境验证（真机、企业环境）—— 与 `docs/N1_PHASE2_PLAN.md:210`
+      同一挂账，**需真机**。
+
+---
+
+## 11. 复核记录（2026-10-06）
+
+**性质**：本文档在二期（`docs/N1_PHASE2_PLAN.md`）全部落地时**未同步回填** ——
+`73f2381`（2026-08-23，II-1/II-2/II-3 落地）的改动面是
+`build.ps1` / `demo/main.c` / `docs/ADVANCED2.md` / `docs/HANDOVER.md` /
+`docs/N1_PHASE2_PLAN.md` / `include/protect/selfcrypt.h` / `src/integrity.c` /
+`src/selfcrypt.c` / `tools/selfcrypt_proto.py` —— **9 个文件，不含本文档**
+（`docs/N1_PLAN.md`）。`docs/ADVANCED2.md:167` 与 `docs/N1_PHASE2_PLAN.md:3`
+都如实记了"二期全部完成"，只有本文档留在"未开工"。
+
+**本轮修正**（均为就地改现值，不改历史结论）：
+
+| 位置 | 原 | 现 |
+|------|----|----|
+| 头部状态行 | `阶段 0-3 已完成` | `阶段 0-3 已完成；二期 II-1/II-2/II-3 亦已完成` |
+| §4 阶段 2 待办 | `[ ] 二期待办：解密态 CRC、D2c、D2b` | 拆为已落地（II-1/II-2）与**真实缺口（D2c）**两条 |
+| §4 阶段 2 接入 | `[ ] demo/main.c 接入（✅ 已接入）`（自相矛盾） | `[x]` + 行号证据 |
+| §4 阶段 3 待办 | `[ ] T29/T30/D2b/多函数` | `[x]` 已落地部分 + `[ ]` **T29/T30 不存在**的实测 |
+| §6 验收 4 | `T29/T30 全 PASS` | 加复核注：**本条未达成** |
+| §9 里程碑 | `计划完成，未开工` | `✅ 完成（73f2381）` |
+| §10 待办 4 | `[ ]` | `[x]` 已落地 + 明确仍缺项 |
+
+**本轮发现的真实缺口（不是陈旧标记，是真没做）** —— 三条，均已如实保留未勾：
+
+1. **D2c 看门狗周期重加密**：`docs/N1_PLAN.md:139` 定义的"折中方案"，`src/` 内
+   搜 `D2c|D2C|周期重加密|reencrypt` **零命中**。
+2. **T29/T30 回归测试**：`tests/e2e.py` 的 ID 实测止于 **T28**
+   （26 个 ID：T1–T8、T11–T28），全库搜 `T29|T30` 零命中；
+   `git log -S 'T29'` 只命中本文档创建提交 `80b4ce5` ⇒ **只是计划里的编号**。
+3. **密文态 CRC（`PROTCRYP` 第 4 标记）**：`docs/N1_PLAN.md:146-148` 计划给
+   `.protcrypt` 加第 4 个烧录标记；实测 `tools/hashpatch.py:47`
+   `MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP', b'PROTCRCX')` 只有 4 个，
+   搜 `PROTCRYP` 全库**零命中**。⇒ **II-1 只做了"解密态"一半**。
+
+**由此暴露的覆盖缺口（最值得记的一条）**：**II-1 的机制已实现、却没有任何
+回归测试触发它**。`src/selfcrypt.c` 在解密后逐函数校验 CRC 并与 meta 里的
+明文 CRC 比对，失败即 `demo/main.c:529 exit(PROT_EXIT_TAMPERED)`；
+但 `tests/` 内没有任何一处**篡改 `.protcry` meta**（搜索结果显示
+`tests/attack_drill.py` 对 `.protcry` 只有**读**操作 D2/D3，
+`tests/protchain_check.py:149 selfcrypt_meta` 只做解析）。这与 §2.24（T3 孤儿）、
+§2.27（`exit_pol` 未定义名）同型：**失败路径的代码最难被测试碰到**。
+
+**诚实边界**：
+- 本复核**未重跑门禁**；N1 相关结论只依据静态代码/测试搜索与 `git log -S`。
+- "`.protcry` meta 篡改测试不存在"是**全库文本搜索的结论**，不是"做不到"——
+  理论上可以加，只是现在没有。
+- 未验证 II-1 在真机上是否真的会在 meta 被篡改时退 `0xBAD`
+  （机制读代码成立，但**没有实测证据**）。
+- D2c 的"零命中"只覆盖 `src/`；未搜 `tools/` 与文档（定义处当然在文档里）。
