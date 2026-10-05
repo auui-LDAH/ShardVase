@@ -137,7 +137,7 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 [ok] 版本非占位                            [ok] mojibake 全库回归 (mojibake_check)
 [ok] Release 构建 (build.ps1)              [ok] 平台层契约 (platform conformance)
 [ok] 可复现 (repro_check)                  [ok] 攻击技契约 (attackcheck)
-[ok] e2e T1-T28                            [ok] 构建状态自检 (check_state_platform)
+[ok] e2e T1-T29                            [ok] 构建状态自检 (check_state_platform)
 [ok] attacks A1-A12                        [ok] 平台层自检 (_platform)
 [ok] vm_unit                               [ok] 验证互斥锁自检 (verify_lock)
 [ok] vmc                                   [ok] 文档断言一致性 (docclaim)

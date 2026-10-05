@@ -14,6 +14,7 @@ tests/e2e.py - 端到端测试  (Lane D)
   T3 debug-detect 附加内核调试器 -> MSG_DBG 文本 + 退出码 0xDB (附加失败则 SKIP)
   T4 tamper-detect 翻转 .text 一个字节 -> MSG_TAMPER 文本 + 退出码 0xBAD
   T9/T10          翻转 .rdata/.pdata 一个字节 -> 退出码 0xBAD (A3; 消息可能乱码)
+  T29 selfcrypt-meta II-1: 翻 .protcry 元数据 CRC -> 退出码 0xBAD (版面外对照同基线)
   T11 watchdog-stable --wait-after 14s 期间看门狗周期复查零误报 (A5)
   T12 license-tier-forge 改 TIER 行 -> license: 0 / 退出码 1 (Phase 4)
   T13/T14 blob-missing / blob-tamper -> 退出码 0xB10B (DBI launcher)
@@ -419,6 +420,47 @@ def make_tampered_copy(sec_name='.text', rel_off=0, from_end=0):
     return dst
 
 
+def cry_section_name():
+    """T29: 读构建期产物 `demo/gen/<plat>/prot_sections.json` 的 protcry 随机节名。
+
+    ## 为什么不硬编码 `.protcry`
+      节名**按构建随机化**（`tools/gen_sections.py`）。实测本次构建
+      `.protcry` -> `.b3locz1` ⇒ 硬编码必然找不到。
+
+    ## 为什么不用 `protchain_check.cry_section_names()`
+      它走 `load_section_names()` 的**模块级默认产物**（不带平台参数）
+      -> Linux 侧会读到 Windows 的 JSON。这里按 `_P.gen`（平台感知）读。
+    """
+    p = os.path.join(_P.gen, 'prot_sections.json')
+    with open(p, 'r', encoding='utf-8') as f:
+        d = json.load(f)
+    nm = (d.get('sections') or {}).get('protcry')
+    if not nm:
+        raise RuntimeError('%s 缺少 sections.protcry（先跑 build.ps1）' % p)
+    return nm
+
+
+def make_meta_tampered_copy(sec_off, rel_off):
+    """T29: 复制产物并翻转 `.protcry` 节内相对偏移 `rel_off` 的一个字节。
+
+    `sec_off` = 该节 `ptr_raw`（调用方用 `section_bounds` 取，节名随机）。
+    偏移语义对齐 `tools/selfcrypt_proto.py:441-444` 的写入侧:
+    `meta = [count u32][entry*24]`，`entry = rva4|len4|key8|crc4|group4`
+    ⇒ 第 i 条 entry 的 **crc32 字段** 在节内偏移 `4 + i*24 + 16`。
+    """
+    dst = os.path.join(BUILD, 'demo_meta_tampered.exe')
+    shutil.copyfile(EXE, dst)
+    ro = sec_off + rel_off
+    with open(dst, 'r+b') as f:
+        f.seek(ro)
+        b = f.read(1)
+        if not b:
+            raise RuntimeError('tamper offset %d out of file' % ro)
+        f.seek(ro)
+        f.write(bytes([b[0] ^ 0xFF]))
+    return dst
+
+
 # ---------------------------------------------------------------------------
 # 调试器附加: kernel32.DebugActiveProcess + WaitForDebugEvent 事件泵
 # ## 2026-10-04 恢复（真缺陷修复）: 本类被 `22826c5`「feat(C-3): e2e 全量
@@ -733,6 +775,84 @@ def main():
                                 'WDAC blocked tampered copy (winerror 4551)'))
             else:
                 results.append((tname, 'FAIL', repr(e)))
+
+    # ---- T29: selfcrypt 元数据 CRC 篡改 (N1 二期 II-1 回归) -------------
+    # ## 为什么需要本用例（2026-10-06）
+    #   II-1 的机制**早已实现**: `prot_selfcrypt_init()`
+    #   （`src/selfcrypt.c:290-314`）逐条解密引擎函数后，把**解出来的
+    #   明文 CRC32** 与 `.protcry` meta 里存的**明文 CRC** 比对 ——
+    #   `src/selfcrypt.c:240 if (got != crc) { (void)prot_plat_protect(
+    #   dst,len,PROT_PAGE_EXECUTE_READ); return PROT_ERR_INTEGRITY; }`；
+    #   失败经 `demo/main.c:525-530` -> `MSG_TAMPER` + `exit(0xBAD)`。
+    #   **但 `tests/` 内从未有任何用例翻过 `.protcry`**（`make_tampered_copy`
+    #   三个调用点只翻 `.text`/`.rdata`/`.pdata`）—— 与 §2.24（DebugAttacher
+    #   孤儿）、§2.27（`exit_pol` 未定义名）**同型: 失败路径的代码最难被测到**。
+    #   本用例就是那条一直缺失的回归。
+    #
+    # ## 判据（2026-10-06 实测确立）
+    #   · 翻第 i 条 entry 的 **crc32 字段** -> init 校验失败 -> `0xBAD`
+    #   · 翻节内 **meta 之外**的填充字节（对照）-> meta 未被读 -> **同基线**
+    #   对照的意义: 证明"变红"来自 **meta 内容本身**，而不是"文件被动过"
+    #   （该节不在 integrity 的 CRC 目标表内，`tools/hashpatch.py:112`
+    #   `TARGET_NAMES = ('.text', '.rdata', '.pdata', '.protxec')`）。
+    #
+    # ## 诚实边界
+    #   · `PROT_SELFCRYPT_DISABLE` 构建（`src/selfcrypt.c:64-76` 三个入口
+    #     直接 `return PROT_OK`）或未接 selfcrypt 的构建下，blob 头 count
+    #     为 0 -> **本用例检不出**，如实记 SKIP 并写明原因（**未验证 != 通过**）。
+    #   · 本用例只覆盖"**解密态**校验"这一半；密文态 CRC（计划里的第 4 个
+    #     烧录标记 `PROTCRYP`）**从未实现**，不在射程内。
+    #   · `prot_selfcrypt_leave` 走 `sc_do_range(i, 0)` **不校验**
+    #     （`src/selfcrypt.c:347`）⇒ 篡改只会在 init / D2b enter 的**解密**
+    #     路径上被抓住，这正是本用例走正常启动的原因。
+    try:
+        sec = cry_section_name()
+        raw_off, crc_len = section_bounds(EXE, sec)
+        if crc_len < 4:
+            raise RuntimeError('section %s CRC 长度 %d < 4' % (sec, crc_len))
+        with open(EXE, 'rb') as f:
+            f.seek(raw_off)
+            n = struct.unpack('<I', f.read(4))[0]
+        meta_end = 4 + n * 24
+        if n == 0 or n > 16:
+            results.append(('T29 meta-crc', 'SKIP',
+                            'selfcrypt meta count=%d（PROT_SELFCRYPT_DISABLE '
+                            '或该构建未接 selfcrypt；未验证 != 通过）' % n))
+        elif meta_end > crc_len:
+            results.append(('T29 meta-crc', 'FAIL',
+                            'meta_end=%d 超出节 CRC 长度 %d' % (meta_end,
+                                                                crc_len)))
+        else:
+            # 基线
+            code_b, out_b, _ = run_demo(
+                args=['--license-file', LICENSE],
+                stdin=(serial + '\n').encode('utf-8'))
+            # 对照: 节尾部填充（meta 之外）
+            ctrl = make_meta_tampered_copy(raw_off, crc_len - 1)
+            code_c, out_c, _ = run_demo(
+                exe=ctrl, args=['--license-file', LICENSE],
+                stdin=(serial + '\n').encode('utf-8'))
+            # 本体: 第 0 条 entry 的 crc32 字段首字节
+            meta = make_meta_tampered_copy(raw_off, 4 + 0 * 24 + 16)
+            code_m, out_m, _ = run_demo(
+                exe=meta, args=['--license-file', LICENSE],
+                stdin=(serial + '\n').encode('utf-8'))
+            base_ok = (code_b == 0) and (msg_ok in out_b)
+            ctrl_ok = (code_c == code_b)
+            hit = (_norm_exit(code_m) == _norm_expect(PROT_EXIT_TAMPERED)
+                   and msg_tamper in out_m)
+            ok = base_ok and ctrl_ok and hit
+            results.append(
+                ('T29 meta-crc', 'PASS' if ok else 'FAIL',
+                 'exit=%d ctrl=%d base=%d meta_n=%d%s' % (
+                     code_m, code_c, code_b, n,
+                     '' if (base_ok and ctrl_ok) else ' (对照不成立)')))
+    except Exception as e:
+        if wdac_blocked(e):
+            results.append(('T29 meta-crc', 'SKIP',
+                            'WDAC blocked tampered copy (winerror 4551)'))
+        else:
+            results.append(('T29 meta-crc', 'FAIL', repr(e)))
 
     # ---- T5: VM 指令集单测 (Phase 1d 新增指令) ------------------------
     vm_unit = (os.path.join(BUILD, 'vm_unit.exe')

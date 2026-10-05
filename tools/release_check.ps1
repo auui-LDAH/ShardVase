@@ -293,7 +293,7 @@ if (-not $SkipTest) {
         powershell -ExecutionPolicy Bypass -File .\tools\repro_check.ps1 -BaselineDir build\_gate_baseline
         $LASTEXITCODE -eq 0
     }
-    Check 'e2e T1-T28' { & $py tests\e2e.py; $LASTEXITCODE -eq 0 }
+    Check 'e2e T1-T29' { & $py tests\e2e.py; $LASTEXITCODE -eq 0 }
     Check 'attacks A1-A12' { & $py tests\attacks.py; $LASTEXITCODE -eq 0 }
     Check 'vm_unit' { .\build\vm_unit.exe; $LASTEXITCODE -eq 0 }
     Check 'vmc' { & $py tests\vmc_tests.py; $LASTEXITCODE -eq 0 }

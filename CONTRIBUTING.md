@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File tools\release_check.ps1
 ```powershell
 python tools\modcheck.py                 # 模块契约漂移 + 组合自洽 + 演练覆盖
 python tools\drills.py lint              # 演练记录 schema
-python tests\e2e.py                      # 端到端 T1-T28
+python tests\e2e.py                      # 端到端 T1-T29
 python tests\attacks.py                  # 攻击面 A1-A12
 python tests\protchain_check.py          # 保护链静态断言 P1-P6
 powershell -File build.ps1 -Config Release
