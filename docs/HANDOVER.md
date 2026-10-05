@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（695 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（699 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
 
 
 ## 1. 项目是什么
@@ -992,7 +992,19 @@ CONTRIBUTING.md:67/:95    13 项 / 13/13 PASS -> 30 项（-With* 共 33）/ 30/3
 沿革叙述）、`docs/MODULAR_ARCH.md:309`（阶段 3 待做项的历史描述）、
 `docs/阶段总结-2026-08-30.md:104`（H1 带日期 ⇒ 历史快照）、
 `docs/部署档案-ShardVase.md:107/:165` 与 `docs/blog_project_overview.md:43/:71`
-（最后提交均 `c941c9c`、**无任何文件引用它们** ⇒ 博客发布稿存底, 非活文档）。
+（最后提交均 `c941c9c` ⇒ 博客发布稿存底, 非活文档）。
+
+> **2026-10-06 更正**：上句原写的理由「~~无任何文件引用它们~~」**经实测不成立**
+> —— `git grep` 在该判断作出的提交 `fc18ebb` 上**当时就有引用**，
+> 且 `publish/README.md` 逐字写着「完整技术档案（内部版）：
+> `docs/部署档案-ShardVase.md`（含更多内部细节，发布时按需删减）」。
+> **结论不变，依据换了**：真正成立的是「**无任何机器消费者**」
+> —— 限定可执行/配置类型搜索零命中，且两者都不在 doccheck 的扫描面内；
+> 另有一层早已记对的口径：`publish/` 是 `docs/marketing/` 的发布快照，
+> 「以 `publish/` 为准（新）；旧文件保留作历史」
+> （`docs/项目文件分类-2026-08-30.md`）。
+> 教训与 §2.28 / §2.32 同型：**记档里的「前提」也会过时，而且比结论更难被发现**
+> —— 因为结论还能被下一次实跑证伪，依据则没人复算。
 **"4 组矩阵"一律未动** —— `archive/` 有 13 份归档、`tests/attack_*` 只有 6 个文件,
 矩阵"组"在**任何地方都没有权威定义**, 故只改有权威判据的**轮次**。
 
