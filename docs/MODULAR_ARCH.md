@@ -1,6 +1,10 @@
 # 模块化架构设计（Modular Architecture）
 
-> 版本：2026-09-20 v1 · 状态：**设计提案，待评审**（未动代码）
+> 版本：2026-09-20 v1 · **2026-10-06 复核**：状态：**阶段 0–3 已落地**（阶段 4 可选未做）
+> ⚠️ 原文写作时为「设计提案，待评审（未动代码）」—— 该状态**已过期**：
+> 阶段 0/1 分别见提交 `ab873f4` / `5a1c4bc`，阶段 2 拼装图驱动构建见
+> `build.ps1:583`，阶段 3 `drills/` 见 `tools/drills.py lint`（125 条 0 错误）。
+> 本行按 §5 的复核结论更正；**下文 §5–§6 的原始叙述未逐字重写**，只在其处标注现状。
 > 目标：把当前单体保护套件演进为**攻防双侧、可组合、开源**的反逆向框架。
 > 关联：`docs/CONTRACT.md`（现有契约）、`docs/COST_ASYMMETRY.md`（战略层）、
 > `docs/THREATMODEL.md`（威胁模型）、`docs/DEFENSE_DEEPEN_PLAN.md`（S1-S5 技术债）。
@@ -263,7 +267,10 @@ framework/
 > 纪律：每阶段结束必须 `build.ps1` 裸跑 DONE + `release_check` 全绿。
 > 这是 P3 的直接应用——不许有任何模块走"跳过验证"的路径。
 
-**进度**：阶段 0 ✅ · 阶段 1 ✅ · 阶段 2 进行中 · 阶段 3 待做
+**进度**（**2026-10-06 复核**，逐条证据见各阶段小节）：
+阶段 0 ✅ · 阶段 1 ✅ · **阶段 2 ✅（拼装图驱动构建已落地；`modcheck` 与 `build.ps1` 的
+内联集成仍为「门禁期检查」）** · **阶段 3 ✅（`drills/` 结构化记录 + 125 条 lint 0 错误）** ·
+阶段 4（可选，成本模型）⬜ 未做
 
 ### 阶段 0：前置清理 ✅ 完成（提交 `ab873f4`）
 
@@ -298,19 +305,32 @@ framework/
 「selfcrypt 改写 .text vs integrity 校验 .text」冲突——
 这正是 S1 中 `revoke` 被永久排除的同类问题（P2 的具象化）。
 
-### 阶段 2：组合校验强化（进行中）
+### 阶段 2：组合校验强化 ✅ 已完成（拼装图驱动构建）—— **2026-10-06 复核**
 
 已具备：冲突检测、依赖闭包、四档拼装图。
-待补：`modcheck` 与 `build.ps1` 的集成（当前仅门禁期检查）、
-拼装图驱动实际构建。
 
-### 阶段 3：攻防对称重组（待做）
+**原「待补」两项的现状**：
 
-建 `drills/` 结构化记录 + 回填 7 轮演练数据。
+| 原待补项 | 现状 | 证据 |
+|---------|------|------|
+| `modcheck` 与 `build.ps1` 的集成 | ✅（作为门禁期检查；构建期**内联**仍未做） | `tools/release_check.ps1:321` `Check '模块契约 (modcheck)'` 跑 `--all-compositions`；`build.ps1` 内仅 `:858` 一处注释提及，无内联调用 |
+| 拼装图驱动实际构建 | ✅ | `build.ps1:38 [string]$Composition = ''` / `:531 $compName = if ($Composition) { $Composition } else { 'full' }` / `:583 & $py tools\compose.py $compName --header-out … --sources-out …` / `:587` 空清单直接 `throw`（**未选中的模块既不编译也不链接**，见 `tools/compose.py:17-18`）|
 
-### 阶段 4（可选）：成本模型
+### 阶段 3：攻防对称重组 ✅ 已完成 —— **2026-10-06 复核**
+
+建 `drills/` 结构化记录 + 回填演练数据。**现状**：`drills/` 目录存在，
+含 `_schema.json` / `attacks-regression.json` / `extracted.json` / `drill9-syscall.json`；
+`tools/drills.py lint` ⇒ **125 条攻击记录, 0 个错误**（门禁第 13 项 `攻防记录 (drills lint)`）。
+> 原始目标写「回填 **7** 轮」，实际已达 **125 条记录**且门禁期内持续校验 —— 目标超额达成，
+> 故 ⬜ 在此处属陈旧标记。
+
+### 阶段 4（可选）：成本模型 ⬜ 未做
 
 基于 `drills/` 数据产出 `tools/cost_model.py`（见 `COST_ASYMMETRY.md` 路线 A）。
+**2026-10-06 复核：`tools/cost_model.py` 不存在** ⇒ 本项仍为未做（**保留 ⬜**）。
+> 注意与既有工具区分：`tools/migration_cost.py` / `tools/migration_gate.py` /
+> `tools/migration_inventory.py` 是 **W5.6/W5.7 的迁移成本**度量（门禁第 24 项），
+> **不是** §4 所指的「成本模型」。
 
 ---
 
