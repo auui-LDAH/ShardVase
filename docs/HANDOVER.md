@@ -2215,3 +2215,129 @@ UNDEF    :559   cont
 
 **未验证**：未在 **CI runner** 上复跑验证（本地已 12/12 绿 + 红项签名已复现并转绿）；
 未改 `SETTLE_S`（保留为「PE 加载完成的最短等待」，语义已改正）。
+
+---
+
+## 2.26 增量（2026-10-05）：全门禁挂死 1h45m —— T3 的 `DBG_CONTINUE` 常量写错
+
+### 2.26.1 现象
+
+2026-10-05 07:06 起的全门禁在 `e2e T1-T28` **挂死 1h45m**（日志自 07:20:58
+起不再增长）。进程树：`powershell`(门禁) → `python tests\e2e.py` →
+`build\demo.exe --wait-ms 4000`，**三者都活着但零 CPU**（demo
+`CPU=0.03125`/`WS=5.0MB`，python `CPU=0.359375`）。线程态：
+python 单线程 `Wait/UserRequest`，demo 4 线程全 `Wait/Executive`。
+⇒ **不是慢，也不是偶发。**
+
+### 2.26.2 取证
+
+`build/_t3hang.py` —— `faulthandler.enable(file=_fh, all_threads=True)` +
+`faulthandler.dump_traceback_later(75, exit=True, file=_fh)`，日志逐行
+flush 到 stderr。拿到决定性栈：
+
+```
+File "D:\environment\PYTHON\Lib\subprocess.py", line 1606 in _wait
+File "D:\environment\PYTHON\Lib\subprocess.py", line 1280 in wait
+File "...\build\_t3hang.py", line 129 in main
+```
+
+即卡在 T3 的 `proc.wait()`（**无 timeout**）。
+
+> **教训（工具形态）**：`build/_t3probe.py` 只在函数末尾一次性落盘，
+> 一卡死就**零证据**。诊断脚本必须**逐步 flush**，或用 `faulthandler`
+> 直写 fd。同一坑在 §2.25 也踩过（未就绪路径无输出）。
+
+### 2.26.3 根因：`DBG_CONTINUE` 不是 `2`
+
+`DebugAttacher.DBG_CONTINUE` 写的是**裸整数 `2`**。Win32 的
+`DBG_CONTINUE` 是 **`0x00010002`**（`DBG_EXCEPTION_NOT_HANDLED` 才是
+`0x80010001`）。`build/_t3cont.py` 逐值实测：
+
+```
+=== 裸 2 (现状 e2e 用法) ===        Continue -> 0  err=0x57
+=== DBG_CONTINUE 0x00010002 ===     Continue -> 1  err=0x0
+=== DBG_EXCEPTION_NOT_HANDLED ===   Continue -> 1  err=0x0
+```
+
+`0x57` = `ERROR_INVALID_PARAMETER` ⇒ **`ContinueDebugEvent` 从未成功**
+⇒ 调试对象**从未被恢复运行**，永久停在初始断点：
+
+  · `ExitCodeProcess = 0x103`（`STILL_ACTIVE`）
+  · 附加期间 `cpu = 0`、**stdout 一个字都没有**
+  · `poll()` 恒 None
+
+**后果链**：`--wait-ms` 永不生效 ⇒ 进程处于**调试暂停态**，连
+`proc.kill()` 都终结不了它 ⇒ 无界 `proc.wait()` **永久阻塞** ⇒ 全门禁挂死。
+
+### 2.26.4 三处伴随缺陷（同一次修复一并处理）
+
+| # | 缺陷 | 证据 |
+|---|---|---|
+| ① | **preflight 探针对象错**：S6 用 `cmd /c timeout` 探测能力 | 该探针本环境 **8/8 被拒**（`err=0x5`），而**真实目标 `demo.exe` 可以附加**（`build/_t3preflight.py`）。⇒ 探针恒 SKIP、**真缺口永不执行**；且它**偶发成功**（07:20:59 那次就跑进 `else`，于是暴露挂死）——「拿错误的对象做能力探测」，与 `SETTLE_S` 同型 |
+| ② | **`pump_and_read` 超时契约缺陷** | `TimeoutExpired` 时只 `return (None,'','')`，**既不 kill 也不 wait**，把活进程 + PIPE 句柄留给调用方（调用方随后做了无界 wait） |
+| ③ | **`pump` 在 `EXIT_PROCESS` 时直接 return, 不 Continue** | 留下悬挂的调试对象；且 `WaitForDebugEvent` 无事件时实际返回 **`0x79 = ERROR_SEM_TIMEOUT`**（**不是** `WAIT_TIMEOUT = 0x102`），原实现只认 `0x102` ⇒ 在正确线程上泵就把它当致命错误 break |
+
+### 2.26.5 修法（仅 `tests/e2e.py` 一文件）
+
+  · `DBG_CONTINUE = 2` → **`0x00010002`**（新增 `DBG_EXCEPTION_NOT_HANDLED` 备查）。
+  · `pump()` 返回 `(n_events, saw_exit, exit_code, cont_fails)`；
+    **先 `ContinueDebugEvent` 再判 EXIT**；`exit_code` 取 `DEBUG_EVENT`
+    **offset 16**；新增 `TIMEOUT_ERRNOS = (0x79, 0x102, 0x5B4)`。
+  · **删除整个 `cmd /c timeout` preflight**，直接用真实目标探测：
+    附加失败即带 errno 记 SKIP（保留「环境限制，非未做」语义）。
+  · T3 改为**同线程泵**（不起子线程）+ **先 detach 再 kill** + 有界回收；
+    新增 `_reap(proc, timeout=5)`，`pump_and_read` 超时路径也改用它。
+
+**判据未变**（仍是 `exit == 0xDB` 且 stdout 含 `MSG_DBG`）。
+
+### 2.26.6 验证
+
+  · **修后是真检出，不是残留**：`build/_t3cont.py` 实测 `Continue -> 1
+    err=0x0`，事件序列 `CREATE_PROCESS / LOAD_DLL / CREATE_THREAD×3 /
+    LOAD_DLL…`，**附加期间** stdout 已含 `反调试扫描: 发现可疑` +
+    `MSG_DBG`，并收到 `EXIT_PROCESS` 且 offset16 退出码 = **`0xdb`**。
+  · **判别力对照**（`build/_t3resid.py`）：附加后**零驻留**
+    （dwell=0.05s）即 `rc=219 MSG_DBG=True`；**不附加**仅冻结 4.0s 得
+    `rc=1 MSG_DBG=False`。
+  · `python -X utf8 tests\e2e.py`：**28 PASS / 0 FAIL / 0 SKIP / 0 NA**，
+    **51s**（此前挂死 1h45m+）。T3 行：
+    `T3 debug-detect PASS (exit=219 ev_exit=0xdb events=23 cont_fail=0)`。
+    ⇒ **T3 首次从 SKIP 转为真测 PASS**（此前恒 27P/1S）。
+  · 全门禁：`FAIL: 1/33`，**唯一红项 = `git 工作区干净`**（提交前预期）。
+  · `py_compile` rc=0；`tools/bom.py check tests\e2e.py` = **BOM=True**
+    （`edit` 工具会剥 BOM，已补回）；`build/_undef.py` **0 处**。
+
+### 2.26.7 CI 复核（2026-10-05，已推翻本节原来的「未验证」）
+
+本节最初写「**CI runner 上 T3 是否也能真跑** —— runner 无交互桌面会话，
+`DebugActiveProcess` 很可能仍被拒」。**该推测已被 CI 实跑推翻**：
+
+```
+build-and-verify  Run e2e suite (T1-T28)
+  T3 debug-detect  PASS   (exit=219 ev_exit=0xdb events=21 cont_fail=0)
+  [e2e] 平台=win  总计 28: PASS 28 / FAIL 0 / SKIP 0 / NA 0
+build-and-verify  Full release gate
+  [release_check] PASS: 29 项检查全通过
+```
+
+（CI 运行 `37314958939`，`head=17b1215`，8m59s success。）
+
+⇒ **CI runner 上 T3 也真跑并 PASS**（`cont_fail=0` = `ContinueDebugEvent`
+次次成功）。**「runner 无交互桌面 ⇒ 必 SKIP」是旧结论** —— 之前之所以
+恒 SKIP，是因为 `cmd /c timeout` 探针恒被拒（`err=0x5`），**而我们从未
+真正试过附加 `demo.exe`**。这与 §2.26.4 的缺陷①同源：**错的是探针对象，
+不是环境能力**。
+
+> **教训（通用）**：**「环境限制」的结论必须用「正确对象的尝试」支撑**
+> —— 用一个无关代理（`cmd /c timeout`）失败就断言环境无能力，
+> 会把**自己的缺陷**记成**环境的限制**，从此不再尝试。本仓库此前
+> 至少 5 处文档（`docs/PHASE2.md` / `docs/PLAN.md` / `docs/ROADMAP.md`
+> / `docs/VERIFY_PLAN.md` / `docs/THREATMODEL.md`）据此把「T3 真机验证」
+> 列为待办 —— **那些待办可以直接销掉**。
+
+**仍未验证**：
+
+  · `DBG_EXCEPTION_NOT_HANDLED` 分支未被 T3 使用（仅实测其同样能
+    `Continue` 成功），未接入任何判据。
+  · 本机 T3 用时约 19s（`events=23`），CI 约 21 个事件 —— 事件数随
+    环境 DLL/线程数浮动，**判据未依赖事件数**（只依赖退出码与文本）。
