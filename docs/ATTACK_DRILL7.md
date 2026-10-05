@@ -1,6 +1,6 @@
 # ATTACK_DRILL7 — 符号表解析器攻击面（内存补丁工具链）
 
-> 版本：2026-08-30 v1 · 状态：**WinPE 实证完成，Android 宿主编译就绪**
+> 版本：2026-08-30 v1 · **2026-10-06 补记 v2** · 状态：**WinPE 实证完成（mock 目标）→ 真实 demo.exe 闭环见 §6；Android 宿主编译就绪**
 > 关联：`docs/MEMPATCH_PLAN.md`（规划）、`tools/attacker/`（工具）、
 > `docs/ATTACK_DRILL1-6.md`（此前攻防）、`docs/EXTENSION_PLAN.md`（Android 规划 T1）。
 > 本文档记录**真实破解者工具链**形态的攻击：运行时符号表解析 + 内存补丁，
@@ -94,7 +94,68 @@ tools/attacker/
 | Android 真机未测 | NDK/root 环境就绪后补（T1 第一项）|
 
 **后续建议**：
-1. 对真实 demo.exe（Dev 构建带 MAP）跑完整闭环（含 watchdog 对抗）；
+1. ~~对真实 demo.exe（Dev 构建带 MAP）跑完整闭环（含 watchdog 对抗）~~ ✅ **已完成（2026-10-06，见 §6）** —— 符号定位成功，但 patch 判定函数被 `.text` 段 CRC 拦下（exit=2989），**不再静默失效**；
 2. Android 真机验证 ptrace 附加 + 同进程 patch；
 3. 增加 PDB 解析器（可选，真实破解者常用）；
 4. 与完整性校验对抗：patch 后需同时处理 CRC 重算（hashpatch 思路）。
+
+---
+
+## 6. 真实目标闭环（2026-10-06 补记）
+
+**缘起**：§3 的"盾失效"结论是在 `test_target.c`（模拟盾，**无完整性校验、
+无副本冗余**）上取得的。§5 第 1 条把"对真实 demo.exe 跑完整闭环"挂了近 5 周。
+本轮用同一工具链打真实 `build\demo.exe`（Release，带 `demo.map`），
+把 mock 与真实目标的差异变成数字。
+
+**方法**：`tools/attacker/winpe_sympatcher.exe --map build\demo.map --sym <name>`
+定位 → `ReadProcessMemory` 确认序言 → `VirtualProtectEx` + `WriteProcessMemory`
+写 `31 C0 C3`（`xor eax,eax; ret`）→ 喂 stdin 使目标自然退出（**不 kill**，否则
+退出码不可信）。探针 `build/_drill7_clean.py`（只读诊断，未入库）。
+
+**四组实测**（同一构建，`real_base=0x7ff6d37d0000`）：
+
+| 组 | 操作 | 符号 / 运行时 VA / 序言 | 写入 | 退出码 | MSG_TAMPER |
+|----|------|------------------------|------|--------|-----------|
+| A | 基线（不附加、不写） | — | — | `1` (0x1) | ✗ |
+| D | 附加 + 符号定位，**只读不写** | `prot_antidebug_detected` @`0x140001420` → `0x7ff6d37d1420`，序言 `48 83 ec` | ✗ | `1` (0x1) | ✗ |
+| B | patch `prot_antidebug_detected` 头 | 同上 | ✅ `31 c0 c3` | **`2989` (0xBAD)** | **✓** |
+| C | patch `prot_antidebug_detected_multi` 头 | `…_multi` @`0x1400015b0` → `0x7ff6d37d15b0`，序言 `48 89 5c` | ✅ `31 c0 c3` | **`2989` (0xBAD)** | **✓** |
+
+四组均 `natural=True`（自然退出，无强杀）。
+
+**结论（与 mock 目标的三点差异）**：
+
+1. **符号定位在真实目标上同样成功** —— MAP 通道给出 `prot_antidebug_detected` /
+   `_multi` 的编译时 VA，ASLR 换算（`Toolhelp32` 取模块基址，**不是**拿 `PREF`
+   硬读 —— 后者会 `err=299 ERROR_PARTIAL_COPY`）后序言与预期一致。⇒
+   "真实破解者工具链"的**定位能力**在 Release 构建（有 MAP 时）成立。
+2. **附加本身不再触发检测** —— 组 D 只定位不写，退出码与基线同为 `1`、无
+   `MSG_DBG`。这与 §3 的 mock 场景不同（mock 会因附加被检测）。
+   **旁注**：`prot_antidebug_detected` 在本次构建里对"外部附加"未报 `0xDB`，
+   与本轮 e2e T3（用 `DebugActiveProcess` 附加派生进程，确实得 `exit=219`）
+   并不矛盾 —— T3 附加的是 `--wait-ms 4000` 的同一 exe 且由调试器持有线程，
+   形态不同；此处不深挖，**如实记为观察**。
+3. **patch 判定函数在真实目标上不再静默生效** —— 组 B/C 写入成功（读回
+   `31 c0 c3` 一致），但目标没有"判定被关掉后继续跑"，而是打印
+   `完整性校验失败，程序可能已被篡改。` 并以 `2989`（`PROT_EXIT_TAMPERED`）
+   退出。**机制**：`prot_antidebug_detected` / `_multi` 的 map 段号都是
+   `0001` = `.text$mn`，而 `.text` 是 baked-CRC 的**第 0 个目标**
+   （`src/integrity.c` 的 `g_prot_baked_crc[0]`，覆盖含调零掩码），
+   改它必然被段 CRC 抓到 —— 这正是 DRILL3 罪证在真实目标上的复现。
+
+**因此 §3 的"盾失效"必须限定**：它成立于**无完整性校验的 mock 目标**；
+在真实 demo 上，符号定位仍是可达的，但**单点 patch 判定函数的收益被
+`.text` 段 CRC 收走**（想静默失效须同时重算段 CRC —— 即 `hashpatch` 思路，
+且 R3.2-c 之后还有 4 副本 + 位置抖动抬高定位成本）。
+
+**诚实边界**：
+
+- 本轮只测**单点 patch**；"同时中和段 CRC + 4 副本"的完整对抗链**未测**
+  （DRILL9 §5 已记 F/G/H 由此翻转为 `0xBAD`，属另一条线的结论）；
+- Release 构建有 `demo.map` 是本轮前提；**无 MAP/PDB 时 MAP 通道失效**
+  （§5 边界表第 1 条），COFF 通道在 `/DEBUG:NONE` 下同样为空；
+- 组 D 的"附加不触发检测"只测了一个构建一个时刻，**未做多次/多形态**；
+- Android 侧真机仍未测（§4.2）。
+
+*2026-10-06 v2*

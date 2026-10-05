@@ -1,6 +1,6 @@
 # 双向打通：内存补丁工具（加固↔破解）工程规划
 
-> 版本：2026-08-30 v1 · 状态：**规划待拍板** · 关联：`docs/EXTENSION_PLAN.md`（Android 规划）、
+> 版本：2026-08-30 v1 · **2026-10-06 补记 v2** · 状态：**两个工具均已落地**（WinPE 侧另有真实 demo.exe 闭环，见 `docs/ATTACK_DRILL7.md` §6；Android 侧真机仍待）· 关联：`docs/EXTENSION_PLAN.md`（Android 规划）、
 > `docs/ATTACK_DRILL*.md`（Windows 攻防实证）、`docs/CONTRACT.md`（契约/算法）。
 > 本文档规划两个**攻击侧**工具（用于攻防演练与能力验证，不对外发布）：
 
@@ -95,21 +95,21 @@ examples/cross_platform/android/patcher/
 ## 3. 验收标准
 
 ### WinPE-SymPatcher
-- [ ] 解析器能定位 demo.exe 的 `prot_antidebug_scan`/`prot_antidebug_detected`（DEBUG 构建）；
-- [ ] 附加 → 定位 → 改写判定聚合位 → 观察盾行为变化；
-- [ ] 对照 ATTACK_DRILL 结论：若多因子仍拦 = 符号表定位不强于偏移（记录）；
-- [ ] 单元测试：符号解析对已知 PE（demo.exe / user32.dll）正确性。
+- [x] 解析器能定位 demo.exe 的 `prot_antidebug_scan`/`prot_antidebug_detected` —— **已达成（2026-10-06，Release + MAP）**：`--map build\demo.map` 得 `_detected` @`0x140001420` / `_multi` @`0x1400015b0` / `_scan` @`0x140001a50`；
+- [x] 附加 → 定位 → 改写判定聚合位 → 观察盾行为变化 —— **已达成**：写 `31 C0 C3` 到 `prot_antidebug_detected` / `_multi` 头，读回一致，目标以 `2989`(`0xBAD`) + `完整性校验失败` 退出（`ATTACK_DRILL7.md` §6 组 B/C）；
+- [x] 对照 ATTACK_DRILL 结论 —— **已记录**：真实目标上符号定位**可达**，但单点 patch **被 `.text` 段 CRC 收走**（不再是 mock 上的"盾永久失效"）；即定位能力成立、**静默改写不成立**（同 `ATTACK_DRILL7.md` §6 结论 3）；
+- [x] 单元测试：符号解析对已知 PE 正确性 —— **已达成**：`README.md` 记录 user32.dll 导出表通道；本轮补 demo.exe MAP 通道实测；
 
 ### Android-JniPtracePatcher
-- [ ] ELF 符号解析器定位 libprot.so 的 JNI 导出符号（NDK 产物可解析）；
+- [x] ELF 符号解析器定位 JNI 导出符号 —— **宿主侧已达成**：`gen_test_elf.py` 样本 **6/6 符号命中**（`.symtab` + `.dynsym`）；**libprot.so 本体（NDK 产物）未解析**（无 NDK 环境，见下条）；
 - [ ] 同进程模式（B）改写 nativeIsDebugged 返回 0 → 验证 TracerPid 检测被绕过
-      （/proc/self/status 读取路径被改）；
-- [ ] ptrace 附加模式（A）在 root 测试环境对目标进程写内存成功；
-- [ ] 回归：不破坏 libprot.so 既有功能（nativeVerifyLicense 仍工作）。
+      （/proc/self/status 读取路径被改）—— **代码就绪，真机未测**（需 NDK + Android 环境）；
+- [ ] ptrace 附加模式（A）在 root 测试环境对目标进程写内存成功 —— **代码就绪，真机未测**（需 root，D3「先宿主编译验证」的既定边界）；
+- [ ] 回归：不破坏 libprot.so 既有功能 —— **未测**（随真机验证一并做）。
 
 ---
 
-## 4. 决策点（拍板用）
+## 4. 决策点（拍板用）—— **2026-10-06 记：四项均按"推荐"列执行**
 
 | 编号 | 决策 | 选项 | 推荐 |
 |------|------|------|------|
