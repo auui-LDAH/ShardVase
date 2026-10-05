@@ -220,13 +220,46 @@ def _run_demo_wsl(args, stdin, exe, timeout):
 
 
 def pump_and_read(proc, timeout=30):
-    """Wait for proc exit. Return (exitcode_or_None, stdout_text, stderr_text)."""
+    """Wait for proc exit. Return (exitcode_or_None, stdout_text, stderr_text).
+
+    ## 超时路径必须**自己回收**进程（2026-10-05 修）
+      原实现在 `TimeoutExpired` 时只 `return (None, '', '')` —— 既不 kill
+      也不 wait，把**活进程 + PIPE 句柄**留给调用方。T3 的调用方随后做了
+      `proc.kill(); proc.wait()`（**无 timeout**）：被附加调试的目标处于
+      暂停态时 kill 不能立刻终结它，`wait()` 于是**永久阻塞** —— 实测全门禁
+      因此挂死 1h45m，`build/_t3hang.py` 的 faulthandler 栈落在
+      `subprocess.py:1280 wait` / `_wait`。
+      现在：超时就 kill + **有界** wait，并返回 None 表示"没拿到退出码"。
+    """
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out.decode('utf-8', 'replace'), \
             err.decode('utf-8', 'replace')
     except subprocess.TimeoutExpired:
+        _reap(proc)
         return None, '', ''
+
+
+def _reap(proc, timeout=5):
+    """**有界**回收一个可能处于调试暂停态的进程（2026-10-05 新增）。
+
+    ## 为什么要单独一个（而不是内联 `proc.kill(); proc.wait()`）
+      `proc.wait()` **无 timeout** 时，一旦 kill 未能真正终结进程就**永久
+      阻塞** —— 全门禁因此挂死 1h45m。这里每一步都有界：
+        · `kill()` 本身可能抛（进程已退）
+        · `wait(timeout=...)` 超时后再补一次 kill 并**不再等**
+      调用方仍应先 `DebugActiveProcessStop` **解除调试暂停**，
+      否则 kill 也无法立刻终结被调试进程。
+    """
+    try:
+        if proc.poll() is None:
+            proc.kill()
+    except Exception:                    # noqa: BLE001
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:                    # noqa: BLE001
+        pass
 
 
 def pe_text_raw_offset(path):
@@ -399,9 +432,32 @@ def make_tampered_copy(sec_name='.text', rel_off=0, from_end=0):
 #  **守护**: `build/_undef.py` 全库静态审计（引用但未绑定的全局名）。
 # ---------------------------------------------------------------------------
 class DebugAttacher(object):
-    DBG_CONTINUE = 2                      # DBG_CONTINUE
+    # ## ⚠️ `DBG_CONTINUE` **必须是 0x00010002**（2026-10-05 修，真根因）
+    #   原实现写 `2`（裸整数）。`ContinueDebugEvent` 的 `dwContinueStatus`
+    #   只接受 **DBG_CONTINUE = 0x00010002** 或
+    #   **DBG_EXCEPTION_NOT_HANDLED = 0x80010001**；传 2 实测
+    #   **返回 0 / err=0x57 = ERROR_INVALID_PARAMETER** ⇒ 调试对象
+    #   **从未被恢复运行**（停在初始断点: cpu=0、
+    #   `ExitCodeProcess=0x103` = `STILL_ACTIVE`、附加期间 stdout 一个字
+    #   都没有）。**后果链**: `--wait-ms` 永不生效 ⇒ `proc.kill()` 也终结
+    #   不了处于调试暂停态的进程 ⇒ 无界 `proc.wait()` **永久阻塞** ⇒
+    #   全门禁挂死 1h45m（`build/_t3hang.py` 的 faulthandler 栈落在
+    #   `subprocess.py:1280 wait`）。
+    #   **修后实测**（`build/_t3cont.py`）: `Continue -> 1 err=0x0`，
+    #   事件序列 `CREATE_PROCESS / LOAD_DLL / CREATE_THREAD×3 / LOAD_DLL…`，
+    #   **附加期间**就打印 `反调试扫描: 发现可疑` + `MSG_DBG`，并收到
+    #   `EXIT_PROCESS` 且退出码 **0xdb** ⇒ 是真的"被调试运行时检出"，
+    #   不是 detach 之后的残留。
+    DBG_CONTINUE = 0x00010002             # DBG_CONTINUE（**不是 2**）
+    DBG_EXCEPTION_NOT_HANDLED = 0x80010001
     EXIT_PROCESS_DEBUG_EVENT = 5          # EXIT_PROCESS_DEBUG_EVENT
-    WAIT_TIMEOUT = 0x00000102
+    WAIT_TIMEOUT = 0x00000102             # 保留（历史值；实际超时见下）
+    # ## 超时 errno 白名单（2026-10-05 修）
+    #   `WaitForDebugEvent` 在**没有事件**时返回的 errno 实测是
+    #   **0x79 = ERROR_SEM_TIMEOUT**，**不是** `WAIT_TIMEOUT (0x102)`。
+    #   原实现只认 `0x102` ⇒ 一旦在**正确线程**上泵就会把它当成致命错误
+    #   而 `break` ⇒ 泵形同虚设。这里把三类超时值都当作"继续等"。
+    TIMEOUT_ERRNOS = (0x79, 0x102, 0x5B4)
 
     def __init__(self):
         self._pid = None
@@ -414,24 +470,49 @@ class DebugAttacher(object):
 
     def pump(self, timeout=25.0):
         """
-        泵调试事件直到进程退出 (EXIT_PROCESS_DEBUG_EVENT) 或超时。
-        附加期间必须持续 ContinueDebugEvent, 否则目标进程保持挂起。
+        泵调试事件, 最多 `timeout` 秒。
+
+        ## ⚠️ 必须在 `attach()` 的**同一个线程**上调用（2026-10-05）
+          `DebugActiveProcess` 在主线程、`WaitForDebugEvent` 挪到子线程后,
+          子线程**第一次**调用就拿 `err=0x6 = ERROR_INVALID_HANDLE` 且
+          **零事件**（实测 `build/_t3fix.py`）。注意 `0x6` 只是"attach 与
+          pump 分离"的形态, **不是**让进程不动的根因 —— 根因是
+          `DBG_CONTINUE` 写错（见类常量注释）。无论如何, 本函数在
+          `attach()` 的同一线程上调用于此更稳妥。
+
+        返回 `(事件数, 是否见到 EXIT_PROCESS, 退出码或 None, Continue 失败次数)`。
+        **本函数不 detach** —— 由调用方决定何时 detach（`detach()` 幂等）。
         """
         deadline = time.monotonic() + timeout
+        n_events = 0
+        saw_exit = False
+        exit_code = None
+        cont_fails = 0
         while time.monotonic() < deadline:
             ev = ctypes.create_string_buffer(512)
             if KERNEL32.WaitForDebugEvent(ev, 200):
                 code = ctypes.c_ulong.from_buffer(ev).value
                 dbg_pid = ctypes.c_ulong.from_buffer(ev, 4).value
                 dbg_tid = ctypes.c_ulong.from_buffer(ev, 8).value
+                n_events += 1
+                # ## 先 Continue 再判 EXIT（2026-10-05 修）
+                #   原实现在 `EXIT_PROCESS` 时**直接 return, 不 Continue**
+                #   —— 调试事件不继续会留下悬挂的调试对象。顺序改成
+                #   "先继续, 再记录退出码"。
+                ctypes.set_last_error(0)
+                if not KERNEL32.ContinueDebugEvent(dbg_pid, dbg_tid,
+                                                   self.DBG_CONTINUE):
+                    cont_fails += 1
                 if code == self.EXIT_PROCESS_DEBUG_EVENT:
-                    self.detach()
-                    return
-                KERNEL32.ContinueDebugEvent(dbg_pid, dbg_tid, self.DBG_CONTINUE)
-            else:
-                if ctypes.get_last_error() != self.WAIT_TIMEOUT:
+                    saw_exit = True
+                    # EXIT_PROCESS 的退出码在 DEBUG_EVENT 结构 offset 16
+                    exit_code = ctypes.c_ulong.from_buffer(ev, 16).value
                     break
-        self.detach()
+            else:
+                err = ctypes.get_last_error()
+                if err not in self.TIMEOUT_ERRNOS:
+                    break
+        return n_events, saw_exit, exit_code, cont_fails
 
     def detach(self):
         if self._pid is not None:
@@ -499,98 +580,74 @@ def main():
                         '无 Linux 等价物）；Linux 覆盖见 attacks_linux '
                         '负向③（ptrace 附加 -> debug_object=1）'))
     else:
+        # ## 2026-10-05 重写（三处真缺陷）
+        #
+        #   ① **`DBG_CONTINUE` 写错**（裸 `2` 而非 `0x00010002`）—— 见
+        #      `DebugAttacher` 类常量注释。这是**全门禁挂死 1h45m 的根因**:
+        #      `ContinueDebugEvent` 返回 0/`0x57`, 调试对象停在初始断点,
+        #      连 `kill()` 都终结不了它 -> 无界 `proc.wait()` 永久阻塞。
+        #   ② **preflight 探针对象错**（S6 的 `cmd /c timeout`）—— 本节
+        #      原意是"先确认能驱动调试会话再测, 避免留下挂起进程"。但实测
+        #      该探针在本环境 **8/8 被拒**（`err=0x5` = 拒绝访问）, 而**同一
+        #      环境对真实目标 `demo.exe` 的附加是成功的**（`build/_t3preflight.py`
+        #      与 `build/_t3ctrl.py`）⇒ 探针**恒 SKIP**、真缺口永不执行;
+        #      更糟的是它**偶发成功**（07:20:59 那次门禁就跑进了 `else` 分支,
+        #      于是暴露了挂死）。**拿错误的对象做能力探测**与 `SETTLE_S`
+        #      同型 —— 故**整块删除**, 直接用真实目标探测: 附加失败即
+        #      带 errno 记 SKIP（诚实: 环境限制, 不是"未做"）。
+        #   ③ **无界回收** —— 现在一律"**先 detach 再 kill, 且带 timeout**":
+        #      被调试进程解除暂停后 kill/wait 才能成功（实测 detach 后
+        #      `rc=219` 立刻返回）。
+        #
+        #   **判据未变**（仍是 `exit == 0xDB` 且 stdout 含 `MSG_DBG`）——
+        #   修 ① 之后它在**被调试运行期间**就成立（`build/_t3cont.py`:
+        #   附加期间 stdout 已含 `MSG_DBG`, 并收到 `EXIT_PROCESS` 且
+        #   offset16 的退出码 = `0xdb`）⇒ 是**真检出**, 不是 detach 残留。
+        proc = None
+        dbg = DebugAttacher()
         try:
-            debug_ok = False
-            _probe = None
-            probe_err = 0
-            # ## preflight 已修（S6, 2026-09-25）—— 原实现**必然 SKIP**
-            #
-            #   **原实现的问题**: 探针是 `DebugActiveProcess(os.getpid())`
-            #   —— **对自身附加**。而 **Windows 禁止进程调试自身**
-            #   -> 探针**必然失败** -> `debug_ok=False` -> **T3 永远 SKIP**
-            #   （实测: Windows 27P/1S，那个 SKIP 就是 T3）。
-            #
-            #   **后果（真缺口）**: T3 是 e2e 里**唯一**验证"被附加调试器
-            #   能否检出（MSG_DBG + exit 0xDB）"的用例 -> **从未被验证**。
-            #
-            #   **修法（保留原意，换探针对象）**: 原意是"先确认本环境能
-            #   驱动调试会话，再决定测/跳过"（避免留下挂起进程）。改为
-            #   **对派生的无害子进程附加** —— 语义**更准**（真实附加能力
-            #   = 能附加**别的**进程），且零泄漏（探针必杀，见 finally）。
-            try:
-                _probe = winproc.Popen(
-                    ['cmd', '/c', 'timeout', '/t', '3', '/nobreak'],
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL)
-                time.sleep(0.4)              # 等它起来
-                ctypes.set_last_error(0)
-                if KERNEL32.DebugActiveProcess(_probe.pid):
-                    ev = ctypes.create_string_buffer(512)
-                    if KERNEL32.WaitForDebugEvent(ev, 1200):
-                        debug_ok = True
-                        KERNEL32.ContinueDebugEvent(
-                            ctypes.c_ulong.from_buffer(ev, 4).value,
-                            ctypes.c_ulong.from_buffer(ev, 8).value, 2)
-                    KERNEL32.DebugActiveProcessStop(_probe.pid)
-                else:
-                    # ## 记录**具体错误码**（S6 实测, 2026-09-25）
-                    #   实测本环境 = **5 (ERROR_ACCESS_DENIED / 拒绝访问)**
-                    #   —— 自动化壳/沙箱**不允许调试其他进程**。
-                    #   带上错误码，后人无需重跑诊断即可区分
-                    #   "**环境限制**"与"**代码写错**"。
-                    probe_err = ctypes.get_last_error()
-            finally:
-                # **零泄漏**: 无论成败都杀掉探针（原实现的承诺）
-                if _probe is not None:
-                    try:
-                        if _probe.poll() is None:
-                            _probe.kill()
-                        _probe.wait(timeout=5)
-                    except Exception:        # noqa: BLE001
-                        pass
-
-            if not debug_ok:
-                # ## SKIP 原因**写准**（S6, 2026-09-25）
-                #   原串太笼统（无法区分"环境限制"与"探针写错"）。
-                #   实测: DebugActiveProcess -> **winerror 5（拒绝访问）**
-                #   => **环境不允许调试其他进程**（自动化壳/沙箱）。
-                #   **诚实**: 这是**环境能力限制**，不是"未做"；
-                #   在有调试权限的交互式会话下本项会**真的执行**。
+            proc = winproc.Popen(
+                [EXE, '--wait-ms', '4000'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
+            time.sleep(1.0)              # 等 PE 加载完成（足以被附加）
+            ctypes.set_last_error(0)
+            if not dbg.attach(proc.pid):
+                err = ctypes.get_last_error()
+                # 环境能力限制, 非"未做"（保留原 SKIP 语义与错误码）
                 results.append(('T3 debug-detect', 'SKIP',
                                 'env denies process debugging '
-                                '(winerror %d/0x%x); 保留 SKIP（环境限制，'
-                                '非未做）' % (probe_err, probe_err)))
+                                '(err=%d/0x%x); 保留 SKIP（环境限制，非未做）'
+                                % (err, err)))
             else:
-                proc = winproc.Popen(
-                    [EXE, '--wait-ms', '4000'],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
-                time.sleep(1.0)
-                dbg = DebugAttacher()
-                if not dbg.attach(proc.pid):
-                    results.append(('T3 debug-detect', 'SKIP',
-                                    'DebugActiveProcess failed (err=0x%x)' %
-                                    ctypes.get_last_error()))
-                else:
-                    import threading
-                    t = threading.Thread(target=dbg.pump, kwargs={'timeout': 25.0})
-                    t.daemon = True
-                    t.start()
-                    code, out, _err = pump_and_read(proc, timeout=30)
-                    t.join(timeout=1)
-                    if code is None:
-                        if proc.poll() is None:
-                            proc.kill()
-                            proc.wait()
-                        results.append(('T3 debug-detect', 'SKIP',
-                                        'debug session stalled in this env'))
-                    else:
-                        ok = (_norm_exit(code) == _norm_expect(PROT_EXIT_DEBUG_DETECTED)) and (msg_dbg in out)
-                        results.append(('T3 debug-detect',
-                                        'PASS' if ok else 'FAIL',
-                                        'exit=%d' % code))
+                # **同线程泵**（本函数在主线程, 与 attach 同线程）
+                n_events, saw_exit, ev_exit, cont_fails = dbg.pump(timeout=15.0)
+                dbg.detach()             # 先 detach: 让被调试进程解除暂停
+                code, out = None, b''
+                try:
+                    out, _err = proc.communicate(None, timeout=10)
+                    code = proc.returncode
+                except subprocess.TimeoutExpired:
+                    code = None
+                if code is None:
+                    _reap(proc)
+                txt = out.decode('utf-8', 'replace') if out else ''
+                ok = (code is not None and
+                      _norm_exit(code) == _norm_expect(PROT_EXIT_DEBUG_DETECTED)
+                      and msg_dbg in txt)
+                results.append(
+                    ('T3 debug-detect', 'PASS' if ok else 'FAIL',
+                     'exit=%s ev_exit=%s events=%d cont_fail=%d' % (
+                         code,
+                         ('0x%x' % ev_exit) if ev_exit is not None else None,
+                         n_events, cont_fails)))
         except Exception as e:
             results.append(('T3 debug-detect', 'FAIL', repr(e)))
+        finally:
+            # **零泄漏 + 有界**: detach(幂等) -> kill -> 带 timeout 的 wait
+            dbg.detach()
+            if proc is not None and proc.poll() is None:
+                _reap(proc)
 
     # ---- T4: 篡改检测 (.text) -------------------------------------------
     # 注: 托管环境若启用 WDAC (代码完整性策略), 新复制的篡改副本会因文件
