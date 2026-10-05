@@ -183,8 +183,15 @@ size_t prot_auth_build_message(const char* serial, uint64_t mid,
    .symtab/.dynsym 符号定位骨架，NDK 产物上执行加密）。**A3b（OLLVM）
    文档化**：后续在 NDK 环境引入 -flto/优化混淆即增强；自加密段不依赖
    编译器即可用。
-6. [ ] T1：Android 攻防测试矩阵（需 NDK 构建产物/真机）。
+6. [ ] T1：Android 攻防测试矩阵（需真机；**NDK 环境已于 2026-10-06 具备**）。
    - [x] T1-0（2026-08-30）：**攻击侧工具就绪**——`tools/attacker/android_jniptrace/`
-     ELF64 符号解析器（.symtab/.dynsym，宿主编译 6/6 符号命中）+ JNI/ptrace 补丁
+     ELF64 符号解析器（.symtab/.dynsym）+ JNI/ptrace 补丁
      模块（`patcher_jni.c` 同进程/`ptrace_patcher_cli.c` 附加双模式）。
-     详见 `docs/ATTACK_DRILL7.md`。真机验证待 NDK/root 环境。
+     详见 `docs/ATTACK_DRILL7.md`。
+   - [x] T1-0b（2026-10-06）：**真实 NDK r28c 交叉编译通过**（`aarch64-linux-android`
+     API 21/23/28 × `-Wall -Wextra -Werror` 全绿）。符号解析器对**真实 NDK 产物**
+     `libprot.so`（10192 B, ARM aarch64）6/6 JNI 导出命中；`--strip-all` 后 JNI 导出
+     仍 6/6（必须留在 `.dynsym`）。本轮**暴露并修复 5 处缺陷**（含 `process_vm_writev`
+     的 bionic API 23 门槛、include 路径、`-Wignored-qualifiers` 等）—— 原
+     「宿主编译验证」只覆盖了 `elfparse.c`/`elfdump.c` 两个文件，两个 patcher
+     从未被任何目标编译过。**真机验证仍待**（需 Android 设备 + root）。

@@ -163,7 +163,7 @@ ShardVase 不是传统的"更强壳"或"更硬保护"。它是一个：
 | 质量门禁项 | 37 项（默认跑 34 项） |
 | 二进制体积（standard） | ~232 KB |
 | 零依赖 | 运行时仅 Windows API |
-| 支持平台 | Windows x64（.NET/C# 已验证，Android ARM64 源码就绪） |
+| 支持平台 | Windows x64（.NET/C# 已验证，Android ARM64 NDK 交叉编译通过） |
 
 ---
 
@@ -173,7 +173,7 @@ ShardVase 不是传统的"更强壳"或"更硬保护"。它是一个：
 |------|------|
 | **Windows x64** | ✅ 完整支持 |
 | **.NET/C#** | ✅ 已验证（protgate.dll via P/Invoke） |
-| **Android ARM64** | 🔧 源码就绪（libprot.so），NDK 实编译待完成 |
+| **Android ARM64** | 🔧 源码就绪 + NDK r28 交叉编译通过（libprot.so），真机待验证 |
 | **UWP** | ❌ 不推荐（与 selfcrypt 根本冲突） |
 | **内核驱动** | ❌ 不推荐（全新项目，需 WDK/KMDF + EV 证书） |
 
@@ -204,7 +204,7 @@ ShardVase 不是传统的"更强壳"或"更硬保护"。它是一个：
 
 - 🔧 SPDX 许可证头（合规，低风险）
 - 🔧 段名随机化 + 差异扩散（开源策略有效性关键）
-- 🔧 Android NDK 实编译 + 攻击矩阵
+- 🔧 Android 真机攻击矩阵（NDK 交叉编译已完成）
 - 🔧 模块协议实现（Phase 6a-6e，设计完成）
 
 ---

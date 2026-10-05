@@ -1,6 +1,6 @@
 # 双向打通：内存补丁工具（加固↔破解）工程规划
 
-> 版本：2026-08-30 v1 · **2026-10-06 补记 v2** · 状态：**两个工具均已落地**（WinPE 侧另有真实 demo.exe 闭环，见 `docs/ATTACK_DRILL7.md` §6；Android 侧真机仍待）· 关联：`docs/EXTENSION_PLAN.md`（Android 规划）、
+> 版本：2026-08-30 v1 · **2026-10-06 补记 v3** · 状态：**两个工具均已落地**（WinPE 侧另有真实 demo.exe 闭环，见 `docs/ATTACK_DRILL7.md` §6；Android 侧**真实 NDK r28 交叉编译通过**并修复 5 处从未被编译暴露的缺陷，真机仍待）· 关联：`docs/EXTENSION_PLAN.md`（Android 规划）、
 > `docs/ATTACK_DRILL*.md`（Windows 攻防实证）、`docs/CONTRACT.md`（契约/算法）。
 > 本文档规划两个**攻击侧**工具（用于攻防演练与能力验证，不对外发布）：
 
@@ -101,9 +101,9 @@ examples/cross_platform/android/patcher/
 - [x] 单元测试：符号解析对已知 PE 正确性 —— **已达成**：`README.md` 记录 user32.dll 导出表通道；本轮补 demo.exe MAP 通道实测；
 
 ### Android-JniPtracePatcher
-- [x] ELF 符号解析器定位 JNI 导出符号 —— **宿主侧已达成**：`gen_test_elf.py` 样本 **6/6 符号命中**（`.symtab` + `.dynsym`）；**libprot.so 本体（NDK 产物）未解析**（无 NDK 环境，见下条）；
+- [x] ELF 符号解析器定位 JNI 导出符号 —— **已达成（含真实 NDK 产物，2026-10-06）**：`gen_test_elf.py` 样本 **6/6 符号命中**（`.symtab` + `.dynsym`）；**真实 NDK r28c aarch64 产物 `build/_ndk_out/libprot.so`（10192 B, `ARM aarch64` DYN）同样 6/6 命中** —— `nativeVerifyLicense 0x4de0` / `nativeCheckIntegrity 0x50ac` / `nativeIsDebugged 0x50c4` / `nativeDetectHook 0x5174` / `nativeStartWatchdog 0x5220` / `nativeStopWatchdog 0x5294`，负向对照 `Java_com_prot_demo_Prot__nope` ⇒ `not found`。宿主 x86_64 版（`build/_libprot_host.so` 16864 B）亦 6/6。**原文「无 NDK 环境」已事实过期**（NDK 在 `D:\environment\android-sdk\ndk\28.2.13676358`）；
 - [ ] 同进程模式（B）改写 nativeIsDebugged 返回 0 → 验证 TracerPid 检测被绕过
-      （/proc/self/status 读取路径被改）—— **代码就绪，真机未测**（需 NDK + Android 环境）；
+      （/proc/self/status 读取路径被改）—— **代码就绪（NDK API 21/23/28 交叉编译通过），真机未测**（需 Android 设备/root；NDK 环境本身已具备）；
 - [ ] ptrace 附加模式（A）在 root 测试环境对目标进程写内存成功 —— **代码就绪，真机未测**（需 root，D3「先宿主编译验证」的既定边界）；
 - [ ] 回归：不破坏 libprot.so 既有功能 —— **未测**（随真机验证一并做）。
 
@@ -115,7 +115,7 @@ examples/cross_platform/android/patcher/
 |------|------|------|------|
 | D1 | 先做哪个工具 | WinPE 先行 / Android 先行 | **WinPE 先行**（符号解析器可复用 ELF 思路，且已有 demo 产物可测） |
 | D2 | 工具放置位置 | tools/（攻击工具与构建工具混放）/ 独立 tools/attacker/ | **tools/attacker/**（与既有工具分离，明确"攻击侧"属性） |
-| D3 | Android 是否需要真机 | 宿主编译验证 / 真机 root 测试 | **先宿主编译验证**（无 NDK/真机环境时文档化后续步骤） |
+| D3 | Android 是否需要真机 | 宿主编译验证 / 真机 root 测试 | **先宿主编译验证**（原记「无 NDK/真机环境时文档化后续步骤」；**2026-10-06 更新：NDK r28 已就位并实跑交叉编译**，故本步已兑现且暴露并修复 5 处缺陷，真机测试仍为后续） |
 | D4 | 是否对 RELEASE（strip）构建测试 | 是 / 否 | **是**（符号被 strip 是真实挑战，记录定位失败路径） |
 
 ---
@@ -124,8 +124,8 @@ examples/cross_platform/android/patcher/
 
 | 风险 | 缓解 |
 |------|------|
-| RELEASE 构建符号被 strip → 定位失败 | 记录为边界；DEBUG 构建可定位即证明解析器正确；strip 后改用 .pdata/.rdata 启发式（后置） |
-| Android 无真机/NDK 环境 | 宿主编译 + 单元测试先行；文档化真机步骤 |
+| RELEASE 构建符号被 strip → 定位失败 | **2026-10-06 实测按符号类别区分**：对真实 NDK 产物跑 `llvm-strip --strip-all`（`libprot_stripped.so` 7424 B）后，**JNI 导出（本工具的目标符号）仍 6/6 可定位** —— 它们必须留在 `.dynsym` 供 `dlsym` 解析，strip 不掉；**消失的是内部静态符号**（`wd_loop` / `g_wd_stop` / `g_wd_thread` 由 `S` 变 `not found`）、`.symtab` 整体消失（`symtab=0`）。⇒ 该风险**不对本工具成立**；若将来目标转为内部符号，再上 `.pdata`/`.rdata` 启发式（后置） |
+| Android 无真机/NDK 环境 | **2026-10-06 更新：NDK r28c 已具备**，交叉编译已实跑（API 21/23/28 × `aarch64-linux-android`，`-Wall -Wextra -Werror` 全绿）。剩余缺口仅「真机 + root」；真机步骤仍待文档化 |
 | ptrace 附加受限（Android 9+） | 同进程 JNI 模式（B）为主，ptrace 模式（A）标注需 root |
 | 工具被误用于攻击他人软件 | 仅用于本项目攻防演练；不对外发布；文档声明用途 |
 

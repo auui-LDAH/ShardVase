@@ -1,6 +1,6 @@
 # ATTACK_DRILL7 — 符号表解析器攻击面（内存补丁工具链）
 
-> 版本：2026-08-30 v1 · **2026-10-06 补记 v2** · 状态：**WinPE 实证完成（mock 目标）→ 真实 demo.exe 闭环见 §6；Android 宿主编译就绪**
+> 版本：2026-08-30 v1 · **2026-10-06 补记 v3** · 状态：**WinPE 实证完成（mock 目标）→ 真实 demo.exe 闭环见 §6；Android 真实 NDK r28 交叉编译通过（含修复 5 处缺陷），真机仍待**
 > 关联：`docs/MEMPATCH_PLAN.md`（规划）、`tools/attacker/`（工具）、
 > `docs/ATTACK_DRILL1-6.md`（此前攻防）、`docs/EXTENSION_PLAN.md`（Android 规划 T1）。
 > 本文档记录**真实破解者工具链**形态的攻击：运行时符号表解析 + 内存补丁，

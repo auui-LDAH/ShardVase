@@ -243,7 +243,7 @@ prot_sdk/wizard      : key_mode = new | pub（二选一）+ lite 精简单开关
 | 现有待办 | 相对本战略 |
 |----------|-----------|
 | `release_check` 全量实跑（现已可裸跑） | ✅ 已完成 |
-| Android NDK 实编 + T1 矩阵 | 独立线；与成本计算器有协同（Android 成本数据） |
+| Android NDK 交叉编译 ✅ 已完成（2026-10-06）；真机 T1 矩阵待做 | 独立线；与成本计算器有协同（Android 成本数据） |
 | GitHub push + CI 实跑 | 独立线 |
 | Defender 引擎修复 | 独立线 |
 | T3 真机（需交互式桌面） | 独立线 |

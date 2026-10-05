@@ -113,7 +113,7 @@
 |------|------|------|
 | PE 符号解析（MAP/导出/COFF） | ✅ 实证 | `tools/attacker/winpe_sympatcher/` |
 | 内存补丁（OpenProcess + ASLR 换算） | ✅ 实证 | 同上 |
-| ELF 符号解析（.symtab/.dynsym） | ✅ 宿主编译就绪 | `tools/attacker/android_jniptrace/` |
+| ELF 符号解析（.symtab/.dynsym） | ✅ NDK 产物实证（6/6，strip 后仍 6/6） | `tools/attacker/android_jniptrace/` |
 | JNI/ptrace 补丁 | 🟡 待真机 | 同上 |
 | 进程转储 | ✅ 工具就绪 | `tools/procdump_like.py` |
 | VM 语义还原 | ✅ 工具就绪 | `tools/vm_reduce.py` |

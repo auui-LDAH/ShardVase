@@ -172,7 +172,7 @@ powershell -File build.ps1 -Config Release
 | 补演练记录 | 给 `revoke`/`syscall` 补 drill（**当前缺**） | 低 |
 | 修文档错误 | 数字、链接、过时说明 | 低 |
 | 扩充测试 | 新的攻击面用例 | 中 |
-| 平台延伸 | Android 真机验证（`docs/EXTENSION_PLAN.md`） | 高 |
+| 平台延伸 | Android **真机**验证（NDK 交叉编译已完成，见 `docs/EXTENSION_PLAN.md`） | 高 |
 
 **当前最欢迎的两类**：
 
