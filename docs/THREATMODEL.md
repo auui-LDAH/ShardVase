@@ -95,7 +95,7 @@ RSA 签名，公钥在程序里，私钥离线。攻击者还原全部 VM 也**�
 3. **机器标识可换**：L4b 值在内存可改，真正 bind-to-machine 需 RSA/签名或在线激活；
    本地只能做到"换机即失败"。
 4. **反调试置信度**：干净环境 T7/selftest 已验证 0 误报；A5 看门狗周期复查
-   提升驻留期检测密度；真机 T3 仍待做（累计成本分钟级），这是"置信度"问题
+   提升驻留期检测密度；T3 已于 2026-10-05 真机 + CI 双端走通（累计成本分钟级），这是"置信度"问题
    而非架构问题。
 5. **签发链路边界（第五轮实证，2026-08-28）**：
    - `EXPIRES` 依赖本地时钟——真机回拨系统时间后过期 license 复活（L4
@@ -130,7 +130,7 @@ RSA 签名，公钥在程序里，私钥离线。攻击者还原全部 VM 也**�
 | L4b：本机 machine 绑定成立 | T1（auto 机器）通过；异机=拒绝 |
 | L3：干净环境无关键误报 | `tests/e2e.py` T7 selftest-clean |
 | L4a：.text/.rdata/.pdata 单字节篡改 | `tests/e2e.py` T4 / T9 / T10 |
-| T3 真机调试（尚未自动化） | 真机人肉跑 `python tests\e2e.py`，T3 应 SKIP→PASS/FAIL |
+| T3 真机调试（2026-10-05 已自动化） | `tests/e2e.py` T3 直接 `DebugActiveProcess` 附加派生进程并同线程泵事件；真机与 CI runner 双端 PASS |
 | N1 自变形：引擎静态密文（2026-08-22） | `tests/attacks.py` A11 selfcrypt-dump + `tests/protchain_check.py` P1/P2 |
 | N4 间接化：受保护函数无直接 call（2026-08-22） | `tests/attacks.py` A10 static-trace + `tests/protchain_check.py` P5 |
 | BLOB_SIGN：伪造 blob 拒绝（2026-08-22） | `tests/attacks.py` A8 blob-forge + e2e T14/T28 + protchain P3/P4 |

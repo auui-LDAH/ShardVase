@@ -25,7 +25,7 @@ Windows x64 原生 C 反逆向保护套件 + 演示程序。四路并行实现�
 |------|------|
 | T1 正确序列号 → 退出码 0 / 显示"校验通过" | ✅ PASS |
 | T2 错误序列号 → 退出码 1 / 显示"序列号无效" | ✅ PASS |
-| T3 调试器附加 → 退出码 0xDB | ⚠️ 沙箱无法驱动调试会话记 SKIP，需真机验证 |
+| T3 调试器附加 → 退出码 0xDB | ✅ PASS（2026-10-05 真机 + CI runner 双端实测） |
 | T4 篡改 .text → 退出码 0xBAD / 显示完整性失败 | ✅ PASS |
 | T5 VM 指令集单测 | ✅ PASS |
 | T6 多实例稳定（Phase 2c 随机化不得改变结果，8 连跑全过） | ✅ PASS |
@@ -141,7 +141,7 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 
 ## 4. 剩余工作（按优先级）
 
-- [ ] **P0｜真实调试检测验证**：在普通交互终端跑 `python tests\e2e.py`，确认 T3 真实走通（附加调试器 → 0xDB）。
+- [x] P0｜真实调试检测验证（2026-10-05 完成）：T3 已在真机与 CI runner 双端走通（`T3 debug-detect PASS (exit=219 ev_exit=0xdb cont_fail=0)`）。原因追到 `tests/e2e.py` 的 `DBG_CONTINUE` 常量写成了裸 `2`（应为 `0x00010002`）⇒ `ContinueDebugEvent` 报 `ERROR_INVALID_PARAMETER(0x57)` ⇒ 被测进程从未被恢复运行。
 - [x] P1｜健全性收尾（2026-08-08 完成）：清理根目录 10 个散落 `.obj` 与 `build\demo_mincrc.exe`；`build.ps1` 末尾新增 `*.obj` 清理步骤，重建后验证根目录 0 残留。
 - [x] P1｜契约同步（2026-08-08 完成）：CONTRACT.md §3 明确密钥流"先更新后取字节"；新增 §5.4 记录 `license_vm.vasm` 的 dup 修复。
 - [x] **Phase 1a｜VM 构建期 opcode 随机化（2026-08-08 完成，见 `docs/ROADMAP.md`）**：
@@ -219,7 +219,7 @@ A2 VM 密文高熵非明文 / A3 构建镜像指纹（跨轮互异）/ A4 --self
 | 攻击模拟（不需真机） | `tests/e2e.py` 扩 T6 多实例稳定/T7 selftest 干净；新 `tests/attacks.py` A1 machine-bind / A2 VM 密文高熵 / A3 构建指纹 / A4 selftest 干净 | 全 PASS |
 | machine-id 覆盖 | `vmenc.py genserial --machine-id`（十进制/0x/auto），`build.ps1 -MachineId` 贯通;异机绑定用 `-MachineId 42` 复现 T1 拒绝（已实测） | 手动实测 FAIL 正确 |
 
-> 注意：T3（真机调试附加）仍待真机；CI 未推远程因此本地以 verify.ps1 全绿为准。
+> 注（2026-10-05 更新）：T3 已在真机与 CI runner 双端走通，本条原「仍待真机」已销；CI 现已推送远程并全绿（见 `docs/HANDOVER.md` §2.26）。
 
 ### 4.3 A1 RSA 离线签发（2026-08-10 完成，本会话）
 

@@ -91,9 +91,9 @@
 
 | # | 项 | 锁因 | 开门条件 |
 |---|----|------|----------|
-| B1 | T3 真机调试验证 | 需真实 attach 调试器会话 | 提供可远程登录的 Windows（RDP）→ 跑 `python tests\e2e.py` 将 SKIP 转 PASS/FAIL 并补用例 |
+| B1 | ~~T3 真机调试验证~~ ✅ 2026-10-05 已解锁 | ~~需真实 attach 调试器会话~~ | 已达成：真机与 CI runner 双端 `T3 debug-detect PASS`；根因是 `DBG_CONTINUE` 常量错写 |
 | B2 | CI 推 GitHub 跑通 | 需远程仓库/runner | push 远端后 `ci.yml` 自动跑 MSVC build + verify；产物 manifest 可审计 |
-| B3 | 发包全量回归（含 T3 三角验证） | 依赖 B1/B2 | 两者完成后 `verify.ps1 -Rounds 3` 作为发版 gate |
+| B3 | 发包全量回归（含 T3 三角验证） | 依赖 B2（B1 已于 2026-10-05 解锁） | `verify.ps1 -Rounds 3` 作为发版 gate |
 | B4 | 真实硬件/部署验证 | 需物理机（换机、UEFI 等） | Phase 4 授权签发完成后用真机验证绑定 |
 
 ## 开发节奏建议
