@@ -271,7 +271,7 @@
       "verifies_text": false,
       "needs_writable_dir": false,
       "known_limits": [
-        "与 main 同页的函数无法参与加密 (VP 页粒度禁执行自伤) -> revoke 永久排除",
+        "与 main 同页的函数无法参与加密 (VP 页粒度禁执行自伤); 该限制自 .protpad 填充节起不再命中 revoke —— 2026-10-05 revoke 已纳入 EXT 组",
         "加密种子默认恒定 (selfcrypt_proto.py 默认值), build.ps1 未传 --seed",
         "解密期日志需 -ScDebug 显式开启 (默认关闭, 以免泄漏 RVA/密钥/CRC)"
       ],

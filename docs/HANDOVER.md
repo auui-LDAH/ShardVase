@@ -1310,7 +1310,8 @@ D2a 下 `prot_selfcrypt_enter` 首行即 `return PROT_OK`，`else` 分支不可�
 `scan_e8_calls` @`tests/protchain_check.py:285`）**只扫 `0xE8` 直接调用**，
 而 T11 那处是 `call rax`（经 `g_ad_scan_fn` 函数指针）。
 **声明式的组清单来自单一事实来源**：`tools/selfcrypt_proto.py` 的
-`DEFAULT_TARGETS`（组 0 = VM 4 个）/ `EXT_TARGETS`（组 1 = EXT 4 个），
+`DEFAULT_TARGETS`（组 0 = VM 4 个）/ `EXT_TARGETS`（组 1 = 当时 EXT 4 个；
+2026-10-05 revoke 补入后为 5 个 —— 见 §2.28），
 用 `ast.parse` 抽取，**不硬编码**。
 
 **三类"看似不是目标调用、实际是"的形态**（判据必须展开）：
