@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（642 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `9e013ff`（阶段总结 28287ea + 陈旧复选框整理 9e013ff 后）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（686 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T29 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `80db8ba`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba）
 
 
 ## 1. 项目是什么
@@ -3066,5 +3066,149 @@ f4b27f4 = 38  + Android 交叉编译 (android_compile_check)
   / `.github/**` / `publish/**`；这些位置的复选框未统计。
 - 阶段 4（成本模型）标 ⬜ 的依据仅是 `tools/cost_model.py` **文件不存在**；
   未排查是否有**别的文件**已等价实现了该模型。
+
+*2026-10-06 v1*
+
+---
+
+## 2.33 「机制在、测试不在」的第 3 次复发：补齐 e2e T29（2026-10-06）
+
+### 2.33.1 缘起：复核 N1_PLAN 时数出来的一个空洞
+
+复核 `docs/N1_PLAN.md`（§2.32 的「整理」步）时发现三处"真没做"的缺口，
+其中一处与既有缺陷同型、且**当天就能闭合**：
+
+**II-1 解密态 CRC 校验在 `73f2381`（2026-08-22）就落地了，
+但 `tests/` 里从来没有一处篡改 `.protcry` 的元数据去触发它。**
+
+机制是齐的、终止路径也是齐的：
+
+```
+src/selfcrypt.c:290-314   prot_selfcrypt_init() 逐条 sc_do_range(i, 1) 并比对
+src/selfcrypt.c:240       if (got != crc) { ... return PROT_ERR_INTEGRITY; }
+demo/main.c:525-529       if (sc != PROT_OK) { MSG_TAMPER; exit(PROT_EXIT_TAMPERED); }
+```
+
+但 e2e 的 26 个用例 ID（T1–T8、T11–T28）没有一个碰 `.protcry`：
+
+| 位置 | 对 `.protcry` 的操作 |
+|------|---------------------|
+| `tests/e2e.py:387 make_tampered_copy()` | 只翻 `.text` / `.rdata` / `.pdata` |
+| `tests/attack_drill.py` D2/D3 | 只有**读** |
+| `tests/protchain_check.py:149 selfcrypt_meta()` | 只有解析 |
+
+⇒ 用户可见的 `MSG_TAMPER` + `0xBAD` 这条路径，**从未被自动化验证过**。
+
+这是「没人比对」的**第 3 次复发**。§2.24（e2e T3 的 `DebugAttacher` 被误删后
+无人发现）是"代码在、调用点不在"；§2.27（`guard_selftest.py` 的 `exit_pol`
+未定义名）是同一个测试文件里的空洞。**共同点：失败路径的代码最难被测试碰到** ——
+要触发它必须主动构造一个"看起来像攻击"的输入，而没人有动力主动写这个。
+
+### 2.33.2 修法与一个关键设计：三跑对照
+
+`tests/e2e.py` 新增 120 行（提交 `80db8ba`）：
+
+1. docstring 用例清单补 T29 一行；
+2. 两个模块级助手 —— `cry_section_name()`（从
+   `demo/gen/<plat>/prot_sections.json` 的 `sections.protcry` 取**构建期随机化后
+   的真实节名**）与 `make_meta_tampered_copy(sec_off, rel_off)`（按节内偏移翻 1 字节）；
+3. T29 块 —— 篡改目标 = 第 0 条 entry 的 **crc32 字段首字节**（节内偏移 `4+0*24+16`，
+   对齐写入侧 `tools/selfcrypt_proto.py:441-444`）。
+
+⚠️ **只断言"篡改后必须 0xBAD"是不够的。** `.protcry` 不在
+`tools/hashpatch.py:112 TARGET_NAMES = ('.text','.rdata','.pdata','.protxec')` 内，
+所以存在一个必须排除的替代解释：**"随便翻这个节里的任意字节都会 0xBAD"**。
+若成立，T29 就退化成"证明翻过文件 = 会报错"，与 meta CRC 无关。
+
+因此判据是**三跑对照**：
+
+```
+base_ok = (code_b == 0) and (msg_ok in out_b)        # 基线必须正常
+ctrl_ok = (code_c == code_b)                          # 翻节尾填充 == 基线  ← 关键
+hit     = (_norm_exit(code_m) == _norm_expect(PROT_EXIT_TAMPERED)
+           and msg_tamper in out_m)                   # 翻 meta crc32 -> 0xBAD
+ok = base_ok and ctrl_ok and hit
+```
+
+`ctrl_ok` 证明**变红来自 meta 内容本身，不是来自"动过这个节"**。
+
+**这是本条的通用教训**：写"篡改必须被检测到"这类测试时，
+**必须同时给出一个"篡改但不该被发现"的对照**，否则测的是"文件被动过"，
+不是"目标校验逻辑生效"。
+
+### 2.33.3 验证（含变异验证）
+
+| 项 | 结果 |
+|----|------|
+| `python tests/e2e.py` | **总计 29: PASS 29 / FAIL 0 / SKIP 0 / NA 0**，rc=0 |
+| `T29 meta-crc` 详情 | `PASS (exit=2989 ctrl=0 base=0 meta_n=9)` |
+| 基线/对照/本体 | `exit=0` / `exit=0`（同基线）/ `exit=2989 (0xBAD)` + `完整性校验失败` |
+| 实测节信息 | `protcry=.b3locz1` `ptr_raw=0x34800` `crc_len=0x4000` `n=9` `meta_end=0xdc` |
+| **变异验证** | 篡改点退回 `crc_len-1` ⇒ **`T29 meta-crc FAIL (exit=0 ctrl=0 base=0)`**，`总计 29: PASS 28 / FAIL 1`，rc=1；逐字节恢复（`bytes=66943 bom=True 一致=True`） |
+| `py_compile` / `bom.py add` | rc=0 / `+BOM` |
+| `build/_hygiene.py` | `15 个文件, 0 处异常` |
+| `tools/doccheck.py` | **PASS**（`检查数字 664 处, 错误 0, 警告 0`） |
+| `tools/docclaim_check.py` | **PASS (8/8)** |
+
+变异验证的意义：证明 T29 **可判伪**，不是"只会通过的检查器"
+（呼应 `docs/阶段总结-2026-10-06.md` §3.8）。
+
+### 2.33.4 顺带做的：计数面同步（并暴露判据问题）
+
+T29 落地后，「T1-T28」字样成为陈旧值。全库普查命中 41 处，
+按**语义**分成两类：
+
+- **现值**（门禁清单 / 单项命令注释 / CI step 名）⇒ **改**，共 **8 处**：
+  `tools/release_check.ps1:296`（`Check 'e2e T1-T28'`）/ `tools/ci_sim.ps1:9,:75` /
+  `.github/workflows/ci.yml:45` / `tools/verify_linux_runtime.py:293,:296,:320,:322` /
+  `README.md:140` / `CONTRIBUTING.md:76` / `publish/02-项目档案.md:119` /
+  `docs/阶段总结-2026-10-06.md:257`。
+- **历史**（带日期 / 某轮输出快照 / 已勾选的计划验收行）⇒ **一律不动**，共 30 处：
+  `docs/HANDOVER.md` 7 处 / `docs/CI_PLAN.md` 6 处 / `docs/compat-matrix.csv` 3 处 /
+  `docs/PILLAR2_OBSERVABILITY_PLAN.md` 3 处 / `docs/PORTABILITY_ASSESSMENT.md` 2 处 /
+  `docs/ATTACK_PLAN.md` / `docs/BLOB_SIGN_PLAN.md` / `docs/INFRA_PLAN.md` /
+  `docs/MODULE_PROTOCOL_DECISIONS.md` / `docs/REVIEW_MODULE_PROTOCOL.md` /
+  `docs/WORKBENCH_ROADMAP.md` / `docs/部署档案-ShardVase.md` 各 1 处 +
+  `tools/release_check.ps1:92,:96`。
+
+⚠️ **`:92`/`:96` 是最容易改错的两处**：它们不是"门禁清单"，
+而是 `gate_log` 限长规则**事故本身**的叙述（2026-10-02，`e2e T1-T28` 失败时
+被测脚本先打印 27 行用例，"末 12 行"全是 `T16..T26 PASS` 噪声，
+含 `FAIL` 的那一行被当作"前 N 行"省略）。**改掉它会让自检叙事失实。**
+
+**标签溯源**（`build/_t29label*.py` 逐提交比对）：
+`Check 'e2e T1-T28'` 自门禁创建提交 `e68a762` 起就是 `T1-T28` 且**再未改过**
+（`git log -S "e2e T1-T28" -- tools/release_check.ps1` 只命中 `e68a762` 与
+`f9285bf` 的**文字引述**，后者 `f9285bf^` 与 `f9285bf` 逐字相同）。
+`e68a762` 时 e2e 实际 ID 集合 = `[1..8, 11..28]`，`max=T28` ⇒ 标签当时准确。
+⇒ **本仓库没有"标签随用例增长同步改名"的先例**；但 T1-T28 是**区间上界**，
+加了 T29 后上界变为 T29，故现值为「T1-T29」更诚实。
+
+**判据层面的问题**：`tools/doccheck.py` 与 `tools/docclaim_check.py`
+**都不解析「T1-T28」字样**（doccheck 只在 `:157` 注释里提到 T3/DebugAttacher）。
+⇒ 这 41 处**没有任何机器强制**同步，也无任何机制**发现**漏改 ——
+它与 §2.32 记录的"陈旧复选框"是**同一根因**（手写状态 + 无机器比对），
+只是这次我自己既是引入者又是发现者。
+
+### 2.33.5 诚实边界
+
+- **仍未在真机 / 企业环境验证**（与 `docs/N1_PLAN.md` §10 第 5 条同一挂账）；
+  `0xBAD` 证据是 **Windows x64 本机构建**下的。
+- **Linux 侧未跑**：`build/linux/` 下没有 demo 产物 ⇒ `--platform linux` 时
+  T29 会走 `section_bounds()` 的 `RuntimeError` 分支变 **FAIL**
+  （如实报错，不是假绿）；待 Linux 产物齐备后需复跑。
+- **`PROT_SELFCRYPT_DISABLE` 构建下 T29 记 SKIP**（`n == 0` ⇒ 无 meta），
+  该分支**未实测**。
+- **T29 只覆盖 II-1 的"解密态"一半**：密文态 CRC（`PROTCRYP` 第 4 烧录标记）
+  **从未实现**（`tools/hashpatch.py:47 MAGICS` 只有 4 个，全库搜 `PROTCRYP` 零命中）；
+  `prot_selfcrypt_leave()`（`src/selfcrypt.c:347`）走 `sc_do_range(i, 0)`
+  **不校验**，故 T29 只覆盖 `init`/`enter` 路径。
+- **T30（密文态篡改）仍未实现**；**D2c 看门狗周期重加密仍未实现**
+  （`docs/N1_PLAN.md:139` 的折中方案，`src/` 内零命中）。
+- **未重跑全门禁**：本条提交时 `release_check.ps1` 另行后台跑，结果见后续提交或本节后续补记。
+- 计数面同步用的是 `build/_t29sync.py`（逐条 `(old, new, expected_count)` 断言，
+  任何不符即整体中止不写盘）；其末尾的**自证断言过严**（对
+  `tools/release_check.ps1` 因保留历史注释而误报），写盘已在断言之前完成，
+  不影响结果 —— 但这是一个**应当记下的脚本缺陷样本**。
 
 *2026-10-06 v1*
