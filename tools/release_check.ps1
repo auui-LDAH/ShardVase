@@ -976,6 +976,59 @@ Check '静态未定义名审计 (undef_check)' {
     & $py -X utf8 tools\check_undef.py --quiet; $LASTEXITCODE -eq 0
 }
 
+# Android 交叉编译 (android_compile_check, 2026-10-06): 防"Android 侧从未被编译过"。
+#
+# **为什么需要**: 2026-10-06 用真 NDK r28 交叉编译才发现 —— 攻击侧两个 patcher
+#   自 `c941c9c` 落地起**从未被任何目标编译过**，源码有两个真缺陷:
+#     · `patcher_jni.c:23` `#include "../elfparse/elfparse.h"` 路径指到目录外
+#     · 两文件裸调 `process_vm_writev`（bionic 标 `__INTRODUCED_IN(23)`）
+#   而 `tools/attacker/android_jniptrace/README.md` 记的"宿主编译验证"命令
+#   **只编了 `elfparse.c` + `elfdump.c`** —— 即"声称验证过的代码"与
+#   "实际验证过的代码"不是同一份。`examples/cross_platform/android/` 另有
+#   3 处从未经 `-Wall -Wextra -Werror` 的缺陷。
+#   旧门禁为何看不见: `linux_compile_check.py:88 SCAN_DIRS = ['src']` 只扫 `src/`；
+#   CI 全文搜 `ndk|android|aarch64` 零命中。
+#
+# ## ⚠️ 判据必须锚定**文档声明的最低 API (21)** —— 这是本项存在的全部理由
+#   实测同一份源码（裸 `process_vm_writev`）:
+#     api21 -> rc=1（`call to undeclared function`）
+#     api23 -> rc=0
+#     api28 -> rc=0
+#   bionic 在 API 21/22 上**根本不声明**该函数，23+ 才声明。
+#   => "挑一个现代 API 编一遍"会**放过**这个缺陷 —— 它潜伏至今正是因为
+#      所有人都用现代 API 试。工具默认 `DEFAULT_APIS = (21, 28)`，21 在前。
+#
+# ## 为什么这里不能只看退出码的"0 或非 0"
+#   2026-10-06 自测抓到工具**自身的假通过**: 文件编不过时它打印了 `FAIL` 与
+#   `[API_GATED: 需要回退]`，但 `--quiet` 仍 rc=0（第一版只在传 `--min` 时
+#   才判失败）=> 门禁会报 `[ok]`。这正是本项目反复记名的形态
+#   「工具报 FAIL，门禁说 ok」（同本文件 `$LASTEXITCODE` 影子变量事故）。
+#   已修: 把关点抽成 `exit_code_for()`，默认编不过即非 0，并补 T10-T13 回归自检
+#   （T11 专门断言"不传 `--min` 时编不过也返回 1"）。
+#
+# ## 为什么跳过而不是失败
+#   找不到 NDK 时本项**从未执行**，必须与"已通过"可区分（「未验证 != 通过」）。
+#   工具自身已判 2，这里**显式判 2 -> SKIP**，不做全局隐式映射。
+#
+# ## 为什么跳过不会留下覆盖空白
+#   CI runner **预装 NDK**（`ubuntu-latest` 实测含 `27.3.13750724` /
+#   **`28.2.13676358`**（与本机同版本）/ `29.0.14206865`），故本项在 CI 上
+#   由 `linux-portability` job 的 Android 步骤**真正执行**，不是恒 SKIP。
+#
+# ## ⚠️ 与 `linux_compile_check` 相同的 `$LASTEXITCODE` 纪律
+#   每步调用后**立刻**捕获进 `$rc`，绝不读 `$LASTEXITCODE`、
+#   绝不在本 scriptblock 内给它赋值（见上面第 18 项的陷阱记录）。
+Check 'Android 交叉编译 (android_compile_check)' {
+    & $py tools\android_compile_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py tools\android_compile_check.py --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    $rc -eq 0
+}
+
 
 
 

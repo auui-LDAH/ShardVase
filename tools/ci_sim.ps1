@@ -7,7 +7,7 @@
 #   job build-and-verify:
 #     Build (Release) + RecordSeeds
 #     e2e T1-T28 / attacks A1-A12 / vm_unit / vmc / example E1-E7
-#     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / 静态未定义名 undef_check / py_compile
+#     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / 静态未定义名 undef_check / Android 交叉编译 android_compile_check / py_compile
 #   job reproducible:
 #     用 seeds.json 同种子重建 (Release, SkipSign) + SHA-256 比对 demo.exe/vm.blob
 #   job sdk-package:
@@ -95,12 +95,28 @@ if (-not $SkipTest) {
         & $py -X utf8 tools\check_undef.py --quiet
         if ($LASTEXITCODE -ne 0) { throw 'undef_check check failed' }
     }
+    # 无 NDK -> 工具**自己**返回 2 (SKIP)。此处必须把 SKIP 与 FAIL 分开:
+    # `Step` 只看 `$LASTEXITCODE -ne 0` -> 所以 SKIP 时要显式把它归零,
+    # 否则"未验证"会被本模拟器误报成失败（与门禁纪律相反）。
+    Step 'Android 交叉编译 (android_compile_check)' {
+        & $py -X utf8 tools\android_compile_check.py --selftest --quiet
+        if ($LASTEXITCODE -eq 2) {
+            Write-Host '[ci_sim]   SKIP: 未找到 Android NDK (未验证 != 通过)' -ForegroundColor DarkGray
+            $LASTEXITCODE = 0
+        } elseif ($LASTEXITCODE -ne 0) {
+            throw 'android_compile_check selftest failed'
+        } else {
+            & $py -X utf8 tools\android_compile_check.py --quiet
+            if ($LASTEXITCODE -ne 0) { throw 'android_compile_check check failed' }
+        }
+    }
     Step 'py_compile all' {
         & $py -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py `
             tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\mock_server.py `
             tools\selfcrypt_elf.py tools\vm_reduce.py tools\procdump_like.py `
             tools\residency_guard.py tools\window_check.py tools\replica_check.py `
             tools\check_crc_targets.py tools\check_undef.py `
+            tools\android_compile_check.py `
             tests\e2e.py tests\attacks.py tests\vmc_tests.py `
             tests\protchain_check.py examples\tool_demo\test_example.py
     }

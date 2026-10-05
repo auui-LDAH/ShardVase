@@ -64,7 +64,7 @@ jobs:
         run: python tests\protchain_check.py
 
       # 阶段 1/3/5 新增的门禁项必须也在 CI 里跑 —— 否则等于"本地才生效的门禁",
-      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 37 项 (默认 34)。
+      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 38 项 (默认 35)。
       - name: Module contract (modcheck)
         run: python tools\modcheck.py --all-compositions
 
@@ -128,7 +128,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 -SkipDirtyCheck
 
       - name: Python syntax check (all tools)
-        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tools\replica_check.py tools\check_crc_targets.py tools\check_undef.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
+        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tools\replica_check.py tools\check_crc_targets.py tools\check_undef.py tools\android_compile_check.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
 
       # ## 为什么必须单独上传门禁日志（2026-10-02 实测教训）
       #   `Full release gate` 失败时，上面的 artifact 上传步**根本不会执行**
@@ -369,3 +369,36 @@ jobs:
           python3 tools/modcheck.py
           python3 tools/conformance.py modules.json
           python3 tools/attackcheck.py --quiet
+
+      # ---- 第四部分: Android 交叉编译（2026-10-06）----
+      #
+      # ## 缘起
+      #   `tools/android_compile_check.py` 落地时发现: **Android 侧从未被
+      #   任何目标编译过** —— `tools/attacker/android_jniptrace/` 的两个
+      #   patcher、`examples/cross_platform/android/` 都只被"读过"。
+      #
+      # ## 为什么放在这个 job
+      #   本 job 的职责就是"**在真实非 Windows 环境上验证可移植性**"。
+      #   Android 交叉编译是同一职责的延伸，且 runner 自带 NDK/SDK。
+      #
+      # ## 无 NDK 时**必须** SKIP（退出码 2）而不是 FAIL
+      #   与 `linux_compile_check` 同纪律（见本文件上方注释）: 前置不存在
+      #   时判据从未执行，"未运行"必须与"已通过"可区分，但把"环境没装"
+      #   报成 FAIL 会让门禁在干净 runner 上**永远红**。
+      #   工具自己实现三态（`exit_code_for()`），故这里**不**做
+      #   `if [ -d ... ]` 之类的环境判断 —— 环境判断写两遍就会漂移。
+      - name: Android cross-compile (android_compile_check)
+        run: |
+          # 注意: **不能**在本块用 `set -e` —— 它会令 SKIP（退出码 2）
+          # 在读 rc=$? 之前就终止脚本，把"未验证"误报成 job 失败。
+          python3 tools/android_compile_check.py --selftest --quiet
+          rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::warning::android_compile_check 自检 SKIP（未找到 NDK）—— 未验证 != 通过"
+            exit 0
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::android_compile_check 自检失败 (rc=$rc)"
+            exit "$rc"
+          fi
+          python3 tools/android_compile_check.py --quiet

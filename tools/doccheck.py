@@ -156,8 +156,15 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 # 2026-10-05: 36/33 -> 37/34 (新增 `静态未定义名审计 (undef_check)`;
 #   `tests/e2e.py` T3 的 `DebugAttacher` 孤儿调用与 `guard_selftest` 的
 #   `cont`/`exit_pol` 两起"只在失败路径上执行"的 NameError 催生)。
-GATE_TOTAL = 37
-GATE_DEFAULT = 34
+# 2026-10-06: 37/34 -> 38/35 (新增 `Android 交叉编译 (android_compile_check)`;
+#   用真 NDK r28 交叉编译才发现 Android 侧**从未被编译过** ——
+#   `tools/attacker/android_jniptrace/` 两个 patcher 自 `c941c9c` 起
+#   从未被任何目标编译，`examples/cross_platform/android/` 从未过
+#   `-Wall -Wextra -Werror`。判据锚定**声明的最低 API 21**，因为
+#   裸 `process_vm_writev` 在 api23+ 完全看不见（bionic 的
+#   `__INTRODUCED_IN(23)`）。默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 38
+GATE_DEFAULT = 35
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')

@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-05 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **37** 项（默认 34）· 提交 `8d65e87`（S1 revoke 收口 + §2.28 记档后）
+> **最后核实**: 2026-10-05 · 方法: tools/docclaim_check.py（8/8 PASS）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ 门禁 **38** 项（默认 35）· 提交 `8d65e87`（S1 revoke 收口 + §2.28 记档后）
 
 
 ## 1. 项目是什么
@@ -2612,5 +2612,212 @@ WinPE 四条验收盒勾上（附证据），**Android 四条如实保留未勾*
   COFF 通道同样为空（§5 边界表第 1 条）；
 - 组 D「附加不触发检测」只测了一个构建一个时刻，**未做多次/多形态**；
 - Android 侧真机仍未测（需 NDK + root）。
+
+*2026-10-06 v1*
+
+## 2.30 门禁第 38 项：Android 交叉编译（`tools/android_compile_check.py`，2026-10-06）
+
+### 2.30.1 缘起：Android 侧**从未被编译过**
+
+本节的触发点是一件与 §2.28/§2.29 **完全同型**的事：**做过了，但没人对账**。
+
+2026-10-06 为了给 `docs/MEMPATCH_PLAN.md` 的验收 1 补证据（原文要求的是
+**NDK 产物 `libprot.so`**，此前只有合成样本），在本机找到了真 NDK
+（`D:\environment\android-sdk\ndk\28.2.13676358`，`Pkg.ReleaseName = r28c`，
+clang 19.0.1），于是顺手把 Android 侧全量编了一遍 —— **一编就出 5 处缺陷**：
+
+  · `tools/attacker/android_jniptrace/patcher_jni.c` / `ptrace_patcher_cli.c`
+    —— 裸调 `process_vm_writev`，而 bionic 的 `<sys/uio.h>` 把它标为
+    `__INTRODUCED_IN(23)`；本项目 Android 侧下限是 **API 21**。
+    另有一处 include 路径写成 `"../elfparse/elfparse.h"`（上一级没有该目录）。
+  · `examples/cross_platform/android/libprot.c` / `selfcrypt_android.c`
+    —— `-Wall -Wextra -Werror` 下 unused parameter / ignored qualifiers /
+    unused function。
+
+**根因不是"没写好"，而是"没人编"**（三处独立证据，均实测）：
+
+  1. `tools/linux_compile_check.py:88 SCAN_DIRS = ['src']` —— **只扫 `src/`**，
+     Android 侧代码在 `tools/attacker/` 与 `examples/` 下，**根本不在扫描面内**；
+  2. `.github/workflows/ci.yml` 搜 `ndk|NDK|android|aarch64` **零命中**
+     —— CI 从没编过 Android；
+  3. 工具作者自己的 `README.md` 那句「宿主编译验证」，逐行核对后**只编了
+     `elfparse.c` + `elfdump.c` 两个文件**，而 Android 侧有 8 个 `.c`。
+
+⇒ **声称的覆盖与实际覆盖是两个集合，而没有任何机制比对这两个集合。**
+这正是本项目已记名的教训「**表的条数对得上，语义对不上**」
+（`hashpatch.py` 的 `TARGET_LOGICAL` 静默 `section absent — skip`，
+见 §2.26 的 DRILL9 条）在**编译覆盖**上的重演：
+"我编过了" 与 "我编了哪些" 不是同一句话。
+
+### 2.30.2 本项最关键的判据：**必须在最低 API 上编译**
+
+同一份源码，三个 API 级别的实测结果（2026-10-06，NDK r28c）：
+
+| 形态 | api21 | api23 | api28 |
+|------|-------|-------|-------|
+| 裸 `process_vm_writev`（未修） | **rc=1** | rc=0 | rc=0 |
+| 仓库实际的 `syscall` 回退（已修） | rc=0 | rc=0 | rc=0 |
+| 晚定义 `_GNU_SOURCE`（另一类缺陷） | **rc=1** | - | **rc=1** |
+
+**这个缺陷在 API 23 及以上完全看不见。** 任何"挑一个现代 API 编一遍"的门禁
+都会**放它过去** —— 而这正是它潜伏至今的原因（也解释了为什么 README 的
+"宿主编译"没抓到：宿主 glibc 上 `process_vm_writev` 一直可见）。
+
+⇒ 判据锚定**文档声明的最低 API（`docs/EXTENSION_PLAN.md`: API 21+）**，
+即 `DEFAULT_APIS = (21, 28)`，且 **21 必须在前**
+（`tools/android_compile_check.py:123`，它才是有判别力的那一遍）。
+api28 那一遍不是冗余：它把"真的错"与"只是 API 高于下限"分开 ——
+api21 失败但 api28 通过 ⇒ 归因为 `API_GATED`，**这是可行动的诊断**，
+而不是一句笼统的"编译失败"。
+
+### 2.30.3 工具设计（判据 ①–⑤）
+
+`tools/android_compile_check.py`（696 行，BOM=False）：
+
+  ① **清单完整性**：`SCAN_DIRS`（2 个目录）下每个 `.c` 必须在 `TARGETS`
+     （8 项）里或在 `EXCLUDE`（当前为空）里显式豁免 —— 否则报 `UNLISTED` 并失败。
+     **查的是实际集合 vs 声明集合，不是声明条数**（见 2.30.1 的教训）。
+  ② **最低 API 编译**（`DEFAULT_APIS[0] = 21`）：每个目标文件必须编过。
+  ③ **现代 API 编译**（28）：同上，用于差分归类。
+  ④ **差分归类**：`API_GATED` / `MISSING_HEADER` / `WINDOWS_HEADER` /
+     `UNLISTED` 各归各因。
+  ⑤ **无 `-D_GNU_SOURCE` 命令行注入**：仓库 Android 侧源码**自己**在文件头
+     `#define _GNU_SOURCE`。若某文件只在"命令行替它定义"时能编过，说明它的
+     `#define` 位置太晚（被 bionic 头冻结）—— 与 `linux_compile_check` 的
+     第二遍**同一条判据**，故本工具**不加**该宏
+     ⇒ 本地与 CI 不可能对同一份源码得出相反结论。
+
+**自检 18 项（T1–T13，含 T2b/T3b/T3c/T7b/T8b）**，全部为**负向注入**：
+"能报出失败"才是自检，其中 `T3c 该缺陷在 API 28 确实看不见` 直接钉住 2.30.2
+的判据 —— 它断言"**最低 API 那一遍不可省**"，而不只是断言工具能报错。
+
+**为什么不用"拓宽 `linux_compile_check.SCAN_DIRS`"代替本项**（实测）：
+把 `src` 换成全部目录会引入 **7 个永久 FAIL** ——
+需 `jni.h`（NDK 才有）2 个、需 `-I elfparse` 1 个、
+Windows-only（`windows.h`）4 个。它们**全是"本平台不适用"，不是"代码有错"**。
+把"环境不对"报成"代码有错"只会训练人忽略门禁
+（与 `tools/linux_compile_check.py:266` 同款纪律）⇒ 故采用
+**显式清单 + 每文件自己的 include 目录**，而不是盲目递归。
+
+**两工具互补而非重叠**：`linux_compile_check` 抓 glibc 的**特性宏冻结**
+（`<features.h>` 首次遇到系统头即冻结），本项抓 bionic 的 **API 级别门控**
+（`__INTRODUCED_IN(N)`）。同型不同因，不可互相替代。
+
+### 2.30.4 门禁接线：**追加到末位**（一个结构性决定）
+
+`tools/release_check.ps1` 新增第 38 项，**默认跑、不 gated** ⇒
+`tools/doccheck.py` 的 `GATE_TOTAL 37 -> 38` / `GATE_DEFAULT 34 -> 35`
+（`:159-160`，`GATE_OK` 引用变量故无需改）。
+
+**⚠️ 关键决定：插在末位，而不是语义相邻的第 19 位。**
+最初把 Android 项插在 `linux_compile_check`（第 18 项）之后
+—— 语义上最近，但这样做会让**其后 19 个序号全部 +1**。而门禁序号被
+约 10 处文档/工具注释**按序号引用**：`docs/HANDOVER.md:2011`（第 36 项）、
+`docs/HANDOVER.md:2349`（§2.27 标题）、`docs/COST_ASYMMETRY.md:255`、
+`docs/ATTACK_DRILL9.md:266`/`:326`、`docs/DECISION_REDUNDANCY_PLAN.md:9`/`:592`、
+`docs/CONTINUATION_PLAN.md:194`、`tools/prot_dbg.py:130`、
+`tools/doccheck.py:531-534`、`tools/release_check.ps1:882-883`/`:1067`/`:1075-1076`。
+
+**仓库惯例 = 追加到末位**：第 33 / 35 / 36 / 37 项**全部如此**；
+唯一一次中段插入（`window_check` 第 11 位）迫使
+`docs/HANDOVER.md:1579-1582` 留下了一条「序号更正」记录。
+⇒ 19 个序号的文档 churn 成本远高于"语义相邻"的收益，故**末位**。
+
+**搬移过程本身也留了两条教训**（都在 `tools/release_check.ps1` 上）：
+
+  · 字符串拼接引入了 **1 个 bare LF**（byte 56913，在 `undef_check` 块尾
+    `}` 与 Android 注释之间）。`.ps1` 的 CRLF-only 是仓库硬不变量，
+    但 `edit`/脚本写入**不会**自动保证 —— 必须显式
+    `b.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')` 归一化后复验。
+  · `edit` 再一次**剥掉了 `.ps1` 的 BOM**（首字节 `23 20 74` = `# t`），
+    导致 `Parser::ParseFile` 报 **`parse errors: 26`**（全是 BOM 丢失后
+    PowerShell 按本地代码页读 UTF-8 中文的**连带假错**，不是真实语法错误）。
+    修法照旧：`python -X utf8 tools/bom.py add <file>` ⇒ 首字节 `EF BB BF`
+    ⇒ `parse errors: 0`。
+    ⇒ **纪律重申：任何 `edit` 过 `.ps1` 之后必须 `bom.py add` + 复验 `ParseFile` 为 0。**
+
+### 2.30.5 陈旧计数全库收口（`git log -S` 定下的处置原则）
+
+计数从 37/34 变 38/35 后 `doccheck` 立刻报 **9 处红项**
+（`docs/CONTINUATION_PLAN.md:441`/`:523`/`:616`/`:682`/`:710`、
+`docs/DEBUG_CONSOLE_PLAN.md:8`、`publish/01-关于ShardVase.md:63`、
+`publish/02-项目档案.md:116`/`:168`），全库另有 30 处命中。
+
+**处置原则不是拍脑袋定的**：用 `git log --oneline -S '<字面量>'` 逐一回溯，
+发现 `门禁默认 34 项 PASS`、`重跑门禁**（默认 34 项）`、
+`门禁 **37** 项 · 提交见` **三处的最新改动提交统统是 `bc68b11`**
+（即门禁第 37 项那次），`-S '…33 项…'` / `-S '…36 项…'` 同样命中 `bc68b11`。
+⇒ **仓库既有惯例 = 每轮就地替换数字，不是逐处加注**。故本轮全部就地改为现值。
+
+**唯一例外是漂移测试字面量**：`tools/doccheck.py:823-828` 的
+`门禁 31/31` / `release_check 35 项` / `门禁 **35** 项` / `门禁 37/37 全通过` /
+`门禁 21/37`。该文件 `:809-810` 已确立约束——**漂移字面量不得落在
+`{GATE_TOTAL, GATE_DEFAULT}` 内**（否则自检会因"这个值恰好是对的"而失去
+判别力）。现 `37/34` 不在 `{38,35}` 内 ⇒ **恰好仍然合法，不动**。
+
+一并回填的两条元数据「最后核实」行：
+`docs/CONTINUATION_PLAN.md:4`（`门禁默认 **34** 项实跑` → `35`）与
+`docs/HANDOVER.md:18`（`门禁 **37** 项（默认 34）` → `38`（默认 35））。
+
+**另须留意 `RE_GATE_NN` 只比分母**（`tools/doccheck.py:170`，
+`:744 if claim in GATE_OK: continue`）：写 `38/38` 合法、写 `37/37` 红；
+而夹在中间的数字任意值都放行（`门禁 21/38（唯一失败=未提交）` 合法）。
+
+### 2.30.6 CI 接线与一个 bash 陷阱
+
+`.github/workflows/ci.yml`：`linux-portability` job（`runs-on: ubuntu-latest`、
+`timeout-minutes: 20`）新增第 6 步 `Android cross-compile (android_compile_check)`，
+并把 `tools\android_compile_check.py` 加入 `:131` 的 `py_compile` 显式清单
+（该清单是**逐文件列举**的，不是 glob —— 漏加就等于不检查）。
+
+**⚠️ 踩到的陷阱：本块不能用 `set -e`。** 第一版照抄同 job 其它步骤的
+`set -e` 开头，但本步要读 `rc=$?` 来分辨三态 —— `set -e` 会在
+**退出码 2（SKIP）时于 `rc=$?` 之前就终止脚本**，把"未验证"误报成 job 失败，
+恰是门禁纪律明文反对的。已改为不用 `set -e`、逐条显式判 rc
+（`SKIP` ⇒ `::warning::` + `exit 0`；`!=0` ⇒ `::error::` + `exit $rc`）。
+⇒ 教训：**`set -e` 与"我要看上一命令的退出码"是互斥的**，
+在需要三态（PASS/FAIL/SKIP）的步骤里必须二选一。
+
+`tools/ci_sim.ps1`（本地 CI 模拟器）同步：`Step` 映射注释加项、
+新增同款步骤、`py_compile` 清单补项。该模拟器的 `Step` 只看
+`$LASTEXITCODE -ne 0` ⇒ SKIP 时必须显式把 `$LASTEXITCODE` 归零，
+否则"未验证"会被模拟器误报成失败（同款纪律，换了个宿主语言重演一次）。
+
+### 2.30.7 验证
+
+- 工具自检：`[android_compile_check-selftest] PASS: 可自证能正确判定`
+  （**18 项 T1–T13** 全 `ok`，含 T3c「该缺陷在 API 28 确实看不见」）。
+- 工具主跑：`--quiet` ⇒ **rc=0**（8/8 目标在 api21 与 api28 两遍均通过）。
+- 门禁结构：`38 项均为顶层语句，无被嵌套项；其中 3 项由 -With* 显式开关控制
+  （默认不跑），默认调用跑 35 项`。
+- `tools/doccheck.py` ⇒ **`PASS`**（`检查数字 603 处, 错误 0, 警告 0`；
+  `基准: 门禁 38 项, 轮次 9 个`）。
+- `tools/docclaim_check.py` ⇒ **`PASS (8/8)`**。
+- `build/_hygiene.py` ⇒ **15 个文件, 0 处异常**
+  （`tools/release_check.ps1 bom=True crlf=1106 bareLF=0 bytes=64339`；
+  `tools/ci_sim.ps1 bom=True crlf=155 bareLF=0 bytes=7318`）。
+- `Parser::ParseFile` 对 `tools/release_check.ps1` 与 `tools/ci_sim.ps1`
+  均 **`parse errors: 0`**。
+- YAML 可解析：`yaml.safe_load` 后 `linux-portability` 有 6 个 step，
+  末项为 `Android cross-compile (android_compile_check)`。
+
+### 2.30.8 诚实边界
+
+- **本项只证明"能编过"，不证明"能跑对"**。Android 侧的行为正确性
+  仍**未在真机验证**（需 Android 设备 + root）；`docs/MEMPATCH_PLAN.md`
+  的 Android 四条验收依旧保留未勾。
+- 本机 NDK 只有 **28.2（r28c）**，而 CI runner 同时有 27.3 / 28.2 / 29.0。
+  工具会打印实际选中的版本进报告与 JSON —— 因为**不打印版本，就无法判断
+  "门禁绿了"是因为代码对，还是因为换了编译器恰好看不见**
+  （判据 2.30.2 的实测表正是这种风险的实证）。
+- `EXCLUDE` 当前为空。将来若有人加了豁免，**必须带原因**（工具的
+  `EXCLUDE` 注释已写死这条纪律）—— 无原因的豁免就是静默通道。
+- 8 个 `TARGETS` 是**手写清单**。判据 ① 的集合比对只在 `SCAN_DIRS`
+  （2 个目录）范围内有效；`SCAN_DIRS` 本身仍是手工维护的，
+  即"**谁定义扫描面**"这一层没有机制保护。
+- 与 §2.29 同型的方法论风险依然存在：本轮再次印证
+  「**做过了 ≠ 对过账了**」——`linux_compile_check` 建成时
+  "Linux 可移植性已验证"是真的，但它被读成了"可移植性已验证"，
+  于是 Android 侧在**没有任何人注意到的情况下**从未进过编译器。
 
 *2026-10-06 v1*
