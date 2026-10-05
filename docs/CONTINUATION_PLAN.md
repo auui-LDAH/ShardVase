@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
 > 版本：2026-10-02 v7 · 状态：**✅ 全部完成**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / Q4 ✅ / Q5 ✅ / **Q6 ✅**）
-> **最后核实**: 2026-10-05 · 方法: `tools/docclaim_check.py` + 门禁默认 **34** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `bc68b11`（R3.2-c 位置抖动 + gate_log T1 调度抖动 + e2e T3 真机验证 + 门禁第 37 项后）
+> **最后核实**: 2026-10-05 · 方法: `tools/docclaim_check.py` + 门禁默认 **34** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `8d65e87`（R3.2-c 位置抖动 + gate_log T1 调度抖动 + e2e T3 真机验证 + 门禁第 37 项 + S1 revoke 收口后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
