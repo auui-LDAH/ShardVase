@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（707 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（715 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -3568,4 +3568,33 @@ T30 的 `early=yes` 是**必须保住**的一条：它证明密文篡改仍然�
 - **密文态 CRC（`PROTCRYP`）仍未实现**：`tools/hashpatch.py:47 MAGICS` 只有
   4 个标记。这是 N1 的另一条独立缺口，与本轮无关。
 
-*2026-10-06 v4*
+### 2.35.7 提交后的全门禁与 CI 实测
+
+修法提交 `c2666b9`（`fix(selfcrypt)!: D2c 收口`）后复跑：
+
+- **全门禁 `tools/release_check.ps1`：35/35 PASS**（`[release_check] PASS: 35 项检查全通过`，
+  日志 `build/logs/release_check_20261006_193841.log`）。
+  提交前同一套门禁是 **34/35**，唯一未过的就是第 1 项 `git 工作区干净`
+  （改动未提交）—— 提交后该项转绿，其余 34 项两次全绿。
+  3 项按设计 SKIP（`-WithMutation` / `-WithSkeleton` / `-WithMigration`），
+  门禁日志里显式写作「未验证 != 通过」。
+- **`tools/doccheck.py`**：提交 `c2666b9` 时实测 `检查数字 707 处, 错误 0, 警告 0`，
+  豁免 178 处 ⇒ PASS（改前 699 处）。
+  写出本节后又跑一次：**715 处**（本节新增 8 处）⇒ 仍 0 错误、PASS。
+  ⇒ 这类「检查器报的自己的计数」**每加一段文档就变**，写进正文必然立刻过期；
+  此处两个数字都保留，用来说明该数字**不是**稳定判据。
+- **`tools/docclaim_check.py`**：PASS（8/8）。
+- **`build/_hygiene.py`**：15 文件 0 异常。
+- **CI run `37459442189`（head `c2666b9`）`completed success`**，四个 job 全绿：
+  `build-and-verify` 9m32s / `linux-portability` 12s / `reproducible` 49s /
+  `sdk-package` 45s。
+
+> **一个自找的回归**（值得记）：我一开始把头部「最后核实」行的提交字段写成
+> `· 基线提交 6c52733`，想表达「这是本轮的基线，不是本次提交」。结果
+> `tools/docclaim_check.py` 的 `RE_COMMIT = re.compile(r'·\s*提交\s*`([^`]+)`')`
+> 要求 `·` 后**紧跟**「提交」，判为 `docs/HANDOVER.md(缺提交字段)` ⇒ 整项 FAIL
+> （7/8）。改回「提交」后立刻 8/8。
+> **教训**：受机器解析的字段里**不能夹带自己的语义修饰**。这条与 §2.31
+> （硬编码判据常量）同型 —— 都是「表达欲」撞上「解析器」。
+
+*2026-10-06 v5*
