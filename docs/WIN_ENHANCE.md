@@ -122,6 +122,13 @@ watchdog 周期检测。
 1. [x] 拍板 D1-D4（Release 默认 D2b / 保持 D2b / 做 W2 / Release 收敛输出）。
 2. [x] W1a：build.ps1 Release 默认 D2b + `-NoD2b` 回退（实测 enter/leave
        有实体 = D2b 生效）。
+       > **2026-10-06 补记：该验收判据不足，且结论当时不成立。**「enter/leave
+       > 有实体」只证明**包装函数存在**，不证明**窗口之外是密文** —— 而后者
+       > 才是 D2b 的全部卖点。实测（`docs/HANDOVER.md` §2.35）：
+       > `prot_selfcrypt_init` 解完不锁，组 0 在"启动 → 首次 `leave(VM)`"
+       > 之间**全程明文**（自然路径 661 ms；`--wait-ms 6000` 时 6713 ms）。
+       > 已由 D2c 收口（init 校验后立即回密，仅 `PROT_SELFCRYPT_D2B` 下），
+       > 该窗口压到 0；现判据已改为**内存字节 vs 磁盘密文**的逐条比对。
 3. [x] W2a+b：watchdog 周期回调（`prot_integrity_set_watchdog_callback`）
        —— demo 注册 N3 冗余复查 + dbiguard 周期扫描；**前置修复 FAKE
        翻转同步 result_sum**（原逻辑漏翻校验和，周期复查会误杀）。

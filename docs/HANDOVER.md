@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（699 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `efb81b7`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（707 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -3362,4 +3362,210 @@ if any(mrva <= t_va + ctl_off < mrva + mlen for mrva, mlen in ranges):
 - 唯一噪音是 CI 的 Node.js 20 弃用告警
   （`actions/checkout@v4` 等被迫跑在 Node.js 24 上），与本次改动无关。
 
-*2026-10-06 v3*
+---
+
+## 2.35 D2b 的**真实缺口**与 D2c 收口 —— 承诺说「间隙是密文」，实测间隙是明文（2026-10-06）
+
+### 2.35.1 缘起：一条被 `[x]` 盖住的验收
+
+`docs/WIN_ENHANCE.md:123-124` 的验收行写着：
+
+> `[x] W1a：build.ps1 Release 默认 D2b + -NoD2b 回退（实测 enter/leave`
+> `     有实体 = D2b 生效）。`
+
+验收判据是「**enter/leave 有实体**」。这条判据只回答「包装函数在不在」，
+**没有回答**「不在窗口里的那些时刻，内存里到底是密文还是明文」—— 而后者才
+是 D2b 的全部卖点（`docs/N1_PHASE2_PLAN.md:63`：运行期非调用时刻内存中函数
+为密文，dump 抓不到明文引擎）。
+
+本轮把后半句真正测了。结论是：**commit 前，后半句不成立。**
+
+### 2.35.2 承重机制：`prot_selfcrypt_init` 解了密就不再上锁
+
+`src/selfcrypt.c` 的 `prot_selfcrypt_init` 原实现（简化）：
+
+```c
+/* D2a: 全部解密并校验; D2b: 只解密组 0 一次 (enter/leave 接管后续) */
+for (i = 0u; i < n; i++) {
+    prot_status st = sc_do_range(i, 1);
+    if (st != PROT_OK)
+        return st;
+    g_sc_state[i] = 1u;
+}
+#ifdef PROT_SELFCRYPT_D2B
+g_sc_d2b_enabled = 1u;
+#endif
+```
+
+注释声称 D2b 下「只解密组 0」，**实现是无条件解密全部 n 条**，而且解密后
+`g_sc_state[i] = 1u` 把它们标记为「当前明文」。此后每条要一直等到自己所属组
+的 `leave(组)` 被调用才会重新加密。
+
+于是从 `prot_selfcrypt_init()` 返回到**首次** `leave(组)` 之间存在一段
+**全量明文驻留窗口**。实测（`demo.exe`，Release，9 条目标；判据 = 内存字节
+vs 磁盘密文，见 §2.35.4）：
+
+| 路径 | 组 0（VM 引擎，条目 0-3） | 组 1（EXT，条目 4-8） |
+|------|---------------------------|-----------------------|
+| 自然路径（总时长 ~0.67 s） | 明文 `0.005s` → `0.666s`（**661 ms**） | 0.005 起明文，仅 0.313-0.346 一段回密 |
+| `--wait-ms 6000`（总时长 ~6.7 s） | 明文 `0.004s` → `6.717s`（**6713 ms**） | 0.004 起明文，6.323 后开始周期性开合 |
+
+组 0（`prot_vm_run` / `vm_build_keymaps` / `vm_wb` / `vm_var`）在**整个运行期
+的前 99.9%** 都是明文，只在进程退出前最后 1-2 ms 的 `leave(VM)` 才短暂回密。
+注意自然路径下 `0.666 C C C C P P P P` 这一行：`leave(VM)` 先把组 0 回密，
+紧接着 `leave(EXT)` 又把组 1 解开 —— 这说明两个组各自独立开合，而组 0 的
+明文期**几乎覆盖全程**。
+
+`--wait-ms` 这个钩子的睡眠点在 `demo/main.c:533-536`，**在 init 之后**
+（`:525`）—— 也就是说，一个「启动后先等一会儿」的产物，其引擎明文在内存里
+躺了 6.7 秒。Procdump 在这个窗口里抓一次，`prot_vm_run` / `vm_build_keymaps` /
+`vm_wb` / `vm_var` 全部是明文。
+
+**这正是 D2a 的形态，不是 D2b 的形态。** 换句话说：D2b 的调用期
+enter/leave 确实工作（§2.35.4 给出证据），但它前面挂着一整段 D2a。
+
+### 2.35.3 修法：D2c 的最小实现 —— 校验后立即回密
+
+`docs/N1_PLAN.md:143-144` 把 D2c 定义为「看门狗周期重加密」。本轮先说清
+**这个定义的前提已经不成立**：看门狗每一轮本来就已经
+`enter(EXT)` / `leave(EXT)`（`src/integrity.c:188` / `:256`），组 1 的周期
+重加密**早就在跑**（实测组 1 在 5.9 s 周期里约 95.6% 时间是密文）。
+
+真正的缺口是 init 那一次**解完不锁**。所以 D2c 的最小实现不是新建机制，
+而是给 init 补齐收尾：
+
+```c
+for (i = 0u; i < n; i++) {          /* ① 逐条解密 + 逐条 CRC 校验 */
+    prot_status st = sc_do_range(i, 1);
+    if (st != PROT_OK)
+        return st;
+    g_sc_state[i] = 1u;
+}
+#ifdef PROT_SELFCRYPT_D2B
+g_sc_d2b_enabled = 1u;
+for (i = 0u; i < n; i++) {          /* ② 校验完立即回密 */
+    (void)sc_do_range(i, 0);
+    g_sc_state[i] = 0u;
+}
+#endif
+```
+
+三个设计约束，每条都有实测依据：
+
+- **回密必须限定在 `PROT_SELFCRYPT_D2B` 下。**
+  D2a 构建的 `prot_selfcrypt_enter` / `prot_selfcrypt_leave` 在开口就
+  `if (!g_sc_d2b_enabled) return PROT_OK;` 早退（`src/selfcrypt.c:321-322` /
+  `:341-342`）。若 D2a 下也回密，函数体会**永久停在密文**，调用即执行垃圾
+  指令 —— 即 §2.16 / T11 记录过的 `0xC0000005` 形状。
+  *这条约束被一次**误操作意外验证**了*：本轮第一次重建误用了 `-Release`
+  （`build.ps1` 的参数是 `[string]$Config`，没有 `-Release` 开关），产物按
+  Dev 配置编译、D2B 未定义；探针显示 9 条**全程明文** —— 与「D2a 下回密会
+  崩」的预测方向一致（该次没崩只是因为回密块整体被 `#ifdef` 摘掉了）。
+- **不能牺牲「启动即拒止」。** 仍保持「逐条解密 → 逐条 CRC 校验 → 任一条
+  不过就返回错误」，调用方 `demo/main.c:526-530` 退
+  `PROT_EXIT_TAMPERED(0xBAD)`。回密放在校验**之后**，拒止时点不变。
+- **回密后不得踩空。** 全部加密目标的跨模块调用点都在配对 enter/leave
+  窗口内 —— `tools/window_check.py`（门禁第 11 项）静态覆盖 24 文件 / 308
+  函数 / 9 个目标，PASS。组内私有函数（`vm_build_keymaps` / `vm_wb` /
+  `vm_var`）只在 `prot_vm_run` 体内被调用，随 VM 组窗口一并解密。
+
+### 2.35.4 验证
+
+**判据不是状态数组，而是内存字节 vs 磁盘密文。** 这一点是本轮的方法学要点：
+`g_sc_state[]` 是**实现自己的记账**，它可能与内存真实状态不符（本轮第一版
+探针就是这么被误导的，见 §2.35.5）。终版探针 `build/_d2c_truth.py` 对每个
+条目取 `build/selfcrypt_mask.txt` 的 `(rva,len)`，把**进程内存字节**与
+**磁盘上的密文**逐字节比对：相等 = 当前密文，不等 = 当前明文。
+
+修复后（Release，9 条，同一判据）：
+
+| 路径 | 组 0（条目 0-3） | 组 1（条目 4-8） |
+|------|------------------|------------------|
+| 自然路径 | **全程 C C C C**（0.001 s → 退出） | 窗口内 P，其余 C |
+| `--wait-ms 6000` | **全程 C C C C**（0.001 s → 6.845 s 退出） | 6.017 s 起才见窗口 |
+
+关键对照 —— **同一份源码、同一构建配置、同一条命令，改前 vs 改后**：
+
+| 命令 | 改前组 0 | 改后组 0 |
+|------|----------|----------|
+| 自然路径 | 明文 `0.005s → 0.666s`（661 ms） | 全程密文 |
+| `--wait-ms 6000` | 明文 `0.004s → 6.717s`（6713 ms） | 全程密文 |
+
+即 **`--wait-ms 6000` 把组 0 的明文窗口从 6713 ms 压到 0**。改前那组数字是在
+`git stash` 掉修法、用同一 `-Config Release` 重建后测的（9 条目标、同一探针），
+不是引用旧构建，故可直接对比。
+
+回归（全部在修复后的同一产物上）：
+
+| 项 | 结果 |
+|----|------|
+| `tests/e2e.py` | `[e2e] 平台=win  总计 30: PASS 30 / FAIL 0 / SKIP 0 / NA 0` |
+| T11 watchdog-stable | PASS `(exit=0 (14s residency))` |
+| T29 meta-crc | PASS `(exit=2989 ... meta_n=9)` |
+| T30 cipher-crc | PASS `(exit=2989 ... off=0x1b68 early=yes)` |
+| `tools/window_check.py` | `作用域 24 文件 / 308 函数; 加密目标 9 个` + PASS |
+| `tools/guard_selftest.py` | PASS（正向 hits=0 / 负向 hits=3） |
+| `build/_hygiene.py` | 15 文件 0 异常 |
+| 全门禁 | 34/35 通过；**唯一未过的是第 1 项 `git 工作区干净`**（本次改动尚未提交）。其余 34 项含 e2e / attacks / vm_unit / vmc / example / protchain / window_check / conformance / linux_compile / undef_check / android_compile 全绿。 |
+
+T30 的 `early=yes` 是**必须保住**的一条：它证明密文篡改仍然在
+`demo/main.c:525 prot_selfcrypt_init()` 就被抓住（拒止点没有因为回密而
+后移）。若这条变成 `no`，说明校验被推迟了 —— 那是本修法**不允许**发生的。
+
+### 2.35.5 我自己第一版探针的 confound（必须记下）
+
+本轮最初的结论是**错的**，而且错得很有代表性，如实记录：
+
+第一版探针用 `subprocess.Popen(argv, stdin=subprocess.PIPE)` 启动 `demo.exe`，
+**但没有写入序列号**。`demo/main.c:764` 是
+`fgets(mem.serial, sizeof(mem.serial), stdin)` —— 进程就**卡在那里**，
+根本没走到 `:777` 的 `prot_vm_run` 调用点。于是探针观察到「组 0 从 init 到
+退出一直是明文、`leave(VM)` 从未执行」，得出了「**D2b 对 VM 组失效**」的
+错误结论。
+
+修正方式是从 `demo/vm_build.json` 读出 `serial` 写进 stdin。喂入之后
+`g_sc_state` 立刻显示 `leave(VM)` 确实把组 0 归 0（`:664 [0,0,0,0,0,0,0,0]`）。
+
+**教训**：探针的「没观察到」必须先排除「**根本没跑到**」。这与 §2.25
+（拿固定 `sleep` 赌宿主就绪）同型 —— 都是**观测装置本身**成了错误来源，
+而不是被观测的机制。
+
+第二次误读同样值得记，而且**方向相反**：改用 `g_sc_state[]` 后有一轮读到
+「`init` 后全 1、到退出都不变」，我据此写下「修法没生效」。那一轮探针跑的是
+**误用 `-Release` 的那份 Dev 产物**（`$isRelease = ($Config -eq 'Release')`
+为假 ⇒ 该构建未定义 `PROT_SELFCRYPT_D2B` ⇒ `enter/leave` 是空操作 ⇒ 状态位
+自然一直停在全 1）。换到真正的 Release 产物后，同一个探针读到的是
+`0.009 [1,1,1,1,1,0,0,0,0]`（init 解密途中）→ `0.011 [0,0,0,0,1,1,1,1,1]`
+（init 回密后只剩组 1 的扫描窗口）→ 此后组 0 恒 `[0,0,0,0]`。
+
+**两次误读的共性**：我都拿「一个**间接**信号」当结论 —— 第一次是
+「进程没输出期望的调用痕迹」，第二次是「一个自报的记账数组」。而
+`g_sc_state` 的语义恰恰是「**本实现认为**谁是明文」，回密又是它和内存
+在**同一个循环**里一起改的；只读它，等于让被检查者自己出证词。所以终版
+判据必须落到**外部可验证的量**：进程内存字节 vs 磁盘密文（§2.35.4）。
+
+### 2.35.6 诚实边界
+
+- **无独立的新用例覆盖这条不变量。** 本轮是用 `build/_d2c_truth.py` 手工
+  验的，该脚本在 `build/` 下（gitignored）。门禁里**没有**「非调用时刻内存
+  必须是密文」的自动判据 ⇒ 这条不变量**回归了不会有测试变红**。与
+  §2.32「陈旧复选框」、T11 的「P5 只判不得直接 E8 调用，不判调用点是否在
+  窗口内」同型：**机制在、门禁不在**。
+- **`examples/tool_demo` 是裸调用面。** `examples/tool_demo/main.c` 有 5 处
+  未开窗调用（`:206` / `:260` / `:267` / `:278` / `:312`）。当前无害，仅因为
+  `examples/tool_demo/build_example.ps1` 的构建链**从不接 selfcrypt**
+  （全文搜 `selfcrypt_proto` 零命中 ⇒ `.protcry` 条目数 n=0 ⇒ init 早退）。
+  一旦给它接上 selfcrypt，这 5 处会全部踩空；而
+  `tools/window_check.py:86-87 SCOPE_DIRS = ('src', 'src/platform', 'demo',
+  'prot_sdk/skeleton')` **不含 `examples/`** ⇒ 该风险**无静态门禁覆盖**。
+- **D2a 下明文驻留是设计使然，不是缺陷。** 本修法只在 D2B 下回密；D2a
+  构建（`-NoD2b` / Dev）行为一字未变。
+- **窗口内仍是明文。** 回密把「非调用时刻」收窄到真正的窗口边界，但
+  enter/leave 之间的那条缝隙依然存在（组 1 实测约 4.4% 采样落在窗口内）。
+  这是 D2b 的固有代价，不是本修法能消除的。
+- **真机 / 企业环境（杀软 EDR 对高频 SMC 的反应）仍未验证**，证据全部来自
+  本机 Windows x64。与 §2.34.6 同。
+- **密文态 CRC（`PROTCRYP`）仍未实现**：`tools/hashpatch.py:47 MAGICS` 只有
+  4 个标记。这是 N1 的另一条独立缺口，与本轮无关。
+
+*2026-10-06 v4*

@@ -300,7 +300,45 @@ prot_status prot_selfcrypt_init(void)
     if (n == 0u || n > PROT_SELFCRYPT_MAX_FN)
         return PROT_OK;
 
-    /* D2a: 全部解密并校验; D2b: 只解密组 0 一次 (enter/leave 接管后续) */
+    /* D2c (2026-10-06): 启动逐条校验 + **校验后立即回密**。
+     *
+     * ## 改前 (旧注释宣称 "D2b 只解密组 0", 实现却是 D2a 全量明文)
+     *   `for (i = 0; i < n; i++) sc_do_range(i, 1);` 把**全部** n 条解密后
+     *   **留在明文态**, 各自直到 `leave(组)` 才重新加密。
+     *   => 从本函数返回, 到**首次** `leave(组)` 之间, 存在一段
+     *      **全量明文驻留窗口**。demo 实测: 自然路径 ~0.66s;
+     *      带 `--wait-ms 6000` 时 ~6.67s (期间 dump 可抓到全部明文引擎)。
+     *   这**违反** N1 的运行期承诺「非调用时刻内存中函数为密文」
+     *   (`docs/N1_PHASE2_PLAN.md` 的威胁边界), 且与旧注释自相矛盾。
+     *
+     * ## 改后 (D2c)
+     *   ① 仍逐条解密 + 逐条 CRC 校验: 篡改 -> 立即返回非 OK,
+     *      调用方 (`demo/main.c` / `app_main.c`) 退 `PROT_EXIT_TAMPERED`。
+     *      启动即拒止的语义**不变** (T29 meta-CRC / T30 密文体-CRC 均走此路径)。
+     *   ② 校验完**立即把全部条目重新加密** (对称 XOR, 不校验), `g_sc_state[]` 归 0;
+     *   ③ 之后的按需解密全部交给 `prot_selfcrypt_enter` / `prot_selfcrypt_leave`。
+     *   => 明文只存在于 enter/leave 窗口内。
+     *
+     * ## 为什么回密必须限定在 `PROT_SELFCRYPT_D2B` 下
+     *   D2a 构建的 `enter` / `leave` 是**空操作** (开头 `!g_sc_d2b_enabled` 早退)。
+     *   若 D2a 下也回密, 函数体会**永久停在密文** -> 调用即执行垃圾指令
+     *   (即 T11 的 `0xC0000005` 形状)。故回密仅 D2B 编译期生效。
+     *
+     * ## 为什么回密后不会踩空 (修法安全性依据)
+     *   · 全部加密目标的**跨模块**调用点都在配对 enter/leave 窗口内 ——
+     *     `tools/window_check.py` (门禁第 11 项) 静态覆盖 24 文件 / 308 函数
+     *     / 9 个目标, 当前 PASS;
+     *   · 组内私有函数 `vm_build_keymaps` / `vm_wb` / `vm_var` 只在
+     *     `prot_vm_run` 体内被调用, 随 VM 组窗口一并解密;
+     *   · 本函数返回后到首次开窗之间**没有**任何加密目标调用点
+     *     (`demo/main.c`: init -> 反调试扫描窗口; `app_main.c` 同形)。
+     *
+     * ## 诚实边界
+     *   · `examples/tool_demo/main.c` 有 5 处**未开窗**调用, 但该示例的
+     *     构建管线不接 selfcrypt (`.protcry` 条目数 n=0 -> 本函数早退),
+     *     故当前无害; 一旦给它接上 selfcrypt 就会全部踩空,
+     *     而 `tools/window_check.py` 的扫描面**不含 `examples/`**。
+     */
     for (i = 0u; i < n; i++) {
         prot_status st = sc_do_range(i, 1);
         if (st != PROT_OK)
@@ -309,6 +347,10 @@ prot_status prot_selfcrypt_init(void)
     }
 #ifdef PROT_SELFCRYPT_D2B
     g_sc_d2b_enabled = 1u;
+    for (i = 0u; i < n; i++) {
+        (void)sc_do_range(i, 0);
+        g_sc_state[i] = 0u;
+    }
 #endif
     return PROT_OK;
 }
