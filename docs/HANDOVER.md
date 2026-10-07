@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（715 处 0 错误）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + 门禁 **38** 项（默认 35）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7）+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -3597,4 +3597,187 @@ T30 的 `early=yes` 是**必须保住**的一条：它证明密文篡改仍然�
 > **教训**：受机器解析的字段里**不能夹带自己的语义修饰**。这条与 §2.31
 > （硬编码判据常量）同型 —— 都是「表达欲」撞上「解析器」。
 
-*2026-10-06 v5*
+## 2.36 门禁第 39 项：selfcrypt 驻留期密文态 —— 把 §2.35.6 自己记名的空白补上（2026-10-06）
+
+### 2.36.1 缘起：一条被我**写进诚实边界、却没去补**的缺口
+
+§2.35.6 逐字写着：
+
+> **无独立的新用例覆盖这条不变量。** 本轮是用 `build/_d2c_truth.py` 手工验的，
+> 该脚本在 `build/` 下（gitignored）。门禁里**没有**「非调用时刻内存必须是密文」
+> 的自动判据 ⇒ 这条不变量**回归了不会有测试变红**。
+
+写下来是一回事，补上又是另一回事。这一节就是把那句话兑现：新增
+`tools/selfcrypt_residency_check.py`，入库为**门禁第 39 项**。
+
+它的**价值定位**和 §2.32「陈旧复选框」、T11 的「P5 只判不得直接 `E8` 调用」
+是同一类：**机制在、门禁不在**。这类缺口的共同形态是「承诺写进了注释块与
+文档，验证只发生在写它的那一轮」—— 下一轮谁把
+`src/selfcrypt.c:348-354` 的回密循环挪走、或把 `#ifdef PROT_SELFCRYPT_D2B`
+改坏，**没有任何测试会变红**，而 `docs/N1_PHASE2_PLAN.md` 与
+`docs/ADVANCED2.md` 里「非调用时刻内存是密文」的承诺照样挂着。
+
+### 2.36.2 判据：为什么是「内存 == 磁盘密文」而不是「解密一次看 CRC」
+
+`src/selfcrypt.c:114-122 sc_xor_range` 是**对合**的：
+
+```c
+k = k * PROT_KS_MUL + PROT_KS_ADD;
+dst[j] = (uint8_t)(dst[j] ^ (uint8_t)(k >> 56));
+```
+
+同一密钥流 XOR 两次回到原文 ⇒ **「内存字节 == 磁盘字节」本身就是
+「当前处于密文态」的正当判据**，不需要解密、不需要知道密钥流对不对
+（流错了反而两边一起错、恰好相等 —— 但那种情况在磁盘侧就不可能是
+`tools/selfcrypt_proto.py` 写进去的那份密文，因为参考来自**产物文件本身**）。
+
+判据四条：
+
+1. **组 0 条目数 > 0** —— 否则判据空转，直接 FAIL；
+2. **`g_sc_d2b_enabled == 1`** —— 回密循环在 `#ifdef PROT_SELFCRYPT_D2B` 内
+   （`src/selfcrypt.c:348-354`）。单列这条是为了让**「没编译进来」**与
+   **「回归了」**在报告里可区分，而不是笼统一句 FAIL；
+3. **采样轮数足够** —— 「读不到」≠「不存在」：一条采样都没拿到、或读内存
+   失败，必须 FAIL，不许被读成「没发现问题」；
+4. **每一轮里组 0 每一条目的内存字节都逐字节等于磁盘密文** —— 任何一条
+   不符即 FAIL，并报出**首个不符的轮次与字节位**（可定位「只回密了一部分」
+   那种情形）。
+
+判据是**失效安全**的：地址算错 / 节名解析错 / 读内存失败 / 读错区间，
+结果一律是「内存 != 磁盘」⇒ **红**。**绿**只有一种达成方式 —— 地址对、
+字节真的一致。**这一点是本项敢进默认门禁的前提**：一个可能因管道缺陷
+而假绿的门禁项，比没有更危险（§2.30 的 `--quiet` 仍 rc=0 就是同一个坑）。
+
+**组 1（EXT 扩展组）不在判据内**：看门狗每轮自己开/关一次 EXT 窗口
+（`src/integrity.c:188` enter / `:256` leave），窗口内它**就该**是明文。
+工具把「组 1 明文出现多少轮」打出来做**诊断** —— 这不是装饰：它是
+「采样器确实能分辨明文/密文两态」的**活体对照**。实测 `--observe-s 12`：
+组 1 明文出现 **6/120 轮**，同期组 0 **120/120 全密文**。
+
+### 2.36.3 复用而非重写：三处既有解析入口
+
+新工具刻意**不写第四份**同类实现：
+
+- **meta 解析** → `tests/protchain_check.py:149 selfcrypt_meta(data, secs)`
+  （唯一入口，`SC_ENTRY_SIZE`/`SC_ENTRY_GROUP_OFF` 常量在 `:70-71`；
+  自己重写步长会漂移成魔数）。**分组按 meta 的 `group` 字段**，不依赖
+  `build/selfcrypt_mask.txt` 的文件行序 —— 本次实测两者**恰好一致**
+  （9 行 mask 的 `(rva,len)` 与 meta 逐条相同），但一致是**巧合而非契约**。
+- **节表 / 磁盘偏移换算** → `tests/protchain_check.py:257 sections_of` +
+  `:337` 的形式 `text['ptr_raw'] + (rva - text['virtual_addr'])`
+  （**这正是 `p1_selfcrypt_ciphertext` 已在用的换算**）。
+- **符号取址** → `tools/mapfile.py:107 parse()`（MSVC 第 2 列是节内偏移、
+  第 4 列才是绝对 VA 的历史坑，已在 `tools/mapfile.py:126-143` 记档；
+  `tools/guard_selftest.py:162 _sym_va` 是**第三份**自写正则，属既有债，
+  本工具**不再制造第四份**）。
+- **运行时基址** → `tools/guard_selftest.py:256 _module_base`（Toolhelp32）。
+  ⚠️ 这一步踩到一个**真实的既有债**，见 §2.36.5。
+
+另有一条纪律照抄 `tools/prot_dbg.py:601-604`：复用 `protchain_check` 前
+必须把 `pc._CURRENT_EXE` 指向**本次被测产物**，否则 `load_section_names()`
+会去解析**另一个平台**的 `prot_sections.json`，拿到静默错误的随机节名
+⇒ `.protcry` 找不到 ⇒ 条目恒空 ⇒ 看起来像「这个构建没有加密目标」。
+
+### 2.36.4 负向自检：判据是纯函数，所以变异可以只在内存里做
+
+`judge(entries, samples, refs)` 是**纯函数**（只吃条目 / 采样 / 磁盘参考），
+因此 4 条变异**不启进程、不写盘、不编译**：
+
+| 变异 | 语义 | 实测 |
+|---|---|---|
+| M1 组 0 某条某一轮内存 != 磁盘 | **回密没生效的签名** | 被抓 |
+| M2 采样列表清空 | 无证据不得通过 | 被抓 |
+| M3 组 0 某条某一轮取不到 | 只等到一部分 | 被抓 |
+| M4 磁盘参考改 1 个字节 | 证明是**逐字节**比较 | 被抓 |
+
+基线（真实形态的合成数据）**必须全绿** —— 只红不绿的判据同样是坏的。
+实测 `[selfcrypt-residency-selftest] 4/4 变异被抓`。
+
+**诚实边界**：负向自检证明的是**比较器与判据**有判别力（纯数据变异），
+**不是**端到端地另编一个「无 D2c」的产物来证明「回归必然变红」。那需要
+第二次构建，与本项目「门禁只读、不编译」的纪律冲突。端到端那一半由本项的
+**正向运行**背书：它真的起进程、真的读内存、真的与磁盘逐字节比。
+
+### 2.36.5 途中踩到的既有债：`_module_base` 的 ctypes 原型不完整
+
+复用 `tools/guard_selftest.py:256 _module_base` 时，第一版直接崩在
+`ctypes.ArgumentError`：
+
+```
+File "tools\selfcrypt_residency_check.py", line 402, in run
+    base = guard_selftest._module_base(k32, p.pid, os.path.basename(exe))
+File "tools\guard_selftest.py", line 268, in _module_base
+    if not k32.Module32First(snap, ctypes.byref(me)):
+ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
+```
+
+**根因**：`_module_base` 自己**从不设置** `CreateToolhelp32Snapshot` /
+`Module32First` / `Module32Next` 的 `argtypes`/`restype`，它的调用点
+（`tools/guard_selftest.py:290-310 run_by_hits`）也没设。默认 `restype`
+是 32 位 `c_int`，**本机快照句柄恰好小**，所以侥幸没出事。
+我在新工具里把 `CreateToolhelp32Snapshot.restype` 正成 `wt.HANDLE` 之后，
+同一个函数立刻炸 —— 因为句柄现在是个真 64 位值了。
+
+**教训（与 §2.32「测量类错误」同族）**：这不是「`_module_base` 有 bug」，
+是「**一个靠默认 32 位返回值的巧合在跑的实现**」。修法是在新工具里把三个
+原型**成对**补齐（只补一个反而把它从「侥幸能跑」变成「必然崩」），并在
+代码里留逐字记录。`tools/prot_dbg.py:283-285` 是**第三份** Toolhelp32 实现
+且它**设了** argtypes —— 三份实现、两种原型纪律，这就是本项目一贯记名的
+「同一件事的多份实现会各自漂移」。本工具**没有**去改 `guard_selftest.py`
+（那会动到已入库门禁第 31 项的行为），只是把债务记在明处。
+
+### 2.36.6 门禁项数口径同步（38/35 → **39/36**）
+
+按仓库约定**追加到末位**（唯一一次中插是 `window_check` 第 11 项，见
+`docs/HANDOVER.md:1579-1582` 的「序号更正」记录）。同步的面：
+
+- `tools/doccheck.py:166-168`：`GATE_TOTAL 38 -> 39` / `GATE_DEFAULT 35 -> 36`，
+  并在 `:149-165` 的沿革块按同格式续写一行；
+- 「现时值口径」13 个文件共 20 处（`CONTRIBUTING.md` / `README.md` /
+  `ShardVase-展示文档.md` / `.github/PULL_REQUEST_TEMPLATE.md` /
+  `.github/workflows/ci.yml` / `docs/BLUEPRINT.md` / `docs/CONTINUATION_PLAN.md` /
+  `docs/DEBUG_CONSOLE_PLAN.md` / `docs/DECISION_REDUNDANCY_PLAN.md` /
+  `docs/HANDOVER.md` / `publish/01-关于ShardVase.md` / `publish/02-项目档案.md`）；
+- `tools/ci_sim.ps1:119` 的 `py_compile all` 清单加入新工具；
+- **历史记录一律不动**（`docs/HANDOVER.md` 的 §2.x 逐轮记录、
+  `docs/阶段总结-2026-*.md`、`docs/PLATFORM_ISOLATION_PLAN.md` 的
+  `38/38`（那是**当时备份文件数**，同形异义）等）。
+
+同步方式不是手改：写了 `build/_sync39.py`，每处都**断言旧串恰好出现一次**，
+找不到即报错退出，不做静默跳过。
+
+> **本轮自找的回归（值得记）**：该脚本图省事，把写回的每个文件都统一成了
+> **CRLF**。而本项目的卫生纪律（`build/_hygiene.py`）是
+> **`.ps1` ⇒ BOM=True + CRLF only；其余一律 BOM=False + LF only**
+> ⇒ 12 个 `.md`/`.yml` 立刻变成「BOM=False crlf=N bareLF=0」的异常项，
+> 门禁第 20 项 `mojibake 全库回归` 之外的 `build/_hygiene.py` 报 12 处。
+> 修法：`build/_fixeol.py` **按 `git show HEAD:<file>` 里的原风格**逐个还原
+> （而不是假设「非 .ps1 就是 LF」—— 假设本身就是本轮出错的原因）。
+> 这类「同步脚本顺手改了不该改的东西」与 §2.33.4 的
+> 「**批量写入必须断言，不能假设**」同型。
+
+### 2.36.7 实测
+
+`tools/selfcrypt_residency_check.py` 本体（`build/demo.exe`，9 条条目 =
+组 0 四条 + 组 1 五条）：
+
+```
+=== selfcrypt_residency_check（D2c 驻留期密文态）===
+  exe=demo.exe  条目 9 条（组 0: 4 条）  采样 120 轮 × 100 ms（窗口 12.0s）
+  就绪: g_wd_interval=[0, 5000]（等了 0.76s）基址=0x7ff688e60000  g_sc_d2b_enabled=1
+  [组 1 诊断] 明文出现 6/120 轮（组 1 不在判据内）
+  [ok] 组 0 条目数 > 0  (组 0 4 条 / 组 1 5 条)
+  [ok] 采样轮数 >= 10  (120 轮)
+  [ok] 组 0 每条目都有磁盘参考  (ok)
+  [ok] 组 0 在全部采样轮次均为磁盘密文  (全部 120 轮逐字节一致)
+[selfcrypt-residency] PASS: 组 0 4 条 × 120 轮 全部逐字节等于磁盘密文
+```
+
+就绪哨兵取 `g_wd_interval != 0`（`src/integrity.c:828`），**不是**
+`g_wd_policy` —— 后者 `guard_selftest` 自己要写（CONTINUE=0），拿它当信号
+会**自毁证据**（`tools/guard_selftest.py:129-132` 记着这次教训）。
+哨兵非 0 证明「init + blob 装载 + `start_watchdog` 都已走完」，采样因此落在
+`--wait-after` 驻留窗口内，而**不是** init 内部那段「解密以校验」的瞬时明文
+（那段是 D2c 设计固有的，不该被判据抓）。
+
+*2026-10-06 v6*

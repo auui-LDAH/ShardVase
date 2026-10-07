@@ -117,6 +117,7 @@ if (-not $SkipTest) {
             tools\residency_guard.py tools\window_check.py tools\replica_check.py `
             tools\check_crc_targets.py tools\check_undef.py `
             tools\android_compile_check.py `
+            tools\selfcrypt_residency_check.py `
             tests\e2e.py tests\attacks.py tests\vmc_tests.py `
             tests\protchain_check.py examples\tool_demo\test_example.py
     }

@@ -146,8 +146,8 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   docs/DEBUG_CONSOLE_PLAN.md:224       「已交付并入库门禁（30 / 32)」
 # 语义上门禁项数**只可能是分母**。旧实现比较 `m.group(2)` —— 方向本就对。
 #
-# ## 容差 {38, 35}
-# 总数 38 / 默认调用 35 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
+# ## 容差 {39, 36}
+# 总数 39 / 默认调用 36 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
 # 沿用轮次规则的先例: 允许"全量"与"默认"两种口径。
 # 2026-10-02: 33/30 -> 34/31 (新增 `加密封装窗口 (window_check)`, §2.16/T11)。
 # 2026-10-03: 34/31 -> 35/32 (新增 `判定多副本等价性 (replica_check)`, R3.2-c)。
@@ -163,8 +163,16 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   `-Wall -Wextra -Werror`。判据锚定**声明的最低 API 21**，因为
 #   裸 `process_vm_writev` 在 api23+ 完全看不见（bionic 的
 #   `__INTRODUCED_IN(23)`）。默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 38
-GATE_DEFAULT = 35
+# 2026-10-06: 38/35 -> 39/36 (新增 `selfcrypt 驻留期密文态
+#   (selfcrypt_residency)`; 补的正是 `docs/HANDOVER.md` §2.35.6 **自己记名**
+#   的诚实边界: D2c 修法（`c2666b9`）当时只有一次性手工探针（脚本在
+#   gitignored 的 `build/` 下）=> 这条不变量**回归了不会有测试变红**。
+#   判据 = 驻留窗口内 selfcrypt **组 0**（VM 引擎调用链）各条目内存字节
+#   必须**逐字节等于磁盘密文**; 组 1（EXT 组）不在判据内，因为看门狗每轮
+#   自己开/关一次 EXT 窗口（`src/integrity.c:188`/`:256`），窗口内它就该是明文。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 39
+GATE_DEFAULT = 36
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
