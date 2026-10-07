@@ -3780,4 +3780,37 @@ ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
 `--wait-after` 驻留窗口内，而**不是** init 内部那段「解密以校验」的瞬时明文
 （那段是 D2c 设计固有的，不该被判据抓）。
 
-*2026-10-06 v6*
+### 2.36.8 提交与 CI 实测
+
+- 主提交 `7062039`（`feat(gate)!: 门禁第 39 项`）：16 文件 / +821 −31；
+- 补提交 `458c3f5`（`docs: 门禁清单补上第 39 项 + CI py_compile 同步新工具`）。
+
+**本地全门禁**：`tools/release_check.ps1 -SkipDirtyCheck` ⇒
+`[release_check] PASS: 36 项检查全通过`（`[ok]` 36 / `[X]` 0 / `[skip]` 0），
+含 `[ok]  selfcrypt 驻留期密文态 (selfcrypt_residency)`；
+日志 `build/logs/release_check_20261007_201141.log`。
+`tools/doccheck.py` PASS（734 处 0 错误）· `tools/docclaim_check.py` PASS 8/8
+（`gate-count` = **39 项**）· `build/_hygiene.py` 15 文件 0 异常。
+
+**CI run `37631637848`（head `7062039`）`completed success`**，四个 job 全绿：
+`build-and-verify` 10m20s / `linux-portability` 17s / `reproducible` 59s /
+`sdk-package` 1m6s。**runner 上实测出现**
+`[ok]  selfcrypt 驻留期密文态 (selfcrypt_residency)` ——
+即新项在 CI 的 MSVC 14.51 / Python 3.12 环境下**同样工作**，不只是本机
+（本机是 MSVC 14.44 / Python 3.13.13）。
+
+> **一处清单类漏项（值得记）**：第 39 项入库时，「数字断言」全部同步了，
+> 但两处**枚举式清单**漏了：
+> 1. `README.md:135-154` 的「默认跑的全部 N 项」ASCII 清单 ——
+>    这是门禁项清单的**权威展示面**；
+> 2. `.github/workflows/ci.yml:131` 的 `Python syntax check (all tools)` ——
+>    该列表是**逐字枚举**、不是 glob ⇒ 新工具不进这张表，CI 就**从不检查
+>    它的语法**。`tools/ci_sim.ps1:113-122` 的本地镜像已经同步，CI 侧却漏了，
+>    而 `ci_sim.ps1` 存在的理由本身就是「CI 的本地镜像」。
+>
+> 根因是同一个：**能被机器校验的东西（数字）改了，靠人眼维护的枚举漏了**。
+> `tools/doccheck.py` 只判计数、不判这两张清单的成员 ⇒ 两处都不红。
+> 与 §2.32「陈旧复选框」同型 —— **数字对了不等于清单对了**；
+> 修法是补提交 `458c3f5`。
+
+*2026-10-06 v7*
