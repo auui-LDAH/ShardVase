@@ -4207,5 +4207,33 @@ Step 'py_compile all' {
 "当时的记录"不能改**（改了就是篡改历史，且这类文件里的数字
 本来就带日期语境）。本步真正要同步的只有**活体配置**两处
 （`ci.yml` 与 `ci_sim.ps1`），文档侧零改动。
+### 2.38.7 提交与 CI 实测（2026-10-06）
 
-*2026-10-06 v9*
+提交 **`c1b6703`** `ci(gate)!: 语法检查步从逐字枚举改为 compileall —— 原先只覆盖 23/95 个文件`
+（3 files / +176 -12：`.github/workflows/ci.yml` + `tools/ci_sim.ps1` +
+`docs/HANDOVER.md`）；`git push origin master` ⇒ `500f08b..c1b6703`。
+
+**CI `37673432129`（head `c1b6703`）`completed success`，四 job 全绿**：
+
+| job | 结果 |
+|-----|------|
+| `build-and-verify` | success（22 步全绿） |
+| `linux-portability` | success |
+| `reproducible` | success |
+| `sdk-package` | success |
+
+关键是新步骤本身在 CI 上是**真的跑了且真的过了**：
+`build-and-verify` 的 step 列表里 `Python syntax check (all live sources)` = **success**。
+
+⚠️ 这里有一条**只有 CI 才能给的证据**：本机跑 compileall 用的是
+**Python 3.13.13**，而 CI runner 上是 **Python 3.12.10**（`linux-portability`
+job 是 **3.12.3**，`python3 --version` 实测）。改之前那 72 个文件
+**从未在 3.12 上编译过** —— 换句话说，本节之前的"本地全绿"里
+有 72 个文件是**新纳入**的，它们跨 3.12/3.13 两个解释器都能编译，
+这一条由本 CI run 背书（而不是由我的本机背书）。
+
+> 这也是本节最值得记的一点：**换机制的收益不只是"以后不会再漏"，
+> 还立刻兑现了一次 —— 72 个文件在 CI 上首次被编译，且通过。**
+> 若其中有任何一个用了 3.13 才有的语法，本 CI run 就会红。
+
+*2026-10-06 v10*
