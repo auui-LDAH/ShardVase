@@ -3813,4 +3813,176 @@ ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
 > 与 §2.32「陈旧复选框」同型 —— **数字对了不等于清单对了**；
 > 修法是补提交 `458c3f5`。
 
-*2026-10-06 v7*
+## 2.37 `PROTCRYP` 缺口定性：**已记名**的可利用面，首次端到端实证（2026-10-06）
+
+### 2.37.1 缘起：一条被记名至少三处、却从未被端到端利用的缺口
+
+`docs/N1_PLAN.md:263-268` 自己挂着一个未勾项：
+
+> - [ ] **仍缺的是密文态 CRC（`PROTCRYP` 第 4 标记）**：`T30` 验的是"密文被
+>   解密后按 meta 明文 CRC 重算"，**不是**"密文形态本身有独立 CRC"。
+>   后者从未实现 …… ⇒ 如实保留未勾，**不把"机制在"读成"验收过"**。
+
+同一件事在 `docs/OPEN_SOURCE_COMPENSATION.md:87-96` 里被写得更重：
+
+> - 覆盖：**`.text` / `.rdata` / `.pdata` / `.protxec`** 共 4 段
+> - **未覆盖**：`.data` `.protcrc` `.protcry` `.protpad` `.fptable` `.rsrc` `.reloc`
+>
+> **完全开源后**，攻击者读源码即知"改哪个区域不会被校验发现"。
+> 尤其 `.data` 与 `.protcry`（可写区）**未被覆盖** —— 这是可利用面。
+
+`docs/PILLAR2_OBSERVABILITY_PLAN.md:251` 也记了同一条，并给出**为什么没做**：
+`覆盖 .protcry（selfcrypt 密文区）会导致自身改写触发误报 | 需排除"运行期必然变化
+的区域"，或改为"校验后再解密"`。
+
+**所以本轮的第一件事是自我纠正**：这不是"发现了一个没人注意的洞"。
+**边界早就被记名了**（三处）。本轮的新增量**只有**一件事 ——
+**第一次把它端到端利用到 `rc=0`**。DRILL9 验的是另一条路
+（patch `.text` 段内容 + 重算段 CRC / patch 检查器），**没有**验"翻密文 +
+同步改 meta"这一路（见 `docs/ATTACK_DRILL9.md:88-95` 的八用例表）。
+
+### 2.37.2 判据与算式：为什么"翻密文 + 同步改 meta"是自洽的
+
+`src/selfcrypt.c:114-122 sc_xor_range` 的密钥流是**逐字节递推**的：
+
+```c
+k = k * PROT_KS_MUL + PROT_KS_ADD;
+dst[j] = (uint8_t)(dst[j] ^ (uint8_t)(k >> 56));
+```
+
+`key0` 是**进入循环前的种子**，故第 j 字节用的是第 j+1 次迭代的 `k`。
+用 Python 复算（`MUL = 0x5851F42D4C957F2D`，`ADD = 0x14057B7EF767814F`；
+⚠️ Python 十六进制字面量**不带 `u` 后缀**，写 `...F2Du` 会
+`SyntaxError: invalid hexadecimal literal`）后，实测：
+
+```
+zlib.crc32(解密后明文) == meta 里存的 crc32   ->  True
+```
+
+⇒ **算式无歧义**，且 meta 的 `crc32` 字段就是**解密后明文**的 CRC32。
+于是攻击者只需：① 翻 `.text` 里该函数密文的任意一字节；
+② 把新明文重算 CRC32，写回 `.protcry` meta 该条的 `crc32` 字段
+（节内偏移 `4 + index*24 + 16`）。两处都改完，`sc_do_range` 解密后
+`got == crc`，`src/selfcrypt.c:240` 的 `PROT_ERR_INTEGRITY` 分支**不会触发**。
+
+### 2.37.3 三对照实测（`build/_protcryp_final.py`，同一次运行）
+
+```
+entry[8] g1 len=154 off=0  (旧明文CRC=0xf3877c04 -> 新明文CRC=0xf8e05580)
+  只翻密文, meta 不动 : rc=2989        MSG_TAMPER=True  protcrc未变=True  out=119B
+  翻密文 + 同步 meta  : rc=3221225477  MSG_TAMPER=False protcrc未变=True  out=662B
+
+entry[0] g0 len=125 off=122  (旧明文CRC=0x338b19f1 -> 新明文CRC=0x324973c6)
+  只翻密文, meta 不动 : rc=2989        MSG_TAMPER=True  protcrc未变=True  out=119B
+  翻密文 + 同步 meta  : rc=0           MSG_TAMPER=False protcrc未变=True  out=725B
+
+entry[8] g1 len=154 off=151  (旧明文CRC=0xf3877c04 -> 新明文CRC=0xf2451633)
+  只翻密文, meta 不动 : rc=2989        MSG_TAMPER=True  protcrc未变=True  out=119B
+  翻密文 + 同步 meta  : rc=0           MSG_TAMPER=False protcrc未变=True  out=725B
+```
+
+读法：
+
+* `MSG_TAMPER` = stdout 里有没有 `完整性校验失败`（`demo/main.c` 的
+  `PROT_STR_MSG_TAMPER`）—— 它区分**"被完整性层拦下"**与**"走到别处才崩"**；
+* `out=119B` + `rc=2989` = 控制组，被 `demo/main.c:526-530` 的
+  `MSG_TAMPER; exit(PROT_EXIT_TAMPERED)` 拦下；
+* `rc=0` + `MSG_TAMPER=False` + `out=725B` = **完整性层一个字都没报，
+  且程序正常结束**（`rc=3221225477` 是 `0xC0000005`，改坏了函数序言）；
+* ⭐ **`protcrc未变=True` 三行全部成立** —— 见下节。
+
+### 2.37.4 ⭐ 决定性字段：绕过**不触碰信任锚**
+
+前三轮的探针（`build/_protcrc_forge.py`）先回答了一个更基本的问题：
+**`.protcrc`（烧录表）本身能不能被攻击者重算？**
+
+可以。在 `.text` 翻**非掩码**字节，用 `tools/hashpatch.py` **自己的**
+`compute_section_crc()` 重算，写回 `.protcrc` 第 0 项，**5/5 未被 integrity 拦**：
+
+```
+rel=0x200   in-mask=False rc=3221225477  MSG_TAMPER=False
+rel=0x1000  in-mask=False rc=3221225477  MSG_TAMPER=False
+rel=0x8000  in-mask=False rc=0           MSG_TAMPER=False   <<< 完全通过且正常结束
+rel=0x1f000 in-mask=False rc=0           MSG_TAMPER=False   <<< 完全通过且正常结束
+rel=0x22000 in-mask=False rc=0           MSG_TAMPER=False   <<< 完全通过且正常结束
+```
+
+`tools/hashpatch.py:455-487` 的写回逻辑本身就说明了原因：`field_off = off + 8`，
+`if current == 0:` 就 `struct.pack('<I', crc)` 写盘 ——
+**明文 CRC32 字段，写入侧零密钥**。再加两条佐证：
+
+* `(Get-AuthenticodeSignature build\demo.exe).Status == NotSigned`；
+* `src/**/*.c` 与 `tools/*.py` 搜 `WinVerifyTrust|Authenticode|GetSignature`
+  **零命中** ⇒ 运行期**不验自身签名**。签发材料 `build/keys/codesign.pfx`
+  是**自签**的。
+
+这与 `docs/THREATMODEL.md:107` 已记名的 L3 边界**同类**：
+`verify_license.py 信任锚 = 使用的 DER 文件本身；攻击者换 der 自签`。
+
+⇒ **本节的结论（也是"该不该做 `PROTCRYP`"的答案）**：
+`.protcry` 那份 meta **与 `.protcrc` 同属"无密钥信任根"**。
+补一个 `PROTCRYP`（无论落在 `.protcrc` 里、还是另立第 5 段）如果仍然
+**没有带密钥的信任根**，攻击者同样重算即可 ⇒ **对磁盘改写者零收益**。
+所以缺口是**设计后果**（无密钥信任根 + 密文/明文两态可互校），
+**不是"忘了实现一个机制"**。要做就得引入密钥（HSM/签名/外部锚），
+那是另一条路线，不是补一个 magic 常量。
+
+反过来说，`protcrc未变=True` 这个字段把性质说清楚了：
+**这一路的绕过比 DRILL9 更省事** —— DRILL9 至少要"重算段 CRC 再写回"，
+而这里只需改 `.protcry` 里一个 4 字节字段，**段 CRC 那条路根本不经过**
+（因为 9 个 selfcrypt 密文区间**全部已被 D1b 掩码剔除**，
+`tools/hashpatch.py:383-387`；实测 9 条 `(rva,len)` 全部落在 `.text` 内）。
+
+### 2.37.5 我自己的两处过度声称（更正，必须记）
+
+落笔前我一度把本轮写成"文档自相矛盾"。逐条复核后**推翻了两条**：
+
+1. `docs/DECISION_REDUNDANCY_PLAN.md:388` 逐字「故"重算 CRC"与"落在掩码区"
+   **两种规避都无效**」—— **不是被证伪的断言**。它的主语是 **R3.2-b 的
+   快照校验**（`它不依赖 CRC`），讲的是"重算 CRC 对**快照校验**无效"，
+   **完全正确**，与 DRILL9 用例 C（重算后仍 `0xBAD`）一致。
+   我把主语读成了"完整性校验"。**读错了主语**。
+2. `docs/OPEN_SOURCE_COMPENSATION.md:154-157` 的「CRC 链式 | 段间 CRC 互相依赖」
+   —— **不是现状断言**。该表的表头是 `| 手段 | 说明 |`，所在章
+   `### 4.x` 的小节性质是「**修法**」（同章 `### 4.1` 的表头就是
+   `| 特征 | 现状 | 修法 |`）⇒ 它在**提出要做什么**，不是**声称已做了什么**。
+   我把表格性质读错了。（真实现状确实是 4 段**互相独立**、无链式，
+   `src/integrity.c:485-524` 每节各自与 `read_baked_crc(j)` 比对 ——
+   但"文档声称有链式"这件事不成立。）
+
+**教训**：`docs/DECISION_REDUNDANCY_PLAN.md:394-397` 自己就写了更正纪律的范例
+（`🚫 本节结论已被 §11 推翻 —— 见 §11.4 的逐条更正` + `保留原文的理由:
+**"记录会过时"** 是本项目已记名 6 次的形态`）。**引用文档断言前必须读主语**
+—— 尤其是"规避无效""必须重算"这类**评分/成本陈述**，它们和
+"某处没被覆盖"这种**事实陈述**是两类东西。
+
+### 2.37.6 探针自身的一处标注 bug（如实记）
+
+第一版 `build/_protcryp_layer.py` 输出里有一行 `base`（基线），标着
+`rc=2989 MSG_TAMPER=True`，与 `cipher` 行**完全相同**，看起来像"基线也被拦了"。
+根因是探针的 `make()` **无论 `sync` 与否都翻了一个字节** ⇒
+`base` 实际等价于 `cipher`。**这是标注 bug，不是结论 bug** ——
+该次运行的**决定性证据是 `sync` 行**（`rc=3221225622` / `MSG_TAMPER=False` /
+输出 662 字节，尾部含 `请输入序列号:` ⇒ 程序走完反调试与 VM 检测才崩）。
+定论版 `build/_protcryp_final.py` 把三对照放进**同一次运行**并**去掉了
+`base` 行**，才得到 §2.37.3 那张干净的表。
+
+⇒ 与 §2.36.5（`_module_base` 的 ctypes 原型不完整）同型：
+**探针自己也会说谎**，而且探针的错会**伪装成被测对象的性质**。
+
+### 2.37.7 结论与边界
+
+* **定性**：`PROTCRYP` 缺口 = **已记名的可利用面**（三处记名）+ 本轮**首次
+  端到端实证**。不是新发现的洞，也不是文档自相矛盾。
+* **不做的理由（有据）**：补 `PROTCRYP` 若仍无带密钥信任根 ⇒
+  与 `.protcrc` 一样可重算 ⇒ **零收益**。真要做需要外部信任锚（另一条路线）。
+* **什么时候会重新评估**：一旦引入带密钥的信任根（签名/HSM/外部锚），
+  本条应重开 —— 那时"密文态 CRC"才**第一次**具备实际增量。
+* **未验证**：本轮**未跑完整门禁**（改动面是文档，且门禁第 39 项已覆盖
+  驻留期不变量）。`.protcry` 的**运行期**利用（不是磁盘改写）未测 ——
+  它需要写进程内存，属另一类攻击面。
+* **构建漂移**：本节引用的 rva/len 是**本次 `build/demo.exe`** 的实测值
+  （`[0] 0x76e0/125` … `[8] 0x4f50/154`）。⚠️ 早前一轮记录的是
+  `0x4e70/0x5610` 一组 ⇒ **产物在此期间被重建过**，引用数值必须注明构建。
+
+*2026-10-06 v8*

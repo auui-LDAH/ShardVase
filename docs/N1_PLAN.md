@@ -266,6 +266,18 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
       b'PROTCRCD', b'PROTCRDP', b'PROTCRCX')` 只有 4 个，搜 `PROTCRYP`
       全库零命中。⇒ 如实保留未勾，**不把"机制在"读成"验收过"**，
       也**不把 T30 读成 PROTCRYP**。
+      > **2026-10-06 定性（`docs/HANDOVER.md` §2.37）**：该缺口**已被
+      > 端到端实证可利用** —— 翻 `.text` 内 selfcrypt 密文 + 同步改
+      > `.protcry` meta 的 `crc32`（节内偏移 `4 + i*24 + 16`）⇒
+      > 完整性层**零报警**、`rc=0`，且**不触碰 `.protcrc`**
+      > （9 个密文区间全部已被 D1b 掩码剔除，段 CRC 那条路根本不经过）。
+      > 但它**不是"忘了实现"**：`.protcry` meta 与 `.protcrc` 同属
+      > **无密钥信任根**（`build/demo.exe` 实测 `NotSigned`、运行期不验签、
+      > `tools/hashpatch.py:455-487` 写回侧零密钥 ⇒ `.protcrc` 亦可重算）。
+      > 补 `PROTCRYP` 若仍无带密钥信任根 ⇒ 同样可重算 ⇒ **零收益**。
+      > ⇒ 该勾**继续保留未勾**，并补上"**为什么不做**"；一旦引入
+      > 外部信任锚（签名 / HSM / 外部锚），本条应**重开** ——
+      > 那时"密文态 CRC"才第一次具备实际增量。
 
 ---
 
@@ -283,6 +295,11 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
    > PASS；但 **密文态 CRC（`PROTCRYP`）从未实现** ⇒ 仍是缺口。此处措辞
    > 需分清：「T30 密文态篡改」= 篡改密文、由**解密态** CRC 抓住；
    > 「密文态 CRC」= 对密文形态本身独立校验 —— 后者不存在。
+   >
+   > **2026-10-06 定性**：缺口**已被端到端实证可利用**，但补它
+   > **零收益**（无带密钥信任根，见 §4 阶段 3 的注与 §11 缺口 3）。
+   > 故 §6 第 4 条仍**未达成**，且**不打算**以"加一个 magic 常量"
+   > 的方式达成。
 5. **可复现**：同种子两次 Release 构建 SHA-256 一致。
 6. **降级开关**：`PROT_SELFCRYPT_DISABLE` 构建后功能全绿（N1 完全旁路）。
 
@@ -349,7 +366,9 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
       **仍缺**：**密文态 CRC（`PROTCRYP`）从未实现** —— 详见 §4 阶段 3 与
       §6 验收标准第 4 条的复核注。（**T29/T30 均已于 2026-10-06 补齐**；
       T30 ≠ PROTCRYP。**D2c 亦已于 2026-10-06 收口**，见 §3.2 与
-      `docs/HANDOVER.md` §2.35。）
+      `docs/HANDOVER.md` §2.35。**`PROTCRYP` 的定性见 §6 复核注与
+      §11 缺口 3**：已记名的可利用面，补它**零收益**
+      （无带密钥信任根）。）
 5. [ ] 杀软/EDR 跨环境验证（真机、企业环境）—— 与 `docs/N1_PHASE2_PLAN.md:210`
       同一挂账，**需真机**。
 
@@ -394,6 +413,13 @@ indirect/strgen 同一 `-SeedsFile` 机制）。注意：**加解密形态的字
    `.protcrypt` 加第 4 个烧录标记；实测 `tools/hashpatch.py:47`
    `MAGICS = (b'PROTCRCP', b'PROTCRCD', b'PROTCRDP', b'PROTCRCX')` 只有 4 个，
    搜 `PROTCRYP` 全库**零命中**。⇒ **II-1 只做了"解密态"一半**。
+   > **2026-10-06 定性（`docs/HANDOVER.md` §2.37）**：本条**不是**
+   > "机制缺失"而是**设计后果**。`.protcry` 未被任何段 CRC 覆盖
+   > 本就已记名（`docs/OPEN_SOURCE_COMPENSATION.md:87-96`、
+   > `docs/PILLAR2_OBSERVABILITY_PLAN.md:251`）；本轮新增的是
+   > **端到端实证**：密文 + meta `crc32` 同步改写可绕到 `rc=0`。
+   > 而 `.protcrc` 自身可重算伪造（5/5 未被拦）⇒ 在这条信任链上
+   > 再加一段 `PROTCRYP` 不增加攻击者成本。
 
 **由此暴露的覆盖缺口（最值得记的一条）**：**II-1 的机制已实现、却没有任何
 回归测试触发它**。`src/selfcrypt.c` 在解密后逐函数校验 CRC 并与 meta 里的
