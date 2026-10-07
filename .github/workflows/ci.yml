@@ -127,8 +127,30 @@ jobs:
       - name: Full release gate
         run: powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 -SkipDirtyCheck
 
-      - name: Python syntax check (all tools)
-        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tools\replica_check.py tools\check_crc_targets.py tools\check_undef.py tools\android_compile_check.py tools\selfcrypt_residency_check.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
+      # ## 为什么从"逐字枚举"改成 compileall（2026-10-06 实测）
+      #   本步原名就是 "Python syntax check (**all tools**)"，但实现是
+      #   一条 18 个 `tools\*.py` + 5 个 tests/examples 的**逐字枚举**。
+      #   实测（`build/_enum4.py` / `build/_enum5.py`）：仓库里**活体**源码共 **95 个 .py**
+      #   （`tools/` 73 + `tests/` 15 + `examples/` 1 + `sdk_service/` 5 +
+      #   `prot_sdk/` 1），枚举只覆盖 **23 个** ⇒ **72 个从未被检查过**，
+      #   其中包括 **门禁第 11 项 `tools/window_check.py`** 与
+      #   **第 31 项 `tools/guard_selftest.py`**、`tools/check_state_platform.py`、
+      #   `tools/comment_lint.py`、`tools/mojibake_check.py`，以及受 `-With*`
+      #   控制的 **第 16 项 `tools/mutate_check.py` / 第 24 项
+      #   `tools/migration_gate.py`** 与全部 5 个 `tests/attack_drill*.py`。
+      #   它们一旦有语法错，CI 全绿而门禁在本地才炸 ——
+      #   恰是本节上方引用的 P3 教训（"可绕过的门禁会掩盖缺陷"）。
+      #
+      #   根因与 `docs/HANDOVER.md` §2.36.8 记的**同一类**：
+      #   **能被机器校验的东西（数字）改了，靠人眼维护的枚举漏了**。
+      #   故修法不是"把人眼清单补全"（下次还会漏），而是换掉机制：
+      #   `compileall` 按**目录**遍历，新增文件自动纳入，**无需维护清单**。
+      #   （实测 `compileall -q` 5 个根耗时 **189 ms**，语法错时 rc=1。）
+      #
+      #   `archive/`（历史快照）与 `dist/`（构建产物）**刻意排除**：
+      #   它们不是活体源码，且其语法错不应阻断 CI。
+      - name: Python syntax check (all live sources)
+        run: powershell -Command "python -m compileall -q tools tests examples sdk_service prot_sdk"
 
       # ## 为什么必须单独上传门禁日志（2026-10-02 实测教训）
       #   `Full release gate` 失败时，上面的 artifact 上传步**根本不会执行**

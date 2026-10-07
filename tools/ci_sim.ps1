@@ -111,15 +111,16 @@ if (-not $SkipTest) {
         }
     }
     Step 'py_compile all' {
-        & $py -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py `
-            tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\mock_server.py `
-            tools\selfcrypt_elf.py tools\vm_reduce.py tools\procdump_like.py `
-            tools\residency_guard.py tools\window_check.py tools\replica_check.py `
-            tools\check_crc_targets.py tools\check_undef.py `
-            tools\android_compile_check.py `
-            tools\selfcrypt_residency_check.py `
-            tests\e2e.py tests\attacks.py tests\vmc_tests.py `
-            tests\protchain_check.py examples\tool_demo\test_example.py
+        # ## 为什么从"逐字枚举"改成 compileall（2026-10-06 实测，同 ci.yml:130）
+        #   旧实现是 18 个 tools + 5 个 tests/examples 的**硬编码清单**。
+        #   实测活体源码共 **95 个 .py**，旧清单只覆盖 23 个 ⇒
+        #   **72 个从未被检查**（含 `tools/window_check.py` 门禁第 11 项、
+        #   `tools/guard_selftest.py` 第 31 项、全部 `tests/attack_drill*.py`）。
+        #   两次同步都漏（`458c3f5` 补了 `selfcrypt_residency_check.py`，
+        #   但下一次新增又会漏）⇒ 换机制：按目录遍历，**无需维护清单**。
+        #   `archive/`、`dist/` 刻意排除（非活体源码）。
+        & $py -X utf8 -m compileall -q tools tests examples sdk_service prot_sdk
+        if ($LASTEXITCODE -ne 0) { throw 'py_compile all failed' }
     }
 }
 

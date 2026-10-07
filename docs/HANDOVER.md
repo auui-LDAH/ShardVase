@@ -4066,5 +4066,146 @@ tools/guard_selftest.py --quiet
 
 > 这两条与 §2.32「陈旧复选框」、§2.36.8「清单类漏项」同属一个族：
 > **验证的失败模式，比被验证的对象更容易骗人。**
+## 2.38 「Python syntax check (all tools)」只检查了 23/95 个文件 —— §2.36.8 记的枚举漏项，机器可查的部分收口（2026-10-06）
 
-*2026-10-06 v8*
+### 2.38.1 缘起：§2.36.8 记了名，但只补了那一处
+
+§2.36.8 记的形态是：
+
+> 根因是同一个：**能被机器校验的东西（数字）改了，靠人眼维护的枚举漏了**。
+> `tools/doccheck.py` 只判计数、不判这两张清单的成员 ⇒ 两处都不红。
+
+当时补的是**那两处**（`README.md` 的 ASCII 清单、`ci.yml` 的
+`py_compile` 枚举）。§2.36.8 自己没说的是：**这类漏项是机制性的，
+补一次只解决一次**。本节把它收口 —— 不是再补一遍清单，而是**换掉机制**。
+
+### 2.38.2 实测：那一步名不副实
+
+`.github/workflows/ci.yml:130` 这步的名字一直是
+`Python syntax check (**all tools**)`，实现是一条**逐字枚举**：
+
+```
+run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py ...
+     tools\selfcrypt_residency_check.py tests\e2e.py tests\attacks.py
+     tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
+```
+
+实测（`build/_enum3.py` / `build/_enum4.py` / `build/_enum5.py`）：仓库**活体**
+源码共 **95 个 `.py`** —— `tools/` 73 + `tests/` 15 + `examples/` 1 +
+`sdk_service/` 5 + `prot_sdk/` 1；该枚举只列了 **23 个**（全部确实落在活体集内，
+无幻影条目）⇒ **72 个从未被语法检查过**。漏掉的里面包括：
+
+* **`tools/window_check.py`** —— 门禁**第 11 项**；
+* **`tools/guard_selftest.py`** —— 门禁**第 31 项**；
+* **`tools/mutate_check.py`（第 16 项）与 `tools/migration_gate.py`（第 24 项）**
+  —— 这两项是 `-With*` 开关下的**受控门禁**，其语法错在 CI 上同样不可见；
+* 其余**被 `Check` 体直接调用**的门禁工具（清单由 `build/_gatewho.py` 从
+  `tools/release_check.ps1` 的 39 个 `Check` 体里反向抽出，非凭记忆）：
+  `tools/check_state_platform.py`（第 25 项）/ `tools/comment_lint.py`（第 19 项）/
+  `tools/mojibake_check.py`（第 20 项）/ `tools/skeleton_check.py`（第 23 项）/
+  `tools/prot_dbg.py`（第 32/34 项）/ `tools/attackcheck.py`（第 22 项）/
+  `tools/docclaim_check.py`（第 28 项）/ `tools/perf_baseline.py`（第 30 项）/
+  `tools/check_crc_targets.py`（第 36 项）/ `tools/check_undef.py`（第 37 项）/
+  `tools/conformance.py`（第 17 项）/ `tools/replica_check.py`（第 35 项）等；
+* **全部 5 个 `tests/attack_drill*.py`** 与 `tests/_platform.py`、
+  `tests/attack_sdk_matrix.py`、`tests/attacks_linux.py`、
+  `tests/c2vasm_golden.py`、`tests/http_platform_test.py`、
+  `tests/vmcalc_flow_test.py`；
+* 整目录 `sdk_service/`（5 个）与 `prot_sdk/wizard/prot_wizard.py`。
+
+后果正是这一步**上方 4 行**自己引用的 P3 教训
+（`ci.yml:66-67`「阶段 1/3/5 新增的门禁项必须也在 CI 里跑 —— 否则等于
+"本地才生效的门禁", 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)」）：
+**一个门禁工具自己有语法错，CI 全绿，只在本地炸。**
+
+### 2.38.3 修法：从"维护清单"换成"遍历目录"
+
+不是把人眼清单补全 —— 那下一次新增还会漏（`458c3f5` 刚补过
+`selfcrypt_residency_check.py`，历史里同类补丁已发生多次）。
+改成按**目录**遍历，新增文件自动纳入：
+
+```yaml
+- name: Python syntax check (all live sources)
+  run: powershell -Command "python -m compileall -q tools tests examples sdk_service prot_sdk"
+```
+
+`tools/ci_sim.ps1:113-123` 的本地镜像**同步**换成同一条
+（它存在的理由就是"CI 的本地镜像"，两侧不一致等于镜像失效）：
+
+```powershell
+Step 'py_compile all' {
+    & $py -X utf8 -m compileall -q tools tests examples sdk_service prot_sdk
+    if ($LASTEXITCODE -ne 0) { throw 'py_compile all failed' }
+}
+```
+
+**为什么 `compileall` 而不是 `py_compile` 加 glob**：`py_compile` 只接受
+文件列表，要用它就必须继续枚举；`compileall` 接受**目录**并递归。
+实测 5 个根耗时 **189 ms**（可忽略）。
+
+**刻意排除 `archive/` 与 `dist/`**：前者是历史快照（5 个 `.py`），
+后者是构建产物（23 个 `.py`）—— 都不是活体源码，
+其语法错**不应**阻断 CI。
+
+### 2.38.4 验证（含负向）
+
+| 检查 | 结果 |
+|------|------|
+| 正向：`compileall -q tools tests examples sdk_service prot_sdk` | `rc=0`，189 ms |
+| **负向：塞一个 `def f(:` 进 build 临时目录** | `rc=1` + `SyntaxError: invalid syntax` |
+| **⭐ CI 原样形态：`powershell -NoProfile -Command "<python> -m compileall -q <坏目录>"`** | 外层 **`rc=1`**（证明失败能穿透 `powershell -Command` 到达 CI） |
+| **⭐ 同一形态换好目录** | 外层 **`rc=0`** |
+| `compileall` 对**不存在的目录** | 打印 `Can't list ...` 但 **`rc=0`** |
+| YAML 解析（`yaml.safe_load`） | 步骤名/命令读取正确 |
+| `tools/ci_sim.ps1` PowerShell 解析 | `parse errors: 0` |
+| `build/_hygiene.py` | 15 文件 0 异常（`ci_sim.ps1` 补回 BOM=True + CRLF） |
+| `tools/doccheck.py` | PASS（751 处 0 错误 / 豁免 196） |
+| `tools/docclaim_check.py` | PASS (8/8) |
+
+> 那一行"CI 原样形态"是本步**唯一值得单独测**的东西：一个只会在
+> 本地红、在 CI 上恒绿的检查器，等于没有。实测 `powershell -Command`
+> 确实把内层原生命令的非 0 退出码传播到外层 `$LASTEXITCODE`
+> （另用 `powershell -Command "cmd /c exit 7"` 单独验过该机制本身）。
+> ⚠️ 本机无法用 `powershell -Command "python ..."` 原样跑（本机 PATH
+> 上的 `python` 是 WindowsApps 桩，会打成 `Python was not found...`），
+> 故上表用绝对路径 `D:\environment\PYTHON\python.exe` 替代 `python`；
+> CI runner 的 PATH 有真 python，命令原文形式即为可执行形式。
+
+⚠️ **诚实边界（负向验证发现的一条）**：`compileall` 对**不存在的目录**
+只打印 `Can't list 'X'` 而**返回 rc=0** —— 即"目录被删/改名"时本步会
+**静默少覆盖**而不是变红。（负向只对"目录内存在语法错"变红。）
+本轮 5 个根都是 git 跟踪目录，故当前不触发；但这是本步**已知的失效模式**，
+如实记在此处，不假装它是全封闭的。
+
+### 2.38.5 与 §2.36.8 的关系
+
+| | §2.36.8 | §2.38（本节） |
+|---|---|---|
+| 发现 | 两处枚举清单漏了新工具 | 同一处机制漏了 **72 个文件** |
+| 修法 | **补清单**（补那两处） | **换机制**（遍历目录，清单不再存在） |
+| 残留风险 | 下次新增还会漏 | 只剩"目录不存在时静默少覆盖" |
+
+> 一条可迁移的判据：**凡是"靠人维护的清单"，都要问一句
+> 「能不能改成从事实推导」。** 能推导的（数字来自 `GATE_TOTAL`、
+> 文件集来自目录遍历）就不该有清单；推导不出来的（README 里那份
+> 带中文名与 `[ok]` 的**展示面**）才保留清单，并由
+> `tools/doccheck.py` 的计数断言兜底。
+
+### 2.38.6 改了机制之后：哪些文字要跟、哪些不能动
+
+换机制会牵动一批**描述这步的文字**。实测清点如下（`build/` 只读探测）：
+
+| 位置 | 原文 | 处置 |
+|------|------|------|
+| `.github/workflows/ci.yml:151` | 步骤名 `Python syntax check (all tools)` | **改**为 `(all live sources)`（原名已名不副实） |
+| `tools/ci_sim.ps1:113-123` | `Step 'py_compile all'` 枚举体 | **改**为同一条 `compileall`（镜像必须一致） |
+| `docs/CI_PLAN.md:19` / `:57` | `py_compile（5 个工具）` / `py_compile (扩展: + indirect.py + ...)` | **不动** —— `:19`/`:57` 属该计划**当时的步骤描述**，`:140`/`:150`/`:174` 是已勾的完成项记录 |
+| `docs/OSS_TAIL_PLAN.md:265` | `C8 \| Python 文件语法自检（py_compile 全部） \| 38 个文件` | **不动** —— 已完成的步骤结果表，"38 个文件"是**当时**的实测数 |
+| `docs/PORTABILITY_ASSESSMENT.md:1262` | `语法检查 \| 每个文件 py_compile 通过` | **不动** —— 属 §14.5 那批 23 文件替换的**回滚策略记录** |
+
+判据与 §2.36.8 / §2.32 同一条：**"现时值口径"要同步，
+"当时的记录"不能改**（改了就是篡改历史，且这类文件里的数字
+本来就带日期语境）。本步真正要同步的只有**活体配置**两处
+（`ci.yml` 与 `ci_sim.ps1`），文档侧零改动。
+
+*2026-10-06 v9*
