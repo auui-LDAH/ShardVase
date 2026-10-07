@@ -81,8 +81,16 @@ if (-not $SkipTest) {
         if ($LASTEXITCODE -eq 0) { & $py examples\tool_demo\test_example.py }
     }
     Step 'protchain P1-P6' { & $py tests\protchain_check.py }
-    Step '加密封装窗口 (window_check)' { & $py tools\window_check.py }
-    Step '判定多副本等价性 (replica_check)' { & $py tools\replica_check.py }
+    Step '加密封装窗口 (window_check)' {
+        & $py tools\window_check.py --selftest | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'window_check selftest failed' }
+        & $py tools\window_check.py
+    }
+    Step '判定多副本等价性 (replica_check)' {
+        & $py tools\replica_check.py --selftest | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'replica_check selftest failed' }
+        & $py tools\replica_check.py
+    }
     Step 'CRC 目标表一致性 (crc_targets)' {
         & $py -X utf8 tools\check_crc_targets.py --selftest --quiet
         if ($LASTEXITCODE -ne 0) { throw 'crc_targets selftest failed' }

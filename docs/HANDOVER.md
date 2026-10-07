@@ -4775,4 +4775,197 @@ doccheck 扫描面内**），所以它们不会因为过时而变红。本节把
 | 全库未勾框现值 | 13 个 .md / 49 条（模板与动作项 19 / 其余 30）|
 | 本轮机械改动 | **无**（§8.1/§8.2 均为记录与判定，不动产品代码）|
 
-*2026-10-06 v15*
+## 2.42 26 个注册 `--selftest` 的工具里，11 个的自检从未被任何自动化面跑过 —— §8.1 唯一真正能落实的那部分（2026-10-06）
+
+### 2.42.1 缘起：把 §2.41.5 的数对了之后，下一个问题
+
+§2.41.5 数清了「§8.1 候选面 = 26 个真实注册 `--selftest` 的工具」。但**注册了自检**和
+**自检真的被跑过**是两件事。本节的问句是：**这 26 个的自检，有没有人跑？**
+
+判据：逐字扫调用面（`.ps1` / `.sh` / `.yml`）里「**同一行**既有工具名又有 `--selftest`」，
+且**跳过 `#` 注释行**（注释里的示例不算执行）。探针 `build/_allsel.py`。
+
+### 2.42.2 实测：15 个被跑过，11 个从未被跑过
+
+**自检被跑过（15 个）**：`android_compile_check` / `attackcheck` / `check_crc_targets` /
+`check_state_platform` / `check_undef` / `comment_lint` / `conformance` / `doccheck` /
+`linux_compile_check` / `mojibake_check` / `perf_baseline` / `prot_dbg` / `sdk_pack` /
+`selfcrypt_residency_check` / `verify_linux_runtime`。
+
+**自检从未被跑过（11 个）**：`docclaim_check` / `genpaths` / `hostgen` / `identity` /
+`migration_cost` / `migration_gate` / `modcheck` / `replica_check` / `solve_profile` /
+`vmc_linux` / `window_check`。
+
+更宽口径（`build/_selstyles.py`，同时认 argparse 注册与 `'--selftest' in sys.argv` 两种风格）
+⇒ 提供自检的文件 **28 个**，自检从未被跑 = **13 个**（上述 11 + `compat` + `mapfile`）。
+
+### 2.42.3 这 11 个的自检**全都有判别力**（不是空壳）
+
+逐个实跑（`build/_orphanrun.py` / `build/_orphanrun2.py`），全部 rc=0 且输出自证其能抓错：
+
+| 工具 | 自检输出（末行） |
+|---|---|
+| `genpaths` | `PASS: 两平台/两布局/负向均可自证` |
+| `identity` | `PASS: 派生确定且各层隔离`（含「雪崩: 32 字节中差异 >= 20」） |
+| `migration_cost` | `PASS: 度量可自证能抓错`（「单字节不同 -> 相同字节数 8191」） |
+| `migration_gate` | `PASS: 阈值判定可自证能抓错`（「空串不匹配 got=False want=False」） |
+| `modcheck` | `PASS: 全部协议规则可自证能抓错`（R17 变异后警告=1 / 基线报错=0） |
+| `replica_check` | `PASS: 提取/解析/聚合器形态/抗折叠/位置抖动判别均已自证` |
+| `solve_profile` | `PASS: 求解器可自证能抓错`（「顺序无环 got=[] want=[]」） |
+| `vmc_linux` | `PASS`（「T1 假断言用例被正确判为**不通过**（RESULT 0）」） |
+| `window_check` | `PASS: 判据与解析均按预期`（「目标清单与 selfcrypt_proto 声明一致」） |
+| `hostgen` | `PASS: 生成器可自证正确性`（`#ifdef/#endif` 配对） |
+| `docclaim_check` | `PASS: 1 正向 + **5 负向** + T6 占位符判据 + T7 计数形态判据均可自证` |
+
+⇒ **判别力的证明早就存在，只差一次调用。**
+
+> ⚠️ 我自己的探针在这里错了一次：初版给全部 11 个都传了 `--quiet`，其中 **5 个不接受该
+> 参数**（`genpaths` / `identity` / `migration_cost` / `replica_check` / `window_check`）
+> ⇒ rc=2 + `unrecognized arguments: --quiet`，差点读成「这 5 个的自检本身是坏的」。
+> 去掉 `--quiet` 后全部 rc=0。**又一次「探针的参数假设太宽，伪装成被测对象的失败」。**
+
+### 2.42.4 耗时与副作用：接进门禁的代价近乎为零
+
+`build/_orphantime.py`（基线 `git status` 为空）⇒ 11 个全部 rc=0、**全部不写脏工作区**：
+`genpaths` 0.05s / `hostgen` 0.05s / `identity` 0.06s / `replica_check` 0.07s /
+`solve_profile` 0.07s / `migration_cost` 0.09s / `docclaim_check` 0.10s /
+`migration_gate` 0.11s / `modcheck` 0.11s / `window_check` 0.50s / **`vmc_linux` 7.22s**。
+除 `vmc_linux` 外全在 0.6s 内。
+
+### 2.42.5 分类：A 类「本体在门禁里跑、却从不带 `--selftest`」= 5 个
+
+`build/_orphanclass.py`（只扫 `release_check.ps1` / `ci_sim.ps1` / `ci_linux.ps1` / `ci.yml`
+的非注释行）：
+
+- **A 类（5 个）**：`window_check`（门禁第 11 项）/ `modcheck`（第 12 项）/
+  `migration_gate`（第 24 项，受 `-WithMigration`）/ `docclaim_check`（第 28 项）/
+  `replica_check`（第 35 项）。**本体被门禁调用，但从没跑过自检。**
+- **B 类（6 个）**：`genpaths` / `hostgen` / `identity` / `migration_cost` /
+  `solve_profile` / `vmc_linux` —— 这四个调度面里看不到它们。
+- **C 类（已带 `--selftest`）= 0 个。**
+
+> ⚠️ **B 类的「零调用」是我的探针面太窄**（`build/_bclass_verify.py` 把面扩到 118 个
+> 脚本/配置文件）⇒ 实测：`genpaths` **32 处引用**（`build.ps1:319`/`:329`、`build.sh:83`/`:89`，
+> 被 `tests/e2e.py` / `tests/protchain_check.py` / `tools/prot_dbg.py` 等 import）、
+> `identity` 6 处、`migration_cost` 7 处、`solve_profile` 14 处、`vmc_linux` 5 处。
+> **它们不是孤儿，只是从不跑自检。** 唯一真孤儿是 `hostgen`：全库 462 个文件里只有
+> 4 处**提及**、零执行，它是「缺口 #1 原型」（`tools/hostgen.py:3` 自述「只生成、不替换」）。
+
+### 2.42.6 修法：只接 A 类那 5 个（**不改门禁项数**，只加深 body）
+
+B 类里 `genpaths` / `identity` / `migration_cost` / `solve_profile` 在构建与模组求解的
+关键路径上，但它们**没有对应的门禁项**，接进去就是新增门禁项（另一件事）。A 类的 5 个
+已经有门禁项，缺的只是「证明自己有判别力」这一步 —— 与已入库的第 11 / 31 / 36 / 37 / 39 项
+做法一致。故本轮只接 A 类。
+
+`tools/release_check.ps1` 五处（第 11 / 12 / 24 / 28 / 35 项）与 `tools/ci_sim.ps1` 两处镜像
+（`window_check` / `replica_check`）统一改成「先自检、再主体」：
+
+```powershell
+Check '加密封装窗口 (window_check)' {
+    # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
+    & $py tools\window_check.py --selftest | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py tools\window_check.py; $LASTEXITCODE -eq 0
+}
+```
+
+**两个细节是实测逼出来的，不是选出来的**：
+
+1. `window_check` 与 `replica_check` 的 argparse **不接受 `--quiet`** ⇒ 给它们传会 rc=2
+   被当成 FAIL。故这一条用 `| Out-Null` 抑制输出，而**不加** `--quiet`。
+2. `migration_gate` 上面紧邻的是 `if ($WithMigration) {`，**不是注释块** ⇒ 说明文字落在
+   **body 内首行**。这不是权宜：`Check '文档断言一致性 (docclaim)' {` 的下一行（原 `:743`）
+   本来就是注释 ⇒ 这已是本仓库既有的写法。
+
+文件：`tools/release_check.ps1` 69811 → **70428 B**（crlf 1185 → **1190**，bareLF 0）；
+`tools/ci_sim.ps1` 7888 B。`build/_chk39b.py` ⇒ **仍是 39 项**，序号与名称一个没变；
+`--selftest` 出现次数 25 → **30**。
+
+### 2.42.7 验证：怎么证明这 5 行接线是**承重的**，不是装饰
+
+「加了一行 `--selftest`」本身很容易，难的是证明它**真的会拦下东西**。方法是差分：
+造一个强制失败的 shim（`build/_shim/py.cmd`，凡是含 `--selftest` 的命令一律 `exit /b 3`），
+把它分别喂给**接线前**（`git show HEAD:tools/release_check.ps1` 的副本）和**接线后**
+（工作树）的**真实 Check body**，按 `Check()` 自身的语义取值（`$out[-1]`）：
+
+| Check 项 | 接线前 + shim | 接线后 + shim | 正基线（真 python） |
+|---|---|---|---|
+| `window_check` | True | **False** | True |
+| `modcheck` | True | **False** | True |
+| `migration_gate` | False | False | False |
+| `docclaim` | True | **False** | True |
+| `replica_check` | True | **False** | True |
+
+**4 项构成干净差分**（接线前 shim 抓不到、接线后被抓到）⇒ 这 4 行承重。
+
+第 5 项 `migration_gate` 的布尔值**被一个既有失败污染**（真 python 下也是 False，见 §2.42.8），
+故布尔值对它没有证明力。改用**计时**这个它自己伪造不了的信号：
+
+```
+HEAD (接线前) + shim      105.18s   verdict=False
+worktree (接线后) + shim    0.41s   verdict=False
+```
+
+接线后 body 在 `--selftest` 行（rc=3）就短路了，**根本走不到**那 12 次构建的度量；
+接线前必须把整轮度量跑完（~90-105s）。⇒ 该行同样承重。
+
+> ⚠️ 这里我又踩了一次同一个坑：`build/_mgbody.ps1` **硬编码了真 python**，首次计时得
+> `HEAD 93.64s / worktree 90.36s` 两个都慢、**看似无差分**；改成 `-Py` 参数把 shim 传进去
+> 后差分立刻出现。**探针的参数没接上，再一次伪装成「被测对象没有差异」。**
+
+### 2.42.8 顺带发现：一个**被门控遮住的既有 FAIL**
+
+验证第 5 项时撞见：
+
+```
+[migration_gate] FAIL: M3 15.6% > 12% 保护函数可被特征定位 -> 迁移成本低
+```
+
+- 代码事实：`tools/migration_gate.py:92-93` = `MAX_M3 = 12.0` / `MAX_M1 = 12.0`。
+  `:81-93` 详注收紧理由：初版取 **25%** 时，**禁用 6/16 文件的部分移除**只让 M3 升到
+  **20.6%** ⇒ 仍在阈值内 ⇒ **漏检**。实测已知点：全部注入 **5.9%** / 移除 6/16 **20.6%** /
+  无注入 **55.9%** ⇒ 故收紧到 **12%**。
+- ⚠️ **但两处记述还是旧的 25%**：`tools/migration_gate.py:19-25` 的 docstring 阈值表仍写
+  `| **M3 保护函数命中** | 55.9% | **5.9%** | **<= 25%** |`；
+  `tools/release_check.ps1` 该项注释块仍写「M3 <= 25%（当前 5.9%）」。
+- **现值 15.6% > 阈值 12%** ⇒ 若真跑 `release_check.ps1 -WithMigration`，**第 24 项会 FAIL**。
+  因为该项默认受 `-WithMigration` 门控（默认 36 项不含它），**默认门禁仍全绿**。
+  ⇒ 这是一个**被门控遮住的既有回归**，与本轮接线无关（HEAD 的 body 在真 python 下同样 False）。
+
+> 诚实边界：我只测到「现值 15.6% 超阈值」，**没有**查明 M3 从 5.9% 漂到 15.6% 的原因，
+> 也**没有**判定该改代码还是该改文档。这是本轮新记名的待办，不是已解决的问题。
+
+### 2.42.9 与 §2.36.8 / §2.38 / §2.40 的关系
+
+四节的形状同源：**判据存在 ≠ 判据被执行**。
+
+| 节 | 判据在哪 | 为什么没生效 |
+|---|---|---|
+| §2.36.8 | `tools/ci_sim.ps1` 的枚举清单 | 清单是**逐字枚举**，新工具不进表就永远不被检查 |
+| §2.38 | `ci.yml` 的语法检查步 | 同上，改成目录遍历才收口 |
+| §2.40 | `doccheck` 的扫描面 | 扫描面是**自声明 opt-in**，不写元数据就永久不被扫 |
+| **§2.42** | **各工具的 `--selftest`** | **自检写好了、有判别力，但从没被任何自动化面调用** |
+
+可迁移判据（§2.38.5 那条的延伸）：**「能用」不等于「在用」** —— 凡是发现一个
+「已经写好的能力」，都要问一句「谁在跑它」。
+
+### 2.42.10 验证表
+
+| 项 | 结果 |
+|---|---|
+| `build/_hygiene.py` | **15 个文件, 0 处异常**（`release_check.ps1` bom=True crlf=1190 bareLF=0） |
+| PS 语法（`build/_parsechk3.ps1`） | `ci_sim.ps1: 0` / `release_check.ps1: 0` |
+| 门禁项数（`build/_chk39b.py`） | **39 项**，序号与名称一个没变；`--selftest` 出现 **30** 次 |
+| `tools/doccheck.py --selftest` | **27 项（13 项负向注入 / 14 项合规豁免）** 全通过 |
+| `tools/doccheck.py` | `[ok] 门禁结构: 39 项均为顶层语句…默认调用跑 36 项` / `[ok] README 门禁清单: 36 条成员与默认跑的 36 项双向唯一匹配` |
+| 全门禁 | **`[release_check] PASS: 36 项检查全通过`** |
+| 接线承重性 | **5/5**（4 项布尔差分 + 1 项计时差分） |
+
+| 本轮机械改动 | 值 |
+|---|---|
+| `tools/release_check.ps1` | 5 个 Check body 加深（+5 行注释 +10 行调用），**项数不变** |
+| `tools/ci_sim.ps1` | 2 个 Step 镜像加深 |
+| 新增门禁项 | **0**（判据本身没变，变的是"证明它有判别力"这一步被自动跑了） |
+
+*2026-10-06 v16*

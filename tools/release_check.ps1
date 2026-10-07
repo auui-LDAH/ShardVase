@@ -314,11 +314,19 @@ if (-not $SkipTest) {
     #   `src/integrity.c` 放回仓库副本, 判据必须报出那处 A5 间接调用;
     #   当前树必须 0 报。判据自证能抓错。
     Check '加密封装窗口 (window_check)' {
+        # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
+        & $py tools\window_check.py --selftest | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
         & $py tools\window_check.py; $LASTEXITCODE -eq 0
     }
     # 模块化框架 (docs/MODULAR_ARCH.md): 注册表须与源码一致 + 参考组合自洽。
     # 放在门禁内而非可选脚本 —— P3 教训: 可绕过的门禁会掩盖缺陷。
-    Check '模块契约 (modcheck)' { & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0 }
+    Check '模块契约 (modcheck)' {
+        # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
+        & $py tools\modcheck.py --selftest --quiet
+        if ($LASTEXITCODE -ne 0) { return $false }
+        & $py tools\modcheck.py --all-compositions; $LASTEXITCODE -eq 0
+    }
     # 阶段 3 (攻防对称): 演练记录须符合 schema 且 target_module 有效。
     Check '攻防记录 (drills lint)' { & $py tools\drills.py lint; $LASTEXITCODE -eq 0 }
     # 阶段 5 (M5): 对外材料数字不得与内部能力漂移
@@ -644,6 +652,9 @@ if ($WithSkeleton) {
 #     **跳过时明确标注，不静默通过**。
 if ($WithMigration) {
     Check '迁移成本 (migration_gate)' {
+        # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
+        & $py tools\migration_gate.py --selftest --quiet
+        if ($LASTEXITCODE -ne 0) { return $false }
         & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
     }
 } else {
@@ -732,9 +743,12 @@ Check '验证互斥锁自检 (verify_lock)' {
 #     （pending/TBD/—/todo/空/HEAD）+ 3 个真 sha 做正负对照，并**先证明
 #     修复前的形态会 FAIL**（不是自说自话）。
 Check '文档断言一致性 (docclaim)' {
+    # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
     # 退出码 2 = 有断言因**前置产物缺失**未执行（如干净克隆上无 build/demo_linux）
     #   -> SKIP，**不谎报通过**（判据从未执行）。CI 的 Windows runner 上这条
     #   必然触发，若按 FAIL 处理则门禁在干净克隆上永远红。
+    & $py -X utf8 tools\docclaim_check.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
     & $py -X utf8 tools\docclaim_check.py --quiet
     if ($LASTEXITCODE -eq 2) { return 'SKIP' }
     $LASTEXITCODE -eq 0
@@ -887,6 +901,9 @@ Check '调试控制台活体自检 (prot_dbg live)' {
 #   不触碰 demo.exe / seeds.json / 掩码文件。缺 demo.exe 时判据 ② 走 SKIP 并
 #   打印「未验证 != 通过」，判据 ①③ 仍会执行。
 Check '判定多副本等价性 (replica_check)' {
+    # 含负向自检: 先跑 --selftest 证明本判据有判别力(自检不通过即本项 FAIL), 再跑主判据。
+    & $py -X utf8 tools\replica_check.py --selftest | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
     & $py -X utf8 tools\replica_check.py
     $LASTEXITCODE -eq 0
 }
