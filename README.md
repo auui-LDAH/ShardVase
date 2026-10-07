@@ -151,6 +151,7 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 [ok] 协议兼容性 (conformance)              [ok] CRC 目标表一致性 (crc_targets)
 [ok] Linux 编译覆盖 (linux_compile_check)  [ok] 静态未定义名审计 (undef_check)
                                            [ok] Android 交叉编译 (android_compile_check)
+                                           [ok] selfcrypt 驻留期密文态 (selfcrypt_residency)
 ```
 
 默认不跑的 3 项（各约 1-4 分钟，发版前用 `-With*` 启用）：

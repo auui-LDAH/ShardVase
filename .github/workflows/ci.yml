@@ -128,7 +128,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File tools\release_check.ps1 -SkipDirtyCheck
 
       - name: Python syntax check (all tools)
-        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tools\replica_check.py tools\check_crc_targets.py tools\check_undef.py tools\android_compile_check.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
+        run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py tools\hashpatch.py tools\indirect.py tools\selfcrypt_proto.py tools\vmc.py tools\vcvars.py tools\mock_server.py tools\modcheck.py tools\drills.py tools\doccheck.py tools\compose.py tools\ingest_attacks.py tools\replica_check.py tools\check_crc_targets.py tools\check_undef.py tools\android_compile_check.py tools\selfcrypt_residency_check.py tests\e2e.py tests\attacks.py tests\vmc_tests.py tests\protchain_check.py examples\tool_demo\test_example.py"
 
       # ## 为什么必须单独上传门禁日志（2026-10-02 实测教训）
       #   `Full release gate` 失败时，上面的 artifact 上传步**根本不会执行**
