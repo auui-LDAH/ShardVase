@@ -4400,6 +4400,27 @@ job 是 **3.12.3**，`python3 --version` 实测）。改之前那 72 个文件
     build/_readmemut.py          : rc=0（删一项 -> 红 -> 还原逐字节相同）
     build/_dcstructneg.py        : rc=0（结构失败时不崩，0b 仍给结论）
     全门禁（-SkipDirtyCheck）     : PASS: 36 项检查全通过（[ok] 36 / [X] 0 / [skip] 0）
+### 2.39.10 提交与 CI 实测
 
-*2026-10-06 v11*
+提交 `b0b601e`（3 files / +453 −13）：
+
+| 文件 | 改动 |
+|---|---|
+| `tools/doccheck.py` | 新增 `gated_check_names()` / `parse_readme_gate_list()` / `_gate_base()` / `_gate_match()` / `check_readme_gate_list()`；主检加 0b 节；自检加 5 条用例并纳入打印与计数；修掉 `_n`/`_opt` 的作用域崩溃 |
+| `tools/release_check.ps1` | doccheck 项上方注释删掉会过期的用例条数（同 §2.36.7 处置） |
+| `docs/HANDOVER.md` | 本节 |
+
+推送 `a73eeb7..b0b601e`；CI run **`37679557390`**（head `b0b601e`）**`completed success`**，
+四 job 全绿（`build-and-verify` / `linux-portability` / `reproducible` / `sdk-package`）。
+
+> ⭐ **关键证据**：`build-and-verify` 的 **`Public-material drift (doccheck)`**
+> step = `success`。该步先跑 `doccheck.py --selftest`（把关 5 条新用例能否抓到注入）
+> 再跑主检（把关 README 清单的 36 条成员）—— 两者在 CI 的 Python 3.12 上**都过**。
+> 于是新判据不只是"本机能跑"，而是**跨环境成立**。
+
+同一 run 里 `Python syntax check (all live sources)` 亦 `success`
+（§2.38 换的机制），两个连续改动在同一 run 上共同验证。
+
+*2026-10-06 v12*
+
 
