@@ -55,11 +55,24 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # 的 `门禁 14/14`、docs/BLUEPRINT.md:640 的 `release_check 11/11` …),
 # 它们记录的**是当时的真实值** —— 改成现值即**篡改历史**。
 #
-# ## 故: 范围 = 对外材料 + **显式自称现时**的内部文档
+# ## 故: 范围 = 对外材料 + 根目录 front door + **显式自称现时**的内部文档
 # `> **最后核实**: <日期> · 方法: … · 提交 <sha>` 是文档对"我自称现时"
 # 的**显式自声明**。声明是承重的: 无此声明不得纳入检查 (新文档默认不被
 # 检查, 是有意为之 —— 想被检查就先声明)。实测 24 文件 / 88 处数字断言,
 # 残留 2 条真缺陷, 零噪声。
+#
+# ## 2026-10-06 补: 自声明式扫描面的**结构性盲区**
+# 自声明是 opt-in, 而"现值口径"是**应然** —— 凡声称现值的都该被守。
+# 二者不匹配的后果: 一个**自称权威、读者当下照着做**的文件, 只要不写
+# `最后核实` 就永久不被检查。实测 `README.md:132` 的
+# `跑 **36 项**（默认; 加 -With* 后共 **39 项**）` 改成 `37` ⇒ doccheck
+# 仍 rc=0、零报错 (`README.md` 不在面内)。
+# 修法不是"多写几处自声明"(仍是人眼的纪律), 而是把**恒为现时**的那类
+# 从"自声明"改成"位置推导": 根目录 `*.md` + `.github/*.md` 与
+# `publish/` 同理 —— 它们是读者**当下照着做**的说明, 不是历史快照。
+# 实测并入 8 文件后 **0 新错误**, 目标数 24 -> 32。
+# 未纳入的仍是历史快照 (`docs/阶段总结-*.md` / `docs/STAGE_AUDIT.md`
+# / `docs/BLUEPRINT.md` 等) —— 它们记的是**当时的真实值**, 纳入即篡改历史。
 VERIFIED_META = re.compile(r'^>\s*\*\*最后核实\*\*', re.M)
 
 
@@ -75,7 +88,18 @@ def header_declares_current(text):
 
 
 def build_targets():
-    ts = sorted(glob.glob(os.path.join(REPO, 'publish', '*.md')))
+    # 根目录 front door + .github 模板 —— 它们**恒为"现时"**, 与 publish/ 同理:
+    # README / CONTRIBUTING / 展示文档 是读者**当下照着做**的说明, 不是历史快照;
+    # PR 模板每次开 PR 都被复制进一条新记录。
+    #
+    # 2026-10-06 实测: `README.md:132` 的 `跑 **36 项**（默认…共 **39 项**）`
+    # 此前**无人守** —— 把它改成 `37` 后 doccheck 仍 rc=0, 零报错。
+    # 根因: 自声明式扫描面(`> **最后核实**`)对**不写该元数据**的文件永久失明,
+    # 而"现值口径"是应然(凡声称现值都该被守), 二者不匹配。
+    # 实测并入后 0 新错误(8 文件), 故并入。
+    ts = sorted(glob.glob(os.path.join(REPO, '*.md')))
+    ts += sorted(glob.glob(os.path.join(REPO, '.github', '*.md')))
+    ts += sorted(glob.glob(os.path.join(REPO, 'publish', '*.md')))
     ts += sorted(glob.glob(os.path.join(REPO, 'docs', 'marketing', '*.md')))
     for f in sorted(glob.glob(os.path.join(REPO, 'docs', '**', '*.md'),
                              recursive=True)):
@@ -704,18 +728,31 @@ def check_readme_gate_list(text=None, checks=None, gated=None):
     **没有任何门禁在守**：漏列一项而数字仍写 36，doccheck 不会红。
     同型于 §2.36.8（补了清单但没换机制）与 §2.38（语法检查枚举只覆盖 23/95）。
 
-    ## 判据（四条，全部由事实推导，无硬编码名单）
+    ## 判据（五条，全部由事实推导，无硬编码名单）
       ① 清单条数 == `Check` 总数 − gated 项数（两边都是**算出来的**）
       ② 每个默认跑项在清单里**恰好**命中一条（0 条 = 漏项；>1 条 = 歧义）
       ③ 清单里每一条都**恰好**命中一个默认跑项（0 条 = 幽灵项 / 措辞漂移）
       ④ gated 项**不得**出现在"默认跑"清单里（它默认不跑，列进去是错的）
+      ⑤ 散文里那个 `N` 也必须等于默认跑项数 —— 见下。
 
     ②③ 各要求"恰好 1"，合起来即**双向唯一匹配** —— 这比"存在某个匹配"
     强得多，后者会被一个足够短的清单项蒙混过关。
 
+    ## ⑤ 为什么散文里的数字要单独判（2026-10-06 实测补）
+    判据 ① 比的是**清单条数**（数出来的），**不是**那句散文里写的 `N`。
+    实测（`build/_readmenum_mut.py`）：把 `README.md:132` 的
+    `**36 项**（默认` 改成 `**37 项**`、**清单一个字都不动**，
+    `doccheck` 仍然 **rc=0、无任何报错** —— 那时 `declared`（37）已被
+    `parse_readme_gate_list` 解析出来，却在调用处被写成 `_declared` **丢弃**。
+    解析出来了却不判，等于没解析；这与 §2.36.8/§2.38 同型：
+    **事实可得，但没有任何判据在用它**。
+
     ## 诚实边界
-      · 只覆盖 `README.md` 这一处清单。其它文档里的门禁枚举**不在判据内**
-        （未普查过是否还有第二处"默认跑全清单"这句话）。
+      · 只覆盖 `README.md` 这一处清单。其它文档里的门禁枚举**不在判据内**：
+        实测（`build/_scanface_gap.py`）doccheck 的扫描面是**自声明**的
+        （`build_targets()` 只收头部带 `> **最后核实**` 的 `docs/**`），
+        故 `README.md` / `CONTRIBUTING.md` / `docs/阶段总结-*.md` 等
+        **42 个文件**里含现时值计数的位置**全部在扫描面之外**，无人守。
       · 匹配用基名的连续子串来容忍 README 的排版缩写；它**不是**模糊匹配，
         但过短的基名会命中多项 -> 由 ② 的 ">1 = 歧义" 报出来。
       · **只判成员集合，不判排版**（两列对齐、`[ok]` 前缀、缩写本身）。
@@ -727,7 +764,7 @@ def check_readme_gate_list(text=None, checks=None, gated=None):
             return ['README.md 不存在 —— 门禁清单成员判据失去对象']
         text = open(p, encoding='utf-8').read()
 
-    names, _declared, why = parse_readme_gate_list(text)
+    names, declared, why = parse_readme_gate_list(text)
     if why:
         return ['README.md 门禁清单: ' + why]
 
@@ -759,6 +796,14 @@ def check_readme_gate_list(text=None, checks=None, gated=None):
             'README.md 清单 %d 条，但默认跑的门禁项有 %d 项'
             '（%d 个 Check − %d 个 -With* 控制项）—— 计数或成员已漂移'
             % (len(names), len(default), len(checks), len(gated)))
+
+    # ⑤ 散文里的数字（与 ① 数出来的清单条数是**两件事**）。
+    # 2026-10-06 实测：只改这个数字、清单不动，旧判据完全失明。
+    if declared is not None and declared != len(default):
+        errors.append(
+            'README.md 散文声称「默认跑的全部 %d 项」，但实际默认跑 %d 项'
+            '（%d 个 Check − %d 个 -With* 控制项）—— 散文数字已漂移'
+            % (declared, len(default), len(checks), len(gated)))
 
     rbase = [(n, _gate_base(n)) for n in names]
     cbase = [(n, _gate_base(n)) for n in default]
@@ -1135,17 +1180,22 @@ def selftest():
     else:
         _default = [c for c in _all if c not in _gated]
 
-        def _mk(names):
+        def _mk(names, declared=None):
+            # declared 默认取 names 条数（绝大多数用例要测的是**成员**）；
+            # 要单独测散文数字时显式传入。
+            d = len(names) if declared is None else declared
             body = ''.join('[ok] %s\n' % n for n in names)
-            return '默认跑的全部 %d 项：\n```\n%s```\n' % (len(names), body)
+            return '默认跑的全部 %d 项：\n```\n%s```\n' % (d, body)
 
         gl_cases = [
             ('真实 README 清单 -> 不报', _rd, 0, None),
-            ('漏列一项 -> 必须报', _mk(_default[1:]), 2, '未列出'),
+            ('漏列一项 -> 必须报', _mk(_default[1:]), 3, '未列出'),
             ('幽灵项 -> 必须报',
              _mk(_default[1:] + ['幽灵门禁项 (no_such)']), 2, '幽灵'),
             ('gated 项混进默认清单 -> 必须报',
-             _mk(_default + sorted(_gated)), 7, '不该列进去'),
+             _mk(_default + sorted(_gated)), 8, '不该列进去'),
+            ('散文数字漂移（清单不动）-> 必须报',
+             _mk(_default, declared=len(_default) + 1), 1, '散文'),
             ('清单块结构被破坏 -> 必须报',
              '默认跑的全部 36 项：\n没有围栏\n', 1, '前提'),
         ]
@@ -1158,6 +1208,18 @@ def selftest():
         elif kw and not any(kw in x for x in e):
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
+
+    # --- 扫描面自身的守卫 ---
+    #
+    # 上面所有用例都建立在"该文件**在面内**"之上。若扫描面哪天把根目录
+    # 悄悄移出去, 判据会**全绿而失明** —— 判据的判据没了。
+    # 2026-10-06 实测: README.md 曾长期不在面内, 而 doccheck 一直 PASS。
+    # 故把"恒为现时的 front door 必须在面内"本身断言成用例。
+    _must = ['README.md', 'CONTRIBUTING.md', '.github/PULL_REQUEST_TEMPLATE.md']
+    for _m in _must:
+        if os.path.join(REPO, _m.replace('/', os.sep)) not in TARGETS:
+            fails.append('扫描面守卫: `%s` 不在 TARGETS 内 —— '
+                         '它是恒为现时的 front door, 移出即失明' % _m)
 
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)

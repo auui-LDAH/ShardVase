@@ -4421,6 +4421,148 @@ job 是 **3.12.3**，`python3 --version` 实测）。改之前那 72 个文件
 同一 run 里 `Python syntax check (all live sources)` 亦 `success`
 （§2.38 换的机制），两个连续改动在同一 run 上共同验证。
 
-*2026-10-06 v12*
+## 2.40 doccheck 的扫描面是**自声明**的 —— 一个自称权威的文件可以永久不被检查（2026-10-06）
 
+### 2.40.1 缘起：把上一节的"未验证"当成假设
 
+§2.39 收尾时留了一条未验证项：「未普查其它文档是否还有第二处『默认跑全清单』」。
+本节先做那次普查，结果顺带暴露了一个**比清单漏项更靠底层**的问题：
+`doccheck` 的扫描面本身是**自声明**的。
+
+### 2.40.2 普查：真·清单块 10 处，只 1 处需要守
+
+探针 `build/_gatelist_audit2.py`（判据 = 连续多行、每行含一个**不同**的门禁名核、
+不同名数 ≥10；初版 `build/_gatelist_audit.py` 把散文提及也算清单，太松）命中 10 处：
+
+| 位置 | 名数 | 判定 |
+|---|---|---|
+| `docs/阶段总结-2026-10-06.md:253-271` | 34 | 阶段快照，历史 |
+| `README.md:136-154` | 31 | **现时应然，须守** |
+| `docs/HANDOVER.md:1564-1575` | 29 | 沿革记录，历史 |
+| `docs/阶段总结-2026-09-29.md:135-138` | 17 | 阶段快照，历史 |
+| `docs/STAGE_AUDIT.md:32-36` | 15 | 审计快照，历史 |
+| `docs/HANDOVER.md:4104-4112` | 14 | §2.38 注释块转述，历史 |
+| `docs/阶段总结-2026-10-06.md:341-345` | 14 | 阶段快照，历史 |
+| `docs/STAGE_AUDIT.md:39-44` | 11 | 审计快照，历史 |
+| `docs/阶段总结-2026-09-29.md:141-145` | 11 | 阶段快照，历史 |
+| `.github/workflows/ci.yml:132-140` | 10 | §2.38 刚写的注释块，历史 |
+
+⇒ §2.39 的未验证项**可以关闭**：没有第二处需要守的"默认跑全清单"。
+
+### 2.40.3 ⭐ 真正的问题：扫描面是 opt-in，而"现值口径"是应然
+
+`tools/doccheck.py:77 build_targets()` 只收三个来源：`publish/*.md`、
+`docs/marketing/*.md`，以及 `docs/**/*.md` 中头部**显式写 `> **最后核实**`** 者
+（`header_declares_current()`，`:66-74` 限定首个二级标题之前）。
+设计理由是承重的且**写得很清楚**（`:58-62`）：新文档默认不被检查，是有意为之 ——
+想被检查就先声明；历史文档记的是当时的真实值，改成现值即篡改历史。
+**这一段判据本身没有错。**
+
+错的是它的**外延**：自声明是 opt-in，而"现值口径"是**应然**
+（凡是声称现值的都该被守）。二者不匹配的后果是
+——**一个自称权威、读者当下照着做、却不写那行元数据的文件，永久不被检查。**
+
+实测（`build/_readmenum_mut.py` + `build/_readmenum2.py`）：
+
+| 变异点 | 旧判据 |
+|---|---|
+| `README.md:133` `默认跑的全部 **36** 项：` → `37` | **rc=1**（§2.39 的新判据 ⑤ 抓到） |
+| `README.md:132` `跑 **36 项**（默认` → `37` | **rc=0，零报错** ★ |
+
+第二行是本节的关键证据：**同一个文件、同一句话里的另一个数字，没有任何人守。**
+根因不是判据写错，而是 `README.md` **根本不在 `TARGETS` 里**
+（实测 `os.path.join(REPO,'README.md') in TARGETS` = `False`）。
+
+同类盲区实测（`build/_scanface_gap.py`）：扫描面内 7 个文件含计数断言，
+**面外 42 个**，其中 `README.md`(3) / `CONTRIBUTING.md`(2) / `ShardVase-展示文档.md`(1) /
+`docs/阶段总结-2026-10-06.md`(18) / `.github/PULL_REQUEST_TEMPLATE.md`(1) …
+`docs/阶段总结-2026-10-06.md:251` 甚至逐字自称
+「**门禁 38 项全清单**（权威顺序载体 = `README.md` / `docs/HANDOVER.md` / `tools/release_check.ps1`）：」
+而停在 38 项（现为 39）——**自称权威的载体，自己不受任何判据保护。**
+
+### 2.40.4 修法：把"恒为现时"的那一类从自声明换成**位置推导**
+
+不选"再补几处自声明"——那仍是一次性的、靠人眼的纪律（同 §2.36.8 / §2.38 的教训）。
+改的是**类的定义**：根目录 `*.md` 与 `.github/*.md` 与 `publish/` 同理 ——
+它们是读者**当下照着做**的说明，**不是历史快照**：
+
+```python
+ts = sorted(glob.glob(os.path.join(REPO, '*.md')))
+ts += sorted(glob.glob(os.path.join(REPO, '.github', '*.md')))
+ts += sorted(glob.glob(os.path.join(REPO, 'publish', '*.md')))
+ts += sorted(glob.glob(os.path.join(REPO, 'docs', 'marketing', '*.md')))
+```
+
+并入 9 个文件（8 个根目录 `.md` + `.github/PULL_REQUEST_TEMPLATE.md`）：
+`TARGETS` **24 → 33**，豁免 **196 → 197**（日期语境 +1），检查数字从 795 起涨（本节写入前实测 853 处；写入后更高，理由见 §2.36.7 —— 自计数不能写死在被它数的文件里），
+**0 新错误**。判据一条没改，只是把文件放进来看。
+
+### 2.40.5 我此前记录的一处**错误判断**（如实更正）
+
+在 `build/_readme_face_exp.py` 之前，我曾据一次内存实验记下结论：
+「`RE_GATE_N` 只认 `GATE_TOTAL`=39，故把 `README.md` 纳入扫描面会**误报 2 处**
+（`:132`/`:107` 的合法双数表述『36 项（默认…共 39 项）』），必须先改正则」。
+**这个判断是错的。** 实测 `tools/doccheck.py:967` 逐字：
+
+```python
+claim = int(m.group(2))
+if claim in GATE_OK:
+    continue
+```
+
+`GATE_OK = (GATE_TOTAL, GATE_DEFAULT) = (39, 36)` —— **两个数都在容差内**，
+`RE_GATE_NN` 同理（`:979`）。双数表述本就合法，`build/_readme_face_exp.py`
+实跑（README 并入 TARGETS 后跑完整 `main()`）**基线与变异前均 `rc=0`、0 错误**，
+直接推翻了我那条"必须先改正则"的前提。若照那条前提走，会去改一个**没坏的正则**，
+并把真正的病根（README 不在面内）留着。
+
+教训与 §2.37.10 两条是同一族：**结论会被下一次真跑证伪，而前提从来不重算。**
+我在没有重跑的情况下，把"一个实验里的变异结果"读成了"基线的性质"。
+
+### 2.40.6 扫描面自身的守卫：判据的判据
+
+上面所有判据都建立在"该文件**在面内**"之上。若扫描面哪天被移出去，
+判据会**全绿而失明** —— 正是本节实测到的历史状态（README 长期不在面内，而 doccheck 一直 PASS）。
+故把"恒为现时的 front door 必须在面内"本身断言成自检用例：
+
+```python
+_must = ['README.md', 'CONTRIBUTING.md', '.github/PULL_REQUEST_TEMPLATE.md']
+for _m in _must:
+    if os.path.join(REPO, _m.replace('/', os.sep)) not in TARGETS:
+        fails.append('扫描面守卫: `%s` 不在 TARGETS 内 —— '
+                     '它是恒为现时的 front door, 移出即失明' % _m)
+```
+
+负向验证 `build/_faceguard_neg.py`：正常态 `selftest rc=0`；
+内存里把 `README.md` 移出 `TARGETS` ⇒ **`selftest FAIL (1/27)`**、
+报 `[X] 扫描面守卫: README.md 不在 TARGETS 内 —— 它是恒为现时的 front door, 移出即失明`。
+**一个不会失败的守卫等于没有守卫**，故这条也做了注入。
+
+### 2.40.7 未纳入的，以及为什么
+
+`docs/阶段总结-*.md` / `docs/STAGE_AUDIT.md` / `docs/BLUEPRINT.md` /
+`docs/WORKBENCH_ROADMAP.md` / `docs/OSS_TAIL_PLAN.md` / `docs/LINUX_PORT_PLAN.md`
+**仍不纳入**。实测把它们并进来会报 14 条错，逐条看**全部是历史值**
+（如 `docs/OSS_TAIL_PLAN.md:103` 的 `门禁 14/14`、`docs/WORKBENCH_ROADMAP.md:140` 的 `门禁项数声称 14`）
+—— 它们记的是**当时的真实值**，纳入即**篡改历史**。
+这正是 `build_targets()` 原注释 `:51-56` 已经写明的边界，那一段判据继续有效。
+
+> ⚠️ 诚实边界：本节修的是「**恒为现时**的 front door 不在面内」，
+> **不是**"扫描面覆盖了全库"。仍有 30+ 个文件在面外，其中一部分（阶段总结类）
+> 的现时值**仍然无人守** —— 它们的定性是"历史记录"，**这个定性本身靠人判断**，
+> 没有任何判据在守"某文件到底算历史还是算现时"。
+> 若哪天需要，那才是下一个可推导的判据（例如"文件名含日期 ⇒ 历史"）。
+
+### 2.40.8 验证
+
+| 项 | 结果 |
+|---|---|
+| `tools/doccheck.py` 主检 | `错误 0, 警告 0` / 豁免 197 / `[doccheck] PASS`（自计数随文档增长，写死即立刻过期，见 §2.36.7） |
+| `tools/doccheck.py --selftest` | `PASS: 27 项（13 项负向注入 / 14 项合规豁免）` |
+| 端到端变异 `build/_readmemut2.py` | 基线 `rc=0`；`:132` `36→37`（同形、清单不动）⇒ **`rc=1`**，报 `[X] README.md:132 门禁项数声称 37 项, 实际 39`；还原后逐字节相同 = True、`rc=0` |
+| 守卫负向 `build/_faceguard_neg.py` | 正常 `rc=0`；README 移出 TARGETS ⇒ `FAIL (1/27)` |
+| `tools/docclaim_check.py` | `PASS (8/8)` |
+| `build/_hygiene.py` | 15 个文件, 0 处异常 |
+| 全门禁（`-SkipDirtyCheck`） | `PASS: 36 项检查全通过`（含 `[ok] 对外材料 (doccheck)`） |
+
+*2026-10-06 v13*
