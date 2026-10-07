@@ -4611,4 +4611,32 @@ for _p in TARGETS:
 | `build/_hygiene.py` | 15 个文件, 0 处异常 |
 | 全门禁（`-SkipDirtyCheck`） | `PASS: 36 项检查全通过`（含 `[ok] 对外材料 (doccheck)`） |
 
-*2026-10-06 v13*
+### 2.40.9 提交与 CI 实测（2026-10-06）
+
+本轮分两次提交，两次都推送并核验了 CI：
+
+| 提交 | 内容 | 规模 |
+|---|---|---|
+| `db3f788` | `feat(doccheck)!: 扫描面从自声明改为位置推导` —— §2.40.1–§2.40.8 与 `build_targets()` 改造、front-door 正向守卫 | 2 files / +215 −11 |
+| `bb3fc6a` | `feat(doccheck): 扫描面反向守卫` —— 按文件名推导的历史快照不得进入面内，外加本节记的三处自我更正 | 2 files / +73 −10 |
+
+两次都是先本地跑完四道复核再提交，提交后立即 `git push origin master`
+（`8a4fbc7..db3f788`、`db3f788..bb3fc6a`，两次 rc=0），再 `gh run watch '<id>' --exit-status` 等 CI。
+
+| CI run | head | 结果 |
+|---|---|---|
+| `37688754737` | `db3f788` | `completed success`，四 job 全绿 |
+| `37694044916` | `bb3fc6a` | `completed success`，四 job 全绿 |
+
+两次的 `build-and-verify` 里都有两个 step 直接关涉本轮改动，且都是 **success**：
+
+- ⭐ `Public-material drift (doccheck)` —— 先跑 `--selftest`（含正向守卫与反向守卫的
+  27 项），再跑主检（33 个文件的计数断言）。**新判据在 CI 的 Python 3.12 上同样成立**，
+  不只是本机（3.13.13）。
+- `Python syntax check (all live sources)` —— §2.38 换掉的机制，本轮继续绿。
+
+> 两次 CI 的四 job 分别是 `build-and-verify` / `linux-portability` / `reproducible` /
+> `sdk-package`；`linux-portability` 跑在 `ubuntu-latest`，其余三个在 `windows-latest`。
+> 输出里有 `ubuntu-latest` 标签迁移的 deprecation 提示，与本轮无关。
+
+*2026-10-06 v14*
