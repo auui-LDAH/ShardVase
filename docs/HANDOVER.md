@@ -3984,5 +3984,44 @@ rel=0x22000 in-mask=False rc=0           MSG_TAMPER=False   <<< 完全通过且�
 * **构建漂移**：本节引用的 rva/len 是**本次 `build/demo.exe`** 的实测值
   （`[0] 0x76e0/125` … `[8] 0x4f50/154`）。⚠️ 早前一轮记录的是
   `0x4e70/0x5610` 一组 ⇒ **产物在此期间被重建过**，引用数值必须注明构建。
+### 2.37.8 还债：`tools/guard_selftest.py` 的 Toolhelp32 原型补齐（同日）
+
+§2.36.5 记了这笔债却没还 —— 当时刻意**不动** `tools/guard_selftest.py`，
+理由是"会动到已入库门禁第 31 项的行为"。本轮把它还掉，并实测**门禁第 31 项
+行为未变**。
+
+改法是**三个原型一起补**（`tools/guard_selftest.py:311-326`）：
+
+```python
+k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+k32.Module32First.restype = wt.BOOL
+k32.Module32First.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
+k32.Module32Next.restype = wt.BOOL
+k32.Module32Next.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
+```
+
+**为什么必须一起补**：只把 `restype` 正视成 `wt.HANDLE` 会让 Python 把
+64 位句柄按 `c_int` 传给 `Module32First` ⇒
+`ctypes.ArgumentError: argument 1: OverflowError: int too long to convert`
+（这正是 §2.36.5 里新门禁第一次跑本体撞到的形态）。
+**只补一个，反而从"侥幸能跑"变成"必然崩"** —— 这个非线性是本节最值得记的点。
+
+验证（实测）：
+
+```
+tools/guard_selftest.py --quiet
+  ok   正向(不 patch -> hits 必须 = 0)         exit=None   hits=0
+  ok   负向(patch -> hits 必须 > 0)           exit=None   hits=3
+  [guard_selftest] PASS（守卫命中计数可自证: 正向 0 / 负向 > 0）   rc=0
+```
+
+⇒ **判据数值与改前一致**（正向 0 / 负向 3），即补齐原型**没有**改变被测行为，
+只是把一个依赖"句柄值恰好小"的巧合换成确定的原型。
+
+同时 `tools/prot_dbg.py:283-285` 那份实现**本来就设了**原型 ⇒
+至此三份 Toolhelp32 实现（`guard_selftest` / `prot_dbg` /
+`selfcrypt_residency_check`）**原型纪律统一**。
+`build/_hygiene.py` 15 文件 0 异常。
 
 *2026-10-06 v8*

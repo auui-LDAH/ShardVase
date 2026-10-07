@@ -308,6 +308,24 @@ def run_by_hits(target, verbose=True):
     k32.VirtualProtectEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
                                      wt.DWORD, ctypes.POINTER(wt.DWORD)]
     k32.CloseHandle.argtypes = [wt.HANDLE]
+    # ## ⚠️ Toolhelp32 三件套必须**成对**设原型（2026-10-06 补，HANDOVER §2.36.5/§2.37.8）
+    #   旧版只设了上面那几个：`_module_base()` 用的
+    #   `CreateToolhelp32Snapshot` / `Module32First` / `Module32Next`
+    #   三个都**没有** argtypes/restype。默认 restype 是 32 位 `c_int`，
+    #   而 `CreateToolhelp32Snapshot` 返回 64 位 `HANDLE` —— 本机句柄值
+    #   恰好小，故**侥幸**一直能跑（`tools/prot_dbg.py:283-285` 是第三份
+    #   实现且它**设了**原型 ⇒ 三份实现两种纪律）。
+    #   `tools/selfcrypt_residency_check.py`（门禁第 39 项）只修正了
+    #   `restype` 一处，立刻以
+    #   `ctypes.ArgumentError: argument 1: OverflowError: int too long to convert`
+    #   炸在 `:268` —— **只补一个反而从"侥幸能跑"变成"必然崩"**，
+    #   故这里三个一起补齐。
+    k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+    k32.Module32First.restype = wt.BOOL
+    k32.Module32First.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
+    k32.Module32Next.restype = wt.BOOL
+    k32.Module32Next.argtypes = [wt.HANDLE, ctypes.POINTER(_MODULEENTRY32)]
 
     def _rd(h, va, n=4):
         buf = (ctypes.c_ubyte * n)()
