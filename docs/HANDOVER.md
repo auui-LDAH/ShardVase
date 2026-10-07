@@ -4023,5 +4023,48 @@ tools/guard_selftest.py --quiet
 至此三份 Toolhelp32 实现（`guard_selftest` / `prot_dbg` /
 `selfcrypt_residency_check`）**原型纪律统一**。
 `build/_hygiene.py` 15 文件 0 异常。
+### 2.37.9 提交与 CI 实测
+
+本轮两个提交：
+
+| 提交 | 内容 | 改动面 |
+|------|------|--------|
+| `bdd42cb` | `docs: §2.37 —— PROTCRYP 缺口定性` | `docs/HANDOVER.md` / `docs/N1_PLAN.md`（+200 −2） |
+| `51a49c9` | `fix(guard_selftest): 补齐 Toolhelp32 三件套 ctypes 原型` | `docs/HANDOVER.md` / `tools/guard_selftest.py`（+57） |
+
+**本地全门禁**（`-SkipDirtyCheck`）：
+
+```
+[release_check] PASS: 36 项检查全通过        ([ok] 36 / [X] 0 / [skip] 0)
+```
+
+日志 `build/logs/release_check_20261008_022734.log`。含
+`[ok]  selfcrypt 驻留期密文态 (selfcrypt_residency)`。
+
+**CI**：
+
+| run | head | 结果 |
+|-----|------|------|
+| `37664133662` | `bdd42cb` | `completed success`，四 job 全绿 |
+| `37666667742` | `51a49c9` | `completed success`，四 job 全绿 |
+
+⇒ §2.37.8 的原型补齐在 **CI 的 MSVC 14.51 / Python 3.12** 环境下同样通过
+（本机是 MSVC 14.44 / Python 3.13.13）—— 这一条对本节尤其重要：
+**"本机句柄值恰好小所以侥幸能跑"这类巧合，正是跨环境才会暴露的**。
+
+### 2.37.10 本轮留下的两条一般性教训
+
+1. **引用文档断言前必须读主语。** §2.37.5 那两条过度声称都源于此：
+   `docs/DECISION_REDUNDANCY_PLAN.md:388` 的「两种规避都无效」主语是
+   **R3.2-b 快照校验**（不依赖 CRC，说法正确）；
+   `docs/OPEN_SOURCE_COMPENSATION.md:154-157` 是**修法建议表**、
+   非现状断言。**"评分/成本陈述"与"事实陈述"是两类东西**，
+   前者可以讨论、后者才能被证伪。
+2. **探针的错会伪装成被测对象的性质。** §2.37.6 的 `base` 行标注 bug
+   让"基线"看起来也被拦；§2.36.5 的 ctypes 原型缺失让"读不到变量"
+   看起来像"变量不存在"。**两次都是工具说谎，而不是被测对象。**
+
+> 这两条与 §2.32「陈旧复选框」、§2.36.8「清单类漏项」同属一个族：
+> **验证的失败模式，比被验证的对象更容易骗人。**
 
 *2026-10-06 v8*
