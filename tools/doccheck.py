@@ -1221,6 +1221,23 @@ def selftest():
             fails.append('扫描面守卫: `%s` 不在 TARGETS 内 —— '
                          '它是恒为现时的 front door, 移出即失明' % _m)
 
+    # --- 反向守卫: 按**文件名**推导的"历史快照"不得进入扫描面 ---
+    #
+    # 2026-10-06 实测: 全库文件名含日期的 Markdown 共 6 个
+    # (docs/迁移核验-2026-09-20.md / docs/阶段总结-2026-08-30.md /
+    #  docs/阶段总结-2026-09-29.md / docs/阶段总结-2026-09-30.md /
+    #  docs/阶段总结-2026-10-06.md / docs/项目文件分类-2026-08-30.md),
+    # **6 个全部在面外**, 且逐一核对全是历史快照; 反之面内 33 个无一带日期。
+    # 两侧收敛 => "含日期 => 历史" 可判定。若哪天把这种文件放进面内,
+    # 它的**当时值**会被当**现值**判, 判据会要求篡改历史文档来变绿。
+    # (反面: 不带日期的历史文档无法由此识别, 那是人判断的残余。)
+    _dated = re.compile(r'20\d\d[-_]?\d\d[-_]?\d\d')
+    for _p in TARGETS:
+        if _dated.search(os.path.basename(_p)):
+            fails.append('扫描面守卫: `%s` 文件名含日期, 却出现在 TARGETS 内 —— '
+                         '它记的是当时的真实值, 放进面内会要求篡改历史文档'
+                         % os.path.relpath(_p, REPO).replace(os.sep, '/'))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
