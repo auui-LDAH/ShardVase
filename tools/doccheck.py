@@ -597,6 +597,200 @@ def check_gate_structure():
 
 
 
+def gated_check_names():
+    """`if ($With*)` body 内的 `Check` 名集合 —— **默认调用下不跑**的那些。
+
+    ## 为什么由结构推导，而不是硬编码名单
+    当前是 3 项（`mutate_check` / `skeleton_check` / `migration_gate`）。
+    硬编码这 3 个名字的写法会在**下一次新增可选门禁**时静默失效：
+
+      · 新项不在 README 清单里（正确，因为它默认不跑），
+        也不在硬编码的 gated 集合里（错误）-> 判据把"正确的省略"误报成漏项；
+      · 若有人真的把新项补进 README，硬编码集合反而**放行**。
+
+    **名单是会被漂移的东西，结构不是。** 同一条教训见 `selftest()` 里
+    把漂移字面量由 `GATE_TOTAL` 推导的注释（那里已实际失效 3 次）。
+
+    `check_gate_structure()` 已断言「每个 `if ($With*)` body 里最多一个
+    `Check`」，故这里取 body 内的 Check 名是**良定义**的。
+
+    返回 `None` 表示**扫描器前提被破坏**（文件里出现 here-string 或块注释）
+    -> 调用方必须报错，**不得**把它当成"没有 gated 项"（那会让全部默认项
+    被当成 gated，判据静默失效）。
+    """
+    p = os.path.join(REPO, 'tools', 'release_check.ps1')
+    if not os.path.isfile(p):
+        return None
+    text = open(p, encoding='utf-8-sig').read()
+    for pat in (r"@'", r'@"', r'<#'):
+        if re.search(pat, text):
+            return None
+    rows = _ps_scan(text)
+    names = set()
+    for idx, (ln, op, _cl, depth, _c, raw) in enumerate(rows):
+        if not re.match(r"^\s*if\s*\(\s*\$With\w+\s*\)\s*\{", raw):
+            continue
+        base = depth - op
+        for ln2, _o2, _c2, d2, _c2s, raw2 in rows[idx + 1:]:
+            if d2 <= base:
+                break
+            m2 = re.match(r"^\s*Check\s+'([^']+)'", raw2)
+            if m2:
+                names.add(m2.group(1))
+    return names
+
+
+def parse_readme_gate_list(text):
+    """从 `README.md` 抽出"默认跑的全部 N 项"清单块的成员名。
+
+    返回 `(names, declared, why)`。`why` 非空 = **解析前提不成立**（结构被
+    改动），`names` 为 `None` —— 调用方必须报错，**不得**当成空清单：
+    空清单会让"漏项"判据对每一项都命中，看起来像几十条错误，
+    实际是解析器坏了（"探针的错会伪装成被测对象的性质"，§2.37.6）。
+
+    两列 ASCII 排版靠 `[ok]` 切分即可 —— 右列的前置空格由 `strip()` 吃掉。
+    2026-10-06 实测：按 `[ok]` 切分得 36 条；改用"前瞻吃右列"的正则只得 20 条。
+    """
+    m = re.search(r'默认跑的全部\s*(\d+)\s*项[：:]\s*\n```\n(.*?)```', text, re.S)
+    if not m:
+        return None, None, ('README.md 里找不到「默认跑的全部 N 项：」+ 围栏'
+                            '清单块 —— 判据前提被破坏，不做猜测')
+    declared = int(m.group(1))
+    body = m.group(2)
+    if '[ok]' not in body:
+        return None, None, ('README.md 的门禁清单块里没有任何 `[ok]` 行 '
+                            '—— 结构被改动，不做猜测')
+    names = [x.strip() for x in body.split('[ok]')[1:]]
+    return [x for x in names if x], declared, None
+
+
+_GATE_TAIL_PAREN = re.compile(r'\s*\([^()]*\)\s*$')
+
+
+def _gate_base(s):
+    """门禁项名的**基名** —— 去掉尾部括注、压平空白。
+
+    README 的清单为两列对齐做了**有意的缩写**，已记名两处：
+
+      `manifest.json 版本非占位`                 -> `版本非占位`
+      `Release 构建 (build.ps1 -Config Release)` -> `Release 构建 (build.ps1)`
+
+    两者在基名层面都是「README 名是源名的**连续子串**」。判据就取这一条。
+    """
+    s = re.sub(r'\s+', ' ', s).strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _GATE_TAIL_PAREN.sub('', s).strip()
+    return s
+
+
+def _gate_match(rbase, cbase):
+    """README 清单项的基名是否指向某个门禁项 —— 连续子串，且基名非空。
+
+    空基名会匹配一切，故显式排除；过短的基名会同时命中多项，
+    由调用方的「恰好 1 条」判据报成**歧义**，而不是静默放行。
+    """
+    return bool(rbase) and rbase in cbase
+
+
+def check_readme_gate_list(text=None, checks=None, gated=None):
+    """README.md 的"默认跑的全部 N 项"清单 —— **成员集合**必须与结构一致。
+
+    ## 为什么需要（2026-10-06）
+    `tools/doccheck.py` 一直只判**计数**（`36` / `39` 这两个数字），
+    不判**成员**。实测（`build/_readmelist.py`）证明当前 36 条成员与
+    「39 个 `Check` − 3 个 `-With*` 控制项」**完全一致** —— 但这一致性
+    **没有任何门禁在守**：漏列一项而数字仍写 36，doccheck 不会红。
+    同型于 §2.36.8（补了清单但没换机制）与 §2.38（语法检查枚举只覆盖 23/95）。
+
+    ## 判据（四条，全部由事实推导，无硬编码名单）
+      ① 清单条数 == `Check` 总数 − gated 项数（两边都是**算出来的**）
+      ② 每个默认跑项在清单里**恰好**命中一条（0 条 = 漏项；>1 条 = 歧义）
+      ③ 清单里每一条都**恰好**命中一个默认跑项（0 条 = 幽灵项 / 措辞漂移）
+      ④ gated 项**不得**出现在"默认跑"清单里（它默认不跑，列进去是错的）
+
+    ②③ 各要求"恰好 1"，合起来即**双向唯一匹配** —— 这比"存在某个匹配"
+    强得多，后者会被一个足够短的清单项蒙混过关。
+
+    ## 诚实边界
+      · 只覆盖 `README.md` 这一处清单。其它文档里的门禁枚举**不在判据内**
+        （未普查过是否还有第二处"默认跑全清单"这句话）。
+      · 匹配用基名的连续子串来容忍 README 的排版缩写；它**不是**模糊匹配，
+        但过短的基名会命中多项 -> 由 ② 的 ">1 = 歧义" 报出来。
+      · **只判成员集合，不判排版**（两列对齐、`[ok]` 前缀、缩写本身）。
+        排版确实只能靠人维护；成员不该。
+    """
+    if text is None:
+        p = os.path.join(REPO, 'README.md')
+        if not os.path.isfile(p):
+            return ['README.md 不存在 —— 门禁清单成员判据失去对象']
+        text = open(p, encoding='utf-8').read()
+
+    names, _declared, why = parse_readme_gate_list(text)
+    if why:
+        return ['README.md 门禁清单: ' + why]
+
+    if checks is None:
+        p = os.path.join(REPO, 'tools', 'release_check.ps1')
+        if not os.path.isfile(p):
+            return ['tools/release_check.ps1 不存在 —— 成员判据失去基准']
+        checks = re.findall(r"(?m)^\s*Check\s+'([^']+)'",
+                            open(p, encoding='utf-8-sig').read())
+    if gated is None:
+        gated = gated_check_names()
+        if gated is None:
+            return ['README.md 门禁清单: release_check.ps1 的结构扫描前提被'
+                    '破坏 -> 无法确定哪些项受 -With* 控制；本判据**不做猜测**']
+
+    # 自证: 任一侧数到 0 说明判据或扫描器坏了 —— 宁 FAIL 不静默通过。
+    if not checks:
+        return ['README.md 门禁清单: 从 release_check.ps1 数到 **0** 个 `Check` '
+                '-> 扫描器已失效，不要读成"没有漏项"']
+    if not names:
+        return ['README.md 门禁清单: 清单块里数到 **0** 条成员 '
+                '-> 解析已失效，不要读成"没有漏项"']
+
+    default = [c for c in checks if c not in gated]
+    errors = []
+
+    if len(names) != len(default):
+        errors.append(
+            'README.md 清单 %d 条，但默认跑的门禁项有 %d 项'
+            '（%d 个 Check − %d 个 -With* 控制项）—— 计数或成员已漂移'
+            % (len(names), len(default), len(checks), len(gated)))
+
+    rbase = [(n, _gate_base(n)) for n in names]
+    cbase = [(n, _gate_base(n)) for n in default]
+
+    for cn, cb in cbase:
+        hit = [rn for rn, rb in rbase if _gate_match(rb, cb)]
+        if not hit:
+            errors.append('README.md 未列出默认跑的门禁项 `%s`（清单漏项）' % cn)
+        elif len(hit) > 1:
+            errors.append('README.md 里有 %d 条清单项都指向门禁项 `%s`（%s）'
+                          ' —— 匹配歧义，判据无法判定'
+                          % (len(hit), cn, '、'.join(hit)))
+
+    for rn, rb in rbase:
+        hit = [cn for cn, cb in cbase if _gate_match(rb, cb)]
+        if not hit:
+            errors.append('README.md 清单项 `%s` 在 release_check.ps1 里没有'
+                          '对应项（幽灵项或措辞漂移）' % rn)
+        elif len(hit) > 1:
+            errors.append('README.md 清单项 `%s` 同时命中 %d 个门禁项（%s）'
+                          ' —— 匹配歧义' % (rn, len(hit), '、'.join(hit)))
+
+    for gn in sorted(gated):
+        gb = _gate_base(gn)
+        hit = [rn for rn, rb in rbase if _gate_match(rb, gb)]
+        if hit:
+            errors.append('README.md 的"默认跑"清单里出现了受 -With* 控制的项 '
+                          '`%s`（以 %s 形式）—— 它默认不跑，不该列进去'
+                          % (gn, '、'.join(hit)))
+    return errors
+
+
 def actual_rounds():
     """docs/ATTACK_DRILL*.md 的实际轮次数量。"""
     docs = glob.glob(os.path.join(REPO, 'docs', 'ATTACK_DRILL*.md'))
@@ -914,20 +1108,79 @@ def selftest():
             fails.append('%s: 期望 1 条错误, 实际 %d 条 (%s)'
                          % (real_case[0], len(e), e[:2]))
 
+    # --- README 门禁清单的**成员集合**（计数之外的判据）---
+    #
+    # 计数有下面那套数字漂移判据兜；**成员**此前无人断言 —— 漏列一项而
+    # 总数仍写 36，doccheck 不会红（2026-10-06 实测确认）。
+    # 一个"漏一项也不报"的成员判据只是恒真的装饰，故逐条注入缺陷。
+    #
+    # ⚠️ 基准（`Check` 名 / gated 集合 / README 原文）全部**从仓库现读**，
+    #    不抄字面量：抄下来的清单会在下次增项时静默失去锚点 ——
+    #    这正是上面 `DRIFT` 那段注释记的三次失效的同一条教训。
+    _rcp = os.path.join(REPO, 'tools', 'release_check.ps1')
+    _rdp = os.path.join(REPO, 'README.md')
+    _all, _gated, _rd = None, None, None
+    try:
+        _all = re.findall(r"(?m)^\s*Check\s+'([^']+)'",
+                          open(_rcp, encoding='utf-8-sig').read())
+        _gated = gated_check_names()
+        _rd = open(_rdp, encoding='utf-8').read()
+    except OSError:
+        pass
+
+    gl_cases = []
+    if not _all or not _gated or _rd is None:
+        fails.append('README 门禁清单用例失去基准（读不到 release_check.ps1 '
+                     '或 README.md）—— 判据未被负向验证，不得视为通过')
+    else:
+        _default = [c for c in _all if c not in _gated]
+
+        def _mk(names):
+            body = ''.join('[ok] %s\n' % n for n in names)
+            return '默认跑的全部 %d 项：\n```\n%s```\n' % (len(names), body)
+
+        gl_cases = [
+            ('真实 README 清单 -> 不报', _rd, 0, None),
+            ('漏列一项 -> 必须报', _mk(_default[1:]), 2, '未列出'),
+            ('幽灵项 -> 必须报',
+             _mk(_default[1:] + ['幽灵门禁项 (no_such)']), 2, '幽灵'),
+            ('gated 项混进默认清单 -> 必须报',
+             _mk(_default + sorted(_gated)), 7, '不该列进去'),
+            ('清单块结构被破坏 -> 必须报',
+             '默认跑的全部 36 项：\n没有围栏\n', 1, '前提'),
+        ]
+
+    for name, text, want, kw in gl_cases:
+        e = check_readme_gate_list(text=text, checks=_all, gated=_gated)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # README 门禁清单成员用例走另一个入口（`check_readme_gate_list`），
+    # 不能塞进 `cases`（那批会经 `check_text` 跑**数字漂移**判据，语义不同）。
+    # 但**必须一起打印、一起计数** —— 否则它们只是暗处运行、看起来不存在。
+    for name, _text, want, _kw in gl_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
+    total = len(cases) + len(gl_cases)
     if fails:
         for f in fails:
             print('  [X] %s' % f)
-        print('[doccheck-selftest] FAIL (%d/%d)' % (len(fails), len(cases)))
+        print('[doccheck-selftest] FAIL (%d/%d)' % (len(fails), total))
         return 1
     # 数一数用例构成: 期望 != 0 的是负向注入, 期望 == 0 的是合规豁免。
-    neg = len([c for c in cases if c[2]])
+    neg = (len([c for c in cases if c[2]])
+           + len([c for c in gl_cases if c[2]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
-          % (len(cases), neg, len(cases) - neg))
+          % (total, neg, total - neg))
     return 0
 
 
@@ -961,19 +1214,36 @@ def main(argv=None):
     print()
 
     # --- 0. 门禁结构断言（**必须最先跑**，见 check_gate_structure 的文档）---
+    #
+    # ⚠️ `_n` / `_opt` 在这里**先算**，不能只写在下面那个 `else` 分支里：
+    #    0b 的 README 清单判据也要用它们，而结构断言**失败时**（`else` 不执行）
+    #    仍会走到 0b -> 那里引用未绑定名会 `NameError`，把"结构错了"这条
+    #    真错误替换成一个崩溃。结构断言红的时候正是最需要看清 0b 结论的时候。
+    _src = open(os.path.join(REPO, 'tools', 'release_check.ps1'),
+                encoding='utf-8-sig').read()
+    _n = len(re.findall(r"(?m)^\s*Check\s+'", _src))
+    # `$With*` 可控的项默认不跑 —— 这是**设计**，不是事故：
+    # 判据是"每个 if ($With*) 的 body 里最多一个 Check"，落在 if 外的一律默认必跑。
+    _opt = len(re.findall(r"(?m)^\s*if\s*\(\s*\$With\w+\s*\)", _src))
+
     struct = check_gate_structure()
     if struct:
         errors.extend(struct)
     else:
-        _src = open(os.path.join(REPO, 'tools', 'release_check.ps1'),
-                    encoding='utf-8-sig').read()
-        _n = len(re.findall(r"(?m)^\s*Check\s+'", _src))
-        # `$With*` 可控的项默认不跑 —— 这是**设计**，不是事故：
-        # 判据是"每个 if ($With*) 的 body 里最多一个 Check"，落在 if 外的一律默认必跑。
-        _opt = len(re.findall(r"(?m)^\s*if\s*\(\s*\$With\w+\s*\)", _src))
         print('  [ok] 门禁结构: %d 项均为顶层语句，无被嵌套项；'
               '其中 %d 项由 -With* 显式开关控制（默认不跑），默认调用跑 %d 项'
               % (_n, _opt, _n - _opt))
+
+    # --- 0b. README 门禁清单的**成员集合**（计数之外的那一半）---
+    # 计数由下面的数字漂移判据兜；**成员**此前无人断言（漏一项而数字仍对 -> 不红）。
+    rem = check_readme_gate_list()
+    if rem:
+        errors.extend(rem)
+    else:
+        _names, _decl, _ = parse_readme_gate_list(
+            open(os.path.join(REPO, 'README.md'), encoding='utf-8').read())
+        print('  [ok] README 门禁清单: %d 条成员与默认跑的 %d 项双向唯一匹配'
+              % (len(_names or []), _n - _opt))
 
     exc = {}
     for f in TARGETS:
