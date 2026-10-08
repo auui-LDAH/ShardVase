@@ -834,6 +834,92 @@ def check_threshold_claims(gate_src=None, ps_src=None, consts=None):
     return errors
 
 
+# `.github/workflows/ci.yml` 门禁**项数口径**的三种声明形态。
+#
+# ⚠️ 为什么 `RE_GATE_N` / `RE_GATE_NN` 兜不住这三行（2026-10-06 实测）：
+#    那两个正则都以 `(?:release_check|门禁)` 为**前缀锚**，而 ci.yml 的口径句
+#    写的是「静态 `Check` 调用点 **37** 个」/「要求"34 项全绿"」—— 行里既无
+#    `release_check` 也无 `门禁` ⇒ 两正则对该文件**零命中**；且 `.yml` 从来
+#    不在 `build_targets()` 的扫描面内（面内 33 个全是 `.md`）。
+#    两层都失明 => 只锚定这一个文件、用它的**专有措辞**做判据。
+#    （实测命中面：`静态调用点`→:111、`默认运行`→:111、`要求N项全绿`→:115；
+#      :110 的历史叙述「静态 36 / 默认 33」**刻意不匹配** —— 那是"曾经如此"。）
+_CI_FORMS = (
+    ('静态调用点',
+     re.compile(r'静态\s*`Check`\s*调用点\s*\*{0,2}(\d+)\*{0,2}\s*个'), 'total'),
+    ('默认运行',
+     re.compile(r'默认运行\s*\*{0,2}(\d+)\*{0,2}\s*项'), 'default'),
+    ('要求N项全绿',
+     re.compile(r'要求\s*["“]?\s*\*{0,2}(\d+)\*{0,2}\s*项全绿'), 'default'),
+)
+
+
+def _gate_counts(ps_src=None):
+    """现读 `tools/release_check.ps1` → `(总项数, 默认跑项数)`；`(None, None)` = 读不到。"""
+    if ps_src is None:
+        p = os.path.join(REPO, 'tools', 'release_check.ps1')
+        if not os.path.isfile(p):
+            return None, None
+        ps_src = open(p, encoding='utf-8-sig').read()
+    n = len(re.findall(r"(?m)^\s*Check\s+'", ps_src))
+    opt = len(re.findall(r"(?m)^\s*if\s*\(\s*\$With\w+\s*\)", ps_src))
+    return n, n - opt
+
+
+def ci_count_claims(ci_src=None, total=None, default=None):
+    """`ci.yml` 注释里的门禁项数 vs `release_check.ps1` 的**现数**。
+
+    ## 为什么需要（2026-10-06）
+    `ci.yml:110-115` 用文字写了项数口径，是给读 CI 的人解释"为什么会看到
+    `[skip]`"的关键背景。它 **不在任何扫描面内、也不被任何正则看见**，
+    于是**每次新增门禁项都会静默过期一次**，只能靠人偶然看见。实测这条
+    缺陷已连犯三次（`2d16b61` 35/32→36/33、`bc68b11` 36/33→37/34，之后
+    `7062039` 两次新增门禁项没再动它，停在 37/34 而真值已是 39/36）。
+    `:110` 那句「此前写的是过期的「静态 36 / 默认 33」」本身就是自证。
+    => 与 §2.36.8 / §2.38 / §2.40 / §2.42 / §2.45 同型第 6 次：
+    **事实可得，但没有任何判据在用它。**
+
+    ## 判据
+      ① `静态 Check 调用点 N 个` ⇒ N == 总项数；
+      ② `默认运行 N 项` ⇒ N == 默认跑项数；
+      ③ `要求"N 项全绿"` ⇒ N == 默认跑项数；
+      ④ 任一形态数到 **0** 条 ⇒ FAIL（措辞改了、判据失去锚点，
+         **不得**读成"没有漂移"）；
+      ⑤ 任一形态多处出现则**逐处**判（不只看第一处）。
+
+    `total` / `default` 可显式传入（自检用）；省略则现读真值源。
+    """
+    if total is None or default is None:
+        t, d = _gate_counts()
+        if t is None:
+            return ['tools/release_check.ps1 不存在 —— ci.yml 项数口径失去真值源']
+        total, default = t, d
+    if ci_src is None:
+        p = os.path.join(REPO, '.github', 'workflows', 'ci.yml')
+        if not os.path.isfile(p):
+            return ['.github/workflows/ci.yml 不存在 —— 项数口径对账失去对象']
+        ci_src = open(p, encoding='utf-8').read()
+
+    errors = []
+    for label, rx, kind in _CI_FORMS:
+        want = total if kind == 'total' else default
+        hits = [(ci_src[:m.start()].count('\n') + 1, int(m.group(1)))
+                for m in rx.finditer(ci_src)]
+        if not hits:
+            errors.append('.github/workflows/ci.yml: 找不到「%s」形态的项数声明 '
+                          '—— 判据失去锚点，不得读成"没有漂移"' % label)
+            continue
+        for ln, v in hits:
+            if v != want:
+                what = ('静态 Check 调用点' if kind == 'total'
+                        else '默认跑的项数（总 %d − -With* %d）'
+                             % (total, total - default))
+                errors.append('.github/workflows/ci.yml:%d 「%s」写作 %d，'
+                              '但真值 = %d（%s）—— 注释已漂移'
+                              % (ln, label, v, want, what))
+    return errors
+
+
 def parse_readme_gate_list(text):
     """从 `README.md` 抽出"默认跑的全部 N 项"清单块的成员名。
 
@@ -1436,6 +1522,42 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
+    # --- ci.yml 门禁项数口径用例（第四个入口 `ci_count_claims`）---
+    #
+    # 同样必须一起打印、一起计数（否则"暗处运行、看起来不存在"）。
+    # 四条形态各有负向：任何一个数字漂了都必须报；措辞整条消失也必须报。
+    def _mk_ci(call=None, default=None, allgreen=None):
+        s = '# ## 项数口径（测试用）\n'
+        if call is not None:
+            s += '#   静态 `Check` 调用点 **%d** 个；' % call
+        if default is not None:
+            s += '默认运行 **%d** 项\n' % default
+        if allgreen is not None:
+            s += '# ## 为什么允许 `[skip]` 而不是要求"%d 项全绿"\n' % allgreen
+        return s
+
+    ci_cases = [
+        ('真实仓库 ci.yml 项数口径 -> 不报', None, None, None, 0, None),
+        ('ci.yml 静态调用点漂移(39->37) -> 必须报',
+         _mk_ci(call=37, default=36, allgreen=36), 39, 36, 1, '静态调用点'),
+        ('ci.yml 默认运行漂移(36->34) -> 必须报',
+         _mk_ci(call=39, default=34, allgreen=36), 39, 36, 1, '默认运行'),
+        ('ci.yml 要求N项全绿漂移(36->34) -> 必须报',
+         _mk_ci(call=39, default=36, allgreen=34), 39, 36, 1, '要求N项全绿'),
+        ('ci.yml 三处全漂 -> 三处各报一条',
+         _mk_ci(call=37, default=34, allgreen=34), 39, 36, 3, '漂移'),
+        ('ci.yml 口径句整条消失 -> 必须报',
+         '# 本文件没有项数口径\n', 39, 36, 3, '失去锚点'),
+    ]
+    for name, _ci, _t, _d, want, kw in ci_cases:
+        e = ci_count_claims(ci_src=_ci, total=_t, default=_d)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     # --- 扫描面自身的守卫 ---
     # 上面所有用例都建立在"该文件**在面内**"之上。若扫描面哪天把根目录
     # 悄悄移出去, 判据会**全绿而失明** —— 判据的判据没了。
@@ -1480,7 +1602,12 @@ def selftest():
     for name, _g, _p, _c, want, _kw in th_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
-    total = len(cases) + len(gl_cases) + len(th_cases)
+    # ci.yml 项数口径用例走第四个入口（`ci_count_claims`），同样必须一起
+    # 打印、一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _ci, _t, _d, want, _kw in ci_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
+    total = len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
     if fails:
         for f in fails:
             print('  [X] %s' % f)
@@ -1489,7 +1616,8 @@ def selftest():
     # 数一数用例构成: 期望 != 0 的是负向注入, 期望 == 0 的是合规豁免。
     neg = (len([c for c in cases if c[2]])
            + len([c for c in gl_cases if c[2]])
-           + len([c for c in th_cases if c[4]]))
+           + len([c for c in th_cases if c[4]])
+           + len([c for c in ci_cases if c[4]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -1567,6 +1695,19 @@ def main(argv=None):
         print('  [ok] 迁移成本阈值: M3/M1 = %g%% / %g%% 与 '
               'migration_gate.py docstring、release_check.ps1 注释块一致'
               % (_tc['M3'], _tc['M1']))
+
+    # --- 0d. ci.yml 里的门禁**项数口径**（既不在扫描面内，也不被计数正则看见）---
+    # §2.45 补的是"阈值常量 vs 文档"，这一条补的是"项数 vs CI 注释"：
+    # `.github/workflows/ci.yml` 从来不在 `build_targets()` 的面内，且它的
+    # 口径句不含 `release_check` / `门禁` 二字 ⇒ 两个计数正则都失明。
+    # 实测这条缺陷已连犯三次（见函数文档），每次新增门禁项都会静默过期。
+    cic = ci_count_claims()
+    if cic:
+        errors.extend(cic)
+    else:
+        _ct, _cd = _gate_counts()
+        print('  [ok] ci.yml 项数口径: 静态调用点 %d / 默认运行 %d 与 '
+              'release_check.ps1 现数一致' % (_ct, _cd))
 
     exc = {}
     for f in TARGETS:
