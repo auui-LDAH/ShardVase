@@ -456,7 +456,7 @@ Check 'Linux 编译覆盖 (linux_compile_check)' {
     #
     # ## 为什么跳过不会留下覆盖空白
     #   Linux 编译覆盖在 CI 上由**独立 job `linux-portability`** 真正验证
-    #   （`.github/workflows/ci.yml:244-297`: gcc 编纯逻辑模块 + 平台层
+    #   （`.github/workflows/ci.yml:340-393`: gcc 编纯逻辑模块 + 平台层
     #   conformance + 合同检查，ubuntu-latest）。Windows runner 上的本项
     #   只是**重复**且需要 WSL，跳过不产生无覆盖的空白。
     #

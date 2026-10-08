@@ -29,7 +29,7 @@ jobs:
       #   构建**另一份**二进制并跑 e2e/attacks/vm_unit/vmc/example/protchain；
       #   若本步也改 Release，这些"独立步骤"就只是在重复门禁已做过的同配置检查，
       #   失去"Dev 配置也测一遍"的覆盖面。若确实想要 Release，加 `-Config Release`
-      #   并同步 `docs/CI_PLAN.md` §2.1 与 `tools/ci_sim.ps1:61`。
+      #   并同步 `docs/CI_PLAN.md` §2.1 与 `tools/ci_sim.ps1:71`。
       #
       # 缺陷 5c（2026-10-02）: 本步加 -Brepro 只为让**本步自身**的 Dev 产物
       #   可复现（否则 /Brepro 只在 Release 分支注入 -> PE TimeDateStamp /

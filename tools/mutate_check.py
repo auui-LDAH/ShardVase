@@ -320,7 +320,7 @@ def mut_vmc_compiler():
     """vmc: 破坏 `tools/vmc.py` 的**错误检测**（它真正测试的东西）。
 
     ## 完整排查记录（2026-09-23，四次尝试后定位）
-    vmc 的判据是 `out.startswith('RESULT 1')`（见 tests/vmc_tests.py:176）。
+    vmc 的判据是 `out.startswith('RESULT 1')`（见 tests/vmc_tests.py:250）。
     流程: .vmc 源码 -> `tools/vmc.py` 编译 -> `tools/vmenc.py assemble`
           -> runner.exe -> 打印 "RESULT <n>"。
 
@@ -381,7 +381,7 @@ MUTATIONS = {
         'desc': '改 build/demo.exe 一个字节 (按布局取非掩码偏移)',
     },
     'vmc': {
-        # 判据: `out.startswith('RESULT 1')`（见 vmc_tests.py:176）。
+        # 判据: `out.startswith('RESULT 1')`（见 vmc_tests.py:250）。
         # 变异打在其**被测对象**（tools/vmc.py 编译器）上，而非 vm_build.json
         # （实测: 后者不在判据路径上）。
         'cmd': [PY, '-X', 'utf8', 'tests/vmc_tests.py'],

@@ -421,7 +421,7 @@ def run(exe, map_path, keep_ms, observe_s, quiet):
             return 1
 
         # 就绪哨兵 = `g_wd_interval != 0`（`src/integrity.c:828`，本工具从不写它）
-        # —— 与 `tools/guard_selftest.py:338 _wait_ready` 同一纪律:
+        # —— 与 `tools/guard_selftest.py:356 _wait_ready` 同一纪律:
         #   非 0 即证明「init + blob 装载 + start_watchdog 都已走完」，
         #   采样因此落在 `--wait-after` 驻留窗口内，而**不是** init 内部那段
         #   "解密以校验"的瞬时明文（那段是本设计固有的，不该被判据抓）。

@@ -25,8 +25,8 @@ D2b (`PROT_SELFCRYPT_D2B`) 下加密目标在"间隙"里是**磁盘密文**, 只
 
 同日发现的同型违规 (`docs/HANDOVER.md` §2.16):
   · `demo/main.c:614`        `apply_policy` 的 `else` 分支 (窗口外裸调用)
-  · `prot_sdk/skeleton/app_main.c:555` / `:624`  骨架仍是修复前的老写法
-根因: `src/antidebug.c:548` 的 `prot_antidebug_scan` 是组 1 加密目标, 而
+  · `prot_sdk/skeleton/app_main.c:555` / `:624`  骨架当时也是老写法（已在本提交一并修复）
+根因: `src/antidebug.c:559` 的 `prot_antidebug_scan` 是组 1 加密目标, 而
 `prot_antidebug_apply_policy` **自身不是加密目标、也不开窗口** ⇒ 它的**每个**调用点
 都必须自带窗口。
 
@@ -60,7 +60,8 @@ D2b (`PROT_SELFCRYPT_D2B`) 下加密目标在"间隙"里是**磁盘密文**, 只
   · `prot_sdk/skeleton/**` —— `build_skeleton.ps1` 的宿主
 **不**检查 `examples/tool_demo`(其 `build_example.ps1` **不调** selfcrypt_proto =>
 函数是明文, 恒无害) 与 `tests/**`、`archive/**`。骨架当前恒为 D2a (窗口空转) =>
-那里的违规是**潜伏**的; 仍要修, 因为 D2b 只是一个编译开关。
+那里若出现违规也是**潜伏**的 (不会当场崩), 但仍必须纳入扫描 —— 因为
+D2b 只是一个编译开关, 翻一下潜伏就变现行。
 
 ## CLI
     python tools/window_check.py [--verbose] [--json out.json] [--selftest]
@@ -488,7 +489,7 @@ def find_wrappers(funcs, target_names):
 def find_fptr_aliases(all_text, target_names):
     """文件/全局作用域: `= prot_antidebug_scan;` 形式的函数指针初始化 -> {变量: 目标}。
 
-    **这是 T11 能被静态抓住的关键**: `src/integrity.c:142`
+    **这是 T11 能被静态抓住的关键**: `src/integrity.c:167`
     `static prot_ad_scan_fn volatile g_ad_scan_fn = prot_antidebug_scan;`
     —— 之后 `g_ad_scan_fn(&ad)` 就是一次组 1 目标调用。
     """
@@ -696,7 +697,7 @@ def analyze(root=None, verbose=False):
 
     # --- 违规上报点: SELF = 加密目标 ∪ 作用域内没有被调用者的函数(真入口) ------
     # 中间函数不上报 —— 它们的 requires 会推到调用者身上, 由调用点判定。
-    # (否则 `src/antidebug.c:548` 那处"apply_policy 内部调 scan"会被误报:
+    # (否则 `src/antidebug.c:559` 那处"apply_policy 内部调 scan"会被误报:
     #  apply_policy 的**每一个**调用点都必须自带窗口, 责任在调用者。)
     is_self = set()
     for f in funcs:

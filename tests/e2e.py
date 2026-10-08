@@ -848,7 +848,7 @@ def main():
     #   · 本用例只覆盖"**解密态**校验"这一半；密文态 CRC（计划里的第 4 个
     #     烧录标记 `PROTCRYP`）**从未实现**，不在射程内。
     #   · `prot_selfcrypt_leave` 走 `sc_do_range(i, 0)` **不校验**
-    #     （`src/selfcrypt.c:347`）⇒ 篡改只会在 init / D2b enter 的**解密**
+    #     （`src/selfcrypt.c:389`）⇒ 篡改只会在 init / D2b enter 的**解密**
     #     路径上被抓住，这正是本用例走正常启动的原因。
     try:
         sec = cry_section_name()

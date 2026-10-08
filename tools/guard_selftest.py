@@ -32,7 +32,7 @@ r"""guard_selftest.py — R3.2-b 判定点序言快照校验的**行为自检**�
 "段 CRC 抓不到则 2989 只可能来自守卫" —— **判据换成 hits 后该理由失效**，
 而且掩码区内目标**根本打不到守卫**（实测根因）:
 
-  src/integrity.c:163-173
+  src/integrity.c:188-198
     if (prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT) != PROT_OK) {
         switch (g_wd_policy) { … default: increment(&g_wd_tamper); }
         continue;                  /* <== **整轮跳过** */
@@ -524,7 +524,7 @@ def main():
             print()
             print('[guard_selftest] FAIL: **没有"掩码区外"的已登记守卫** -> 本自检无判别力')
             print('  原因: 掩码区内目标被 patch 会先触发 selfcrypt 的 per-region CRC')
-            print('        -> src/integrity.c:173 `continue` 整轮跳过 -> 守卫跑不到')
+            print('        -> src/integrity.c:198 `continue` 整轮跳过 -> 守卫跑不到')
             print('  处置: 或调整 selfcrypt 目标集合，或用 --target 指定并说明')
             return 1
         target = ok_c[0]

@@ -1062,7 +1062,7 @@ def _live_setup(ctx, a):
 
 def _keep_alive(t, ctx, quiet, js):
     """把看门狗策略预置成 CONTINUE，免得 patch 之后被 watchdog **立刻 EXIT** 掉
-    （`demo/main.c:657` 是 `prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000)`）。
+    （`demo/main.c:679` 是 `prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000)`）。
 
     ⚠ 这**本身也是一次写入** —— 必须如实报告，不能当成"没做事"（纪律 ⑦/⑨）。
     做法与 `tools/guard_selftest.py` 一致（共享思路）。

@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -5856,4 +5856,156 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 同一份代码落在阈值 12% 的两侧。本轮改动**没有触碰** `migration_gate`，故
 两侧数字与 §2.43/§2.44 记录一致。
 
-*2026-10-06 v21*
+## 2.47 源码注释里的 `file:line` 交叉引用：两层失明，14 处已漂移（2026-10-06）
+
+### 2.47.1 缘起：§2.46 普查的副产物
+
+§2.46 查 `.github/workflows/ci.yml` 的门禁项数注释时，为了确认"哪些文件在
+`doccheck` 的扫描面内"，顺手看了一眼 `tools/doccheck.py` 的豁免规则。结果发现
+一条比项数过期更安静的东西：**仓库里大量注释用 `file:line` 指向别处的具体代码，
+而没有任何检查器核对那个行号是否还指着原来那句。**
+
+与 §2.36.8（枚举清单靠人眼）、§2.38（CI 逐字枚举）、§2.40（扫描面自声明）、
+§2.42（自检未被门禁跑）、§2.45（阈值常量无对账）、§2.46（ci.yml 项数不在面内）
+**同型，这是第七个实例** —— 载体从"清单""枚举""扫描面""自检""常量"换成了
+"行号引用"，但形状一样：**事实在文件里，没有任何判据在用它。**
+
+### 2.47.2 两层同时失明
+
+**第一层：`doccheck` 根本不看这些文件。**
+
+`build_targets()`（`tools/doccheck.py:90-112`）只收 `.md`：根目录 `*.md`、
+`.github/*.md`、`publish/*.md`、`docs/marketing/*.md`、以及头部
+`header_declares_current(t)` 为真的 `docs/**/*.md`。实测 `TARGETS = 33 个`，
+`.github` 下**只有** `.github/PULL_REQUEST_TEMPLATE.md` 在面内。而本轮的引用
+全在 `.py` / `.yml` / `.c` 里 —— 这些**从来不在面内**。
+
+**第二层：即使看了，也会被豁免规则整类排除。**
+
+`RE_XREF`（`tools/doccheck.py:218`）匹配形如 `文件:行号` 的串，
+`exempt()` 的第四步最后一条（`:350-351`）是：
+
+```python
+        if RE_XREF.search(line):
+            return '转述他文'
+```
+
+注释 `:214` 逐字写着 `# 转述他文: **必须带行号**才是转述别处`。于是
+**任何带行号的引用所在行，整行都被判"转述他文"而豁免** —— 判据存在，但豁免
+规则正好把这一整类排除在外。自检里还有一条对应用例
+（`tools/doccheck.py:1353` `case('转述他文(带行号) -> 豁免', ...)`），说明这个
+豁免是**有意设计**的，不是疏漏；只是没有人同时想到"那谁来核对被转述的那一行的行号"。
+
+⇒ 结论：`tools/window_check.py` 这类源码注释里的过期引用，
+**永远不会被任何检查器报红**。
+
+### 2.47.3 普查方法（四轮收紧，最终只有一种可信）
+
+| 探针口径 | 结果 | 为什么不可用 |
+|---|---|---|
+| 宽口径（含路径猜测） | 可解析 541 / 可疑 44 / 目标不存在 136 | 噪声太大：`ATTACK_DRILL.md:3` 是**轮次号**不是文件引用 |
+| basename 全库解析 | 引用 373 / 可疑 31 / 不存在 2 / 正常 340 | 可用作**候选集**，但"可疑"仍含大量假阳 |
+| token 重叠启发式 | 可解析 85 / 不共享 token 42 | 误报率过高：大量引用是"注释描述"而非"逐字摘录" |
+| 窄口径（同行须同时有 `` `file:line` `` 与 `` `标识符` ``） | 命中 42 / 目标行不含该标识符 30 | 仍不可用：`window_check.py:27` → `demo/main.c:614` 目标行是 `/*`，而那正是 `else` 分支**注释块的起始行**，引用语义正确 ⇒ **结构性行 != 过期** |
+| 全库 `git log -S` 出生对比 | 未解析 2 / 无法出生对比 77 / 未变 7 / 已变 1 | 覆盖面只有 8/87 ⇒ 不能当判据 |
+
+⭐ **最终可信方法 = 逐条显式出生对比**：对每条引用执行
+`git log -S '<引用串>' --format=%H -- <源文件>` 取**最早**提交；再
+`git show <出生rev>:<目标文件>` 取该 revision 的目标行，与工作树目标行对比。
+两者不同 ⇒ 真漂移；相同 ⇒ 引用仍正确。
+
+对"**调用点留在 X**"这类**时态句**，还需要一个替代判据（因为目标行现在
+当然不在 X）：遍历目标文件全历史，找**哪个 revision 的 X 行恰好等于该语句**；
+命中即证明**写下时正确**，属历史叙述不得改。
+
+### 2.47.4 修掉的 14 处（6 + 8）
+
+**第一批 6 处**（`.github/workflows/ci.yml:32`、`tests/e2e.py:851`、
+`tools/window_check.py:29` / `:699` 两处行号 + `:28` / `:62-63` 两处时态断言）：
+
+| 源 | 旧 | 新 | 新行真值 |
+|---|---|---|---|
+| `.github/workflows/ci.yml:32` | `tools/ci_sim.ps1:61` | **`:71`** | `powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Release -RecordSeeds -SkipSign` |
+| `tests/e2e.py:851` | `src/selfcrypt.c:347` | **`:389`** | `sc_do_range(i, 0); /* 重加密 (对称 XOR), 不校验 */` |
+| `tools/window_check.py:29` | `src/antidebug.c:548` | **`:559`** | `prot_antidebug_scan(&rep);` |
+| `tools/window_check.py:699` | `src/antidebug.c:548` | **`:559`** | 同上 |
+| `tools/window_check.py:28` | 骨架**仍是**修复前的老写法 | 骨架**当时也是**老写法（已在本提交一并修复） | 时态断言：`c8a47994` 同一提交就修好了骨架 |
+| `tools/window_check.py:62-63` | 那里的违规是**潜伏**的; 仍要修 | 那里**若出现**违规也是**潜伏**的 (不会当场崩), 但仍必须纳入扫描 | 原句在 `c8a47994` 修完违规后已无"违规可潜伏" |
+
+**第二批 8 处**（同日稍后，由全库重跑普查发现的额外真漂移）：
+
+| 源 | 旧 | 新 | 新行真值 |
+|---|---|---|---|
+| `tools/guard_selftest.py:35` | `src/integrity.c:163-173` | **`:188-198`** | `:188` = `if (prot_selfcrypt_enter(PROT_SELFCRYPT_GROUP_EXT) != PROT_OK) {`；`:198` = `continue;` |
+| `tools/guard_selftest.py:527` | `src/integrity.c:173` + continue | **`src/integrity.c:198` + continue** | `:198` = `continue;` |
+| `tools/mutate_check.py:323` | `tests/vmc_tests.py:176` | **`:250`** | `ok = out.startswith('RESULT 1')` |
+| `tools/mutate_check.py:384` | `vmc_tests.py:176` | **`:250`** | 同上（该处引用**不带 `tests/` 前缀**，替换串分别构造） |
+| `tools/prot_dbg.py:1065` | `demo/main.c:657` | **`:679`** | `prot_integrity_start_watchdog(PROT_POLICY_EXIT, 5000);` |
+| `tools/release_check.ps1:459` | `.github/workflows/ci.yml:244-297` | **`:340-393`** | `:340` = `linux-portability:`；`:393` = `python3 tools/attackcheck.py --quiet` |
+| `tools/selfcrypt_residency_check.py:424` | `tools/guard_selftest.py:338 _wait_ready` | **`:356 _wait_ready`** | `:356` = `    def _wait_ready(h, proc, va_rdy):` |
+| `tools/window_check.py:492` | `src/integrity.c:142` | **`:167`** | `:167` = `static prot_ad_scan_fn volatile g_ad_scan_fn = prot_antidebug_scan;` |
+
+**为什么第二批才有：** 第一批是靠"读 §2.46 时顺手看到"发现的，只覆盖了
+`tools/window_check.py` 与 `ci.yml` 两处；第二批才是**全库普查**的产物。
+这本身就是 §2.47 的主题的一次自证 —— 第一批的"看见"靠人眼。
+
+### 2.47.5 ⭐ 刻意判定为"不改"的 5 条（假阳性）
+
+普查报出的 13 条"已变"候选里，**5 条是历史叙述**，改写它们等于篡改历史记录：
+
+1. `tests/e2e.py:518` 的恢复来源是 `` `git show 22826c5^:tests/e2e.py:216-255` ``
+   —— 这是 `git show <rev>:<path>:<range>` 形态，**不是** `<file>:<line>`。
+   实测 `22826c5^:tests/e2e.py` 共 866 行，`:216` = `class DebugAttacher(object):`
+   ⇒ 语义正确。
+2. `tools/check_undef.py:12` 与 `tools/release_check.ps1:969` 的
+   「调用点却留在 `tests/e2e.py:515`」—— 实测 `tests/e2e.py:515` 在
+   **`5d601c5`（2026-10-02）** 时**真的**等于 `dbg = DebugAttacher()`
+   （遍历全历史，仅此一个 revision 命中），而 `tools/check_undef.py` 诞生于
+   **`bc68b1129b`（2026-10-05）** ⇒ **写下时正确**，是描述当时事故的历史句。
+   （`DebugAttacher` 调用点现址 = `tests/e2e.py:694`，类定义现址 = `:521`。）
+3. `tools/docclaim_check.py:124` 的 `> **行号更正（2026-10-03）**：上述示例文本
+   **当时**在 `tools/release_check.ps1:79`，现值在 **`:170`**`
+   —— **显式带"当时/现值"双行号**，`release_check.ps1:170` 现值实测吻合 ⇒ 自洽。
+4. `tools/docclaim_check.py:127` 的 `` `tools/doccheck.py:156-163` `` —— 描述的是
+   **该函数当时**的行锚定实现（现已移到 `:451 actual_gate_count()`）⇒ 历史叙述。
+5. 各处的 `22826c5` / `5d601c5` 提交号 —— 历史事实。
+
+⇒ **探针只比"目标行现在 vs 出生时刻"，不读引用行是否自带"当时/现值"语境**
+—— 这正是它产生假阳性的原因，也是它**不能升格为门禁判据**的第二个理由。
+
+### 2.47.6 ⭐ 为什么不给它做门禁判据
+
+三条候选判据的实测误报率（见 2.47.3 表）：token 重叠口径 42 → 30 假阳；
+结构性行口径 8 条里含 `else` 分支注释起始行等真阳误判；`git log -S` 出生对比
+覆盖只有 8/87。**没有一条达到"能进门禁"的精度。** 一个只会误报的检查器比
+没有更危险（§3.8），故本轮**只修引用、不建判据**，与 §2.41 对陈旧复选框的
+处置同型 —— 退回操作提示，而不是硬造一个不可靠的 gate。
+
+### 2.47.7 诚实边界
+
+- **`git log -S` 出生对比探针的汇总数字不可引用**：同一天同算法的两次运行
+  给出 `无法出生对比 77 / 未变 7 / 已变 1` 与 `无法出生对比 4 / 未变 68 / 已变 13`
+  —— 可出生对比数从 8 跳到 72。差异来源未完全定位（疑 `git log -S` 的 `--`
+  路径限定或缓存状态）。**只有逐条 `git log -S <引用串> -- <源文件>` +
+  `git show <rev>:<file>` 对照才可信**，汇总统计一律不采信。
+- 本轮**只覆盖 `file:line` 形态**的引用。`docs/HANDOVER.md` 里的
+  `§2.xx` 节号引用、`git show <rev>:<path>` 形态、以及不带行号的
+  `` `file.py` `` 引用，**都不在本轮射程内**，未普查。
+- 修完后**没有**新增任何自动判据 ⇒ **这 14 处将来还会再次漂移**，本轮只是
+  把当前这一代修对。这是有意的取舍（见 2.47.6）。
+- 全库还有多少处引用未被本轮覆盖，**没有可靠数字**（见上面第一条边界）。
+
+### 2.47.8 验证
+
+| 项 | 结果 |
+|---|---|
+| 8 处新引用指向的行 | **8/8 [ok]**（逐行实测：`src/integrity.c:188`/`:198`、`tests/vmc_tests.py:250`、`demo/main.c:679`、`ci.yml:340`/`:393`、`tools/guard_selftest.py:356`、`src/integrity.c:167`） |
+| 残留旧串扫描 | **0**（8 个旧串在 6 个文件里全部无残留） |
+| 文件字节 | 6 个文件**全部 delta 0 字节**（改的是行号数字，长度相同） |
+| 卫生 | `build/_hygiene.py` **15 个文件, 0 处异常** |
+| `tools/doccheck.py` | **PASS**（`检查数字 942 处, 错误 0, 警告 0`，豁免 204） |
+| `py_compile` | 6 个改动的 `.py` **rc=0** |
+| `tools/release_check.ps1` / `tools/ci_sim.ps1` | `parse errors: 0`（`[Parser]::ParseFile`） |
+| 受影响工具自检 | `guard_selftest` PASS（正向 0 / 负向 3）；`window_check` PASS（24 文件 / 308 函数 / 9 目标）；`selfcrypt_residency_check --selftest` **4/4 变异被抓** |
+
+*2026-10-06 v22*
