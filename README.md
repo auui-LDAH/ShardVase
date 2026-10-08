@@ -129,8 +129,8 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 
 ## 质量门禁
 
-`tools/release_check.ps1` 跑 **37 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
-后共 **40 项**），全绿才算通过。默认跑的全部 37 项：
+`tools/release_check.ps1` 跑 **38 项**（默认；加 `-WithSkeleton`/`-WithMutation`/`-WithMigration`
+后共 **41 项**），全绿才算通过。默认跑的全部 38 项：
 
 ```
 [ok] git 工作区干净                        [ok] C 注释词法 (comment_lint)
@@ -152,6 +152,7 @@ L1  原语 (crc32 / vm_rekey)          ← 不可变的公共设施
 [ok] Linux 编译覆盖 (linux_compile_check)  [ok] 静态未定义名审计 (undef_check)
                                            [ok] Android 交叉编译 (android_compile_check)
                                            [ok] selfcrypt 驻留期密文态 (selfcrypt_residency)
+[ok] 休眠自检审计 (selftest_audit)
                                            [ok] selfcrypt meta 布局四方一致 (selfcrypt_meta)
 ```
 

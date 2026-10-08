@@ -205,8 +205,15 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   `tests/protchain_check.py:336`/`:368` 把 group 解出来又丢掉（写作 `_grp`）。
 #   判据由 `struct.pack` 的格式串**推导**步长与逐字段偏移，不抄字面量。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 40
-GATE_DEFAULT = 37
+# 2026-10-09: 40/37 -> 41/38 (新增 `休眠自检审计 (selftest_audit)`; 承 §2.42:
+#   `docs/PROTOCOL_GOVERNANCE.md:174-175` 的强制纪律只说了工具"能自证会抓错",
+#   没有说"自证必须被执行" —— 全量对账查出 6 个工具 (genpaths / hostgen /
+#   identity / migration_cost / solve_profile / observability) 登记了自检、
+#   写了负向用例、却**没有任何执行者**。判据用 AST 判"登记" + 在入口清单里做
+#   可达链搜索判"被执行", 并且本项自己就是那 6 个自检的执行者。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 41
+GATE_DEFAULT = 38
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
@@ -927,6 +934,15 @@ _CI_FORMS = (
      re.compile(r'默认运行\s*\*{0,2}(\d+)\*{0,2}\s*项'), 'default'),
     ('要求N项全绿',
      re.compile(r'要求\s*["“]?\s*\*{0,2}(\d+)\*{0,2}\s*项全绿'), 'default'),
+    # ⚠️ 第四形态（2026-10-09 补）: `release_check 覆盖 N 项 (默认 M)。`
+    #    它在 `ci.yml:67` 一直写着，且在第 40 项落地后就**已过期**（39/36
+    #    而真值 40/37）却无人报 —— 因为上面三种措辞都不覆盖它。
+    #    教训: **判据的措辞面比真值面窄**，就会留下一块静默区。
+    #    把它写成**一次捕获两个数**（`both`）而不是拆成两条，是因为
+    #    两个数在同一句里，拆开会让"缺一个数"变成"少一条形态"。
+    ('覆盖N项默认M',
+     re.compile(r'覆盖\s*\*{0,2}(\d+)\*{0,2}\s*项\s*\(\s*默认\s*'
+                r'\*{0,2}(\d+)\*{0,2}\s*\)'), 'both'),
 )
 
 
@@ -961,7 +977,9 @@ def ci_count_claims(ci_src=None, total=None, default=None):
       ③ `要求"N 项全绿"` ⇒ N == 默认跑项数；
       ④ 任一形态数到 **0** 条 ⇒ FAIL（措辞改了、判据失去锚点，
          **不得**读成"没有漂移"）；
-      ⑤ 任一形态多处出现则**逐处**判（不只看第一处）。
+      ⑤ 任一形态多处出现则**逐处**判（不只看第一处）；
+      ⑥ `覆盖 N 项 (默认 M)` ⇒ N == 总项数 **且** M == 默认跑项数
+         （2026-10-09 补 —— 该形态在 `:67` 写着且已过期，此前无人报）。
 
     `total` / `default` 可显式传入（自检用）；省略则现读真值源。
     """
@@ -978,21 +996,27 @@ def ci_count_claims(ci_src=None, total=None, default=None):
 
     errors = []
     for label, rx, kind in _CI_FORMS:
-        want = total if kind == 'total' else default
-        hits = [(ci_src[:m.start()].count('\n') + 1, int(m.group(1)))
-                for m in rx.finditer(ci_src)]
+        hits = [(ci_src[:m.start()].count('\n') + 1, m) for m in rx.finditer(ci_src)]
         if not hits:
             errors.append('.github/workflows/ci.yml: 找不到「%s」形态的项数声明 '
                           '—— 判据失去锚点，不得读成"没有漂移"' % label)
             continue
-        for ln, v in hits:
-            if v != want:
+        for ln, m in hits:
+            if kind == 'both':
+                pairs = ((int(m.group(1)), total, '静态 Check 调用点'),
+                         (int(m.group(2)), default,
+                          '默认跑的项数（总 %d − -With* %d）' % (total, total - default)))
+            else:
+                want = total if kind == 'total' else default
                 what = ('静态 Check 调用点' if kind == 'total'
                         else '默认跑的项数（总 %d − -With* %d）'
                              % (total, total - default))
-                errors.append('.github/workflows/ci.yml:%d 「%s」写作 %d，'
-                              '但真值 = %d（%s）—— 注释已漂移'
-                              % (ln, label, v, want, what))
+                pairs = ((int(m.group(1)), want, what),)
+            for v, want, what in pairs:
+                if v != want:
+                    errors.append('.github/workflows/ci.yml:%d 「%s」写作 %d，'
+                                  '但真值 = %d（%s）—— 注释已漂移'
+                                  % (ln, label, v, want, what))
     return errors
 
 
@@ -1769,7 +1793,7 @@ def selftest():
     #
     # 同样必须一起打印、一起计数（否则"暗处运行、看起来不存在"）。
     # 四条形态各有负向：任何一个数字漂了都必须报；措辞整条消失也必须报。
-    def _mk_ci(call=None, default=None, allgreen=None):
+    def _mk_ci(call=None, default=None, allgreen=None, cover=None, cdef=None):
         s = '# ## 项数口径（测试用）\n'
         if call is not None:
             s += '#   静态 `Check` 调用点 **%d** 个；' % call
@@ -1777,20 +1801,38 @@ def selftest():
             s += '默认运行 **%d** 项\n' % default
         if allgreen is not None:
             s += '# ## 为什么允许 `[skip]` 而不是要求"%d 项全绿"\n' % allgreen
+        if cover is not None or cdef is not None:
+            s += '# release_check 覆盖 %d 项 (默认 %d)。\n' % (cover or 0, cdef or 0)
         return s
 
+    # 现值 41/38（2026-10-09 第 41 项落地）；`cover` 形态在 `ci.yml:67`。
     ci_cases = [
         ('真实仓库 ci.yml 项数口径 -> 不报', None, None, None, 0, None),
-        ('ci.yml 静态调用点漂移(39->37) -> 必须报',
-         _mk_ci(call=37, default=36, allgreen=36), 39, 36, 1, '静态调用点'),
-        ('ci.yml 默认运行漂移(36->34) -> 必须报',
-         _mk_ci(call=39, default=34, allgreen=36), 39, 36, 1, '默认运行'),
-        ('ci.yml 要求N项全绿漂移(36->34) -> 必须报',
-         _mk_ci(call=39, default=36, allgreen=34), 39, 36, 1, '要求N项全绿'),
-        ('ci.yml 三处全漂 -> 三处各报一条',
-         _mk_ci(call=37, default=34, allgreen=34), 39, 36, 3, '漂移'),
-        ('ci.yml 口径句整条消失 -> 必须报',
-         '# 本文件没有项数口径\n', 39, 36, 3, '失去锚点'),
+        ('ci.yml 静态调用点漂移(41->39) -> 必须报',
+         _mk_ci(call=39, default=38, allgreen=38, cover=41, cdef=38),
+         41, 38, 1, '静态调用点'),
+        ('ci.yml 默认运行漂移(38->34) -> 必须报',
+         _mk_ci(call=41, default=34, allgreen=38, cover=41, cdef=38),
+         41, 38, 1, '默认运行'),
+        ('ci.yml 要求N项全绿漂移(38->34) -> 必须报',
+         _mk_ci(call=41, default=38, allgreen=34, cover=41, cdef=38),
+         41, 38, 1, '要求N项全绿'),
+        # ⚠️ 第四形态（2026-10-09 补）: `覆盖 N 项 (默认 M)` —— 它在 `:67`
+        #    一直写着且已过期很久却无人报，因为前三种措辞都不覆盖它。
+        ('ci.yml 覆盖N项默认M 的总数漂移(41->39) -> 必须报',
+         _mk_ci(call=41, default=38, allgreen=38, cover=39, cdef=38),
+         41, 38, 1, '覆盖N项默认M'),
+        ('ci.yml 覆盖N项默认M 的默认数漂移(38->36) -> 必须报',
+         _mk_ci(call=41, default=38, allgreen=38, cover=41, cdef=36),
+         41, 38, 1, '覆盖N项默认M'),
+        # ⚠️ 期望 **5** 而不是 4：第四形态一句里有两个数，两个都漂就**各报一条**
+        #    （`kind='both'` 的设计如此 —— 拆成两条独立形态会让"缺一个数"
+        #    退化成"少一条形态"，反而看不见）。前三形态各 1 条 + 本形态 2 条 = 5。
+        ('ci.yml 四处全漂 -> 5 条（覆盖形态两个数各一条）',
+         _mk_ci(call=39, default=34, allgreen=34, cover=39, cdef=34),
+         41, 38, 5, '漂移'),
+        ('ci.yml 口径句整条消失 -> 必须报（四条形态各一条）',
+         '# 本文件没有项数口径\n', 41, 38, 4, '失去锚点'),
     ]
     for name, _ci, _t, _d, want, kw in ci_cases:
         e = ci_count_claims(ci_src=_ci, total=_t, default=_d)
@@ -1976,7 +2018,7 @@ def selftest():
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 50
+    _TOTAL_FLOOR = 52
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'

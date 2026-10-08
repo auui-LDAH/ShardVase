@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **40** 项（默认 37）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **41** 项（默认 38）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -7052,3 +7052,204 @@ X The job was not started because recent account payments have failed or your
 记录里只能如实标注"该提交缺少 CI 验证这一环"。
 
 *2026-10-06 v30*
+
+## 2.53 门禁第 41 项：6 个「登记了自检却没有任何执行者」的工具 —— 以及本项首跑就抓到我自己（2026-10-09）
+
+### 2.53.1 缘起：§2.42 只补了 5 个，全量对账又查出 6 个
+
+§2.42（`docs/HANDOVER.md:4778`）给 **5 个**「休眠自检」接了线，当时的做法是**人工列举**。
+本轮改成**机器普查**，口径三条：
+
+- **声明** = 用 `ast` 判定该文件是否真的 `add_argument('--selftest')`
+  或 `add_parser('selftest')`。**不按文本判** —— 文本会把「定义了 `selftest()`
+  函数」读成「登记了自检入口」。
+- **执行者** = 在入口清单（`tools/release_check.ps1` / `tools/ci_sim.ps1` /
+  `tools/ci_linux.ps1` / `build.ps1` / `.github/workflows/ci.yml` /
+  `.github/workflows/ci-linux.yml`）里**以自检参数**调用它。
+- **孤儿** = 有声明、无执行者。
+
+结果：**29 个工具登记了自检，6 个是孤儿**：
+
+| 工具 | 形态 | 用例数 | 此前为何没被发现 |
+|---|---|---|---|
+| `tools/genpaths.py` | `--selftest` | 17（含 3 负向） | 人工列举漏了 |
+| `tools/hostgen.py` | `--selftest` | 19 | 同上 |
+| `tools/identity.py` | `--selftest` | 12 | 同上 |
+| `tools/migration_cost.py` | `--selftest` | 15 | 同上 |
+| `tools/solve_profile.py` | `--selftest` | 13 | 同上 |
+| `tools/observability.py` | **子命令** `observability.py selftest` | 10 | **形态不同，按 `--selftest` 搜必然漏** |
+
+`docs/PROTOCOL_GOVERNANCE.md:174-175` 的强制纪律逐字是：
+
+> **全部带 `--selftest` 的工具都能自证"会抓错"** —— 这是门禁失效事件（2026-09-23，
+> 7/13 项曾静默通过）后确立的**强制纪律**。
+
+**这条纪律说的是「能自证」，没有说「自证必须被执行」。** 这 6 个正是「能自证、
+用例写得很足、但从未被任何自动化面跑过一次」—— 与 §2.36.8 / §2.38 / §2.40 /
+§2.42 / §2.46 / §2.52 同一个家族：**事实可得，但没有任何判据在用它。**
+
+### 2.53.2 修法：`tools/selftest_audit.py`（门禁第 41 项）
+
+四条判据：
+
+1. 登记了自检的工具数 > 0（**失锚守卫** —— 扫描面失效时必须报，不得读成"没有孤儿"）
+2. 入口清单可达（**失锚守卫**，打印 `入口 N 个，可达文件 M 个`）
+3. 无孤儿
+4. **执行者传入的旗标必须已登记**（见 2.53.3，这是首跑之后才补的）
+
+关键实现选择：
+
+- `_strip_docstrings()` 用 `ast` 找 `ast.Expr(Constant(str))` 形态并**整行清空**，
+  只清文档串、**不清普通字符串字面量** —— 因为 `os.path.join(REPO, 'tools',
+  'vmc_linux.py')` 里的路径**就是代码**，清掉会让真实执行者消失。
+- `_statements()` 按**逻辑行**切分（括号深度归零且不以反引号结尾才断句）。
+  首版用「字符距离窗口 `REF_WINDOW = 400`」，自检用例 M3 立刻报
+  `孤儿 0（期望 1）`：`& $py tools\a.py --quiet` 与 `& $py tools\b.py --selftest`
+  是**相邻两行**（距离极近）但**不是同一条命令**。
+  **判定必须按语句做，不能按字符距离。**
+- `executors()` 做两轮：第一轮直达，第二轮从入口出发做**可达链 BFS**
+  （支持「入口 -> A -> C」的传递调用）。
+
+**成本实测**：6 个自检合计 **0.38 s**，连跑后 `git status --short` **完全干净**
+（不写任何仓库文件）。
+
+**自洽性检查**：审计工具自己也是「登记了自检」的一员。注册本项后，
+孤儿名单里 `tools/selftest_audit.py` 与那 6 个**应当同时消失** —— 实测确实如此。
+
+### 2.53.3 ⭐ 本项首跑就让完整门禁变红，而红的是我自己
+
+第 41 项注册后跑完整门禁（后台作业 `pwsh-1163`）：
+
+```
+[release_check] FAIL: 1/38 未通过
+```
+诊断逐字（`build/logs/release_check_20261009_054204.log`）：
+
+```
+usage: identity.py [-h] [--project PROJECT] [--version VERSION] [--user USER]
+                   [--purpose PURPOSE] [--master MASTER] [--selftest] [--info]
+identity.py: error: unrecognized arguments: --quiet
+[X]  休眠自检审计 (selftest_audit)
+```
+
+根因：我在门禁 body 里给 **6 个**孤儿**统一**加了 `--quiet`，而实测只有 **2 个**
+登记了它。`build/_quietchk.py`（AST 判定）实测：
+
+| 工具 | 有 `--quiet`? | 已登记的长旗标 |
+|---|---|---|
+| `genpaths.py` | **NO** | `--json --layout --platform --print-build-dir --print-gen --print-gen-rel --print-vm-json --selftest` |
+| `hostgen.py` | YES | `--all --hook --out --quiet --selftest` |
+| `identity.py` | **NO** | `--info --master --project --purpose --selftest --user --version` |
+| `migration_cost.py` | **NO** | `--json --map-a --map-b --selftest` |
+| `solve_profile.py` | YES | `--list --out --profile --quiet --selftest` |
+| `observability.py` | **NO** | 子命令 `all/diff/entropy/selftest/static` |
+
+⇒ 这个缺陷**恰好就是本项要防的那一类**：判据覆盖了「**有没有**执行者」，
+没覆盖「**执行得对不对**」。补判据④：把执行者调用语句里的每个 `--` 长旗标
+与该工具 `add_argument` 登记的名字比对，出现未登记即 FAIL。
+**判不了 ⇒ 跳过**（源码不可解析 / 找不到），不得读成「没问题」，
+也不得读成「有问题」。
+
+### 2.53.4 ⭐ 判据④首版报 3 条假阳性，根因在 PowerShell 格式串
+
+首版判据④（`tools/selftest_audit.py` 31330 B）实测报：
+
+```
+[XX] ④ 执行者传入的旗标都已登记
+  tools/ci_sim.ps1 以 --all-compositions 调用 tools/android_compile_check.py
+  tools/release_check.ps1 以 --all-compositions 调用 tools/android_compile_check.py
+  tools/release_check.ps1 以 --install 调用 tools/android_compile_check.py
+```
+
+`build/_findflags.py` 全库定位证实：**`--all-compositions` 属 `tools/modcheck.py`
+（`:978 ap.add_argument('--all-compositions', action='store_true'`），
+`--install` 属 `wsl --install`** —— 三条**全是假阳性**。
+
+根因（`build/_covdbg.py` 打印覆盖语句原文才看出来）：`_statements()` 按**括号深度**
+断句，而 PowerShell 格式串 `Write-Host ("… {0}" -f $x)` 里的 **`{0}` 让深度永久抬高**
+（`{` 未配对）⇒ 整个 `release_check.ps1` 被并成**一条巨型语句** ⇒ 判据在这条语句里
+扫到别的工具的旗标，全算到 `android_compile_check.py` 头上。
+
+修法 = `_invocation_segment(text, start)`：从工具名首次出现处截到**命令边界**
+（`;` / `|` / 物理换行；行尾反引号表示续行**不算**断句），逐出现位置分别取段。
+修后只报**真**缺陷 2 条（`identity.py` / `migration_cost.py` 收到 `--quiet`）。
+
+### 2.53.5 自检 13/13（两族），含 5 条旗标面负向用例
+
+孤儿面 8 条（M1 无人调用 / M2 只在注释里被提到 / M3 被调用但不带自检参数 /
+M4 正常 / M5 传递可达 / M6 中间一跳不带参 / M7 子命令形态 / M8 **只在 docstring 里被提到**）
++ 旗标面 5 条：
+
+| 用例 | 注入 | 期望 |
+|---|---|---|
+| F1 | 传入工具没登记的 `--quiet` | 必报 1 条 |
+| F2 | 只传已登记的 `--selftest` | 不得报 |
+| F3 | 工具**登记过** `--quiet` 后再传 | 不得报（防"一律报"） |
+| F4 | 同一语句里**别的**工具的旗标 | 不得算到本工具头上（正是真实仓库的假阳性） |
+| F5 | 工具源码不可解析 | 跳过、不得报（防"判不了读成有问题"） |
+
+⇒ `[selftest-audit-selftest] 13/13 变异被抓`。
+
+⚠️ **M8 用例的 fixture 踩过一次坑**：首版把 Python docstring 放进
+`tools/release_check.ps1`（PowerShell）⇒ `ast.parse` 抛 `SyntaxError` ⇒
+`_strip_docstrings()` 原样返回 ⇒ 根本没剥 ⇒ 用例报「孤儿 0（期望 1）」，
+**看起来像判据没有判别力**，实际是 fixture 放错了语言。修法 = 放进可达的
+**Python** 入口。这是「探针的错伪装成被测对象的性质」的第 21 次。
+
+### 2.53.6 计数口径 40/37 → 41/38，以及第四种措辞
+
+`tools/doccheck.py`：`GATE_TOTAL = 41` / `GATE_DEFAULT = 38`（`:208-209`），
+`:198-207` 沿革续写一行。
+
+同步的「现时值口径」位置：`README.md`（含**成员清单**新增一行）、
+`.github/workflows/ci.yml:67`/`:111`/`:115`、`docs/CONTINUATION_PLAN.md:529`/`:622`/`:688`/`:716`、
+`docs/DEBUG_CONSOLE_PLAN.md:8`、`docs/DECISION_REDUNDANCY_PLAN.md:257`、
+`docs/HANDOVER.md:18`、`publish/01-关于ShardVase.md`、`publish/02-项目档案.md:116`/`:168`、
+`ShardVase-展示文档.md:163`、`.github/PULL_REQUEST_TEMPLATE.md:16`。
+**历史记录一律不动。**
+
+⚠️ `publish/02-项目档案.md` 的同一串出现 **2 次** ⇒ 断言须写 `want=2`，
+不能逐处断言唯一。
+
+⭐ **顺带发现 `ci.yml:67` 是第四种措辞，从来无人判**：
+原文 `release_check 覆盖 39 项 (默认 36)。` —— 第 40 项落地后它**早已过期**
+（真值 40/37）却没有任何检查报。根因 = `tools/doccheck.py` 的 `_CI_FORMS`
+只认三种措辞（`静态调用点` / `默认运行` / `要求N项全绿`），
+**「覆盖 N 项 (默认 M)」不在其中** ⇒ **判据的措辞面比真值面窄，留下静默区**。
+修法 = 增第四项形态（`kind == 'both'`，一句里**两个数各报一条** ——
+拆成两条独立形态会让「缺一个数」退化成「少一条形态」）。
+`ci_cases` 6 → 8 条；`_TOTAL_FLOOR` 50 → **52**（下限紧贴当前值，**不留余量**
+—— §2.49 的教训：余量恰恰使它对自己要防的那件事失明）。
+实测 ⇒ `PASS: 52 项（32 项负向注入 / 20 项合规豁免）`。
+
+### 2.53.7 验证表
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 新工具语法 | `python -m py_compile tools/selftest_audit.py` | rc=0 |
+| 新工具自检 | `tools/selftest_audit.py --selftest` | `13/13 变异被抓` rc=0 |
+| 新工具本体 | `tools/selftest_audit.py --quiet` | rc=0（四条判据全绿） |
+| 门禁可解析 | `[Parser]::ParseFile tools/release_check.ps1` | `parse errors: 0` |
+| 文件卫生 | `build/_hygiene.py` | 15 文件 / 0 异常 |
+| doccheck 自检 | `tools/doccheck.py --selftest` | `PASS: 52 项` |
+| doccheck 本体 | `tools/doccheck.py` | `错误 0, 警告 0` |
+| docclaim | `tools/docclaim_check.py` | `PASS (8/8)`，`41 项` |
+| 完整门禁 | `tools/release_check.ps1 -SkipDirtyCheck` | 见 2.53.8 |
+
+### 2.53.8 诚实边界
+
+- **判据④只比对 `--` 开头的长旗标**，且只认 `add_argument` / `add_parser`
+  **字面量**登记的名字。位置参数、`-x` 短旗标、由父解析器继承的旗标
+  **不在射程内**。
+- **判据④判不了时跳过**（源码不可解析 / 找不到）—— 宁可沉默也不猜，
+  与 `tools/drills.py` 的「无法判定的字段写 null, **不猜**」同一纪律。
+  代价：若某工具源码被改成不可解析，它的旗标不再被检查。
+- **入口清单是硬编码的 6 个文件**（`selftest_audit.py` 的 `HARNESS` 常量）。
+  新增入口须同步；**失锚时判据①/②先 FAIL，不会静默**。
+- 只判「**有没有**执行者」与「**旗标对不对**」，**不判自检本身是否充分**
+  —— 一个只断言 `1 == 1` 的自检在本项眼里完全合格。
+- 本项**不编译、只读源码**（纯 AST），故它证明的是「调用形态正确」，
+  **不是**「自检在真产物上确实通过」；后者由被调用工具自己的退出码负责。
+
+*2026-10-09 v31*
+

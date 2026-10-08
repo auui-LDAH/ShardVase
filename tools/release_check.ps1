@@ -1172,6 +1172,73 @@ Check 'selfcrypt meta 布局四方一致 (selfcrypt_meta)' {
     $rc -eq 0
 }
 
+# 休眠自检审计 (selftest_audit) —— 「登记了自检」不等于「自检被执行」
+#
+# ## 判据
+#   `tools/selftest_audit.py` 用 **AST** 判定每个 tools/ tests/ 下的 .py 是否
+#   **登记**了自检入口（add_argument('--selftest') 或 add_parser('selftest')），
+#   再在入口清单（本文件 / ci_sim / ci_linux / ci.yml / ci-linux.yml / build.ps1）
+#   里做**可达链**搜索: 只有真的以自检参数被调用才算有执行者。
+#   登记了、却找不到任何执行者 => 孤儿 => FAIL。
+#   另判「**执行得对不对**」: 覆盖语句里出现的每个长旗标都必须被该工具
+#   登记过（判据④）。这条是 2026-10-09 本项**首跑就抓到我自己**的:
+#   我给 6 个孤儿统一加了 `--quiet`，而只有 `hostgen.py` / `solve_profile.py`
+#   登记了它 ⇒ `identity.py: error: unrecognized arguments: --quiet`。
+#   「有没有执行者」判住了，「执行得对不对」当时没有任何判据在管。
+#
+# ## 缘起
+#   2026-10-06 §2.42 给 5 个"休眠自检"接线后，本轮做**全量对账**，又查出 6 个
+#   工具（genpaths / hostgen / identity / migration_cost / solve_profile /
+#   observability）**登记了自检、写了负向用例、却没有任何执行者**。
+#   `docs/PROTOCOL_GOVERNANCE.md:174-175` 的强制纪律只说了"能自证会抓错"，
+#   没有说"自证必须被执行" —— 本项就是那条纪律的**执行面**。
+#
+# ## 本项同时是那 6 个自检的执行者
+#   判据通过后逐个内联执行它们的自检（合计约 0.4s，不写任何仓库文件，
+#   实测连跑后 `git status` 完全干净）。
+#   ⚠️ 这也是自洽性检查: 注册本项后，审计自己的孤儿名单里
+#      `tools/selftest_audit.py` 与这 6 个**应当**同时消失。
+#
+# ## 含负向自检
+#   `--selftest` 13 条变异全部被抓: 孤儿面 8 条（只在注释里被提到 / 被调用但
+#   不带自检参数 / 只在 docstring 里被提到 / 传递可达但中间一跳不带参数 /
+#   子命令形态 等）+ 旗标面 5 条（未登记旗标必报 / 只传已登记的不得报 /
+#   工具登记过之后不得报 / **别的工具的旗标不得算到本工具头上** /
+#   源码不可解析必须跳过）。
+#
+# ## 诚实边界
+#   · 只认**入口清单内**的可达链。若某工具靠 CI 之外的手工调用活着，
+#     本项会把它报成孤儿 —— 这是刻意的: 宁可报出来让人写明理由。
+#   · 入口清单是硬编码的 6 个文件（`selftest_audit.py` 的 HARNESS 常量），
+#     新增入口须同步，否则判据会失锚（失锚时判据①/②先 FAIL，不会静默）。
+#   · 只判"有没有执行者"，不判自检本身是否**充分**。
+#   · 判据④ 只比对 `--` 开头的长旗标，且只认 `add_argument` 字面量登记的名字;
+#     位置参数、`-x` 短旗标、由父解析器继承的旗标都不在射程内。
+
+Check '休眠自检审计 (selftest_audit)' {
+    & $py -X utf8 tools\selftest_audit.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    # 以下 6 个自检此前没有任何执行者，本项即其执行者。逐一显式调用。
+    & $py -X utf8 tools\genpaths.py --selftest
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\hostgen.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\identity.py --selftest
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\migration_cost.py --selftest
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\solve_profile.py --selftest --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\observability.py selftest
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $py -X utf8 tools\selftest_audit.py --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

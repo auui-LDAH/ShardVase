@@ -64,7 +64,7 @@ jobs:
         run: python tests\protchain_check.py
 
       # 阶段 1/3/5 新增的门禁项必须也在 CI 里跑 —— 否则等于"本地才生效的门禁",
-      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 39 项 (默认 36)。
+      # 与 P3 教训相悖 (可绕过的门禁会掩盖缺陷)。release_check 覆盖 41 项 (默认 38)。
       - name: Module contract (modcheck)
         run: python tools\modcheck.py --all-compositions
 
@@ -108,11 +108,11 @@ jobs:
       # 上游步骤已产生构建产物，该项在 CI 中恒失败。
       #
       # ## 项数口径（2026-10-06 复核；此前两轮都写过期过：「静态 36 / 默认 33」→「静态 37 / 默认 34」。现由 doccheck 的 ci.yml 项数判据看住，见 docs/HANDOVER.md §2.46）
-      #   静态 `Check` 调用点 **40** 个；默认运行 **37** 项（3 项 `-With*`
+      #   静态 `Check` 调用点 **41** 个；默认运行 **38** 项（3 项 `-With*`
       #   门禁默认不跑，会打印 `[info] … 未运行 — 未验证 != 通过`）。
       #   运行期每项留下一枚证据行: `[ok]` / `[X]` / `[skip]` / `[info]`。
       #
-      # ## 为什么允许 `[skip]` 而不是要求"37 项全绿"
+      # ## 为什么允许 `[skip]` 而不是要求"38 项全绿"
       #   Windows runner 上**没有 WSL 发行版**，也**从不构建 linux/perf 产物**
       #   -> 4 项跨平台/产物依赖的检查（`linux_compile_check`、
       #   `check_state_platform`、`docclaim` 的 linux 断言、`perf_baseline`）
