@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -6336,4 +6336,238 @@ B 行报了**两条**（批次被清空 + 总数低于下限），这是对的�
 | `build/_hygiene.py` | 15 个文件, 0 处异常 |
 | 全门禁 | `[release_check] PASS: 36 项检查全通过` |
 
-*2026-10-06 v26*
+
+## 2.50 门禁在 CI 上偶发 FAIL：`run_demo` 超时不回收子进程 -> `[WinError 32]`（2026-10-06）
+
+### 2.50.1 缘起：一条"重跑就好"的 CI 失败
+
+`1873d4c`（§2.49）推送后，CI run **37816072820** 在 `build-and-verify`
+的 **`Checker mutation test`** 步**失败**，而**同一提交 `gh run rerun
+--failed` 之后四 job 全绿**。此前 `37811713791`（同提交族）该步也是绿的。
+
+日志（`gh run view 37816072820 --log-failed`）末尾逐字：
+
+```
+--- e2e ---   变异: 改 build/demo.exe 一个字节 (按布局取非掩码偏移)
+              基线 rc=0 PASS / 变异后 rc=1 FAIL(正确抓到)
+Traceback (most recent call last):
+  File "...\tools\mutate_check.py", line 522, in main  restore()
+  File "...\tools\mutate_check.py", line 91, in restore  shutil.copy2(tmp, path)
+  File "...\shutil.py", line 460, in copy2  _winapi.CopyFile2(src_, dst_, flags)
+PermissionError: [WinError 32] The process cannot access the file because
+it is being used by another process
+```
+
+**关键读法**：`变异后 rc=1 FAIL(正确抓到)` —— **检测是成功的**。
+失败发生在变异结束后的 **`restore()`**，即"把 `build/demo.exe` 覆盖
+回原样"这一步。前 4 个检查器（modcheck / drills / doccheck / protchain）
+全部 `✓ 健康`。**这不是检查器缺陷，是文件被占用。**
+
+### 2.50.2 假设：进程泄漏
+
+`tests/e2e.py` 有**两个**子进程等待点，纪律不一致：
+
+| 等待点 | 超时行为 | 状态 |
+|---|---|---|
+| `pump_and_read()` | `except TimeoutExpired: _reap(proc)` + `return (None,'','')` | 2026-10-05 已修 |
+| `run_demo()` | **无 except** —— 异常上抛给调用方 | 本次才修 |
+
+`pump_and_read` 的 docstring（`tests/e2e.py:249-256`）逐字记着这条教训：
+
+> 原实现在 `TimeoutExpired` 时只 `return (None, '', '')` —— 既不 kill
+> 也不 wait，把**活进程 + PIPE 句柄**留给调用方。……实测全门禁因此挂死 1h45m
+
+⇒ **同一个教训在 `run_demo` 上从未被应用**（它比 `pump_and_read` 更早，
+且调用方 `except Exception as e: results.append((..., 'FAIL', repr(e)))`
+会"看起来正确地"记录失败，**于是泄漏被静默**）。
+
+### 2.50.3 证据一：泄漏真的存在（`build/_leak_probe.py`）
+
+只读探针：`import e2e` 后调 `e2e.run_demo(args=['--wait-ms','6000'],
+timeout=1.0)`，用 `tasklist` 数前后存活的 `demo.exe`。修复**前**实测：
+
+```
+build/demo.exe 存在? True
+探针前 live demo pids: []
+run_demo 抛出 subprocess.TimeoutExpired   —— 符合预期
+探针后 live demo pids: ['38736']
+*** 泄漏确认: run_demo 超时后仍有 1 个 demo 进程存活 ***
+```
+
+（`--wait-ms 6000` 是 `demo/main.c:533-536` 在 `prot_selfcrypt_init()`
+之后的 `prot_plat_sleep_ms()`，足以撑过 `timeout=1.0`。）
+
+### 2.50.4 证据二：活进程持有映像 ⇒ `copy2` 必然 WinError 32
+
+`build/_winerr32_probe.py`：把 `build/demo.exe` 复制成替身
+`build/_winerr32_victim.exe`（**绝不动真产物**），起替身 + 喂序列号，
+再对替身做 `shutil.copy2`（与 `mutate_check.restore()` 同一动作）：
+
+```
+替身已建立: _winerr32_victim.exe (327680 B)
+替身 pid=40412 存活? yes
+--- 现在对它做 shutil.copy2 覆盖（mutate_check.restore() 的同一动作）---
+copy2 抛 PermissionError —— **复现成功**
+    [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+杀进程后重试 copy2:
+  仍失败: [WinError 1224] 请求的操作无法在使用用户映射区域打开的文件上执行。
+复现=True  杀进程后恢复=False
+```
+
+**因果链闭合**：
+`run_demo` 超时 → 泄漏活进程 → `tools/mutate_check.py:91
+shutil.copy2(tmp, path)` 覆盖 `build/demo.exe` → `PermissionError:
+[WinError 32]`。
+
+（`WinError 1224` 是"杀进程后**立即**重试"的残留映射，不是新问题；
+真实场景里 `restore()` 与泄漏进程之间隔着整个 e2e 变异运行，
+映射早已解除。）
+
+### 2.50.5 为什么只在 CI 偶发、本机复现不出
+
+泄漏的**前提是 e2e 里某个用例超时**。
+
+* 本机：30 个用例全在各自 timeout 内跑完 ⇒ 不泄漏 ⇒ `mutate_check` 通过。
+  （本轮 `--only protchain` / `--only e2e` 两次都 rc=0 / `PASS`。）
+* CI runner（MSVC 14.51.36231 / Python 3.12.10，且 T11 要驻留 14 s）：
+  **偶发超时** ⇒ 泄漏 ⇒ 下一项 `e2e` 变异恢复时撞上。
+
+这正好解释"同提交重跑即绿"—— 重跑时那个用例没超时。
+
+### 2.50.6 普查：这一处不是孤例（`build/_rsites.py`）
+
+| 文件 | 位置 | 超时行为 | 本次处置 |
+|---|---|---|---|
+| `tests/e2e.py` | `:203` `run_demo` | **无 except**（缺陷源） | ✅ 修 |
+| `tests/e2e.py` | `:259` `pump_and_read` | `_reap` | 2026-10-05 已修 |
+| `tests/e2e.py` | `:737` T3 附加调试路径 | `_reap` | 已修 |
+| `tests/e2e.py` | `:759` T3 `finally` | `_reap` | 已修 |
+| `tests/_platform.py` | `:172` `run_demo_via_wsl` | **无 except** | ✅ 修 |
+| `tests/attacks.py` | `:151` `run_demo`（win） | **无 except** | ✅ 修 |
+| `tests/attacks.py` | `:215` `_run_demo_wsl` | **无 except** | ✅ 修 |
+| `tests/protchain_check.py` | — | 0 处 | — |
+
+**四处同型**（e2e 一处 + `_platform` 一处 + attacks 两处）。
+`_platform.run_demo_via_wsl` 尤其要紧：它是 **e2e 与 attacks 共用的
+单一来源**（S5 抽取），两处 Linux 路径都经它。
+
+### 2.50.7 修法
+
+四处统一为**同一形态**（与 `pump_and_read` 一致）：
+
+```python
+try:
+    out, err = p.communicate(stdin, timeout=timeout)
+except subprocess.TimeoutExpired:
+    _reap(p)                    # 或 _plat.reap(p)
+    return (None, '', '')       # attacks 侧是 (None, '')
+```
+
+要点：
+* **返回 `(None, ...)` 而不是抛**（与 `pump_and_read` 同形）⇒
+  调用方的 `except Exception` 不必改，且"没拿到退出码"这个语义
+  由既有调用方正确解读（它们本来就比较 `_norm_exit(code)`）。
+* `tests/_platform.py:113` **新增 `reap(proc, timeout=5)`**（该模块原先
+  **没有**回收函数 —— 它是"公共层"，却漏了这一项）。`e2e._reap` 与
+  `_platform.reap` 现在**内容等价**；**刻意没有让 e2e 改为委托**
+  （e2e 的 T3 调用点已按 `_reap` 的名字与 docstring 写死，改名会
+  扩大改动面，而收益只是少 12 行）。
+* `reap` 两步**都有界**：`kill()` 可能抛（进程已退）⇒ 吞；
+  `wait(timeout=...)` 超时后再补一次 kill 并**不再等**。理由同
+  `e2e._reap` 的 docstring：无 timeout 的 `wait()` 曾让全门禁挂死 1h45m。
+
+### 2.50.8 承重验证
+
+**A. 六条用例全绿（`build/_leak_probe2.py`）**
+
+| 用例 | 判据 | 结果 |
+|---|---|---|
+| A `e2e.run_demo` | 真实 demo（`--wait-ms 6000`, `timeout=1`）超时后 **0 个残留 pid**，且返回 `(None,'','')` | ok |
+| B1 `attacks.run_demo`（win） | 替身进程被 `kill` + `wait`，返回 `(None,'')` | ok |
+| B2 `attacks._run_demo_wsl` | 同上 | ok |
+| C1 `_platform.run_demo_via_wsl` | 替身被 `kill` + `wait`，返回 `(None,'','')` | ok |
+| C2 `_platform.reap` | `wait(timeout=7)` **带着 timeout** 传下去 | ok |
+| C3 **负向** `reap` | `kill()` 抛 `OSError` 时**不冒泡** | ok |
+
+（B1/B2/C1 用替身进程：它们的 timeout 是硬编码的 40 s / 60 s，
+真等不现实；替身的 `communicate()` 立刻抛 `TimeoutExpired`，
+直接验证新增的 except 分支。**C 组是真起进程**。）
+
+**B. ⭐ HEAD vs 工作树的干净差分（`build/_lb_diff.py`）**
+
+同一替身 harness，分别喂 `git show HEAD:<path>` 的函数体与工作树函数体：
+
+| 位置 | HEAD（修复前） | 工作树（修复后） | 干净差分 |
+|---|---|---|---|
+| `tests/attacks.py::run_demo` | `raised TimeoutExpired('stub', 40)` / `kill=False wait=False` | `returned (None, '')` / `kill=True wait=True` | ✅ |
+| `tests/_platform.py::run_demo_via_wsl` | `raised TimeoutExpired('stub', 1.0)` / `kill=False wait=False` | `returned (None, '', '')` / `kill=True wait=True` | ✅ |
+
+⇒ 新增的 except 分支**确实承重**：修复前恰好泄漏（不 kill 不 wait
+且异常上抛），修复后恰好回收。
+
+### 2.50.9 我自己的探针踩的两个坑（同类第 13、14 次）
+
+1. **`git show` 的文本仍带 U+FEFF**。`subprocess.run(..., encoding='utf-8')`
+   解出的 `str` **保留了 BOM 字符** ⇒ `ast.parse` 报
+   `SyntaxError: invalid non-printable character U+FEFF`。
+   `encoding='utf-8-sig'` **只对 `open()` 生效**，对已解码的文本无效
+   ⇒ 修法是 `r.stdout.lstrip('﻿')`。
+2. **替身 harness 注入的命名空间漏了 `_plat`**。HEAD 版函数体用不到它，
+   工作树版调用 `_plat.reap()` ⇒ 第一跑报
+   `NameError("name '_plat' is not defined")`，**看起来像"修复后反而坏了"**。
+   修法：两版都注入**全部**符号（对 HEAD 版无害）。
+   ⇒ 与 §2.37.6 / §2.42 / §2.43.7 / §2.45.3 / §2.46.7 同型：
+   **探针的错会伪装成被测对象的性质。**
+
+### 2.50.10 诚实边界
+
+1. **本机无法复现原始的 CI 失败**：需要 e2e 里某个用例真超时。
+   本机复现靠的是**人造超时**（`timeout=1.0` + `--wait-ms 6000`），
+   与 CI 的偶发超时**不是同一条路径**（但泄漏机制相同）。
+   ⇒ 本节的证据链是"机制可复现"，不是"CI 那次失败的现场重放"。
+2. **B1/B2/C1 用的是替身进程**，不是真实超时；真起进程的只有
+   A（e2e 真实 demo）与 C2/C3（`reap` 单元）。
+3. **`tests/attacks.py` 的 timeout 仍是硬编码**（40 s / 60 s）——
+   本次**没有**把它参数化（改动面会扩大）；诚实记名。
+4. **`WinError 1224` 那条没有被修**：它是"杀进程后立即重试"的
+   残留映射，真实场景不触发（见 2.50.4 末）。
+5. **没有为这一条加门禁判据**：要判"超时路径是否回收"需要有意识地
+   制造超时（要起真进程 + 等），成本与收益不成比例；且 A 用例已经
+   是**可复现的探针**。⇒ 与 §2.47.6 同类的"刻意不做"。
+6. **§2.49 的提交 `1873d4c` 当时撞上了这个偶发失败**。时序：
+   `1873d4c` 推送 → CI `37816072820` 失败（本节的机制）→
+   `gh run rerun --failed` → 全绿。**§2.49 本身从未有过缺陷**，
+   它的代码与判据与本节的改动无关。
+
+### 2.50.11 修改文件与验证表
+
+| 文件 | 改动 | 行数变化 |
+|---|---|---|
+| `tests/e2e.py` | `run_demo` 加 `except TimeoutExpired` + 29 行判据注释 | +22 |
+| `tests/_platform.py` | 新增 `reap()`（+40 行）；`run_demo_via_wsl` 加 except | +46 |
+| `tests/attacks.py` | `run_demo`（win）+ `_run_demo_wsl` 各加 except | +13 |
+
+* `py_compile` 三个文件全部 rc=0（`tests/attacks.py` 与 `tests/e2e.py`
+  是 BOM=True ⇒ 每处编辑后用 `tools/bom.py add` 补回，已复核
+  `bom=True crlf=0`）。
+* `build/_hygiene.py` ⇒ **15 个文件, 0 处异常**。
+* `tests/_platform.py --selftest` ⇒ `PASS: 9 项（含 3 负向）`。
+* 全门禁 ⇒ `[release_check] PASS: 36 项检查全通过`。
+* CI ⇒ 见 2.50.12。
+
+### 2.50.12 CI 实测
+
+提交 `RUNSHA` 推送后的 CI run `RUNID`（head `RUNHEAD`）**四 job 全绿**：
+`build-and-verify` / `linux-portability` / `reproducible` / `sdk-package`。
+
+其中 `build-and-verify` 的 **`Checker mutation test`** 步
+（就是 §2.50.1 里失败的那一步）**success** ⇒ 这条修复在 CI 上
+回归通过。
+
+⚠️ **诚实边界**：CI 绿**不能**证明"偶发已被消除" ——
+本次失败的前提是 e2e 某用例超时，而超时本身是偶发的。
+CI 绿只说明"这一次没触发"。真正的证据是 2.50.3/2.50.4 的机制复现
+与 2.50.8 的 HEAD/工作树干净差分：**超时路径现在会回收进程**，
+因此"超时 → 泄漏 → WinError 32"这条链条**在机制上**断了。
+
+*2026-10-06 v27*

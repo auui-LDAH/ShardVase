@@ -110,6 +110,36 @@ def fix_path_args(args):
     return out
 
 
+def reap(proc, timeout=5):
+    """**有界**回收一个子进程（超时路径专用）。
+
+    ## 为什么必须有（2026-10-08，**与 `e2e._reap` 同一教训**）
+      子进程超时后若不回收，它会作为**活进程**留下。在 Windows 上，
+      活进程以**独占**方式持有自身映像文件 -> 任何 `shutil.copy2`
+      覆盖该 `.exe` 都报
+        `PermissionError: [WinError 32] The process cannot access the
+         file because it is being used by another process`
+      => 门禁第 16 项 `mutate_check` 的 `restore()` **偶发 FAIL**
+         （CI run 37816072820 实测；同提交重跑即绿）。
+
+    ## 为什么每一步都有界
+      `proc.wait()` **无 timeout** 时，一旦 kill 未能真正终结进程
+      （被调试的目标处于暂停态）就**永久阻塞** —— 实测全门禁因此
+      挂死 1h45m。这里：
+        · `kill()` 本身可能抛（进程已退）
+        · `wait(timeout=...)` 超时后再补一次 kill 并**不再等**
+    """
+    try:
+        if proc.poll() is None:
+            proc.kill()
+    except Exception:                     # noqa: BLE001
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:                     # noqa: BLE001
+        pass
+
+
 def run_demo_via_wsl(exe, args=None, stdin=None, timeout=60,
                      extra_env='', pre='', auto_vm_blob=True,
                      vm_blob_path=None):
@@ -138,7 +168,16 @@ def run_demo_via_wsl(exe, args=None, stdin=None, timeout=60,
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, env=env)
-    out, err = p.communicate(stdin, timeout=timeout)
+    try:
+        out, err = p.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # ## 超时也必须回收（2026-10-08 修，**与 e2e.run_demo 同一处缺陷**）
+        #   原实现让 `TimeoutExpired` 直接上抛 -> demo 作为**活进程**留下
+        #   -> Windows 上独占自身映像 -> 门禁 `mutate_check` 的
+        #   `shutil.copy2` 报 `[WinError 32]`（CI 偶发 FAIL）。
+        #   返回形态与 `e2e.pump_and_read` 的超时返回一致：`(None, '', '')`。
+        reap(p)
+        return (None, '', '')
     return (p.returncode,
             (out or b'').decode('utf-8', 'replace'),
             (err or b'').decode('utf-8', 'replace'))

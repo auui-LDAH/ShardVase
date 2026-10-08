@@ -199,7 +199,29 @@ def run_demo(args=None, stdin=None, exe=EXE, timeout=40):
     p = winproc.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, cwd=os.path.dirname(exe))
-    out, err = p.communicate(stdin, timeout=timeout)
+    try:
+        out, err = p.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # ## 超时也必须回收（2026-10-08 修，**与 pump_and_read 同一教训**）
+        #
+        # 原实现让 `TimeoutExpired` 直接向上抛，由调用方的
+        # `except Exception as e: results.append((..., 'FAIL', repr(e)))` 记录。
+        # 调用方**不会** kill —— 于是 demo.exe 作为**活进程**留下。
+        #
+        # ## 后果（实测 CI 复现）
+        #   该进程以**独占**方式持有自身映像文件 -> 门禁第 16 项
+        #   `tools/mutate_check.py` 的 `restore()`（`shutil.copy2` 覆盖
+        #   `build/demo.exe`）报
+        #     `PermissionError: [WinError 32] The process cannot access the
+        #      file because it is being used by another process`
+        #   => **门禁在 CI 上偶发 FAIL**（2026-10-08 run 37816072820 实测；
+        #      同一提交重跑即通过 —— 典型的偶发，根因是进程泄漏而非检查器缺陷）。
+        #
+        #   `build/_leak_probe.py` 实测：`run_demo(timeout=1)`
+        #   超时后仍有 1 个 demo 进程存活；`build/_winerr32_probe.py`
+        #   实测：活进程存活期间 copy2 报 `[WinError 32]`。
+        _reap(p)
+        return (None, '', '')
     return (p.returncode,
             out.decode('utf-8', 'replace'),
             err.decode('utf-8', 'replace'))

@@ -147,7 +147,16 @@ def run_demo(args=None, stdin=None):
     cmd = [EXE] + (args or [])
     p = winproc.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, cwd=os.path.dirname(EXE))
-    out, err = p.communicate(stdin, timeout=40)
+    try:
+        out, err = p.communicate(stdin, timeout=40)
+    except subprocess.TimeoutExpired:
+        # ## 超时也必须回收（2026-10-08 修，**与 e2e.run_demo 同一处缺陷**）
+        #   原实现让 `TimeoutExpired` 上抛 -> demo 作为**活进程**留下
+        #   -> Windows 上独占自身映像 -> 门禁 `mutate_check` 的
+        #   `shutil.copy2` 报 `[WinError 32]`（CI 偶发 FAIL，
+        #   证据见 docs/HANDOVER.md §2.50 与 build/_leak_probe.py）。
+        _plat.reap(p)
+        return None, ''
     return p.returncode, out.decode('utf-8', 'replace')
 
 
@@ -202,7 +211,12 @@ def _run_demo_wsl(args, stdin):
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, env=env)
-    out, _ = p.communicate(stdin, timeout=60)
+    try:
+        out, _ = p.communicate(stdin, timeout=60)
+    except subprocess.TimeoutExpired:
+        # ## 超时也必须回收（2026-10-08 修，同 `run_demo` 的 win 分支）
+        _plat.reap(p)
+        return None, ''
     return p.returncode, (out or b'').decode('utf-8', 'replace')
 
 
