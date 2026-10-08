@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -6023,4 +6023,189 @@ delta 0 字节），故 CI 上与行号无关的步骤不受影响；`Public-mat
 (doccheck)` 步 success 说明 §2.47 新增的文档段落自身通过了 doccheck 的数字与
 结构判据。
 
-*2026-10-06 v23*
+
+## 2.48 `ci_sim.ps1` 的"保持与 ci.yml 同步"：一句人工承诺，缺口已连犯数月（2026-10-06）
+
+### 2.48.1 缘起
+
+`tools/ci_sim.ps1:6` 逐字写着：
+
+```
+# 步骤映射 (保持与 ci.yml 同步; 每次改 ci.yml 必须同步这里):
+```
+
+这是**人工承诺**。§2.36.8 / §2.38 / §2.40 / §2.42 / §2.45 / §2.46 / §2.47
+都在堵同一类缺陷（**事实可得，但没有任何判据在用它**），本节是第 8 个实例：
+**`ci_sim.ps1` 到底有没有跟上 `ci.yml`，从来没有任何检查器问过。**
+
+### 2.48.2 实测：它没跟上，而且缺的不是"慢"的那些
+
+按**工具 basename** 比对 `ci.yml` 的 `build-and-verify` job（16 个工具）与
+`ci_sim.ps1` 的 `Step` body（方法见 §2.48.4）：
+
+| 工具 | ci.yml | ci_sim（修复前） | 本机实测耗时 |
+|---|---|---|---|
+| `modcheck.py` | `:69` | **缺** | 0.1s |
+| `drills.py` | `:72` | **缺** | 0.1s |
+| `doccheck.py` | `:75` | **缺** | 0.2s |
+| `conformance.py` | `:88` | **缺** | 0.0s |
+| `skeleton_check.py` | `:97` | **缺** | 17.4s |
+| `mutate_check.py` | `:101` | **缺** | 187.5s |
+| `migration_gate.py` | `:105` | **缺** | 107.7s |
+| `release_check.ps1` | `:128` | **缺** | — |
+
+⭐ **关键事实：缺的八个里有四个合计 <0.5 秒。** 这不是"为省时间而刻意排除"
+——`ci_sim` 声称本地等效执行 CI 的步骤，却**从未跑过门禁本体**
+（`release_check.ps1`），也从未跑过四个几乎不花时间的静态检查。
+`docs/HANDOVER.md:1244` 只反向记了一句「`release_check.ps1` 仍不含 SDK 打包
+（`ci_sim.ps1` 已含，门禁未含）」—— **没有任何记录说明这些缺口是刻意的。**
+`docs/INFRA_PLAN.md:98` 的验收标准写的是「`ci_sim.ps1` 本地跑通**全部** CI 步骤，
+PASS」。
+
+### 2.48.3 修法
+
+**(a) 补上 5 个步骤**（`tools/ci_sim.ps1`，紧跟 `Step 'protchain P1-P6'`，
+与 `ci.yml` 同名同序）：
+
+```
+Step '模块契约 (modcheck)' { & $py -X utf8 tools\modcheck.py --all-compositions }
+Step '攻防记录 (drills lint)' { & $py -X utf8 tools\drills.py lint }
+Step '对外材料 (doccheck)' { & $py -X utf8 tools\doccheck.py }
+Step '协议兼容性 (conformance)' {
+    & $py -X utf8 tools\conformance.py --selftest
+    if ($LASTEXITCODE -ne 0) { throw 'conformance selftest failed' }
+    & $py -X utf8 tools\conformance.py modules.json
+}
+Step '骨架回归 (skeleton_check)' { & $py -X utf8 tools\skeleton_check.py }
+```
+
+**(b) 把三个刻意排除的步骤写进头部注释**（此前**根本没写**，等于默不作声）：
+
+```
+#   刻意**排除**的三个 ci.yml 步骤 (2026-10-06 复核):
+#     · Checker mutation test (mutate_check) —— 本机实测 187s；
+#     · Migration cost gate (migration_gate) —— 本机实测 108s, **且** M3 有
+#       工具链抖动 (本机 MSVC 14.44 15.6% FAIL vs CI MSVC 14.51 6.2% PASS,
+#       见 docs/HANDOVER.md §2.43) ⇒ 本地跑它会把 CI 的绿读成红。
+#     · Full release gate (release_check.ps1) —— 门禁本体, 自己会做 Release
+#       构建 + 39 项检查; `ci_sim` 已经跑了一遍 Build, 嵌套跑显著变慢且职责
+#       重叠。由 CI 的 `:127 Full release gate` 负责。
+```
+
+第二项的理由值得单说：**`migration_gate` 在 CI 上是绿的、在本机是红的**
+（§2.43.3 已记名的工具链抖动）。把这一步放进"本地 CI 模拟器"，只会让本地
+读到一个 CI 不会给的红色 ⇒ **排除是正确决定，但必须写出来**，否则下一个人
+会以为是漏了。
+
+**(c) 给这句承诺配上机器判据**（`tools/doccheck.py` 新增 `ci_sim_sync()` +
+第 5 个入口，`main()` 加 **0e** 步）：
+
+- `ci_sim_tool_sets()`：现读 `ci.yml` 的 `build-and-verify` job 与
+  `ci_sim.ps1`，各抽出**工具 basename 集合**（`ci.yml` 侧只取该 job 的
+  `run:` 行，含 `run: |` 之后的缩进 body）；
+- `_CI_SIM_EXEMPT = {'mutate_check.py': …, 'migration_gate.py': …,
+  'release_check.ps1': …}` = **显式豁免，必须写理由**；
+- 判据 ①：`ci.yml` 有而 `ci_sim` 无、且不在豁免表 ⇒ **FAIL**；
+- 判据 ②：豁免项**其实已经在 `ci_sim` 里跑了** ⇒ **FAIL**（豁免过期；
+  留着一个已满足的豁免会掩盖真的漏项）；
+- 判据 ③：任一侧数到 **0** 个工具 ⇒ **FAIL**（解析前提被破坏，
+  **不得**读成"没有差异"）。
+
+### 2.48.4 为什么按**工具 basename** 比，不按步骤名比
+
+两侧的步骤名措辞本来就不同 —— 按名字比会得到一片**假差异**：
+
+| ci.yml | ci_sim.ps1 |
+|---|---|
+| `:45 Run e2e suite (T1-T30)` | `Step 'e2e T1-T30'` |
+| `:68 Module contract (modcheck)` | `Step '模块契约 (modcheck)'` |
+| `:96 Skeleton regression (DIY 路径)` | `Step '骨架回归 (skeleton_check)'` |
+
+路径风格也不同（`tools/modcheck.py` vs `tools\modcheck.py`）。唯一**稳定可比
+且机器可判**的键是**文件 basename**。
+
+### 2.48.5 ⭐ 我自己的判据踩的坑：注释里的提及被当成"已覆盖"（同类第 12 次）
+
+判据第一版把 `ci_sim.ps1` 侧写成 `set(_TOOL_RE.findall(sim_src))` —— **扫全文**。
+于是第一次跑生产判据时报 `[ok] ci_sim 工具集: 14 / 16 … (2 项显式豁免)`：
+`release_check.ps1` **看起来已经被覆盖**，而它**恰恰是当时唯一的真缺口**。
+
+根因是我的**(b) 步注释自己**造成的：`tools/ci_sim.ps1:18` 写了
+`` `tools/release_check.ps1 -With*` ``、`:94` 写了 `` `release_check.ps1` `` ——
+**声明本身被当成了覆盖**。这与 §2.40「扫描面自声明」是**同一类错误**，
+而我正是在写 §2.40 的判据时学到这一点的。
+
+为什么 `--selftest` 全绿也照样漏：`sim_cases` 走 `ci_sim_sync()` 时传的是
+**已解析的集合**（`_mk_sim`），**不经过文件扫描** ⇒ 扫描面这一层的缺陷
+完全在自检的盲区外。
+
+修法 = 新增 `_step_body_tools(text)`：**只收集 `Step` 块 body 里的工具**，
+并且逐行剥掉 `#` 之后的**行内注释**。修后 `14 / 16` → **`13 / 16`**（真值），
+并把这条扫描面本身断言成用例（走 `_step_body_tools()` 而非 `ci_sim_sync()`，
+因为它测的是**扫描面**，不是判据）：
+
+```python
+_scn = ("# 注释里提到 release_check.ps1 与 mutate_check.py\n"
+        "Step 'real' {\n"
+        "    & $py tools\\modcheck.py --all-compositions  # 行内注释: mutate_check.py\n"
+        "}\n")
+_got = _step_body_tools(_scn)
+if _got != {'modcheck.py'}:
+    fails.append('ci_sim 扫描面守卫: `_step_body_tools` 把注释里的工具名也算进去了 …')
+```
+
+### 2.48.6 承重验证（对**真实**文件注入 → 跑完整 doccheck → 逐字节还原）
+
+| 注入 | rc | 报错 |
+|---|---|---|
+| 基线 | 0 | 0 |
+| **A** 从 `ci_sim.ps1` 删掉 `modcheck` 步骤 | 1 | 1（`缺 ci.yml 的步骤（工具 \`modcheck.py\`，ci.yml:69）`） |
+| **B** 从 `ci_sim.ps1` 删掉 `doccheck` 步骤 | 1 | 1（同上，`doccheck.py`） |
+| **C** 从 `ci.yml` 删掉 `modcheck` 步骤（真值源缩小） | 0 | 0（**正确的沉默**：两边都没有就不算不同步） |
+| **D** 让豁免项 `mutate_check.py` 出现在 `ci_sim.ps1` | 1 | 1（`豁免过期，必须从 _CI_SIM_EXEMPT 删掉`） |
+| 还原后 | 0 | 0 |
+
+**逐字节还原一致 = True**（`ci_sim.ps1` BOM=True/crlf=187/bareLF=0/9424 B；
+`ci.yml` BOM=False/crlf=0/bareLF=426/20477 B，两侧换行风格均未变）。
+
+自检新增第 5 批 **`sim_cases` 5 条**，**必须与其余四批一起打印、一起计数**
+（否则"暗处运行、看起来不存在"）⇒ `[doccheck-selftest] PASS: 45 项
+（28 项负向注入 / 17 项合规豁免）`（原 40 项）。另加 §2.48.5 的扫描面守卫 1 条
+（`fails` 通道，不增计数）。
+
+### 2.48.7 端到端实测：新步骤真的跑了
+
+`tools/ci_sim.ps1 -SkipTest -SkipSdk`（只验 Build + repro）与
+**`tools/ci_sim.ps1 -SkipSdk`**（全量）均 **rc=0 / `[ci_sim] PASS (all steps)`**。
+全量那次逐行可见五个新步骤**确实执行**：
+
+```
+[ci_sim] step: 模块契约 (modcheck)
+[ci_sim] step: 攻防记录 (drills lint)
+[ci_sim] step: 对外材料 (doccheck)
+[ci_sim] step: 协议兼容性 (conformance)
+[ci_sim] step: 骨架回归 (skeleton_check)
+…
+[e2e] 平台=win  总计 30: PASS 30 / FAIL 0 / SKIP 0 / NA 0
+[repro_check] PASS: reproducible (demo.exe + vm.blob SHA-256 identical)
+[ci_sim] PASS (all steps)
+```
+
+### 2.48.8 诚实边界
+
+1. **只判"工具集覆盖"，不判"顺序/参数/开关"**：判据看不见步骤顺序错了、
+   参数变了（如 `--quiet` 被去掉）、或 `$SkipTest` 门控范围不同。
+2. **判据看不见"两边都漏"**：若 `ci.yml` 删掉某步、`ci_sim` 同步删掉，
+   判据报 0 条（这**正是** §2.48.6 的 C 用例 —— 刻意的正确沉默）。
+3. **`linux-portability` job 不在判据内**：它需要 gcc/WSL，
+   `tools/ci_sim.ps1:29-30` 已写明由 Linux runner 负责。
+4. **`release_check.ps1` 是"明写的豁免"而不是"已覆盖"**：本轮**没有**把它
+   加进 `ci_sim`。它现在在 `_CI_SIM_EXEMPT` 里并写明理由（§2.48.3(b)）。
+   ⇒ **`tools/ci_sim.ps1` 至今仍不是"全部 CI 步骤"**，
+   `docs/INFRA_PLAN.md:98` 那句「本地跑通全部 CI 步骤」**依然不成立** ——
+   区别只是这条边界**从沉默变成了记名**。
+5. **豁免表是"人写的理由"**：判据只能保证"豁免项不在跑"，保证不了
+   "豁免的理由还成立"。`migration_gate` 那条（本机红 / CI 绿）就是靠 §2.43
+   的工具链抖动，工具链一变它就该被重审。
+
+*2026-10-06 v24*

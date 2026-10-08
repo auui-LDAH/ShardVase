@@ -920,6 +920,170 @@ def ci_count_claims(ci_src=None, total=None, default=None):
     return errors
 
 
+# `tools/ci_sim.ps1` 与 `.github/workflows/ci.yml` 的**工具集**比对。
+#
+# ⚠️ 为什么按**工具 basename** 比而不是按**步骤名**比（2026-10-06 实测）：
+#    两侧的步骤名措辞本来就不同（`:45 Run e2e suite (T1-T30)` vs
+#    `Step 'e2e T1-T30'`；`:68 Module contract (modcheck)` vs
+#    `Step '模块契约 (modcheck)'`）—— 按名字比会得到一片假差异；
+#    路径风格也不同（`tools/modcheck.py` vs `tools\modcheck.py`）。
+#    唯一稳定可比且**机器可判**的键是**文件 basename**。
+_TOOL_RE = re.compile(r'([A-Za-z0-9_\-]+\.(?:py|ps1|exe))')
+
+# ci_sim **刻意不跑**的 ci.yml 步骤（各有理由，见 `tools/ci_sim.ps1:13-19`）。
+# 列进来 = 显式豁免，漏掉依赖 = FAIL。加项必须写理由。
+_CI_SIM_EXEMPT = {
+    'mutate_check.py': '本机实测 187s，耗时级别不同（CI 与 -WithMutation 负责）',
+    'migration_gate.py': '本机实测 108s，且 M3 有工具链抖动'
+                         '（本机 15.6% FAIL / CI 6.2% PASS，§2.43）'
+                         '—— 本地跑会把 CI 的绿读成红',
+    'release_check.ps1': '门禁本体：`ci_sim` 已经跑了一遍 Build，嵌套跑会重复构建'
+                         '且职责重叠（门禁自己含 39 项 + Release 构建）。'
+                         'CI 侧由 `:127 Full release gate` 负责',
+}
+
+# `Step '<名>' { ... }` 的 body 提取。**必须只扫 body，不能扫全文** ——
+# 见 `ci_sim_tool_sets()` 的注释（注释里的工具名会让判据以为"已经跑了"）。
+_STEP_HEAD = re.compile(r"^\s*Step\s+'")
+
+
+def _step_body_tools(text):
+    """只收集 `Step` 块 **body** 里的工具 basename（注释行不算）。
+
+    ⚠️ 为什么不能扫全文（2026-10-06 实测，本轮自己踩的坑）：本文件在
+    `tools/ci_sim.ps1:18` / `:94` 的**注释**里写了 `release_check.ps1`，
+    而"刻意排除"的 `mutate_check` / `migration_gate` 写的是不带后缀的
+    短名 —— 于是扫全文时 `release_check.ps1` **看起来已被覆盖**，
+    判据对**恰好是那个真缺口**失明；同时豁免项检查（判据②）也因注释
+    里的短名而侥幸不触发。这与 §2.40「扫描面自声明」是同一类错误：
+    **声明本身被当成了覆盖**。
+    """
+    out = set()
+    lines = text.replace('\r\n', '\n').split('\n')
+    depth = 0
+    for l in lines:
+        if _STEP_HEAD.match(l):
+            depth = l.count('{') - l.count('}')
+            for t in _TOOL_RE.findall(l):
+                out.add(t)
+            continue
+        if depth > 0:
+            body = l.split('#', 1)[0]          # 行内注释也剥掉
+            for t in _TOOL_RE.findall(body):
+                out.add(t)
+            depth += l.count('{') - l.count('}')
+    return out
+
+
+def ci_sim_tool_sets(ci_src=None, sim_src=None):
+    """现读 ci.yml 的 `build-and-verify` job 与 `ci_sim.ps1` → `(ci_tools, sim_tools)`。
+
+    `ci_tools` = `{basename: 首次出现行号}`（只取该 job 的 `run:` 行）；
+    `sim_tools` = basename 集合（**只取 `Step` 块 body**，注释不算 ——
+    理由见 `_step_body_tools()`）。`(None, None)` = 读不到真值源。
+    """
+    if ci_src is None:
+        cp = os.path.join(REPO, '.github', 'workflows', 'ci.yml')
+        if not os.path.isfile(cp):
+            return None, None
+        ci_src = open(cp, encoding='utf-8').read()
+    if sim_src is None:
+        sp = os.path.join(REPO, 'tools', 'ci_sim.ps1')
+        if not os.path.isfile(sp):
+            return None, None
+        sim_src = open(sp, encoding='utf-8-sig').read()
+
+    lines = ci_src.replace('\r\n', '\n').split('\n')
+    start = next((i for i, l in enumerate(lines)
+                  if l.startswith('  build-and-verify:')), None)
+    if start is None:
+        return None, None
+    end = start + 1
+    while end < len(lines):
+        l = lines[end]
+        if (l.startswith('  ') and not l.startswith('   ')
+                and l.rstrip().endswith(':') and l.strip()):
+            break
+        end += 1
+
+    ci_tools = {}
+    i = start
+    while i < end:
+        m = re.match(r'^\s+run:\s*(.*)$', lines[i])
+        if m:
+            body = m.group(1).strip()
+            if body and body != '|':
+                for t in _TOOL_RE.findall(body):
+                    ci_tools.setdefault(t, i + 1)
+            else:
+                j = i + 1
+                while j < end:
+                    if lines[j].strip() == '' or lines[j].startswith(' ' * 10):
+                        for t in _TOOL_RE.findall(lines[j].strip()):
+                            ci_tools.setdefault(t, j + 1)
+                        j += 1
+                    else:
+                        break
+                i = j - 1
+        i += 1
+
+    return ci_tools, _step_body_tools(sim_src)
+
+
+def ci_sim_sync(ci_src=None, sim_src=None, exempt=None):
+    """`ci_sim.ps1` 与 ci.yml `build-and-verify` 的**工具集**覆盖差。
+
+    ## 为什么需要（2026-10-06）
+    `tools/ci_sim.ps1:6` 一直写着「步骤映射 (保持与 ci.yml 同步; 每次改
+    ci.yml 必须同步这里)」—— 这是**人工承诺，无任何机器判据**。实测：
+    ci.yml 该 job 用 16 个工具，ci_sim 只覆盖 14 个，缺的恰是
+    `modcheck.py` / `drills.py` / `doccheck.py` / `conformance.py` /
+    `skeleton_check.py` 五步（前三者 + conformance 合计 <0.5s，没有
+    "为省时间而排除"的理由），且**从未跑过门禁本体** `release_check.ps1`。
+    => 与 §2.36.8 / §2.38 / §2.40 / §2.42 / §2.45 / §2.46 同型第 7 次。
+
+    ## 判据
+      ① ci.yml 该 job 里出现、`ci_sim.ps1` 里**没有**的工具，若不豁免 ⇒ FAIL；
+      ② `_CI_SIM_EXEMPT` 里列的豁免项若**在 ci_sim 里出现了** ⇒ FAIL
+         （豁免过期，必须删掉，否则会掩盖真的漏项）；
+      ③ 任一侧数到 **0** 个工具 ⇒ FAIL（解析前提被破坏，不得读成"没有差异"）。
+    """
+    if ci_src is None or sim_src is None:
+        ct, st = ci_sim_tool_sets(ci_src, sim_src)
+        if ct is None:
+            return ['ci.yml 的 build-and-verify job 或 tools/ci_sim.ps1 不存在 '
+                    '—— 同步判据失去真值源']
+        ci_tools, sim_tools = ct, st
+    else:
+        ci_tools, sim_tools = ci_src, sim_src
+    if exempt is None:
+        exempt = _CI_SIM_EXEMPT
+
+    errors = []
+    if not ci_tools:
+        errors.append('.github/workflows/ci.yml 的 build-and-verify job 里数到 0 个工具 '
+                      '—— 判据失去锚点，不得读成"没有差异"')
+    if not sim_tools:
+        errors.append('tools/ci_sim.ps1 里数到 0 个工具 —— 判据失去锚点，'
+                      '不得读成"没有差异"')
+    if errors:
+        return errors
+
+    missing = sorted(set(ci_tools) - sim_tools)
+    for t in missing:
+        if t in exempt:
+            continue
+        errors.append('tools/ci_sim.ps1 缺 ci.yml 的步骤（工具 `%s`，ci.yml:%d）'
+                      '——:6 声明"保持与 ci.yml 同步"，但该工具从未在本模拟器执行；'
+                      '要么补 Step，要么加进 _CI_SIM_EXEMPT 并写明理由' % (t, ci_tools[t]))
+    for t in sorted(exempt):
+        if t in sim_tools:
+            errors.append('tools/ci_sim.ps1 的豁免项 `%s` 其实**已经跑了** '
+                          '—— 豁免过期，必须从 _CI_SIM_EXEMPT 删掉'
+                          '（留着一个已经满足的豁免会掩盖真的漏项）' % t)
+    return errors
+
+
 def parse_readme_gate_list(text):
     """从 `README.md` 抽出"默认跑的全部 N 项"清单块的成员名。
 
@@ -1558,6 +1722,56 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
+    # --- ci_sim.ps1 与 ci.yml 工具集同步用例（第五个入口 `ci_sim_sync`）---
+    #
+    # 同样必须一起打印、一起计数（否则"暗处运行、看起来不存在"）。
+    # 五个方向：真仓库不报 / 漏工具必报 / 豁免项已在 sim 里必须报（豁免过期）/
+    # 两侧任一数到 0 个工具必须报（解析前提破坏，不得读成"没有差异"）。
+    def _mk_sim(ci_tools, sim_tools):
+        # 入口接受**已解析**的 (dict, set) —— 绕开文件读取，只测判据本身。
+        return ({t: 10 for t in ci_tools}, set(sim_tools))
+
+    _base_ci = ['modcheck.py', 'e2e.py']
+    _base_sim = ['modcheck.py', 'e2e.py']
+    sim_cases = [
+        ('真实仓库 ci_sim 工具集 -> 不报', None, None, None, 0, None),
+        ('ci_sim 漏掉 ci.yml 的一个工具 -> 必须报',
+         *_mk_sim(_base_ci, ['e2e.py']), None, 1, '缺 ci.yml 的步骤'),
+        ('ci.yml 侧数到 0 个工具 -> 必须报',
+         *_mk_sim([], _base_sim), None, 1, '失去锚点'),
+        ('ci_sim 侧数到 0 个工具 -> 必须报',
+         *_mk_sim(_base_ci, []), None, 1, '失去锚点'),
+        ('豁免项(mutate_check.py)已在 ci_sim 里跑了 -> 必须报',
+         *_mk_sim(['mutate_check.py'], ['mutate_check.py']), None, 1, '豁免过期'),
+    ]
+    for name, _cst, _sst, _ex, want, kw in sim_cases:
+        if _cst is None:
+            e = ci_sim_sync()
+        else:
+            e = ci_sim_sync(ci_src=_cst, sim_src=_sst, exempt=_CI_SIM_EXEMPT)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
+    # ⚠️ 注释里的工具名**不得**算作"已覆盖"（2026-10-06 本轮自己踩的坑）：
+    #    `tools/ci_sim.ps1:18` / `:94` 的注释提到 `release_check.ps1`，
+    #    扫全文时会让判据以为它已被覆盖 —— 而它**恰恰**是当时唯一的真缺口。
+    #    这条用例走 `_step_body_tools()` 本身（不是 `ci_sim_sync`），
+    #    因为它测的是**扫描面**，不是判据。
+    _scn = ("# 注释里提到 release_check.ps1 与 mutate_check.py\n"
+            "Step 'real' {\n"
+            "    & $py tools\\modcheck.py --all-compositions  # 行内注释: mutate_check.py\n"
+            "}\n")
+    _got = _step_body_tools(_scn)
+    if _got != {'modcheck.py'}:
+        fails.append('ci_sim 扫描面守卫: `_step_body_tools` 把注释里的工具名也算进去了 '
+                     '（得到 %s；只应得到 {\'modcheck.py\'}）—— '
+                     '注释里的提及会让判据以为该步骤已被覆盖'
+                     % sorted(_got))
+
     # --- 扫描面自身的守卫 ---
     # 上面所有用例都建立在"该文件**在面内**"之上。若扫描面哪天把根目录
     # 悄悄移出去, 判据会**全绿而失明** —— 判据的判据没了。
@@ -1607,7 +1821,13 @@ def selftest():
     for name, _ci, _t, _d, want, _kw in ci_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
-    total = len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
+    # ci_sim 工具集同步用例走第五个入口（`ci_sim_sync`），同样必须一起
+    # 打印、一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _cst, _sst, _ex, want, _kw in sim_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
+    total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
+             + len(sim_cases))
     if fails:
         for f in fails:
             print('  [X] %s' % f)
@@ -1617,7 +1837,8 @@ def selftest():
     neg = (len([c for c in cases if c[2]])
            + len([c for c in gl_cases if c[2]])
            + len([c for c in th_cases if c[4]])
-           + len([c for c in ci_cases if c[4]]))
+           + len([c for c in ci_cases if c[4]])
+           + len([c for c in sim_cases if c[4]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -1708,6 +1929,19 @@ def main(argv=None):
         _ct, _cd = _gate_counts()
         print('  [ok] ci.yml 项数口径: 静态调用点 %d / 默认运行 %d 与 '
               'release_check.ps1 现数一致' % (_ct, _cd))
+
+    # --- 0e. ci_sim.ps1 与 ci.yml 的**工具集**同步（`:6` 的人工承诺无判据）---
+    # `tools/ci_sim.ps1:6` 写着「保持与 ci.yml 同步; 每次改 ci.yml 必须同步这里」，
+    # 但实测该文件从未跑门禁本体、且缺 5 个 ci.yml 步骤（见函数文档）。
+    # 与 0/0b/0c/0d 同型第 7 次：事实可得，但没有任何判据在用它。
+    sse = ci_sim_sync()
+    if sse:
+        errors.extend(sse)
+    else:
+        _cst, _sst = ci_sim_tool_sets()
+        print('  [ok] ci_sim 工具集: %d / %d 个与 ci.yml build-and-verify 覆盖一致 '
+              '(%d 项显式豁免并写明理由)'
+              % (len(set(_cst) & _sst), len(_cst), len(_CI_SIM_EXEMPT)))
 
     exc = {}
     for f in TARGETS:

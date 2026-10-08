@@ -7,7 +7,16 @@
 #   job build-and-verify:
 #     Build (Release) + RecordSeeds
 #     e2e T1-T30 / attacks A1-A12 / vm_unit / vmc / example E1-E7
-#     protchain P1-P6 / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / 静态未定义名 undef_check / Android 交叉编译 android_compile_check / py_compile
+#     protchain P1-P6 / 模块契约 modcheck / 攻防记录 drills lint / 对外材料 doccheck / 协议兼容 conformance / 骨架回归 skeleton_check
+#     / 加密封装窗口 window_check / 判定多副本 replica_check / CRC 目标表 crc_targets / 静态未定义名 undef_check / Android 交叉编译 android_compile_check / py_compile
+#
+#   刻意**排除**的两个 ci.yml 步骤 (2026-10-06 复核):
+#     · Checker mutation test (mutate_check) —— 本机实测 187s；
+#     · Migration cost gate (migration_gate) —— 本机实测 108s, **且**M3 有
+#       工具链抖动 (本机 MSVC 14.44 15.6% FAIL vs CI MSVC 14.51 6.2% PASS,
+#       见 docs/HANDOVER.md §2.43) ⇒ 本地跑它会把 CI 的绿读成红。
+#     二者由 CI 与 `tools/release_check.ps1 -With*` 负责；
+#     `docs/HANDOVER.md` §2.48 记名了这条边界。
 #   job reproducible:
 #     用 seeds.json 同种子重建 (Release, SkipSign) + SHA-256 比对 demo.exe/vm.blob
 #   job sdk-package:
@@ -81,6 +90,19 @@ if (-not $SkipTest) {
         if ($LASTEXITCODE -eq 0) { & $py examples\tool_demo\test_example.py }
     }
     Step 'protchain P1-P6' { & $py tests\protchain_check.py }
+    # 以下 5 步与 ci.yml 的对应步骤同名同序 (2026-10-06 补齐):
+    # 它们此前只在 CI / `release_check.ps1` 里跑, 本模拟器从未执行 ——
+    # 而本文件的 :6 一直声明"保持与 ci.yml 同步"。实测总耗 <18s,
+    # 便宜到没有"为省时间而排除"的理由。
+    Step '模块契约 (modcheck)' { & $py -X utf8 tools\modcheck.py --all-compositions }
+    Step '攻防记录 (drills lint)' { & $py -X utf8 tools\drills.py lint }
+    Step '对外材料 (doccheck)' { & $py -X utf8 tools\doccheck.py }
+    Step '协议兼容性 (conformance)' {
+        & $py -X utf8 tools\conformance.py --selftest
+        if ($LASTEXITCODE -ne 0) { throw 'conformance selftest failed' }
+        & $py -X utf8 tools\conformance.py modules.json
+    }
+    Step '骨架回归 (skeleton_check)' { & $py -X utf8 tools\skeleton_check.py }
     Step '加密封装窗口 (window_check)' {
         & $py tools\window_check.py --selftest | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'window_check selftest failed' }
