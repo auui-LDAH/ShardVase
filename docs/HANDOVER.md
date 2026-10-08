@@ -6008,4 +6008,19 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 | `tools/release_check.ps1` / `tools/ci_sim.ps1` | `parse errors: 0`（`[Parser]::ParseFile`） |
 | 受影响工具自检 | `guard_selftest` PASS（正向 0 / 负向 3）；`window_check` PASS（24 文件 / 308 函数 / 9 目标）；`selfcrypt_residency_check --selftest` **4/4 变异被抓** |
 
-*2026-10-06 v22*
+### 2.47.9 CI 实测
+
+提交 `b01cb8d`（`docs+fix: 源码注释里 file:line 交叉引用逐条核对 —— 14 处已漂移`，
+9 files / +169 −16）推送后：
+
+| 项 | 结果 |
+|---|---|
+| CI run | **`37797447952`**（head `b01cb8d`）**`completed success`** |
+| job | `linux-portability` 15s / `build-and-verify` / `reproducible` / `sdk-package` **全部 success** |
+
+⚠️ 本轮改动**只改注释里的行号数字**，未触碰任何可执行逻辑（6 个文件
+delta 0 字节），故 CI 上与行号无关的步骤不受影响；`Public-material drift
+(doccheck)` 步 success 说明 §2.47 新增的文档段落自身通过了 doccheck 的数字与
+结构判据。
+
+*2026-10-06 v23*
