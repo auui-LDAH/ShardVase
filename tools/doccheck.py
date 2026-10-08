@@ -664,6 +664,176 @@ def gated_check_names():
     return names
 
 
+def gate_threshold_constants(src=None):
+    """从 `tools/migration_gate.py` 现读 M1/M3 阈值常量 —— **唯一真值源**。
+
+    返回 `(consts, why)`，`consts = {'M3': 12.0, 'M1': 12.0}`。
+    `why` 非空 = 解析前提不成立（常量被改名/换写法）；调用方必须报错，
+    **不得**当成"没有阈值可对账" —— 那会让判据静默失明。
+    """
+    if src is None:
+        p = os.path.join(REPO, 'tools', 'migration_gate.py')
+        if not os.path.isfile(p):
+            return None, 'tools/migration_gate.py 不存在 —— 阈值对账失去真值源'
+        src = open(p, encoding='utf-8').read()
+    out = {}
+    for tag, nm in (('M3', 'MAX_M3'), ('M1', 'MAX_M1')):
+        m = re.search(r'(?m)^%s\s*=\s*([\d.]+)' % nm, src)
+        if not m:
+            return None, ('在 tools/migration_gate.py 里读不到常量 `%s` '
+                          '—— 阈值对账的真值源被改动，本判据不做猜测' % nm)
+        out[tag] = float(m.group(1))
+    return out, None
+
+
+# 阈值声明的**唯一形态**：`<= N%` / `≤ N%`。
+#
+# ⚠️ 刻意**不**匹配「阈值 12%」这种裸写法 —— 实测（build/_threshprobe2.py）
+#    两处文档里都有**叙述性**提到旧值 25% 的句子
+#    （tools/migration_gate.py:24 「阈值 **12%**，不是初版的 25%」、
+#     tools/release_check.ps1:651 「阈值是 **12%** 不是 25%」），
+#    按裸数字匹配会把历史叙述当现值判，要求篡改叙述来变绿。
+_LE_PCT = re.compile(r'(?:<=|≤)\s*(\d+(?:\.\d+)?)\s*%')
+
+
+def _threshold_claims(text, base=1):
+    """抽「M3/M1 … `<= N%`」形态的阈值声明 → `[(行号, 指标, 值, 原文)]`。
+
+    `base` = `text` 首行的**绝对**行号，供调用方按被抽取片段报出真实行号。
+    指标取该行里 `<=` **之前最近**的那一个 M1/M3 —— 一行写两个指标时不会错配。
+    """
+    out = []
+    for i, ln in enumerate(text.split('\n'), base):
+        for m in _LE_PCT.finditer(ln):
+            head = ln[:m.start()]
+            tags = [t for t in ('M3', 'M1') if t in head]
+            if not tags:
+                continue
+            out.append((i, tags[-1], float(m.group(1)), ln.strip()))
+    return out
+
+
+def _comment_block_before(text, anchor, window=40):
+    """取 `anchor` 行上方、**含 `<= N%` 形态阈值声明**的那一段连续 `#` 注释块。
+
+    返回 `(块文本, 块首绝对行号)`；`(None, None)` = 找不到。
+
+    为什么不"从 anchor 直接往上收连续 `#` 行"（2026-10-06 实测踩到）：
+    `release_check.ps1` 里注释块与 `Check` 之间**隔着 `if ($WithMigration) {`**，
+    直接往上收会立刻停在 `if` 行、收到空块，于是判据对**两个**指标都报
+    "找不到声明" —— 看起来像文档漂移，实际是定位器坏了（同 §2.37.6 那条：
+    **探针的错会伪装成被测对象的性质**）。
+
+    故改成**内容锚定**：先在 anchor 上方 `window` 行内找到最近的
+    `#` 开头的阈值声明行，再向上/向下扩到该注释块的边界。
+    不硬编码行号，注释块增删几行不影响。
+    """
+    lines = text.split('\n')
+    idx = None
+    for i, ln in enumerate(lines):
+        if anchor in ln:
+            idx = i
+            break
+    if idx is None:
+        return None, None
+    seed = None
+    for i in range(idx - 1, max(-1, idx - 1 - window), -1):
+        if lines[i].lstrip().startswith('#') and _LE_PCT.search(lines[i]):
+            seed = i
+            break
+    if seed is None:
+        return None, None
+    lo = seed
+    while lo - 1 >= 0 and lines[lo - 1].lstrip().startswith('#'):
+        lo -= 1
+    hi = seed
+    while hi + 1 < len(lines) and lines[hi + 1].lstrip().startswith('#'):
+        hi += 1
+    return '\n'.join(lines[lo:hi + 1]), lo + 1
+
+
+def check_threshold_claims(gate_src=None, ps_src=None, consts=None):
+    """M1/M3 阈值常量 vs 两处文档声明的一致性（**常量 → 文档**，非反向）。
+
+    ## 为什么需要（2026-10-06，§2.43.6 自己记名的空白）
+    §2.43 把 `tools/migration_gate.py` docstring 与 `tools/release_check.ps1`
+    注释里的旧阈值 **25% 修成 12%** —— 但那次修复**没有机器判据**：
+
+      · `MAX_M3` / `MAX_M1` 的唯一消费者是**它们自己的** `--selftest`
+        （`tools/migration_gate.py:220-225` 写的是 `MAX_M3`, 不是字面量），
+        故自检**永远绿**就算文档写错；
+      · 文档里的数字**没有任何检查器在读**。
+
+    => 下次谁改常量（或改回阈值），两处文档会**再次静默过期**，而
+    `--selftest` 依旧全绿 —— 它证明的是"阈值判定逻辑能抓错",
+    **不是**"文档写的阈值是对的"。这与 §2.36.8 / §2.38 / §2.40 同型:
+    **事实可得, 但没有任何判据在用它。**
+
+    ## 判据
+      ① `tools/migration_gate.py` **模块 docstring** 里 M3 / M1 各至少有一条
+         `<= N%` 声明，且值 == 对应常量；
+      ② `tools/release_check.ps1` 里迁移成本项的 `#` 注释块同样两条；
+      ③ 任一面数到 **0** 条声明 ⇒ FAIL（锚点消失，不得读成"没有漂移"）；
+      ④ 常量读不到 ⇒ FAIL（真值源被改动，不猜）。
+
+    刻意**只判这两个面**：它们是 §2.43 实际修过的地方。`tools/migration_cost.py`
+    无阈值；`attacks.json` / 其它文档里的性能与成本叙述**不在判据内**（诚实边界）。
+    """
+    if consts is None:
+        consts, why = gate_threshold_constants(gate_src)
+        if why:
+            return [why]
+
+    if gate_src is None:
+        gp = os.path.join(REPO, 'tools', 'migration_gate.py')
+        if not os.path.isfile(gp):
+            return ['tools/migration_gate.py 不存在 —— 阈值对账失去对象']
+        gate_src = open(gp, encoding='utf-8').read()
+    if ps_src is None:
+        pp = os.path.join(REPO, 'tools', 'release_check.ps1')
+        if not os.path.isfile(pp):
+            return ['tools/release_check.ps1 不存在 —— 阈值对账失去对象']
+        ps_src = open(pp, encoding='utf-8-sig').read()
+
+    errors = []
+
+    def _verdict(claims, label):
+        for tag in ('M3', 'M1'):
+            got = [c for c in claims if c[1] == tag]
+            if not got:
+                errors.append('%s: 找不到 `%s … <= N%%` 形态的阈值声明 —— '
+                              '判据对 %s 失去锚点，不得读成"没有漂移"'
+                              % (label, tag, tag))
+                continue
+            for ln, _t, v, raw in got:
+                if v != consts[tag]:
+                    errors.append(
+                        '%s:%d %s 阈值写作 %g%%，但真值源 `MAX_%s` = %g%% '
+                        '—— 文档已漂移 (%s)'
+                        % (label, ln, tag, v, tag, consts[tag], raw[:70]))
+
+    # 面 1: 真值源**自己**的模块 docstring（= 第一个三引号块）
+    m = re.search(r'"""(.*?)"""', gate_src, re.S)
+    if not m:
+        errors.append('tools/migration_gate.py: 找不到模块 docstring —— '
+                      '阈值表述面消失，不做猜测')
+    else:
+        base = gate_src[:m.start(1)].count('\n') + 1
+        _verdict(_threshold_claims(m.group(1), base),
+                 'tools/migration_gate.py docstring')
+
+    # 面 2: release_check.ps1 迁移成本项的注释块（结构定位，不硬编码行号）
+    blk, bno = _comment_block_before(ps_src, "Check '迁移成本 (migration_gate)'")
+    if blk is None:
+        errors.append('tools/release_check.ps1: 找不到 `Check \'迁移成本 '
+                      '(migration_gate)\'` —— 注释块定位锚点消失，不做猜测')
+    else:
+        _verdict(_threshold_claims(blk, bno),
+                 'tools/release_check.ps1 迁移成本注释块')
+
+    return errors
+
+
 def parse_readme_gate_list(text):
     """从 `README.md` 抽出"默认跑的全部 N 项"清单块的成员名。
 
@@ -1209,8 +1379,64 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
-    # --- 扫描面自身的守卫 ---
+    # --- 门禁阈值常量 vs 文档声明（§2.43.6 记名的空白）---
     #
+    # 与 README 清单同一纪律: 基准**从仓库现读**, 并逐条注入缺陷证明判据
+    # 有判别力。只写正例(=0)会让"恒不报错"的实现也通过。
+    #
+    # ⚠️ 刻意**不**把常量改成"错的"再指望文档报错 —— 判据方向是
+    #    **常量 -> 文档**: 常量是真值源。故负向用例改的是**文档**那一侧,
+    #    以及"真值源读不到"这一前提破坏。
+    def _mk_gate(m3c=12.0, m1c=12.0, doc_m3=12, doc_m1=12, keep_const=True):
+        d = '"""migration_gate.py — 测试用\n\n## 阈值\n'
+        if doc_m3 is not None:
+            d += '  | **M3 保护函数命中** | 55.9%% | 5.9%% | **<= %g%%** |\n' % doc_m3
+        if doc_m1 is not None:
+            d += '  | M1 地址复用率 | — | 1.1%% | <= %g%% |\n' % doc_m1
+        d += '"""\n'
+        if keep_const:
+            d += 'MAX_M3 = %g\nMAX_M1 = %g\n' % (m3c, m1c)
+        return d
+
+    def _mk_ps(doc_m3=12, doc_m1=12, anchor=True):
+        s = '# 判据（实测标定）:\n'
+        if doc_m3 is not None:
+            s += '#   M3 保护函数特征命中率 <= %g%%\n' % doc_m3
+        if doc_m1 is not None:
+            s += '#   M1 地址复用率 <= %g%%\n' % doc_m1
+        if anchor:
+            s += ("if ($WithMigration) {\n"
+                  "    Check '迁移成本 (migration_gate)' {\n"
+                  "        $true\n    }\n}\n")
+        else:
+            s += 'Write-Host "本文件没有迁移成本项"\n'
+        return s
+
+    th_cases = [
+        ('真实仓库阈值声明 -> 不报', None, None, None, 0, None),
+        ('docstring 里 M3 阈值漂移(12->15) -> 必须报',
+         _mk_gate(doc_m3=15), _mk_ps(), None, 1, '漂移'),
+        ('docstring 里 M3 声明整条消失 -> 必须报',
+         _mk_gate(doc_m3=None), _mk_ps(), None, 1, '失去锚点'),
+        ('真值源常量读不到(改名) -> 必须报',
+         _mk_gate(keep_const=False), _mk_ps(), None, 1, '真值源'),
+        ('release_check 注释块 M1 漂移(12->25) -> 必须报',
+         _mk_gate(), _mk_ps(doc_m1=25), None, 1, '漂移'),
+        ('release_check 注释块锚点消失 -> 必须报',
+         _mk_gate(), _mk_ps(anchor=False), None, 1, '锚点消失'),
+        ('常量改 15、文档仍 12 -> 两处各报一条',
+         _mk_gate(m3c=15.0), _mk_ps(), None, 2, '漂移'),
+    ]
+    for name, _g, _p, _c, want, kw in th_cases:
+        e = check_threshold_claims(gate_src=_g, ps_src=_p, consts=_c)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
+    # --- 扫描面自身的守卫 ---
     # 上面所有用例都建立在"该文件**在面内**"之上。若扫描面哪天把根目录
     # 悄悄移出去, 判据会**全绿而失明** —— 判据的判据没了。
     # 2026-10-06 实测: README.md 曾长期不在面内, 而 doccheck 一直 PASS。
@@ -1249,7 +1475,12 @@ def selftest():
     for name, _text, want, _kw in gl_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
-    total = len(cases) + len(gl_cases)
+    # 阈值对账用例走第三个入口（`check_threshold_claims`），同样必须一起
+    # 打印、一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _g, _p, _c, want, _kw in th_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
+    total = len(cases) + len(gl_cases) + len(th_cases)
     if fails:
         for f in fails:
             print('  [X] %s' % f)
@@ -1257,7 +1488,8 @@ def selftest():
         return 1
     # 数一数用例构成: 期望 != 0 的是负向注入, 期望 == 0 的是合规豁免。
     neg = (len([c for c in cases if c[2]])
-           + len([c for c in gl_cases if c[2]]))
+           + len([c for c in gl_cases if c[2]])
+           + len([c for c in th_cases if c[4]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -1323,6 +1555,18 @@ def main(argv=None):
             open(os.path.join(REPO, 'README.md'), encoding='utf-8').read())
         print('  [ok] README 门禁清单: %d 条成员与默认跑的 %d 项双向唯一匹配'
               % (len(_names or []), _n - _opt))
+
+    # --- 0c. 门禁**阈值**常量 vs 文档声明（§2.43.6 记名的空白）---
+    # §2.43 把旧阈值 25% 修成 12%，但那次修复没有机器判据 —— 两处文档里的
+    # 数字无人读，`--selftest` 只证明"阈值判定逻辑能抓错"、不证明文档对得上。
+    thr = check_threshold_claims()
+    if thr:
+        errors.extend(thr)
+    else:
+        _tc, _ = gate_threshold_constants()
+        print('  [ok] 迁移成本阈值: M3/M1 = %g%% / %g%% 与 '
+              'migration_gate.py docstring、release_check.ps1 注释块一致'
+              % (_tc['M3'], _tc['M1']))
 
     exc = {}
     for f in TARGETS:
