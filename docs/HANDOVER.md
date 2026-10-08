@@ -5836,4 +5836,24 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 | `tools/docclaim_check.py` | PASS (8/8) |
 | 全门禁 `release_check.ps1 -SkipDirtyCheck` | **PASS: 36 项检查全通过**（`[ok]` 36 / `[X]` 0 / `[skip]` 0） |
 
-*2026-10-06 v20*
+```
+
+### 2.46.10 CI 实测
+
+提交 `590f2bf`（`fix(doccheck)!: ci.yml 门禁项数口径的机器对账`，3 files /
++337 −7）推送后：
+
+| 项 | 结果 |
+|---|---|
+| CI run | **`37780396166`**（head `590f2bf`）**`completed success`** |
+| 四 job | `linux-portability` / `build-and-verify` / `reproducible` / `sdk-package` **全部 success** |
+| `Public-material drift (doccheck)` 步 | success ⇒ **新判据 0d 在 MSVC 14.51.36231 / Python 3.12.10 的 runner 上同样执行** |
+
+⚠️ 一个**新的观测**（诚实记录）：CI 上 `build-and-verify` 里 **`Migration cost gate`
+这一步是 `success`**，而本机同一提交下 `tools/migration_gate.py --quiet` 报
+`FAIL: M3 15.6% > 12%`。这不是矛盾，而是 §2.43.3 已记名的**工具链抖动**：
+本机 MSVC 14.44.35207 的 M3 = **15.6%**、CI MSVC 14.51.36231 的 M3 = **6.2%**，
+同一份代码落在阈值 12% 的两侧。本轮改动**没有触碰** `migration_gate`，故
+两侧数字与 §2.43/§2.44 记录一致。
+
+*2026-10-06 v21*
