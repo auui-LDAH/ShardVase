@@ -7016,7 +7016,39 @@ if l.lstrip().startswith(FENCE):
 4. §2.52.8 的三处修复**只改了报文与打印条件**，判据的 PASS/FAIL 结论与改前一致
    （干净树上都是 PASS）。即：本轮修的是"红了以后你看不懂为什么"，
    不是"该红没红"。
-5. 第 40 项在**注入轮**里红、在**干净树**上绿；CI 侧需等另一次成功 run 才能确认
-   （见 §2.50.12：CI 帐单问题期间没有 CI 证据）。
+5. 第 40 项在**注入轮**里红、在**干净树**上绿；CI 侧**仍未取得证据**
+   （提交 `3e09018` 的 run 仍因帐单问题未启动 job，见 §2.52.12）。
 
-*2026-10-06 v29*
+### 2.52.12 CI 实测：**仍然没有拿到证据**（帐单问题，非代码）
+
+提交 `3e09018` 的 run **`37841965706`** 结论 `failure`，但它**不是代码问题**：
+
+| job | conclusion | started | completed |
+|---|---|---|---|
+| `linux-portability` | failure | 20:46:36Z | 20:46:39Z（**3 s**） |
+| `build-and-verify` | failure | 20:46:36Z | 20:46:41Z（**5 s**） |
+| `reproducible` | skipped | 20:46:41Z | 20:46:41Z |
+| `sdk-package` | skipped | 20:46:41Z | 20:46:41Z |
+
+两个 job 各在 3 秒 / 5 秒内"完成"，注解逐字：
+
+```
+X The job was not started because recent account payments have failed or your
+  spending limit needs to be increased. Please check the 'Billing & plans'
+  section in your settings
+```
+
+⇒ **调度层失败**，一个 step 都没跑（若为代码问题，`build-and-verify` 至少要跑几分钟
+的 Release 构建）。判定方法 = `gh run view <id> --json status,conclusion,jobs`，
+逐 job 打印 `conclusion` 与 `startedAt/completedAt`：**秒级 + skipped 兄弟 job +
+帐单注解** 三者同时出现即调度层失败。
+
+本条对 §2.52 的影响 = **没有任何影响**：2.52.6 的承重验证、2.52.7 的第 40 项注入证据、
+2.52.10 的完整门禁 `PASS: 37 项` 全部是**本机**实测。CI 绿本也不能替代它们
+（§2.50.12 已记过同一件事：绿只说明"这一次没触发"）。
+
+诚实边界（承接 §2.50.12 的三条）：帐单/支出上限属**外部基础设施状态**，
+需去 GitHub `Billing & plans` 处理；在那之前**每一次提交都不会有 CI 证据**，
+记录里只能如实标注"该提交缺少 CI 验证这一环"。
+
+*2026-10-06 v30*
