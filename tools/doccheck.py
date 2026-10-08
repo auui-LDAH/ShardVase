@@ -1828,6 +1828,39 @@ def selftest():
               % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
              + len(sim_cases))
+
+    # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
+    #
+    # `total` 与 `neg` 都是**由长度算出来的** ⇒ 删掉一个批次、或清空它的项，
+    # 只会让打印的数字**变小**，**不会**报错 —— "PASS: 20 项" 与 "PASS: 45 项"
+    # 长得一样绿，而人不会记得该是多少。§2.48 刚证明过这类
+    # **"声明被当成覆盖"** 的错误有多容易发生（注释里提一句工具名，
+    # 判据就以为它被覆盖了）。
+    #
+    # 判据要求**非空 + 总数下限**，不写每个批次的精确条数：
+    # 精确条数每次加用例都要改，一定会过期；而下限只会被"新增用例"抬高，
+    # **不会**因正常演进失效 —— 它只在"有批次被掏空"时开火。
+    #
+    # ⚠️ 下限**必须紧贴当前值**，不能留余量（2026-10-06 负向实测）：
+    #   我第一版写 `_TOTAL_FLOOR = 40`（当前 45，留 5 条余量），
+    #   负向用例"把 sim_cases 从 5 条砍到 1 条"实测报 **`PASS: 41`** ——
+    #   **仍然全绿**。留余量恰恰使守卫对自己要防的那件事失明。
+    #   故下限 = **当前精确值**：删任何一条用例都必须显式改这个数字
+    #   （删用例是重大动作，值得被强制看见），而新增用例只会让它更高。
+    _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
+                ('ci_cases', ci_cases), ('sim_cases', sim_cases))
+    for _bn, _bl in _BATCHES:
+        if not _bl:
+            fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
+                         '空批次不会报错只会让数字变小（且该批判据完全失去'
+                         '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
+                         % _bn)
+    _TOTAL_FLOOR = 45
+    if total < _TOTAL_FLOOR:
+        fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
+                     '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
+                     % (total, _TOTAL_FLOOR))
+
     if fails:
         for f in fails:
             print('  [X] %s' % f)
