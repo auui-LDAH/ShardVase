@@ -6208,4 +6208,25 @@ if _got != {'modcheck.py'}:
    "豁免的理由还成立"。`migration_gate` 那条（本机红 / CI 绿）就是靠 §2.43
    的工具链抖动，工具链一变它就该被重审。
 
-*2026-10-06 v24*
+
+### 2.48.9 CI 实测
+
+提交 `c3902bc`（3 files / +446 −5）推送后：
+
+| 项 | 结果 |
+|---|---|
+| CI run | **`37810000352`**（head `c3902bc`）**`completed success`** |
+| 四 job | `build-and-verify` / `linux-portability` / `reproducible` / `sdk-package` **全部 success** |
+| 门禁日志 | `build/logs/release_check_20261008_*.log` ⇒ `[release_check] PASS: 36 项检查全通过` |
+
+本地同提交的全门禁逐项亦全绿（`[ok]` 36 / `[X]` 0 / `[skip]` 0），其中
+`对外材料 (doccheck)` 项即新判据的宿主 —— 它在本机与 CI 两侧都执行，
+故 `ci_sim_sync()` 不只在开发机上有效。
+
+补充一条**观测**（诚实记录）：`tools/ci_sim.ps1` 本身**不在 CI 里跑**
+（CI 跑的是 `.github/workflows/ci.yml`）。所以"补进 `ci_sim` 的 5 个步骤在
+CI 上验证过"这句话**不成立** —— 它们是在**本机**由
+`tools/ci_sim.ps1 -SkipSdk` 全量实跑验证的（rc=0 / PASS，§2.48.7）。
+新判据 `ci_sim_sync()` 则**在** CI 里跑（它是 `doccheck` 的一部分）。
+
+*2026-10-06 v25*
