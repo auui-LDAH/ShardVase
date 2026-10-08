@@ -1127,6 +1127,51 @@ Check 'selfcrypt 驻留期密文态 (selfcrypt_residency)' {
     $rc -eq 0
 }
 
+# ## 为什么需要（2026-10-08 实测，不是假想的风险）
+#   `docs/N1_PHASE2_PLAN.md:36` 逐字写着「meta 布局改动必须同步
+#   `selfcrypt_proto.py`（写）与 `selfcrypt.c`（读）、
+#   `integrity.c build_selfcrypt_mask`（读 rva/len 偏移），三侧一致。」
+#   —— 这句是**人工承诺**，四方**没有任何代码在读两侧并比较**。
+#   实测三类漂移:
+#     · py 读侧 SC_ENTRY_SIZE 24->20 : protchain **红**（端到端有兜底）
+#     · C  读侧 SC_ENTRY_SIZE 24u->20u: protchain **绿**、e2e 30/30 **绿**
+#     · py 读侧 SC_ENTRY_GROUP_OFF 20->16: protchain **绿**、e2e 30/30 **绿**
+#   后两类今天**没有任何检查会红** —— 因为 `tests/protchain_check.py:336`/`:368`
+#   把 group 解出来又丢掉（写成 `_grp`），**没有任何判据在用这个字段**；
+#   而 C 侧改错时 protchain 读的是**它自己文件里的**常量，看不见 C。
+#
+# ## 判据（全部由 `struct.pack` 的格式串**推导**，不抄字面量）
+#   ① 写侧格式串 -> 步长与逐字段偏移（`<IIQII` -> 24 / rva@0 len@4 key0@8 crc@16 group@20）
+#   ② 写侧 `hdr` 与 `e_off` 的步长 == 推导值
+#   ③ `src/selfcrypt.c` 的 `SC_ENTRY_SIZE` / `SC_ENTRY_GROUP_OFF`
+#      以及 `sc_do_range` 里四个字段的 `memcpy` 偏移 == 推导值
+#   ④ `tests/protchain_check.py` 的 `SC_ENTRY_SIZE` / `SC_ENTRY_GROUP_OFF` == 推导值
+#   ⑤ `src/integrity.c` 的 `build_selfcrypt_mask()` 里裸步长与 rva/len 偏移 == 推导值
+#   ⑥ **每一侧都必须被找到**：锚点消失即 FAIL —— 失锚**不得**读成"没有漂移"
+#
+# ## 含负向自检
+#   `--selftest` 对文本做 9 条变异（不碰仓库文件），每条都必须被抓；
+#   基线（真实源文件）必须全绿。
+#
+# ## 为什么能安全地跑
+#   纯文本只读；不执行被测代码；不写任何文件。
+#
+# ## 诚实边界
+#   判据比对的是**源码文本**：若常量被挪到别的头文件，本项会报"找不到锚点"
+#   而不是误绿。只覆盖步长与 rva/len/key0/crc/group 偏移；不覆盖 Linux 侧
+#   （`src/selfcrypt.c` 平台无关，两侧共用）。
+
+Check 'selfcrypt meta 布局四方一致 (selfcrypt_meta)' {
+    & $py -X utf8 tools\selfcrypt_meta_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\selfcrypt_meta_check.py --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

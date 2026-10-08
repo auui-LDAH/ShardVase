@@ -34,6 +34,13 @@ init 解密**后**对每个目标函数体计算 CRC32，与**构建期烧录的
 - **meta 布局扩展**：一期 entry = `{ rva u32 | len u32 | key0 u64 }`（16B，无 crc）。
   二期在 entry 末尾加 `crc32 u32`（明文 CRC）→ entry 变 **20B**。
   **注意**：meta 布局改动必须同步 `selfcrypt_proto.py`（写）与 `selfcrypt.c`（读）+ `integrity.c build_selfcrypt_mask`（读 rva/len 偏移），三侧一致。
+  > **2026-10-08 补记**：这句人工承诺**已机械化**（门禁第 40 项 `tools/selfcrypt_meta_check.py`）。
+  > 实测使用该布局的是**四方**，不是三侧：写侧 `tools/selfcrypt_proto.py:444`、C 读侧
+  > `src/selfcrypt.c:80-81`（含 `:141-144` 四个字段的逐字段 `memcpy` 偏移）、py 读侧
+  > `tests/protchain_check.py:70-71`、掩码侧 `src/integrity.c:418-419`（裸步长 `24u`，第 4 处）。
+  > 新工具由写侧 `struct.pack` 的格式串**推导**布局，再与四侧逐一比对；**锚点消失即 FAIL**
+  > （失锚不得读成"没有漂移"）。原承诺未提及 py 读侧与掩码侧的**裸字面量**，而这两类漂移在
+  > 2026-10-08 实测中**无任何现有检查会红**（详见 `docs/HANDOVER.md` §2.51）。
 - **selfcrypt_proto.py**：加密时已算 `zlib.crc32(body)`（明文），写入 meta 第 4 字段。
 - **selfcrypt.c**：解密后对 `[base+rva, +len)` 算 `prot_crc32`，与 meta 比对；
   失败 → 返回 `PROT_ERR_INTEGRITY`，main 侧按完整性策略处理（exit 0xBAD）。

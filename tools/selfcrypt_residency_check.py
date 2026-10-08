@@ -212,9 +212,26 @@ def judge(entries, samples, refs):
                 break
 
     chk('组 0 每条目都有磁盘参考', not missing, '; '.join(missing[:3]) or 'ok')
+    # ⚠️ 这一条的 detail 必须**说出失败的真正原因**。原实现写成
+    #    `'; '.join(drifted[:3]) or ('全部 %d 轮逐字节一致' % len(samples))` ——
+    #    当 `g0` 为空（如 `tests/protchain_check.py` 的 group 偏移被读错，
+    #    9 条全被判成组 1）时 `drifted` 也是空，于是**判 FAIL 的那一行却打印
+    #    「全部 40 轮逐字节一致」**，读日志的人只会看到自相矛盾。
+    #    实测出处：build/logs/release_check_20261009_041442.log（§2.52）。
+    if not g0:
+        d4 = ('组 0 为空（%d 条全被判为组 1）-> 判据**空转**，没有任何条目被比对。'
+              '先看①：这通常意味着 meta 的 group 字段被读错了' % len(entries))
+    elif not samples:
+        d4 = '一轮都没采到（0 轮）-> 无证据'
+    elif missing:
+        d4 = '; '.join(missing[:3])
+    elif drifted:
+        d4 = '; '.join(drifted[:3])
+    else:
+        d4 = '全部 %d 轮逐字节一致' % len(samples)
+
     chk('组 0 在全部采样轮次均为磁盘密文',
-        bool(g0) and len(samples) > 0 and not drifted and not missing,
-        '; '.join(drifted[:3]) or ('全部 %d 轮逐字节一致' % len(samples)))
+        bool(g0) and len(samples) > 0 and not drifted and not missing, d4)
     return checks
 
 
@@ -282,6 +299,11 @@ def selftest():
 
     total = len(mutations)
     print('[selfcrypt-residency-selftest] %d/%d 变异被抓' % (caught, total))
+    # ⚠️ 下面这 4 条是**合成基线**（组 0 恰好 2 条 / 10 轮），不是本体跑出来的
+    #    数据。原实现没有任何前缀，于是门禁日志里它们紧挨在本体的
+    #    `FAIL: 2/4 条判据未通过` 之上，读起来像"4 条全 ok 却报 2/4 FAIL"
+    #    —— 实测出处 §2.52。加上这行表头，两段就不再可能被读混。
+    print('  --- 以下是合成基线（自检用例数据, 非本体采样）---')
     for name, ok, detail in base:
         print('  [%s] %s  (%s)' % ('ok' if ok else 'XX', name, detail))
     return 0 if (caught == total and not bad) else 1
@@ -487,8 +509,15 @@ def run(exe, map_path, keep_ms, observe_s, quiet):
 
         failed = [c for c in checks if not c[1]]
         if failed:
+            # ⚠️ 失败诊断**不受 --quiet 抑制**。`--quiet` 的契约是「成功时不啰嗦」，
+            #    不是「失败时沉默」。原实现把逐条打印一起关掉 ⇒ 门禁（它自己传
+            #    `--quiet`）写进日志的只有这一行计数，读日志的人根本看不到
+            #    哪条判据红了、为什么 —— 实测见 §2.52（`FAIL: 2/4` 上方紧跟着
+            #    的是 **--selftest 合成基线**的 4 条 `[ok]`，看起来像自相矛盾）。
             print('[selfcrypt-residency] FAIL: %d/%d 条判据未通过'
                   % (len(failed), len(checks)))
+            for name, _ok, detail in failed:
+                print('  [XX] %s  (%s)' % (name, detail))
             return 1
         print('[selfcrypt-residency] PASS: 组 0 %d 条 × %d 轮 全部逐字节等于磁盘密文'
               % (len([e for e in entries if e[2] == GROUP_VM]), len(samples)))

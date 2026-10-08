@@ -170,8 +170,8 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   docs/DEBUG_CONSOLE_PLAN.md:224       「已交付并入库门禁（30 / 32)」
 # 语义上门禁项数**只可能是分母**。旧实现比较 `m.group(2)` —— 方向本就对。
 #
-# ## 容差 {39, 36}
-# 总数 39 / 默认调用 36 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
+# ## 容差 {40, 37}
+# 总数 40 / 默认调用 37 都是合法现值 (3 项由 -With* 控制, 默认不跑)。
 # 沿用轮次规则的先例: 允许"全量"与"默认"两种口径。
 # 2026-10-02: 33/30 -> 34/31 (新增 `加密封装窗口 (window_check)`, §2.16/T11)。
 # 2026-10-03: 34/31 -> 35/32 (新增 `判定多副本等价性 (replica_check)`, R3.2-c)。
@@ -195,8 +195,18 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   必须**逐字节等于磁盘密文**; 组 1（EXT 组）不在判据内，因为看门狗每轮
 #   自己开/关一次 EXT 窗口（`src/integrity.c:188`/`:256`），窗口内它就该是明文。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 39
-GATE_DEFAULT = 36
+# 2026-10-08: 39/36 -> 40/37 (新增 `selfcrypt meta 布局四方一致
+#   (selfcrypt_meta)`; 补的是 `docs/N1_PHASE2_PLAN.md:36` **自己写下的**
+#   人工承诺「meta 布局改动必须同步 selfcrypt_proto.py（写）与
+#   selfcrypt.c（读）、integrity.c build_selfcrypt_mask（读 rva/len 偏移），
+#   三侧一致」—— 四方没有任何代码在读两侧并比较。实测三类漂移中，
+#   `SC_ENTRY_GROUP_OFF` 20->16 与 C 侧 `SC_ENTRY_SIZE` 24u->20u
+#   两类**没有任何检查会红**（protchain 绿、e2e 30/30 绿），因为
+#   `tests/protchain_check.py:336`/`:368` 把 group 解出来又丢掉（写作 `_grp`）。
+#   判据由 `struct.pack` 的格式串**推导**步长与逐字段偏移，不抄字面量。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 40
+GATE_DEFAULT = 37
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
@@ -621,6 +631,72 @@ def check_gate_structure():
 
 
 
+def check_fence_balance(docs=None):
+    """断言扫描面内每个 `.md` 的 ``` 围栏**配平**（结构判据）。
+
+    ## 为什么需要（2026-10-08，真实事故）
+    `DocView._walk()`（`:281-304`）用一个**布尔 `inside` 翻转**来判"这一行是否
+    在代码块内"。这个实现在**围栏总数为偶数**时正确，但只要总数是**奇数**，
+    从那个未配对的围栏起，后面所有行的 `in_code` 语义**整体反转** ——
+    代码块内的行被判成"代码块外"、块外的判成"块内"。
+
+    实测（`docs/HANDOVER.md`，HEAD `ab04716`）：围栏 **283 条（奇数）**，
+    于是 `:6671`（在 ``` 块内，围栏 `:6670`/`:6673`）被判 `in_code=False`，
+    里面的 `[release_check] FAIL: 1/36 未通过` 被当成**现值断言**报出来
+    （`门禁项数声称 36, 实际 40`）。**那条报错指向的是受害者，不是病因** ——
+    真正的病因是一个孤立的 ```（`:5839`），它是 `da5f906` 插入 §2.46.10 时
+    多写的一行，使全文奇偶从那一刻起坏掉。
+
+    ⚠️ 关键教训: 奇偶坏掉**不会**让 doccheck 报"围栏不配平"，它只会让
+    **代码块豁免整类失效** —— 于是报出来的是若干看似无关的数字漂移，
+    而真正的病因（多了一个 ```）没有任何判据在看。这类"判据悄悄失效比判据
+    报错更危险"与本仓库 §2.36.8 / §2.38 / §2.40 / §2.42 / §2.45 / §2.46
+    / §2.48 的**同型缺陷第 9 例**：事实（围栏数）可得，无判据在用它。
+
+    ## 判据（两条，任一无锚点即 FAIL，不读成"没有漂移"）
+    ① 围栏总数**必须是偶数**（奇 ⇒ 必有未配对者 ⇒ `in_code` 从某行起反转）；
+    ② **带 info string 的围栏必须落在偶数序号**（`.md` 里带语言标记的
+       ``` 只可能是**开启**围栏 ⇒ 它的序号必为偶数）。这条比 ① 更锐:
+       总数偶数但配对错位（例如多了个裸 ``` 又少了个开围栏）时 ① 绿而 ② 红。
+
+    `docs=None` 时读真实 `TARGETS`；自检传 `{rel: text}` 绕开文件系统。
+    """
+    errors = []
+    if docs is None:
+        docs = []
+        for p in TARGETS:
+            rel = os.path.relpath(p, REPO).replace('\\', '/')
+            try:
+                docs.append((rel, open(p, encoding='utf-8').read()))
+            except OSError:
+                continue
+    else:
+        docs = sorted(docs.items())
+    for rel, t in docs:
+        rows = []
+        for i, l in enumerate(t.split('\n'), 1):
+            if l.lstrip().startswith(FENCE):
+                s = l.lstrip()[len(FENCE):].strip()
+                rows.append((i, s, l))
+        if not rows:
+            continue
+        if len(rows) % 2:
+            last = rows[-1]
+            errors.append(
+                '%s 的 ``` 围栏总数 %d 是**奇数** -> 从某一处起 `in_code` 语义'
+                '整体反转（代码块豁免整类失效）。最后一个围栏在 :%d；'
+                '先找那个多出来的孤立 ```（§2.51 的成因是插新节时多写了一行）'
+                % (rel, len(rows), last[0]))
+        for k, (ln, info, raw) in enumerate(rows):
+            if info and k % 2 == 1:
+                errors.append(
+                    '%s:%d 是带语言标记的围栏（info=%r）却落在**奇数序号** '
+                    '#%d（0-based）-> 配对已错位（带标记的只能是开启围栏）。'
+                    '说明此前某处多了一个 ``` 或少了一个开启围栏'
+                    % (rel, ln, info, k))
+    return errors
+
+
 def gated_check_names():
     """`if ($With*)` body 内的 `Check` 名集合 —— **默认调用下不跑**的那些。
 
@@ -937,8 +1013,11 @@ _CI_SIM_EXEMPT = {
     'migration_gate.py': '本机实测 108s，且 M3 有工具链抖动'
                          '（本机 15.6% FAIL / CI 6.2% PASS，§2.43）'
                          '—— 本地跑会把 CI 的绿读成红',
+    # 这里**刻意不写项数**：写死过一次（"门禁自己含 39 项"），第 40 项落地后
+    # 它就静默过期了 —— 而这个文件不在 doccheck 自己的 TARGETS 里（只扫 .md），
+    # 任何计数判据都看不见它。§2.39 的取向：数字无信息量就删掉，别改成新数字。
     'release_check.ps1': '门禁本体：`ci_sim` 已经跑了一遍 Build，嵌套跑会重复构建'
-                         '且职责重叠（门禁自己含 39 项 + Release 构建）。'
+                         '且职责重叠（门禁本体含全部检查项 + Release 构建）。'
                          'CI 侧由 `:127 Full release gate` 负责',
 }
 
@@ -1800,6 +1879,42 @@ def selftest():
                          '它记的是当时的真实值, 放进面内会要求篡改历史文档'
                          % os.path.relpath(_p, REPO).replace(os.sep, '/'))
 
+    # --- 围栏配平用例（第六个入口 `check_fence_balance`）---
+    #
+    # 同样必须一起打印、一起计数（否则"暗处运行、看起来不存在"）。
+    # 四个方向：配平不报 / 奇数总数必报 / 总数偶数但带标记围栏错位必报 /
+    # 空文档不算（没有围栏不是"没漂移"，只是这份文档不适用该判据）。
+    def _mk_fence(blocks=1, extra_bare=0, info='python'):
+        s = ['# 文档', '']
+        for _ in range(blocks):
+            s += ['%s%s' % (FENCE, info), 'x = 1', FENCE, '']
+        for _ in range(extra_bare):
+            s += ['%s' % FENCE, '']
+        return '\n'.join(s) + '\n'
+
+    # ⚠️ 这个用例必须**总数偶数**且**只有一个**带标记的围栏落在奇数序号，
+    #    才能只触发判据②（第一版把总数写成奇数 ⇒ 两条判据同时开火报 2 条，
+    #    用例自己 FAIL —— 探针的构造错会伪装成判据错，§2.37.6 同型）。
+    #    构造: 1 条裸 + 1 条**带标记(落在奇数序号, BAD)** + 4 条裸 = 6 条。
+    _misaligned = (FENCE + '\n' + FENCE + 'python\nx = 1\n' + FENCE + '\n'
+                   + FENCE + '\n' + FENCE + '\n' + FENCE + '\n')
+    fc_cases = [
+        ('围栏配平(1 个带标记块) -> 不报', _mk_fence(1), 0, None),
+        ('围栏配平(3 个带标记块, 共 6 条) -> 不报', _mk_fence(3), 0, None),
+        ('多一个孤立 ``` (总数奇数) -> 必须报', _mk_fence(1, 1), 1, '奇数'),
+        ('总数偶数但带标记围栏在奇数序号 -> 必须报',
+         _misaligned, 1, '奇数序号'),
+        ('空文档(无围栏) -> 不报', '# 只有文字\n', 0, None),
+    ]
+    for name, _t, want, kw in fc_cases:
+        e = check_fence_balance(docs={'t.md': _t})
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
@@ -1826,8 +1941,13 @@ def selftest():
     for name, _cst, _sst, _ex, want, _kw in sim_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # 围栏配平用例走第六个入口（`check_fence_balance`），同样必须一起
+    # 打印、一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _t, want, _kw in fc_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
-             + len(sim_cases))
+             + len(sim_cases) + len(fc_cases))
 
     # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
     #
@@ -1848,14 +1968,15 @@ def selftest():
     #   故下限 = **当前精确值**：删任何一条用例都必须显式改这个数字
     #   （删用例是重大动作，值得被强制看见），而新增用例只会让它更高。
     _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
-                ('ci_cases', ci_cases), ('sim_cases', sim_cases))
+                ('ci_cases', ci_cases), ('sim_cases', sim_cases),
+                ('fc_cases', fc_cases))
     for _bn, _bl in _BATCHES:
         if not _bl:
             fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 45
+    _TOTAL_FLOOR = 50
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
@@ -1871,7 +1992,8 @@ def selftest():
            + len([c for c in gl_cases if c[2]])
            + len([c for c in th_cases if c[4]])
            + len([c for c in ci_cases if c[4]])
-           + len([c for c in sim_cases if c[4]]))
+           + len([c for c in sim_cases if c[4]])
+           + len([c for c in fc_cases if c[2]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -1975,6 +2097,25 @@ def main(argv=None):
         print('  [ok] ci_sim 工具集: %d / %d 个与 ci.yml build-and-verify 覆盖一致 '
               '(%d 项显式豁免并写明理由)'
               % (len(set(_cst) & _sst), len(_cst), len(_CI_SIM_EXEMPT)))
+
+    # --- 0f. 扫描面内 `.md` 的 ``` 围栏必须配平（§2.51 发现的新成因）---
+    # `DocView._walk()` 靠单个布尔翻转判 `in_code` ⇒ 围栏奇偶坏掉时
+    # **代码块豁免整类失效**，而报出来的却是看似无关的数字漂移。
+    # 判据必须先看住"结构本身是否配平"，否则后续判据的结论不可信。
+    fbe = check_fence_balance()
+    if fbe:
+        errors.extend(fbe)
+    else:
+        _nf = 0
+        for _p in TARGETS:
+            try:
+                _tx = open(_p, encoding='utf-8').read()
+            except OSError:
+                continue
+            if any(l.lstrip().startswith(FENCE) for l in _tx.split('\n')):
+                _nf += 1
+        print('  [ok] 围栏配平: %d 份文档的 ``` 总数为偶数且带标记的围栏'
+              '均在偶数序号' % _nf)
 
     exc = {}
     for f in TARGETS:

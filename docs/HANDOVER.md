@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **39** 项（默认 36）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **40** 项（默认 37）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -5836,8 +5836,6 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 | `tools/docclaim_check.py` | PASS (8/8) |
 | 全门禁 `release_check.ps1 -SkipDirtyCheck` | **PASS: 36 项检查全通过**（`[ok]` 36 / `[X]` 0 / `[skip]` 0） |
 
-```
-
 ### 2.46.10 CI 实测
 
 提交 `590f2bf`（`fix(doccheck)!: ci.yml 门禁项数口径的机器对账`，3 files /
@@ -6590,7 +6588,7 @@ X The job was not started because recent account payments have failed or
   （`build/_lb_diff.py`），且是**逐函数的强弱对照**：
   修复前 `raised TimeoutExpired` / `kill=False wait=False`，
   修复后 `returned (None, ...)` / `kill=True wait=True`。
-* 2.50.11 的**全门禁 `PASS: 36 项`** 也是本机实跑。
+* 2.50.11 的**全门禁 PASS** 也是本机实跑（现值见该节的验证表）。
 
 ## 诚实边界（这条比"CI 绿"更重要）
 
@@ -6604,4 +6602,421 @@ X The job was not started because recent account payments have failed or
 3. 帐单问题属**外部基础设施状态**，不在本仓库的可修范围内；
    本记录只如实标注"该提交缺少 CI 验证这一环"。
 
-*2026-10-06 v27*
+---
+
+## 2.51 门禁第 40 项：selfcrypt meta 布局「四方一致」—— 把一句人工承诺机械化（2026-10-08）
+
+### 2.51.1 缘起：一句写在计划里的承诺，从来没有代码读它
+
+`docs/N1_PHASE2_PLAN.md:36` 逐字写着：
+
+> **注意**：meta 布局改动必须同步 `selfcrypt_proto.py`（写）与 `selfcrypt.c`（读）
+> + `integrity.c build_selfcrypt_mask`（读 rva/len 偏移），三侧一致。
+
+这是**人工承诺**：它规定了"谁必须和谁一致"，但仓库里**没有任何代码在读两侧并比较**。
+本条把它机械化 —— 也就是本仓库第 10 例同型缺陷（「能用」不等于「在用」）。
+
+### 2.51.2 勘查：实测是**四方**，不是「三侧」
+
+按 `<IIQII` / `SC_ENTRY_SIZE` / `SC_ENTRY_GROUP_OFF` 三模式全库扫描，
+真正使用该布局的地方是**四处**（承诺漏掉了 py 读侧与掩码侧的**裸字面量**）：
+
+| 侧 | 位置 | 形态 |
+|---|---|---|
+| ① 写侧 | `tools/selfcrypt_proto.py:437` / `:443` / `:444` | `hdr = 4 + len(entries) * 24` / `e_off = blob_off + 4 + i * 24` / `struct.pack('<IIQII', rva, size, sd, crc, group)` — **裸字面量 24，无命名常量** |
+| ② C 读侧 | `src/selfcrypt.c:80-81` | `#define SC_ENTRY_SIZE 24u` / `#define SC_ENTRY_GROUP_OFF 20u` |
+| ② 附带 | `src/selfcrypt.c:141-144` | 四个字段的**逐字段 `memcpy` 偏移**：`e` / `e+4u` / `e+8u` / `e+16u` |
+| ③ py 读侧 | `tests/protchain_check.py:70-71` | `SC_ENTRY_SIZE = 24` / `SC_ENTRY_GROUP_OFF = 20` |
+| ④ 掩码侧 | `src/integrity.c:418-419` | `blob + 4u + i * 24u` 与 `... + 4u` — **第 4 处裸步长** |
+
+四方**当前字面量一致**（24 / 24u / 24 / 24u），但一致性从未被验证过。
+
+### 2.51.3 判据锐利度实测：三类漂移里**两类今天无人抓**
+
+注入真实文件后跑现有检查（`build/_scmeta_probe2.py`，每例 `finally` 还原并断言逐字节一致）：
+
+| 注入 | `tests/protchain_check.py` | `tests/e2e.py` |
+|---|---|---|
+| 基线（不注入） | rc=0（P1-P6 全 PASS） | — |
+| A. py 读侧 `SC_ENTRY_SIZE 24 -> 20` | **rc=1**（`P1 ... fn 1 out of range`） | — |
+| B. C 读侧 `src/selfcrypt.c:80` `24u -> 20u` | **rc=0 全绿** | **rc=0，30/30 PASS** |
+| C. py 读侧 `SC_ENTRY_GROUP_OFF 20 -> 16` | **rc=0 全绿** | — |
+
+⇒ 只有 A 有端到端兜底。**B、C 两类今天没有任何检查会红**，e2e 30 项也不兜底。
+
+### 2.51.4 根因：group 字段被解出来又丢掉
+
+`tests/protchain_check.py:149-170 selfcrypt_meta()` 确实解出了 group：
+
+```python
+grp = struct.unpack_from('<I', blob, off + SC_ENTRY_GROUP_OFF)[0]
+out.append((rva, ln, grp))
+```
+
+但两个调用点都把它丢弃了 —— `:336` 写成 `for i, (rva, ln, _grp) in enumerate(...)`、
+`:368` 写成 `meta = [(rva, ln) for rva, ln, _grp in ...]`。
+⇒ **没有任何判据在用这个字段**，所以它的偏移漂移必然静默。
+这正是"只数条数的检查看不见『条数对得上、语义对不上』的缺陷"。
+
+### 2.51.5 ⭐ 自我更正：完整门禁**会**红，但**红错了项**且诊断**误导**
+
+我原本预期"注入 C 偏移漂移后完整门禁会全绿"。实测**相反，但结论比预期更糟**。
+
+在**最危险的那一类**（C：`tests/protchain_check.py` `SC_ENTRY_GROUP_OFF 20 -> 16`）
+注入下跑完整门禁（`build/_gateload_meta.py`，`-SkipDirtyCheck`）：
+
+```
+[release_check] FAIL: 1/36 未通过
+red = selfcrypt 驻留期密文态 (selfcrypt_residency)     # ← 门禁第 39 项
+```
+
+而第 39 项的打印**自相矛盾且诊断错误**：
+
+```
+  [ok] 组 0 条目数 > 0  (组 0 2 条 / 组 1 1 条)
+  [ok] 组 0 在全部采样轮次均为磁盘密文  (全部 10 轮逐字节一致)
+[selfcrypt-residency] FAIL: 2/4 条判据未通过      # ← 4 条全是 [ok]
+```
+
+机制：group 偏移读错 ⇒ 9 条条目被**重新分组**（实测 4+5 变成 2+1），
+第 39 项按新的分组取组 0 ⇒ **把一个布局漂移误诊成"驻留期明文暴露"**，
+并且它的 `FAIL: 2/4` 与逐条 `[ok]` 相互矛盾（计数用的是另一套口径，见 2.51.10）。
+
+⇒ 正确表述是：**今天没有任何工具在检查「meta 布局是否四方一致」**。
+第 39 项只是**碰巧**因重新分组而红，且给出的是**错误诊断**。
+新门禁的价值因此不是"多一个红灯"，而是**诊断正确** —— 报错直接指向布局漂移。
+
+（该轮同时实测确认：`e2e T1-T30` 在注入下仍 `[ok]`，与 2.51.3 一致。）
+
+### 2.51.6 修法：`tools/selfcrypt_meta_check.py`（新建，门禁第 40 项）
+
+**判据全部由写侧 `struct.pack` 的格式串推导，不抄字面量**：
+
+1. 写侧格式串 ⇒ 步长与逐字段偏移（`<IIQII` ⇒ 24 / rva@0 len@4 key0@8 crc@16 group@20）；同时校验切片 `data[e_off:e_off+24]` == 推导步长
+2. 写侧 `hdr` 与 `e_off` 的步长 == 推导值
+3. `src/selfcrypt.c` 的 `SC_ENTRY_SIZE`/`SC_ENTRY_GROUP_OFF` **以及 `sc_do_range` 里四个字段的 `memcpy` 偏移** == 推导值
+4. `tests/protchain_check.py` 两常量 == 推导值
+5. `src/integrity.c build_selfcrypt_mask()` 内裸步长与 rva/len 偏移 == 推导值
+6. **每一侧都必须被找到**：锚点消失即 FAIL —— 失锚**不得**读成"没有漂移"
+
+退出码沿用仓库约定 `0=一致 / 1=漂移 / 2=SKIP`。
+注册位置 = 第 39 项 `}` 之后、Linux 运行时**纯注释块之前**（纯注释块必须留在最末）。
+
+**负向自检 9 条变异全部被抓**（`[selfcrypt-meta-selftest] 9/9 变异被抓`）：
+
+| # | 变异 | # | 变异 |
+|---|---|---|---|
+| M1 | 写侧 `hdr` 步长 24→20 | M6 | py 读侧 `SC_ENTRY_SIZE` 24→20 |
+| M2 | 写侧 `e_off` 步长 24→20 | M7 | py 读侧 `SC_ENTRY_GROUP_OFF` 20→16（**今天无人抓的那类**） |
+| M3 | 写侧格式串 group 挪位（`<IIQII`→`<IQIII`） | M8 | 掩码侧步长 24u→20u |
+| M4 | C 读侧 `SC_ENTRY_SIZE` 24u→20u | M9 | 掩码侧读 len 用 +4u→+8u |
+| M5 | C 读侧 `SC_ENTRY_GROUP_OFF` 20u→16u | | |
+
+**真实文件注入差分**（`build/_metaload.py`，每例还原后复核 `新判据 rc=0 | protchain rc=0`）：
+
+| 注入 | 新判据 | protchain |
+|---|---|---|
+| B `src/selfcrypt.c` `SC_ENTRY_SIZE 24u→20u` | **rc=1** | rc=0 |
+| C `tests/protchain_check.py` `GROUP_OFF 20→16` | **rc=1** | rc=0 |
+| A py `SC_ENTRY_SIZE 24→20` | rc=1 | **rc=1**（兜底在场） |
+| D `tools/selfcrypt_proto.py` `e_off` 步长 24→20 | **rc=1** | rc=0 |
+| E `src/integrity.c` 掩码侧 `s_len +4u→+8u` | **rc=1** | rc=0 |
+
+### 2.51.7 我自己的探针踩的坑（同类第 15、16 次）
+
+1. **正则抓到文件里第一个 `struct.pack`**：`struct.pack('<I', len(entries))` 是 count 字段
+   ⇒ 推导步长 4 ⇒ 基线恒红。修法 = 锚定到 entry 那一行
+   （`data\[e_off:e_off\s*\+\s*(\d+)\]\s*=\s*struct\.pack\(...`）。
+2. **只按实参变量名建偏移 dict** ⇒ `len`/`key0` 查不到（`None`）⇒ 那两条判据被**静默跳过**
+   （基线绿、变异也绿）。修法 = 同时按**位置**把 `('rva','len','key0','crc','group')` 映射进去。
+   这条与 2.51.4 的根因**同型**：判据悄悄不生效比判据报错危险得多。
+3. **掩码侧 rva 的字段偏移是隐式 0**（写作 `blob + 4u + i * 24u`，后面没有 `+ 0u`）
+   ⇒ 正则第二个 `+ Nu` 必须可选、缺省算 0，否则基线恒红。
+4. **探针 `--quiet` 假象（同类第 16 次）**：`build/_metaload.py` 给 `tools/doccheck.py`
+   传了 `--quiet`，而 doccheck **只认 `--list`/`--selftest`** ⇒
+   `unrecognized arguments: --quiet` ⇒ rc=2。该列全为 rc=2 是**探针自身的假象，
+   不代表 doccheck 有任何反应**。结论只以「新判据 vs protchain」两列为准。
+   更早的 `build/_scmeta_probe.py` 给 `tests/protchain_check.py` 传 `--quiet`（该脚本只认
+   `--exe/--blob/--map`）同型，rc=2 一度与"检查失败"同形 —— 差点误读。
+
+### 2.51.8 计数口径 39/36 → 40/37
+
+`tools/doccheck.py`：`GATE_TOTAL = 39 → 40` / `GATE_DEFAULT = 36 → 37`（容差注释同步），
+并在沿革块续写一行 `2026-10-08: 39/36 -> 40/37`。
+同步的**现时值**位置：`README.md:107`/`:132`/`:133` + 成员清单新增一项、
+`CONTRIBUTING.md:67`、`ShardVase-展示文档.md:163`、`docs/BLUEPRINT.md:128`、
+`docs/CONTINUATION_PLAN.md:441`/`:529`/`:622`/`:688`/`:716`、`docs/DEBUG_CONSOLE_PLAN.md:8`、
+`docs/DECISION_REDUNDANCY_PLAN.md:257`、`publish/01-关于ShardVase.md:63`、
+`publish/02-项目档案.md:116`/`:168`（**该串在此文件出现 2 次**，逐处断言唯一会失败）、
+`.github/PULL_REQUEST_TEMPLATE.md:16`、`.github/workflows/ci.yml:111`/`:115`、
+`docs/HANDOVER.md:18`。
+`docs/HANDOVER.md` 里大量 36 项口径是**历史快照，一律不动**。
+
+### 2.51.9 修改文件与验证表
+
+| 文件 | 改动 |
+|---|---|
+| `tools/selfcrypt_meta_check.py` | 新建（约 17.5 KB，6 条判据 + 9 条负向变异） |
+| `tools/release_check.ps1` | 注册门禁第 40 项 + 解释性注释块（+45 行） |
+| `tools/doccheck.py` | `GATE_TOTAL`/`GATE_DEFAULT` 40/37 + 沿革续写 |
+| `docs/N1_PHASE2_PLAN.md:36` | 就地补记「该承诺已机械化 + 实测是四方」 |
+| 计数口径 13 个文件 | 39/36 → 40/37 同步 |
+
+* `tools/selfcrypt_meta_check.py` ⇒ 基线 `PASS: 5 条判据全通过`（rc=0）；
+  `--selftest` ⇒ `9/9 变异被抓`（rc=0）。`py_compile` rc=0。
+* `build/_hygiene.py` ⇒ **15 个文件, 0 处异常**。
+* `tools/doccheck.py` ⇒ `检查数字 979 处, 错误 0, 警告 0` / `[doccheck] PASS`
+  （含 `[ok] README 门禁清单: 37 条成员与默认跑的 37 项双向唯一匹配`）。
+* 全门禁（`-SkipDirtyCheck`）⇒ **`[release_check] PASS: 37 项检查全通过`**，
+  含新增的 `[ok] selfcrypt meta 布局四方一致 (selfcrypt_meta)`。
+* CI ⇒ 提交后另记。
+
+### 2.51.10 诚实边界
+
+1. 判据比对的是**源码文本**，不执行被测代码。若常量被挪到别的头文件，
+   本项会报「找不到锚点」而不是**误绿** —— 这是刻意的取向。
+2. 只覆盖**步长**与 rva/len/key0/crc/group **偏移**；不覆盖 Linux 侧
+   （`src/selfcrypt.c` 与 `tools/selfcrypt_proto.py` 平台无关，两侧共用）。
+3. **第 39 项的 `FAIL: 2/4` 与逐条 `[ok]` 自相矛盾**这件事，本条写下的当时
+   只做了记录、没有修。**该缺陷已在 §2.52.5 修掉**（成因不是"计数口径不同"，
+   而是 `--quiet` 把**失败诊断**一起抑制了，加上自检的合成基线没有表头 ——
+   详见 §2.52.5 与 §2.52.7）。此处按时序保留原判断，不回头改写历史。
+4. 本条**没有**为 2.51.3 的 A 类漂移增加新的端到端证据：A 类今天已经有兜底
+   （protchain 会红），新门禁只是让它更早、更明确地报出来。
+
+## 2.52 一份文档的 ``` 围栏总数是奇数 —— 代码块豁免整类静默反转（2026-10-08）
+
+### 2.52.1 缘起：报错指着一个"明明在代码块里"的行
+
+§2.51 落笔后立刻跑 `tools/doccheck.py`，得到：
+
+```
+[X] docs/HANDOVER.md:6671 门禁项数声称 36, 实际 40
+```
+
+而 `:6671` 的内容是 `[release_check] FAIL: 1/36 未通过`，它**就在一个 ``` 块里**
+（围栏在 `:6670` 与 `:6673`）。用 `tools/doccheck.py` 自己的 `DocView(text, path)`
+（**构造签名要两个参数**；类名是 `DocView` 不是 `View`）逐行查 `in_code`：
+
+```
+:6668 in_code=True   :6669 True   :6670 True
+:6671 in_code=False  :6672 False  :6673 True     # ← 与肉眼理解正好相反
+```
+
+### 2.52.2 病因：单个布尔翻转 + 奇数围栏 ⇒ 语义整体反转
+
+`tools/doccheck.py:281-304 DocView._walk()` 用**一个 `inside` 布尔**翻转围栏状态：
+
+```python
+if l.lstrip().startswith(FENCE):
+    inside = not inside
+```
+
+⇒ **只要全文围栏总数是奇数**，那个未配对的围栏之后的**所有**行 `in_code` 语义
+整体反转：真正的代码块被判成正文（于是它里面的数字变成"现值断言"），而正文被
+判成代码块（于是**整类代码块豁免失效**）。这不是一处误报，是**一整个豁免机制
+静默反转**。
+
+### 2.52.3 引入提交：`da5f906` 多写了一行 ```
+
+`build/_fence2.py` / `_fence3.py`：HEAD（`ab04716`）行 6608 / 围栏 **283（奇数）**；
+工作树 6789 / 289（仍奇数）。前 283 个围栏**逐位相同** ⇒ 缺陷在 HEAD 里就存在，
+我新加的 6 个围栏（3 个配对块）本身是配平的，只是**落进了被反转的区间**，
+于是第一次把它暴露出来。
+
+孤立围栏定位在 **`docs/HANDOVER.md:5839`**（`:5838` 空行 / `:5839` = ``` / `:5840`
+空行），位于 `### 2.46.9 验证` 的表格之后、`### 2.46.10` 之前。用 `git log -L` +
+`git log -S` 锁定来源 = 提交 **`da5f906`**（`docs: §2.46.10 —— CI 实测…`，
+2026-10-08），其 diff hunk `@@ -5836,4 +5836,24 @@` 逐字为
+`-*2026-10-06 v20*` → `+``` `（多写的这一行）+ `+### 2.46.10 CI 实测` + …
+
+逐提交奇偶轨迹（`build/_fence9.py`，40 个 rev）：
+
+| 提交 | 围栏数 | 带标记围栏错位数 |
+|---|---|---|
+| `590f2bf` 及之前 | 偶数 | 0 |
+| **`da5f906`** | **253（奇）** | 0 |
+| `b01cb8d` / `3858fe1` | 255 | 1 |
+| `c3902bc` / `9987bdd` | 265 | 2 |
+| `1873d4c` | 273 | 4 |
+| `49ad462` | 281 | 5 |
+| `ab04716` | 283 | 5 |
+
+⇒ 从 `da5f906` 起，**每新增一个带 `python` 标记的围栏就多一条错位** ——
+缺陷在累积，只是没有任何判据在看它。
+
+### 2.52.4 修法 A：删掉孤立围栏 + 删掉 §2.50 里过期的数字
+
+1. 删掉 `docs/HANDOVER.md:5839` 那一行 ```（用 `edit` 工具）。
+   删后 doccheck 的报错从"`:6671`"变成"**`:6591`**"—— 病症从**受害者**移到了
+   **真病因所在的 §2.50 区段**，这正是"先修结构、再看内容"该有的行为。
+2. `:6591`（§2.50.11 的叙述性引用）`…的**全门禁 `PASS: 36 项`** 也是本机实跑。`
+   → `…的**全门禁 PASS** 也是本机实跑（现值见该节的验证表）。`
+   **刻意删数字而不是改成新数字** —— 该行是叙述，数字无信息量（§2.39 的取向）。
+
+⇒ `tools/doccheck.py` 回到 `检查数字 1006 处, 错误 0, 警告 0` / `[doccheck] PASS`。
+（§2.50 区段内另一条 `:6553` 的 `PASS: 36 项` 由 `hist=True` 正确豁免 —— 它的父
+标题 `## 2.50 …（2026-10-06）` 带日期，属历史记录。）
+
+### 2.52.5 修法 B：`check_fence_balance()` —— 让它不可能再静默
+
+只修那 283 行是不够的：**下一次多写一行 ``` 仍然没人报**。故给
+`tools/doccheck.py` 新增结构判据 `check_fence_balance(docs=None)`
+（`docs=None` 读真实 `TARGETS`；传 `{rel: text}` 绕开文件系统供自检用）：
+
+1. **围栏总数必须为偶数** —— 否则报"从某一处起 `in_code` 语义整体反转
+   （代码块豁免整类失效）"。
+2. **带 info string 的围栏必须落在偶数序号**（0-based）—— `.md` 里带语言标记的
+   三反引号只可能是**开启**围栏，序号必为偶数。这条比 ① 更锐：总数偶数但配对
+   错位时 ① 绿而 ② 红。
+
+`main()` 新增 **0f** 步（紧跟 0e）；`selftest()` 新增**第六批 `fc_cases`（5 条）**：
+配平 1 块 / 配平 3 块共 6 条 / 多一个孤立 ```（总数奇数）/ 总数偶数但带标记围栏
+错位 / 空文档。四处必须同改（`total`、`neg`、`_BATCHES`、打印循环）—— 否则新批次
+**暗处运行、看起来不存在**。
+
+`_TOTAL_FLOOR` 由 45 提到 **50**（这条守卫的既有纪律：下限**紧贴当前值**，不留
+余量 —— §2.49 实测过留 5 条余量会让守卫对自己要防的那件事失明）。
+
+自检 **`PASS: 50 项（30 项负向注入 / 20 项合规豁免）`**；本体打印
+`[ok] 围栏配平: 19 份文档的 ``` 总数为偶数且带标记的围栏均在偶数序号`。
+
+### 2.52.6 承重验证：往真实文档注入，确认真的会红
+
+`build/_fenceload.py`（还原放 `finally`，断言逐字节一致）：
+
+| 用例 | rc | 报错条数 | 还原一致 |
+|---|---|---|---|
+| A 往 `README.md` 追加一个孤立 ``` | 1 | 1（含"奇数"，报 `15` 条） | True |
+| B 往 `docs/HANDOVER.md` 追加一个孤立 ``` | 1 | 1（含"奇数"，报 `289` 条） | True |
+| C 还原后对照 | 0 | 0 | — |
+
+（B 用例实测报"`289` 条" —— 即"再写一个孤立围栏"这种错**今天已经会被立刻报出来**。）
+
+### 2.52.7 ⭐ §2.51.5 的证据更正：39 项 → 40 项
+
+§2.51.5 当时引用的是**只有 39 项**的那一轮日志（第 40 项还没写进
+`tools/release_check.ps1`，日志里直接跳过了它）。现在用**含第 40 项**的脚本重跑
+同一注入（`build/_gateload_meta.py`，`GROUP_OFF 20 -> 16`）：
+
+```
+[ok]  CRC 目标表一致性 (crc_targets)
+[ok]  静态未定义名审计 (undef_check)
+[ok]  Android 交叉编译 (android_compile_check)
+[X]  selfcrypt 驻留期密文态 (selfcrypt_residency)      # 第 39 项
+[X]  selfcrypt meta 布局四方一致 (selfcrypt_meta)      # 第 40 项  ← 新证据
+[release_check] FAIL: 2/37 未通过
+```
+
+且第 40 项的诊断**准确指向**病因：
+
+```
+[selfcrypt-meta-selftest] 基线: 5 条判据, 1 条失败
+  [XX] ④ tests/protchain_check.py 读侧常量  (tests/protchain_check.py: SC_ENTRY_GROUP_OFF 写作 16，字段 group 真偏移 20)
+[selfcrypt-meta-selftest] 8/9 变异被抓
+```
+
+⚠️ 注意 `8/9` 里缺的那条是 **M7 自身**（"py 读侧 `SC_ENTRY_GROUP_OFF` 20 -> 16"）：
+因为**真实文件已经被注入成 16**，自检找不到旧值。这**不是**自检失效，而是
+"被测文件正处于变异态"。旧文案一律报"变异点未找到（**自检本身失效**）"，
+属**误诊**。已在 `tools/selfcrypt_meta_check.py` 区分两种成因：
+
+* 文件里已是**新值** ⇒ 报"**变异点已是新值**：…该文件当前处于变异/未还原状态
+  （不是自检失效）"；
+* 新旧值都没有 ⇒ 才报"自检本身失效（源码被改名/挪走了）"。
+
+⇒ §2.51.5 那句"**今天没有任何工具在检查 meta 布局是否四方一致**"在**注入轮**
+这个语境下依然成立（它是描述"修之前"的状态），但**第 40 项确实会因为这类漂移
+而红，且诊断正确** —— 这是 §2.51.5 当时无法拿到的证据。
+
+### 2.52.8 第 39 项诊断缺陷的修复（三处，都在 `tools/selfcrypt_residency_check.py`）
+
+§2.51.10#3 记的"`FAIL: 2/4` 与 4 条 `[ok]` 自相矛盾"，本轮查明**成因不是"两套计数
+口径"**，而是两条更朴素的原因：
+
+1. **`judge()` 第 4 条判据的 detail 写错了。** 原实现
+   `'; '.join(drifted[:3]) or ('全部 %d 轮逐字节一致' % len(samples))` —— 当 `g0`
+   为空（9 条全被判成组 1）时 `drifted` **也是空**，于是**判 FAIL 的那一行却打印
+   「全部 40 轮逐字节一致」**。
+   修法：按 `g0` 空 / `samples` 空 / `missing` / `drifted` / 通过 五种情形分别给
+   detail；`g0` 为空时明确报"组 0 为空（9 条全被判为组 1）-> 判据**空转**，
+   没有任何条目被比对。先看①：这通常意味着 meta 的 group 字段被读错了"。
+2. **`--quiet` 把失败诊断一起抑制了。** `:492 if not quiet:` 包住了逐条打印 ⇒
+   门禁（它自己传 `--quiet`）写进日志的**只有** `FAIL: 2/4 条判据未通过` 一行，
+   读日志的人看不到哪条红了、为什么。`--quiet` 的契约应是"**成功时不啰嗦**"，
+   不是"失败时沉默"。修法：失败分支**无条件**打印每条红的判据。
+3. **自检的合成基线没有表头。** 那 4 条 `[ok]` 是 `--selftest` 的**合成数据**
+   （组 0 恰好 2 条 / 10 轮），紧挨在本体的 `FAIL` 之上，必然被读混。
+   修法：加一行表头 `--- 以下是合成基线（自检用例数据, 非本体采样）---`。
+
+复现证据（`build/_resquiet.py`，注入真实漂移后**分别**用两种参数跑）：
+
+```
+=== 无 --quiet  rc=1 ===
+  条目 9 条（组 0: 0 条）        # ← group 全读错 ⇒ 组 0 空
+  [XX] 组 0 条目数 > 0  (组 0 0 条 / 组 1 9 条)
+  [ok] 采样轮数 >= 10  (40 轮)
+  [ok] 组 0 每条目都有磁盘参考  (ok)
+  [XX] 组 0 在全部采样轮次均为磁盘密文  (全部 40 轮逐字节一致)   # ← 修前的自相矛盾
+  [selfcrypt-residency] FAIL: 2/4 条判据未通过
+=== 带 --quiet（门禁实际用法）  rc=1 ===
+  [selfcrypt-residency] FAIL: 2/4 条判据未通过      # ← 修前只剩这一行，没有归因
+```
+
+### 2.52.9 我自己的探针踩的坑（同类第 17、18、19 次）
+
+1. **按 `utf-16-le` 解码门禁日志**（`build/_gateload_meta.py` 原第 39 行）——
+   错。`gate_log.ps1` 落的门禁日志是**纯 UTF-8**（无 BOM），按 `utf-16-le` 解出
+   乱码，于是 `[ok]` / `[X]` **全部数成 0**，`[ok]=0 [X]=0 [skip]=0` 看起来像
+   "门禁一项都没跑"。同一份日志 `utf-8-sig` 解出 95 行 / 5 处 `release_check`。
+   （"`*>` 落盘是 UTF-16LE"这条纪律只对 **PowerShell 重定向**成立，**不**对
+   `gate_log.ps1` 自己写的文件成立 —— 我把前者套用到了后者。）
+2. **`fc_cases` 第 4 条构造函数写错**：第一版造出 **5 条围栏（奇数）**，
+   于是两条判据**同时开火报 2 条**，用例自己 FAIL（期望 1 条）。
+   与 §2.37.6 同型：**探针的构造错会伪装成判据错**。修法：造 1 条裸 + 1 条带标记
+   （落在奇数序号 #1）+ 4 条裸 = **6 条（偶数）**，只触发判据②。
+3. ⭐ **我在写本节时把新判据自己触发了**（同类第 19 次，也是本轮最有说服力的一条
+   生产证据）：本节 §2.52.5 正文里有一句 `.md 里带语言标记的`＋换行＋**行首三
+   反引号** —— 那行被 `DocView` / `check_fence_balance()` 当成一个**裸围栏**，
+   于是 `docs/HANDOVER.md` 的围栏总数从 300 变成 **301（奇数）**，doccheck 立刻报：
+
+   ```
+   [X] docs/HANDOVER.md 的 ``` 围栏总数 301 是**奇数** -> 从某一处起 `in_code`
+       语义整体反转（代码块豁免整类失效）。最后一个围栏在 :6964
+   ```
+
+   修法：把那句改成"三反引号"（**行首不再出现裸 ```**）。
+   ⇒ 这说明判据**在真实写作流程里就已经开始工作**，而不只是在我为它写的玩具
+   用例上工作 —— 与 §2.52.6 的注入验证互相独立、互为旁证。
+
+### 2.52.10 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/doccheck.py --selftest` | `PASS: 50 项（30 项负向注入 / 20 项合规豁免）` |
+| `tools/doccheck.py` | `检查数字 1006 处, 错误 0, 警告 0` / `[doccheck] PASS` |
+| 围栏配平判据本体 | `[ok] 围栏配平: 19 份文档的 ``` 总数为偶数且带标记的围栏均在偶数序号` |
+| 承重验证 `build/_fenceload.py` | A/B/C 三用例全 OK，两次还原均逐字节一致 |
+| `tools/selfcrypt_meta_check.py --selftest --quiet` | 干净树上 `9/9 变异被抓`，rc=0 |
+| `tools/selfcrypt_residency_check.py --selftest --quiet` | `4/4 变异被抓`，rc=0 |
+| `tools/selfcrypt_residency_check.py --quiet` | `PASS: 组 0 4 条 × 40 轮 全部逐字节等于磁盘密文`，rc=0 |
+| 完整门禁（`-SkipDirtyCheck`） | **`[release_check] PASS: 37 项检查全通过`**，`ok=37 bad=0`，含两项 selfcrypt 项 |
+| `build/_hygiene.py` | `文件卫生: 15 个文件, 0 处异常` |
+
+### 2.52.11 诚实边界
+
+1. 判据②（带标记围栏落在偶数序号）**只覆盖带 info string 的围栏**。若某文档
+   错位后所有带标记围栏**恰好**都还在偶数序号（例如一次多写两行 ```），
+   则①绿②也绿 —— 此时只能靠人工看。判据①（总数偶数）同样看不见"偶数个围栏
+   但配对全错"的情形。
+2. 只覆盖 `TARGETS` 内的 `.md`。仓库里的 `.md` 有相当一部分不在扫描面内
+   （§2.40 已记名这条边界），它们围栏不配平**本判据看不见**。
+3. 本轮**没有**从头扫全库所有 `.md` 的围栏奇偶；修的是 `docs/HANDOVER.md`
+   这一个实测出问题的文件 + 加了面内判据。
+4. §2.52.8 的三处修复**只改了报文与打印条件**，判据的 PASS/FAIL 结论与改前一致
+   （干净树上都是 PASS）。即：本轮修的是"红了以后你看不懂为什么"，
+   不是"该红没红"。
+5. 第 40 项在**注入轮**里红、在**干净树**上绿；CI 侧需等另一次成功 run 才能确认
+   （见 §2.50.12：CI 帐单问题期间没有 CI 证据）。
+
+*2026-10-06 v29*
