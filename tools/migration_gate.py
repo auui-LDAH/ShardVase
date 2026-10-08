@@ -187,6 +187,15 @@ def measure(quiet=False):
         if not quiet:
             print('  -> 中位数（3 对）: M3=%.1f%%  M1=%.1f%%'
                   % (m3_med, m1_med))
+            # ⚠️ M3adv 是**诊断**不是判据（见文件头）：如实报告判据 M3 的
+            #    诚实边界 —— 攻击者自选窗口时能定位多少。不参与 PASS/FAIL。
+            a = re.search(r'对抗口径（自选窗口）\s*: (\d+) / (\d+) \(([\d.]+)%\)',
+                          detail_last)
+            if a:
+                print('  ⚠️ 诊断 M3adv（自选窗口 + 唯一签名）: %s / %s (%.1f%%)'
+                      % (a.group(1), a.group(2), float(a.group(3))))
+                print('     这是判据 M3 的**诚实边界**: 攻击者不必从入口取特征。'
+                      '把 M3 判据窗口收紧**不改变** M3adv（对抗口径不受判据约束）。')
         # ⚠️ 返回顺序必须与调用方一致: **(m3, m1, detail)**
         #   （初版误写为 (m1, m3) -> 打印时两项互换，已修）
         return m3_med, m1_med, detail_last

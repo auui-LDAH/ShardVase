@@ -57,7 +57,25 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 FUNC_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 PROT_PREFIX = 'prot_'
-FEATURE_LEN = 32          # 字节特征长度
+FEATURE_LEN = 32          # 字节特征长度（判据口径: 从函数入口起取）
+FEATURE_SCAN_MAX = 256    # 对抗口径的**自选窗口**扫描上限（字节）
+
+# --------------------------------------------------------------------------
+# **对抗口径 M3adv**（2026-10-06 新增）—— 判据 M3 的诚实边界
+#
+# ## 为什么需要
+#   判据 M3 只在**函数入口起 32 字节**取特征。但攻击者不受这个约束：
+#   他可以自己选窗口（往后挪）。实测（docs/HANDOVER.md §2.43.4）:
+#     · 判据口径          入口起 32B 命中 = **5/32 = 15.6%**
+#     · 对抗口径（唯一签名）自选窗口可定位 = **26/32 = 81.2%**
+#   => 判据测的是"**最容易被利用的取法**"，**显著低估**攻击者能力。
+#
+# ## 这条指标的定位（**不是门禁判据**）
+#   它是**诊断/诚实边界**指标: 报告"若攻击者自选窗口会怎样"。
+#   为什么不设阈值: 要把它压到低位需要**整函数长度抖动**（不是把
+#   `PROT_NOISE` 前移就能解决），属另一个量级的改造，见 §2.43.8。
+#   因此本工具只**报告**它，不让它决定 exit code。
+FEATURE_ADV_REPORT = True
 
 # --------------------------------------------------------------------------
 # **基础设施前缀**（不计入"保护函数特征命中率"）—— M3 实测修正 2026-09-25
@@ -184,6 +202,65 @@ def rva2off(rva, secs, dlen):
     return None
 
 
+def fn_extents(secs, data, m, funcs):
+    """{符号: (rva, 文件偏移, 可用长度)} —— 长度用**下一个函数 RVA** 近似。
+
+    ## 为什么需要
+      对抗口径要判断"某个 32 字节窗口是否落在**同名函数范围内**"，
+      而 map 只给函数**起点**、不给长度 => 用下一个函数起点作边界（近似）。
+      近似是**保守**的：长度偏大只会让"落在范围内"更容易成立，
+      **不会**把可定位的函数误判成不可定位。
+    """
+    starts = sorted((m[s], s) for s in funcs if s in m and m[s] > 0)
+    out = {}
+    for i, (rva, s) in enumerate(starts):
+        nxt = starts[i + 1][0] if i + 1 < len(starts) else rva + 512
+        size = nxt - rva
+        if size <= 0 or size > 65536:
+            size = 512
+        o = rva2off(rva, secs, len(data))
+        if o is None:
+            continue
+        out[s] = (rva, o, min(size, len(data) - o))
+    return out
+
+
+def adv_window_hit(fa, fb_image, fb_off, fb_len, flen=FEATURE_LEN,
+                   scan_max=FEATURE_SCAN_MAX):
+    """**对抗口径**：攻击者自选窗口时，能否跨构建唯一定位该函数。
+
+    在 A 的函数字节 `fa` 里找一个 `flen` 字节窗口，要求它在 B 的**整个映像**
+    `fb_image` 里**只出现一次**（唯一签名），且该次出现落在 B 的**同名函数**
+    范围 `[fb_off, fb_off + fb_len)` 内。
+
+    ## 为什么必须加"唯一"过滤（2026-10-06 实测教训）
+      不过滤时，填充/重复字节（如 `cc cc cc cc`）也算命中 —— 但那种窗口在 B
+      里出现**多次**，**不能用于定位**。实测：不过滤 27/32 = 84.4%，
+      加唯一过滤 26/32 = 81.2%（差的那 1 个正是被重复字节救下的）。
+
+    ## 为什么唯一性要在**整个映像**上判，不能只在 `.text`
+      保护函数并不都在 `.text`：selfcrypt 组（init/enter/leave）经
+      `PROT_CODE_SEG` 落在 `.protxec`。只在 `.text` 里数会把它们误判成
+      "签名不存在"（实测把 `prot_selfcrypt_init` 的签名出现次数误报为 0）。
+
+    返回首个命中的窗口起点偏移；找不到返回 None。
+    """
+    limit = min(scan_max, len(fa) - flen)
+    for start in range(0, limit + 1):
+        sig = fa[start:start + flen]
+        if len(sig) != flen:
+            break
+        idx = fb_image.find(sig)
+        if idx < 0:
+            continue
+        # 唯一性用**二次查找**判（比 count 短路得更早：多数签名一查即排除）
+        if fb_image.find(sig, idx + 1) >= 0:
+            continue
+        if fb_off <= idx < fb_off + fb_len:
+            return start
+    return None
+
+
 # --------------------------------------------------------------------------
 def analyse(pa, pb, mapa=None, mapb=None):
     da, sa = read_sections(pa)
@@ -271,6 +348,31 @@ def analyse(pa, pb, mapa=None, mapb=None):
         'prot_safe': prot_unmatched_names,
     }
 
+    # ---- M3adv 对抗口径（自选窗口 + 唯一签名）----
+    #   判据 M3 固定从入口取；M3adv 允许攻击者自选窗口（见文件头常量注释）。
+    #   **只报告，不参与判定**。
+    ea = fn_extents(sa, da, ma, funcs)
+    eb = fn_extents(sb, db, mb, funcs)
+    adv_prot = [s for s in funcs
+                if is_protected_fn(s) and s in ea and s in eb]
+    adv_hits = []
+    adv_starts = {}
+    for s in adv_prot:
+        _ra, oa, la = ea[s]
+        _rb, ob, lb = eb[s]
+        st = adv_window_hit(da[oa:oa + la], db, ob, lb)
+        if st is not None:
+            adv_hits.append(s)
+            adv_starts[s] = st
+    res['m3a'] = {
+        'prot_total': len(adv_prot),
+        'prot_located': len(adv_hits),
+        'prot_rate': (100.0 * len(adv_hits) / len(adv_prot)
+                      if adv_prot else 0.0),
+        'located': sorted(adv_hits),
+        'starts': adv_starts,
+    }
+
     # ---- M4 结构稳定性 ----
     same_sec = 0
     for (n1, v1, r1, o1, _), (n2, v2, r2, o2, _) in zip(sa, sb):
@@ -345,6 +447,27 @@ def selftest():
     same_n = sum(1 for i in range(len(blob)) if blob[i] == blob2[i])
     case('单字节不同 -> 相同字节数 8191', same_n, 8191)
 
+    print()
+    print('=== 对抗口径 M3adv（自选窗口 + 唯一签名）===')
+    # 用 flen=4 的玩具数据逐条验证 adv_window_hit 的语义。
+    # **必须正反都测**：只测正向命中，会让"恒返回 0"的实现也通过。
+    case('[A] 唯一且在同名函数内 -> 命中 @0',
+         adv_window_hit(b'QWER', b'\x00' * 16 + b'QWER' + b'\x00' * 16,
+                        16, 4, flen=4), 0)
+    case('[B] 签名在 B 出现 2 次（重复/填充）-> 不命中（不能定位）',
+         adv_window_hit(b'QWER', b'QWER' + b'\x00' * 4 + b'QWER',
+                        0, 8, flen=4), None)
+    case('[C] 唯一但在**别的函数**内 -> 不命中（范围过滤生效）',
+         adv_window_hit(b'QWER', b'QWER' + b'\x00' * 16, 8, 8, flen=4), None)
+    case('[D] 需往后挪窗口才唯一 -> 命中 @4（证明"自选窗口"真的在扫）',
+         adv_window_hit(b'XXXX' + b'QWER', b'QWER' + b'\x00' * 16,
+                        0, 4, flen=4), 4)
+    case('[E] 唯一签名落在映像后半（非 .text 区）仍应命中',
+         adv_window_hit(b'QWER', b'\x00' * 512 + b'QWER' + b'\x00' * 16,
+                        512, 4, flen=4), 0)
+    case('空函数体不崩溃', adv_window_hit(b'', b'ABCD', 0, 4, flen=4), None)
+    case('窗口长于函数体不崩溃', adv_window_hit(b'AB', b'ABCD', 0, 4, flen=4), None)
+
     import shutil
     shutil.rmtree(T, ignore_errors=True)
 
@@ -409,6 +532,21 @@ def main():
         print('  未被特征匹配的保护函数（这些是"安全"的）: %d' % len(m3['prot_safe']))
         for s in m3['prot_safe'][:10]:
             print('    %-46s' % s[:46])
+
+    # ---- M3adv 对抗口径（诚实边界，不是判据）----
+    m3a = r.get('m3a')
+    if m3a and m3a['prot_total']:
+        print()
+        print('--- M3adv 对抗口径（攻击者自选窗口 + 唯一签名）---')
+        print('  ⚠️ **不是门禁判据** —— 报告判据 M3 的诚实边界')
+        print('  判据口径（入口起 32B）: %d / %d (%.1f%%)'
+              % (m3['prot_matched'], m3['prot_total'], m3['prot_rate']))
+        print('  对抗口径（自选窗口）  : %d / %d (%.1f%%)'
+              % (m3a['prot_located'], m3a['prot_total'], m3a['prot_rate']))
+        print('  -> 差值 = 判据**低估**的部分: 攻击者不必从入口取特征')
+        if m3a['prot_rate'] > m3['prot_rate'] + 1.0:
+            print('     实测结论: 判据测的是"最容易被利用的取法", '
+                  '收紧判据窗口不改变对抗口径')
 
     print()
     print('--- M4 结构稳定性 ---')
