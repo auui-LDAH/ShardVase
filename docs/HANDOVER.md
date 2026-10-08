@@ -6555,19 +6555,53 @@ except subprocess.TimeoutExpired:
 * 全门禁 ⇒ `[release_check] PASS: 36 项检查全通过`。
 * CI ⇒ 见 2.50.12。
 
-### 2.50.12 CI 实测
+### 2.50.12 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-提交 `RUNSHA` 推送后的 CI run `RUNID`（head `RUNHEAD`）**四 job 全绿**：
-`build-and-verify` / `linux-portability` / `reproducible` / `sdk-package`。
+`49ad462` 推送后的 CI run **37823314673**（head
+`49ad46283559fd829d6d39ab99f6320712191d7d`）状态是 `failure`，
+但**四个 job 一个都没真的运行**。`gh run view 37823314673` 逐字：
 
-其中 `build-and-verify` 的 **`Checker mutation test`** 步
-（就是 §2.50.1 里失败的那一步）**success** ⇒ 这条修复在 CI 上
-回归通过。
+```
+JOBS
+X build-and-verify in 2s (ID 113469631678)
+X linux-portability  in 4s (ID 113469632119)
+- reproducible       in 0s (ID 113469654102)
+- sdk-package        in 0s (ID 113469654413)
 
-⚠️ **诚实边界**：CI 绿**不能**证明"偶发已被消除" ——
-本次失败的前提是 e2e 某用例超时，而超时本身是偶发的。
-CI 绿只说明"这一次没触发"。真正的证据是 2.50.3/2.50.4 的机制复现
-与 2.50.8 的 HEAD/工作树干净差分：**超时路径现在会回收进程**，
-因此"超时 → 泄漏 → WinError 32"这条链条**在机制上**断了。
+ANNOTATIONS
+X The job was not started because recent account payments have failed or
+  your spending limit needs to be increased. Please check the
+  'Billing & plans' section in your settings
+```
+
+⇒ **失败发生在调度层**（GitHub 帐号帐单/支出上限），与本次改动无关。
+`gh run rerun 37823314673 --failed` 返回 rc=0，但重跑后
+`gh run view` 的注解**仍然是同一条帐单信息**（job ID 变了：
+`113471513797` / `113471513934`，结论仍是"未启动"）。
+
+## 本条对 §2.50 的影响
+
+**没有任何影响**，因为 §2.50 的证据链**不依赖 CI**：
+
+* 2.50.3 / 2.50.4 是**本机可复现的机制证据**
+  （`build/_leak_probe.py` 数残留 pid；`build/_winerr32_probe.py`
+  用替身副本复现 `[WinError 32]`）。
+* 2.50.8 的 **HEAD vs 工作树干净差分**是在本机跑出来的
+  （`build/_lb_diff.py`），且是**逐函数的强弱对照**：
+  修复前 `raised TimeoutExpired` / `kill=False wait=False`，
+  修复后 `returned (None, ...)` / `kill=True wait=True`。
+* 2.50.11 的**全门禁 `PASS: 36 项`** 也是本机实跑。
+
+## 诚实边界（这条比"CI 绿"更重要）
+
+1. **这条修复没有 CI 证据**。上次 CI 真跑成功的是 `1873d4c`
+   （run 37816072820，重跑后全绿）与 `9987bdd`（37811713791）；
+   `49ad462` 之后的 run 全部止步于调度层。
+2. **CI 绿本来也不能证明"偶发已被消除"**：失败前提是 e2e 某用例
+   超时，而超时本身是偶发的，绿只说明"这一次没触发"。
+   真正的证据始终是 2.50.8 的**机制**差分 —— 超时路径现在会回收
+   进程，因此"超时 → 泄漏 → WinError 32"这条链条**在机制上**断了。
+3. 帐单问题属**外部基础设施状态**，不在本仓库的可修范围内；
+   本记录只如实标注"该提交缺少 CI 验证这一环"。
 
 *2026-10-06 v27*
