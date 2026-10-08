@@ -4929,6 +4929,8 @@ worktree (接线后) + shim    0.41s   verdict=False
 - ⚠️ **但两处记述还是旧的 25%**：`tools/migration_gate.py:19-25` 的 docstring 阈值表仍写
   `| **M3 保护函数命中** | 55.9% | **5.9%** | **<= 25%** |`；
   `tools/release_check.ps1` 该项注释块仍写「M3 <= 25%（当前 5.9%）」。
+  > **已修**（同日，见 §2.43.2）：两处现均为 **12%**，并补记了本机/CI 的抖动原因。
+  > 本节以下文字描述的是本节写作当时的状态。
 #### ⚠️ 更正（我第一稿把这件事定性错了，两处都错）
 
 第一稿写的是「**被 `-WithMigration` 门控遮住的既有回归**」。补测 CI 日志后发现：
@@ -4984,4 +4986,255 @@ CI 与本地用的 `migration_gate.py` / `migration_cost.py` 是同一份代码�
 | `tools/ci_sim.ps1` | 2 个 Step 镜像加深 |
 | 新增门禁项 | **0**（判据本身没变，变的是"证明它有判别力"这一步被自动跑了） |
 
-*2026-10-06 v16*
+## 2.43 M3 = 15.6% 的机制查明：判据窗口只有 32 字节，而位置抖动落在第 33~47 字节（2026-10-06）
+
+### 2.43.1 缘起：§2.42.8 留下的三件事
+
+§2.42.8 记下「`migration_gate` 在本机 FAIL（M3 = 15.6%）、在 CI PASS（6.2%）」，
+并诚实写了三条边界：① 机理未查明；② 两处记述仍写旧的 `25% / 当前 5.9%`；
+③ 没有判定该改代码、改阈值还是改文档。本节把这三条逐条收掉。
+
+方法上刻意**先修记述、再查机理**：因为「记述与代码不符」是**可机械确认**的事实，
+而「机理」需要新的实验；把前者先钉死，后面的实验才有可信的参照物。
+
+### 2.43.2 先修记述：`25% / 当前 5.9%` -> `12%`（**两处现时值口径**）
+
+`build/_m3claims.py` 全库普查（`.md/.py/.ps1/.json/.yml/.csv/.txt/.c/.h`，
+跳过 `.git`/`build`/`archive`）共 **47 处**命中 M3 阈值相关字样。逐条判读后分三类：
+
+| 类别 | 处数 | 处置 |
+|---|---|---|
+| **现时值口径**（读者会照它做判断） | **2** | **已修为 12%** |
+| 历史叙述（W1.6 成果「55.9% -> 5.9%」） | 4 | 不动（是成果记录，不是阈值） |
+| 历史记录（含当时真值的时间戳条目） | 41 | 不动（§2.40 已确立：历史快照记当时真值） |
+
+两处**现时值口径**的具体改动：
+
+1. `tools/migration_gate.py:18-25` 文件头 docstring 的阈值表：
+   旧 `| **M3 保护函数命中** | 55.9% | **5.9%** | **<= 25%** |` /
+   旧 `| M1 地址复用率 | — | 1.1% | <= 25% |` /
+   旧「阈值留了余量（25% vs 实测 5.9%）」
+   ⇒ 新表为 `无注入基线 / 全注入 / 阈值` 三栏，**M3 与 M1 都是 `<= 12%`**，
+   并写明「12% 不是初版 25%」的标定依据（移除 6/16 只升到 20.6% ⇒ 25% 会漏检）
+   与本机/CI 抖动的机制指针。
+2. `tools/release_check.ps1` 第 24 项注释块（第 647~649 行附近）：
+   旧 `M3 保护函数特征命中率 <= 25%    （当前 5.9%；无注入时 55.9% 必被抓）` /
+   旧 `M1 地址复用率         <= 25%    （当前 1.1%）`
+   ⇒ 新为 `<= 12%` + 「阈值是 12% 不是 25%」的理由 + 抖动说明。
+
+改动后 `tools/release_check.ps1` 由 **70428 B → 71074 B**（`bom=True crlf=1198 bareLF=0`；
+`.ps1` 卫生纪律），旧串 `<= 25%` 残留 **0**、新串 `<= 12%` 计 **2**。
+PS 语法 `parse errors: 0`；`py_compile tools/migration_gate.py` rc=0；
+`tools/migration_gate.py --selftest --quiet` **12 条全 ok**（6 条阈值判定 + 6 条正则/畸形），
+其中阈值判定与代码 `MAX_M3 = 12.0` **一致**：`5.9<=12 True` / `20.6<=12 False` /
+`55.9<=12 False` / `12.0<=12 True` / `12.1<=12 False` / `0<=12 True`。
+
+> 注意一个反直觉点：**`--selftest` 一直是绿的**，因为它的判据取自 `MAX_M3` 常量
+> ——它证明的是「阈值判定逻辑能抓错」，**不能**证明「文档写的阈值是对的」。
+> 文档与常量的漂移，自检看不见。这正是 §2.36.8 / §2.38 / §2.40 那条
+> 「能被机器校验的东西改了、靠人眼维护的地方会漏」的第 5 次同型。
+
+### 2.43.3 机制：首差字节落在第 33~47 字节，而判据只看前 32 字节
+
+复现方式（**不重跑 12 次构建**）：`build/_m3dbg.py` 用固定种子表 + 两个 salt
+（A = `0x11111111` / B = `0xAAAAAAAA`）各构建一次，产物留在临时目录；
+后续全部探针都读这一对产物。
+
+`tools/migration_cost.py` 的 M3 定义是 **`FEATURE_LEN = 32`**：
+取 A 构建中该函数**入口起 32 字节**，在 B 构建的映像里 `find`。
+于是「首差落在第几字节」直接决定是否命中。`build/_m3window.py` + `build/_m3win2.py`
+实测全部 **32 个保护函数**：
+
+```
+prot_license_build_message   首差@47   32B 特征相同 = True
+prot_antidebug_detected_r3   首差@46   32B 特征相同 = True
+prot_antidebug_detected_r4   首差@35   32B 特征相同 = True
+prot_antidebug_detected_r2   首差@33   32B 特征相同 = True
+prot_selfcrypt_init          首差@33   32B 特征相同 = True
+其余 27 个：首差 @2 .. @29  ⇒ 32B 特征 NOT 相同
+```
+
+⇒ **首差 >= 32 的恰好是 5 个，与 M3 命中的 5 个完全同一批**
+（`build/_m3list.py` 的命中清单与 `_m3window.py` 的集合逐一相同）。
+所以 M3 = 15.6% 的分子不是「别的函数偶然匹配」，而是这 5 个函数的
+**前 32 字节跨构建逐字节相同**。
+
+字节级对照（`build/_m3win2.py`，前 48 字节 A vs B）——差异的位置一望可知，
+且差异内容就是构建 salt 本身：
+
+```
+prot_antidebug_detected_r2   A.rva=0x004fd0 B.rva=0x002de0 首差@33
+  +32  A 10 11 11 11 11 8b 4c 24 10 ...   B 10 aa aa aa aa 8b 4c 24 10 ...
+prot_antidebug_detected_r4   A.rva=0x005140 B.rva=0x002fd0 首差@35
+  +32  A 44 24 10 11 11 11 11 8b 4c 24 ...  B 44 24 10 aa aa aa aa 8b 4c 24 ...
+prot_selfcrypt_init          A.rva=0x024200 B.rva=0x024200 首差@33
+  +32  A 50 11 11 11 11 8b 44 24 50 ...   B 50 aa aa aa aa 8b 44 24 50 ...
+```
+
+`11 11 11 11` 与 `aa aa aa aa` 就是 A/B 两个 `PROT_BUILD_SALT` 的立即数
+（`mov dword [rsp+N], imm32`），即 `PROT_NOISE()` 的产物 —— 只是它**出现得太靠后**。
+`prot_license_build_message`（首差@47）与 r3（首差@46）同理。
+
+### 2.43.4 ⭐ 对抗口径：判据 5/32 = 15.6%，但攻击者自选窗口可达 26/32 = 81.2%
+
+判据固定「从入口取 32 字节」，而攻击者**不受这个约束**：他可以从函数任意偏移取特征，
+只要该特征在 B 构建里能重新找到即可用于定位。`build/_m3adv.py`（v1）与
+`build/_m3adv2.py`（v2，加唯一性过滤）实测：
+
+| 口径 | 结果 |
+|---|---|
+| **判据口径**：入口起 32B，在 B 映像命中 | **5 / 32 = 15.6%** ← 与 M3 现值一致（复核通过） |
+| 对抗口径 v1：任一 32B 窗口在 B **同名函数内**找到 | 27 / 32 = 84.4%（**过宽**） |
+| **对抗口径 v2：窗口在 B 整镜像中唯一 + 在 B 同名函数内** | **26 / 32 = 81.2%** |
+
+v1 之所以过宽：填充/重复字节（例如 `cc cc cc cc`）也能"找到"，
+但那种窗口在 B 里出现多次，**不能用于定位**，只有唯一签名才算。
+v2 的「唯一」在**整镜像**上判（不是只在 `.text` —— 见 §2.43.7 的探针更正）。
+
+**最早可命中的 `start`**（步长 1，仅列命中者）：
+
+```
++0   prot_antidebug_detected_r2 / r3 / r4 / prot_license_build_message / prot_selfcrypt_init
++8   prot_dbiguard_suspicious / prot_vmdetect_suspicious
++12  prot_vm_rekey
++21  prot_antidebug_detected_multi / prot_selfcrypt_leave
++25  prot_integrity_check_self / prot_selfcrypt_enter
++27  prot_license_verify          +29  prot_revoke_check
++33  prot_vm_blob_load / prot_vmdetect_scan      +35  prot_indirect_resolve
++37  prot_antidebug_apply_policy  +44  prot_antidebug_scan
++53  prot_sys_nt_query_information_process / prot_sys_nt_query_system_information / prot_vm_run
++64  prot_hostid_get              +74  prot_dbiguard_scan
++110 prot_integrity_check_guards  +111 prot_integrity_start_watchdog
+```
+
+⇒ **把观察窗口往后挪 8 字节，可定位的保护函数就从 5 个变成 7 个；挪到 +112 之后是 26 个。**
+仍不可定位的 6 个：`prot_antidebug_detected` / `prot_integrity_check_iat` /
+`prot_integrity_register_guard` / `prot_integrity_set_watchdog_callback` /
+`prot_sys_available`，以及 `prot_antidebug_fake_active`（估算长度仅 **16 字节**，短于窗口，
+取不出 32 字节特征）。
+
+**这条比 M3 现值本身更重要**：它说明 `M3 <= 12%` 这个判据**测的是"最容易被利用的
+取法"，而不是"攻击者的最优取法"**。判据绿，不代表攻击者定位不到。
+这是一条**判据口径的诚实边界**，不是判据失效（判据本来就写了"从入口取 32 字节"）。
+
+### 2.43.5 量化机制：窗口长度与起点扫描（**不是修法**）
+
+`build/_m3len.py` 固定 A/B 一对构建，改变 `FEATURE_LEN` 与窗口起点：
+判据口径（起点 +0）下，窗口越长命中越少；一旦越过随机化区，反而回升。
+
+```
+LEN=8   28/32 = 87.5%      LEN=32   5/32 = 15.6%  <-- 判据现值
+LEN=16  15/32 = 46.9%      LEN=40   2/32 =  6.2%
+LEN=24  10/32 = 31.2%      LEN=48   0/32 =  0.0%   LEN=64/96/128 = 0/32
+固定 LEN=32，改变起点:
+  start@+0   5/32 = 15.6%   start@+16  3/32 =  9.4%
+  start@+4   2/32 =  6.2%   start@+32  7/32 = 21.9%
+  start@+8   4/32 = 12.5%   start@+48 11/32 = 34.4%   start@+64 15/32 = 46.9%
+```
+
+⇒ **LEN = 48 起命中归零**（32 个保护函数在 48 字节内两两不同）；
+起点后移到 +64 反而升到 46.9%，因为已经**越过随机化区、进入稳定的函数主体**。
+两个方向都印证同一件事：**变化只发生在有限的一段区域里**。
+
+> ⚠️ **调大 `FEATURE_LEN` 不是修法**，只是把机制的边界量出来。判据的语义
+> （"攻击者取函数入口特征"）是有意选的保守口径；改它等于改判据定义，
+> 而不是修防护。这条写进脚本 docstring，避免后人误读成"建议改 32 -> 48"。
+
+### 2.43.6 代码根因：`PROT_PAD_*` 落在 NULL 检查之后
+
+- `include/protect/prot_noise.h:68-74` `PROT_NOISE()` = 一个局部 `volatile`
+  立即数 + 一个永不成立的分支 ⇒ **只覆盖函数序言（约 15 字节）**。
+- `include/protect/prot_noise.h:100-124` `PROT_PAD_STEP()/PROT_PAD_4/2/1()` =
+  `volatile prot_pad1_ = 0u; volatile prot_pad2_ = PROT_BUILD_SALT; prot_pad1_ += prot_pad2_;`
+  ⇒ 这是**第二批**变化源，由调用方用 `#if` 阶梯（`PROT_BUILD_SALT` 的位段）控制条数，
+  于是改变的是**代码长度**。
+- `src/antidebug.c:625-651`（r2）的实际布局：`:626 volatile k = PROT_AD_R2_SALT;`
+  → `:629` 抗 ICF 比较 → `:630-632 if (rep == NULL) return 0u;` →
+  **`:633-642` 才是 `PROT_PAD_*`**。r3（`:655-697`，位段 3..5）、
+  r4（`:703-723`，位段 6..8）同布局。
+- 于是 `PROT_PAD_*` 生成的指令落在**机器码第 33 字节之后**，
+  而 32 字节特征窗口**恰好只覆盖 `PROT_NOISE` 的立即数**。
+  `prot_selfcrypt_init`（`src/selfcrypt.c:290-292` 的 `PROT_NOISE();` 之后紧跟
+  `blob` 取值与长度检查）与 `prot_license_build_message` 同属"序言很短"这一类。
+
+**这不是新发现的缺陷** —— `include/protect/prot_noise.h:40-44` 自己就写了：
+
+> · 只覆盖函数**首部**（约 15 字节）。攻击者若用**函数中部/尾部**的更长
+>   特征仍可能匹配 —— **已知局限**，需在 migration_cost 度量中复核。
+> · 注入位置规律（都在序言）本身是可学习的模式；攻击者可"跳过前 N 字节"
+>   再匹配 —— 这会降低（但不消除）本宏的效果。
+
+本节等于**执行了它要求的"在 migration_cost 度量中复核"**，并首次给出
+精确落点（第 33 / 35 / 46 / 47 字节）与对抗口径的量化（81.2%）。
+
+**为什么 `PROT_PAD_*` 不放在最前面**：它当前的位置在 `rep == NULL` 早退之后，
+有语义原因（先判空再做事）。把它前移到 NULL 检查之前会改变早退路径的机器码，
+属**改防护代码**，须重跑 e2e / `replica_check` / 全门禁 —— 本节**没有做**，
+如实列为未验证。
+
+### 2.43.7 我自己的探针错误（同类第 3 次）
+
+1. **`mc.read_sections()` 的返回形状**：它返回 `(data, sections)`，`sections` 每项是
+   **5 元组** `(name, vsize, size_raw, ptr_raw, virtual_addr)`，**不是 dict**。
+   我按 dict 写了 `s['name']` ⇒ `TypeError: tuple indices must be integers or slices, not str`。
+2. **唯一性搜索的节范围**：v1 只在 B 的 `.text` 里找唯一签名，于是
+   `prot_selfcrypt_init` 报 `n=0`（"入口 32B 在 .text 里不存在"）。
+   实测其 RVA `0x024200` 落在随机名节 **`.q7d7jk6(+0x200)`**（即 `.protxec`），
+   **selfcrypt 组根本不在 `.text`**。改成整镜像后 `n=1`。
+   ⇒ 这不是"selfcrypt_init 没被随机化"，是**口径把它的所在节排除了**。
+
+同型第 3 次（前两次：§2.37.6 的 `base` 行标注 bug、§2.42.7 的 `migbody.ps1` 硬编码真 python）。
+一般化表述：**探针的口径错会伪装成被测对象的性质** —— 而且因为结论"看起来合理"，
+它比工具崩溃更难发现。
+
+**顺带复核一条**：`build/_m3chk.py` 逐条定位 5 个命中，**全部**满足
+`db.find(sig0) == B 中同名函数的入口偏移`（r2 `0x0043d0→0x0021e0`、
+r3 `0x004430→0x002260`、r4 `0x004540→0x0023d0`、
+license_build_message `0x004c70→0x004470`、selfcrypt_init `0x022800→0x022a00`）
+⇒ 判据命中的**确实是对应函数的入口**，不是"窗口偶然落在别处"的假阳性。
+（`_m3where.py` 曾输出 `off2rva` 的 `sec=None`，那是该探针的元组解包瑕疵，不影响此结论。）
+
+### 2.43.8 结论与未决
+
+**已确证：**
+
+1. **本机 M3 = 15.6% 不是防护能力退化，是判据窗口比随机化落点短。**
+   5 个命中函数的首差都在第 33~47 字节，而 `FEATURE_LEN = 32`；
+   命中处确为对应函数入口（非假阳性）。
+2. **CI 6.2% 与本机 15.6% 的差异可由同一机制解释**：工具链
+   （本机 MSVC `14.44.35207` vs CI `14.51.36231`）改变的是**序言长度**，
+   从而改变"首差落在第几字节"；门槛恰在 32/33 附近 ⇒ 同一份代码落到阈值两侧。
+   这是**阈值附近的抖动敏感，不是能力差异**。
+3. **判据显著低估攻击者的能力**：判据 5/32 = 15.6%，攻击者自选窗口
+   26/32 = **81.2%**（唯一签名）。
+4. **`include/protect/prot_noise.h:41-42` 自己写明的已知局限，本节首次量化并定位。**
+5. **两处现时值口径（`25% / 当前 5.9%`）已修为 `12%`**，并补记抖动原因；
+   全库 47 处中其余 45 处为历史叙述/记录，按 §2.40 原则不动。
+
+**未做（诚实边界）：**
+
+- **没有改防护代码**（未把 `PROT_NOISE` / `PROT_PAD_*` 前移进 32B 窗口）。
+  理由：① 属改防护，影响面大（须重跑 e2e / `replica_check` / 全门禁）；
+  ② `PROT_PAD_*` 在 NULL 检查之后有语义原因；
+  ③ **即使前移，也只压低判据的 15.6%，攻击者自选窗口的 81.2% 依然存在** ——
+  要治后者需要**整函数长度抖动**，那是另一个量级的改动。
+  `docs/LINUX_PORT_PLAN.md:1398` 的旧工作项「给剩余 5 个保护函数补 `PROT_NOISE`
+  或纳入 selfcrypt」正是针对这同一批函数（2026-09-25 记为 19.2%，5/26），**至今未做**。
+- **本机 vs CI 的对照实验无法在本机做**（需要 CI 的 MSVC 14.51 工具链）；
+  §2.43.8 第 2 条是**机制解释跨越已知环境差异**，不是直接对照实验。
+- 未验证 `docs/LINUX_PORT_PLAN.md:1398` 那条工作项做完后 M3 会到多少。
+
+### 2.43.9 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/migration_gate.py --selftest --quiet` | **12 条全 ok**（6 阈值判定 + 6 正则/畸形），rc=0 |
+| `py_compile tools/migration_gate.py` | rc=0 |
+| `tools/release_check.ps1` 语法 | `parse errors: 0` |
+| `tools/release_check.ps1` 卫生 | `bom=True crlf=1198 bareLF=0`；`70428 -> 71074 B` |
+| 旧串 `<= 25%` 残留 | **0**（新串 `<= 12%` 计 2） |
+| M3 判据口径复核 | 探针复算 **5/32 = 15.6%**，与门禁实测值一致 |
+| 命中清单一致性 | `_m3list.py` 命中集合 == `_m3window.py` 首差>=32 集合（5/5） |
+| 命中处是否同名入口 | `build/_m3chk.py` **5/5 True** |
+
+*2026-10-06 v17*
