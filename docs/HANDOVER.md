@@ -5629,6 +5629,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
 本轮新增的 0c 步随 `doccheck` 项一起被门禁执行 —— 这也正是本节存在的理由：
 **判据若不进门禁，就只是又一次"事实可得但没人用"**。
 
+### 2.45.8 CI 实测
+
+提交 `cd01626`，CI run `37765383185`：四 job（`build-and-verify` / `linux-portability` /
+`reproducible` / `sdk-package`）全绿。
+
+关键点：`build-and-verify` 里的 `Full release gate` 步会真的跑到
+`tools/doccheck.py`，因此新判据在 CI 的 MSVC 14.51 / Python 3.12 环境下
+**同样被执行**，不只是本机（MSVC 14.44 / Python 3.13）。
+
+CI 上 `Migration cost gate` 是**独立一步**（`.github/workflows/ci.yml:105-106`
+`run: python tools\migration_gate.py --quiet`），故 M3 在 CI 上的结论（PASS）
+与本地（FAIL）不同 —— 那是 §2.43.3 已记录的**工具链差异**，与本节的
+**文档-常量**对账无关：本节判据两个环境下读的都是同一对常量与同一段文档。
+
+
 
 
 
