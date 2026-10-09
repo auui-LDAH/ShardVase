@@ -104,7 +104,7 @@ powershell -File <工程>\build_skeleton.ps1 -Project <工程>
 
 ```powershell
 powershell -File build.ps1 -Config Release
-powershell -File tools\release_check.ps1     # 36 项门禁（默认；共 39 项）
+powershell -File tools\release_check.ps1     # 38 项门禁（默认；共 41 项）
 ```
 
 ---

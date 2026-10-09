@@ -64,7 +64,7 @@ git commit -m "type(scope): 简述
 ### 2.2 必跑的门禁
 
 ```powershell
-# 一键门禁（36 项，含模块契约与演练记录检查；发版前加 -With* 共 39 项）
+# 一键门禁（38 项，含模块契约与演练记录检查；发版前加 -With* 共 41 项）
 powershell -ExecutionPolicy Bypass -File tools\release_check.ps1
 ```
 
@@ -92,7 +92,7 @@ powershell -File build.ps1 -Config Release
 （问题 / 动机）
 
 ## 如何验证
-- [ ] release_check 36/36 PASS（默认）
+- [ ] release_check 38/38 PASS（默认）
 - [ ] （若适用）附实测数字或演练记录
 
 ## 诚实边界

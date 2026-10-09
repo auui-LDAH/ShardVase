@@ -247,6 +247,39 @@ RE_DATE = re.compile(r'\b20[1-9]\d-\d{2}-\d{2}\b')
 FENCE = '```'
 RE_HEADING = re.compile(r'^(#{1,6})\s+(.*)$')
 
+# --- 「恒为现时」文档集 (§2.54) ---
+#
+# 与 `build_targets()` 的四个 glob 组**逐字对应**(根目录 / .github / publish /
+# docs/marketing)。这些文件的性质是: 读者**当下照着做**的说明, 通篇没有
+# "当时的真值" 这种语境 —— 故其中代码块**不是历史转录的容器**, 而是读者
+# 会**原样复制去执行**的命令、或复制进 PR 的模板。
+#
+# ⚠️ 这正是 `in_code` 一刀切豁免的盲区。实测(2026-10-09):
+#   `CONTRIBUTING.md:67` `# 一键门禁（36 项，…共 39 项）`
+#   `CONTRIBUTING.md:95` `- [ ] release_check 36/36 PASS（默认）`
+#   `README.md:107`      `… # 36 项门禁（默认；共 39 项）`
+# 三行都在扫描面内、真值早已是 41/38, 却因 `in_code` 被判"代码块"**永久豁免**:
+# 把它们改成任意数字, doccheck 仍 rc=0 零报错(与 `README.md:132` 并入扫描面
+# 之前那次 §2.40 同类: 事实可得, 但没有任何判据在用它)。
+#
+# ⚠️ **刻意不含** `docs/**` 的自声明文件(写 `> **最后核实**` 的那些):
+# 它们自称"现时", 但正文里带日期的历史小节与程序输出转录极多
+# (`docs/HANDOVER.md` 一处就有 60+ 处代码块内命中)。把它们并入判据会要求
+# **篡改历史记录**才变绿 —— 那是 §2.40 反向守卫在防的同一类错误。
+#
+# 实测: 上述 4 组共 25 个文件, 代码块内的门禁项数命中**仅 4 处, 且全部是
+# 现值声明, 0 处程序输出转录** ⇒ 立此判据当前**零误报**。
+CURRENT_FACING = re.compile(
+    r'^(?:[^/]+\.md'
+    r'|\.github/[^/]+\.md'
+    r'|publish/[^/]+\.md'
+    r'|docs/marketing/[^/]+\.md)$')
+
+
+def is_current_facing(rel):
+    """该文档是否属于「恒为现时」集合(通篇无历史语境)。"""
+    return bool(CURRENT_FACING.match((rel or '').replace('\\', '/')))
+
 
 class DocView(object):
     """按行提供语境判断 (标题栈 / 代码块 / 豁免)。
@@ -344,11 +377,24 @@ class DocView(object):
         """i: 0-based 行号; m: 命中 match; kind: 'nn'|'nge'|'link'|'vague'."""
         line = self.lines[i]
         if self.in_code[i]:
-            return '代码块'
-        if self.hist[i]:
+            # §2.54: 「恒为现时」文档里的代码块**不是历史转录的容器**。
+            # 它们的围栏装的是读者会原样复制去执行的命令、或复制进 PR 的模板,
+            # 现值声明恰恰常写在那里 (`README.md:107` 的行内 shell 注释、
+            # `CONTRIBUTING.md:95` 的 PR 模板勾选框)。一刀切豁免会让这些
+            # 声明**永久失明** —— 改成任意数字都 rc=0。
+            # ⚠️ 只收窄 `nn`/`nge`(门禁项数)两类, 且**只限**这 25 个文件;
+            #    `docs/**` 的自声明历史文档不受影响(那里的围栏确实装转录)。
+            if not (kind in ('nn', 'nge') and is_current_facing(self.path)):
+                return '代码块'
+            # 落到下方与正文同一条判定路径 —— 沿革/序号/转述他文等豁免照旧生效。
+        elif self.hist[i]:
             return '日期语境'
-        if RE_DATE.search(line):
+        if not self.in_code[i] and RE_DATE.search(line):
             # 行自带日期 => "截至 DATE 已核实" 的历史 attestation
+            return '自带日期'
+        if self.in_code[i] and RE_DATE.search(line):
+            # 现时文件代码块里**自带日期**的行仍是历史 attestation
+            # (如 README 的变更记录段), 一并放行。
             return '自带日期'
         if kind in ('nn', 'nge'):
             # 计划/验收表里的项数 = 验收标准
@@ -1957,6 +2003,56 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
+    # --- 第七个入口: 「恒为现时」文档里代码块内的门禁项数 (§2.54) ---
+    #
+    # 判据本体在 `DocView.exempt()` 里 —— 它**收窄**了「代码块」一刀切豁免。
+    # 故用例必须走 `check_text`(生产同一条路径), 且**同时**构造
+    # 现时文件与非现时文件两种 rel, 才能证明收窄**只**打在现时文件上。
+    #
+    # ⚠️ 反例(cf3)是本批**最重要**的一条: 若哪天有人把收窄推广到 `docs/**`,
+    #    `docs/HANDOVER.md` 那 60+ 处代码块内的历史转录会全部变红 ——
+    #    判据会要求**篡改历史记录**才变绿 (§2.40 反向守卫同一类错误)。
+    def _mk_cf(rel, body):
+        return rel, '说明文字：\n\n```\n%s\n```\n' % body
+
+    cf_cases = [
+        ('现时文件代码块内项数 = 真值 -> 不报',
+         _mk_cf('README.md', '# 门禁 41 项'), 0, None),
+        ('现时文件代码块内项数漂移(41->36) -> 必须报',
+         _mk_cf('README.md', '# 门禁 36 项'), 1, '声称 36 项'),
+        ('现时文件代码块内 N/N 漂移(41/41->36/36) -> 必须报',
+         _mk_cf('CONTRIBUTING.md', 'release_check 36/36 PASS'), 1, '声称 36'),
+        ('非现时文件(docs/**)代码块内同一漂移 -> 不报（历史转录）',
+         _mk_cf('docs/HANDOVER.md', '# 门禁 36 项'), 0, None),
+        ('现时文件代码块内带 → 的沿革 -> 不报',
+         _mk_cf('README.md', '# 门禁 21/22 → 33 项'), 0, None),
+        ('现时文件代码块内"第 N 项"序号 -> 不报',
+         _mk_cf('README.md', '# 门禁默认第 20 项'), 0, None),
+        ('现时文件代码块内转述他文(带行号) -> 不报',
+         _mk_cf('README.md', '# 见 docs/HANDOVER.md:237 门禁 32 项'), 0, None),
+    ]
+    for name, (rel, _t), want, kw in cf_cases:
+        _exc = {}
+        e, _w, _c = check_text(rel, _t, GATE_TOTAL, actual_rounds(), _exc)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+        elif want == 0 and rel.startswith('docs/') and not _exc.get('代码块'):
+            # ⭐ 反向守卫：非现时文件**只**能靠"代码块"豁免不报。
+            #    若哪天把收窄推广到 docs/**, 这条立刻变红 —— 那正是
+            #    "判据会要求篡改历史记录才变绿" 的错误 (§2.40 同一类)。
+            fails.append('%s: 期望"代码块"豁免计数 >= 1, 实际 %r —— '
+                         '非现时文件的转录必须仍被代码块豁免兜住' % (name, _exc))
+        elif want == 0 and _c < 1:
+            fails.append('%s: 判据一次都没跑（checked=0）—— 用例是假绿, '
+                         '证明不了收窄生效' % name)
+        elif want > 0 and _exc.get('代码块'):
+            fails.append('%s: 既报了错又记了"代码块"豁免 %r —— 两者互斥'
+                         % (name, _exc))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
@@ -1988,8 +2084,14 @@ def selftest():
     for name, _t, want, _kw in fc_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # 「恒为现时」代码块内项数用例走第七个入口（`check_text` 的代码块豁免
+    # 收窄），同样必须一起打印、一起计数 —— 否则它们只是暗处运行、
+    # 看起来不存在。
+    for name, _rel_t, want, _kw in cf_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
-             + len(sim_cases) + len(fc_cases))
+             + len(sim_cases) + len(fc_cases) + len(cf_cases))
 
     # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
     #
@@ -2011,14 +2113,14 @@ def selftest():
     #   （删用例是重大动作，值得被强制看见），而新增用例只会让它更高。
     _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
                 ('ci_cases', ci_cases), ('sim_cases', sim_cases),
-                ('fc_cases', fc_cases))
+                ('fc_cases', fc_cases), ('cf_cases', cf_cases))
     for _bn, _bl in _BATCHES:
         if not _bl:
             fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 52
+    _TOTAL_FLOOR = 59
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
@@ -2035,7 +2137,8 @@ def selftest():
            + len([c for c in th_cases if c[4]])
            + len([c for c in ci_cases if c[4]])
            + len([c for c in sim_cases if c[4]])
-           + len([c for c in fc_cases if c[2]]))
+           + len([c for c in fc_cases if c[2]])
+           + len([c for c in cf_cases if c[2]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
