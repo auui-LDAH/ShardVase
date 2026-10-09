@@ -7956,7 +7956,19 @@ publish/01-关于ShardVase.md:63 / publish/02-项目档案.md:116 / :168
 本轮**CI 仍未给出可用证据**：GitHub 帐单 / 支出上限未处理，提交后的 run 属调度层失败，
 与 §2.50.12 / §2.53.9 / §2.55.13 同一形态。
 
+提交后的 run = `37938124478`（head `c2c68c4`）：四 job 中
+`build-and-verify` failure 3s / `linux-portability` failure 4s / `reproducible` skipped / `sdk-package` skipped，
+注解逐字：
+
+```
+The job was not started because recent account payments have failed or your
+spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
+```
+
+⇒ **一个 step 都没跑**。处理办法在 GitHub 的 `Billing & plans`，属**外部基础设施状态**，不在本仓库可修范围。
+
 **对本节的影响 = 无**：2.56.10 的全部检查（含两个新工具的 27 条自检、doccheck 69 项、全门禁 39 项）
-均在本机复现，证据链不依赖 CI。
+均在本机复现，证据链不依赖 CI。CI 绿本来也不足以证明这些判据在别的工具链上同样工作 ——
+那一点由两个新工具的负向用例覆盖，而那些用例**会**在 CI 上跑，只要 CI 能跑起来。
 
 *2026-10-09 v34*
