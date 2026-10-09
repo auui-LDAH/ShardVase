@@ -7972,3 +7972,213 @@ spending limit needs to be increased. Please check the 'Billing & plans' section
 那一点由两个新工具的负向用例覆盖，而那些用例**会**在 CI 上跑，只要 CI 能跑起来。
 
 *2026-10-09 v34*
+
+---
+
+## 2.57 ST4：VM 级调试器 —— 以及「一个看起来在跑、其实控制流全错的调试器比没有更坏」（2026-10-10）
+
+### 2.57.1 缘起
+
+`docs/STUDIO_PLAN.md` §5 把实施顺序定为 **ST0 → ST4 → ST2 → ST1 → ST3 → ST5**，
+理由写在该节：ST4 是唯一位于**技术新高地**的阶段（用户要的"像调试 Java 那样
+调试 VM 字节码"就落在这里），而后端雏形**已经存在**（`tools/vm_reduce.py`），
+所以"风险最高者先暴露"。
+
+本节记的是 ST4 落地过程里**两个不显然的判定**，以及一次自检首跑就抓到的
+静默失效。
+
+### 2.57.2 为什么**不能**复用 `tools/vm_reduce.py`
+
+`tools/vm_reduce.py`（264 行）看起来已经做了大半：它能解密镜像、逆置换
+操作码、栈式模拟、打印语义轨迹。但它**故意不完整** —— 它的目的是
+「证明密文可以被还原」（ATTACK_DRILL4 R1-4），不是「正确执行」：
+
+| 缺陷 | 位置 | 后果 |
+|---|---|---|
+| `callind` 只打印目标 ip，**不改 ip** | `tools/vm_reduce.py:209-213` | 间接调用后继续顺序执行 |
+| 没有 `call`/`ret` 的返回栈语义 | `:133` 只处理 `jmp` | 子程序返回错位 |
+| `loadr32`/`storr32`/`move` 等 A4 指令缺失 | 全文 | 解到这些字节就停 |
+
+⇒ 把它当调试器，会得到一个**在任意指令处停不下来、跳转全错**的工具。
+而这比没有调试器**更坏**：它不会失败，只会给出错误的执行路径。
+这正是 §2.36 起反复出现的那条纪律在工具层的复现 ——
+**「能跑」不等于「跑对了」**。
+
+所以 `tools/vm_debug.py` 是新建的，而不是 `vm_reduce.py` 的包装。
+
+### 2.57.3 四个结构性优势：为什么 VM 级优先于主机级（D3 的实测依据）
+
+这不是偏好，是四条**可核对**的差异：
+
+1. **不触发反调试**：VM 级不 `OpenProcess`、不 attach。
+   主机级（`tools/prot_dbg.py`）实测会因 `OpenProcess` 触发目标的反调试
+   （`PROT_EXIT_DEBUG_DETECTED = 0xDB = 219`），须在协议里机读标注。
+2. **不需要 PDB**：Release 构建是 `/DEBUG:NONE /OPT:REF /OPT:ICF /Brepro`
+   （`build.ps1:526`）⇒ 源码级原生调试今天不可用，且不能为此污染发布产物
+   （CI 的 `reproducible` job 逐字节比对）。
+3. **不受 selfcrypt 密文窗口影响**：镜像可**离线**解密后完整解释；
+   而 attach 到宿主进程时，被调用的函数正处于解密窗口（§2.36/§2.37 的领域）。
+4. **不碰 `src/`**：调试器完全在 Python 侧，不改被保护程序的任何构建配置。
+
+### 2.57.4 行号表用 sidecar（D4）
+
+要在 `.vasm` 的**源行**下断点，必须有一张 `字节码偏移 -> 源行号` 的表。
+它**没有**写进镜像，而是落在 `build/<name>.vasm.map`（`VASMMAP1`）。
+三条理由：
+
+- 改镜像头会撞 `hashpatch` / CRC 目标 / `selfcrypt` meta 的**四方一致**
+  判据（门禁第 40 项），并让 selfcrypt 掩码错位；
+- 发布产物**不必携带**调试信息；
+- 可复现性不受影响（偏移与种子无关，CLI help 逐字记
+  "Offsets are seed-independent, so this does not affect the produced image bytes at all."）。
+
+**关键实现决定**：行号表由**同一次汇编**同时产出
+（`assemble_source(..., info=info)`，返回值仍是 `bytes`），而不是另写一遍
+编码路径。理由是：另写的一份会与真实编码路径**漂移**，而漂移的行号映射
+会让调试器指向**错误的行** —— 又一次「比没有更坏」。
+
+### 2.57.5 ⭐ 自检首跑抓到一条静默失效：`brk` 陷阱
+
+第一版 `Vm.step()` 的停机判定写的是 `if self.stop_reason == HALT`。
+自检立刻报：
+
+```
+[X] unit_vm_brk 停在 breakpoint（CON=1 必须停机）
+    期望 breakpoint, 实得 halt
+```
+
+根因：`src/vm.c:915 vm_h_brk` 在 `CON != 0` 时返回
+`PROT_ERR_VM_BREAKPOINT`（值 8），那是**停机**、与 `PROT_VM_HALT`（0xFE）
+同级。只认 `HALT` ⇒ `brk` 陷阱被**跳过**，程序继续跑到真正的 halt。
+
+修法 = `if self.stop_reason is not None: return False` —— 判据从
+「是某种特定的停机」改成「**已经停了**」。这条写进了代码注释。
+
+⇒ 这个缺陷的形状值得记下：**它不会让任何东西报错**。
+`unit_vm_brk.vasm` 照样跑完、照样"成功"，只是把陷阱后的
+`store32` 也执行了。若没有那六个宿主断言作对照锚，这个错误会一路进到面板。
+
+### 2.57.6 `key1=None` 是一个真实输入形态，不是默认参数
+
+调试器有两个入口：
+
+- `source="blob"` —— 真实产物，字节码是**置换过**的，必须用该镜像的
+  `key1` 逆置换；
+- `source="asm"` —— 就地汇编 `.vasm`，得到的是**规范 opcode**。
+
+后者必须走 `inv = list(range(256))` 的**恒等**分支。若图省事让它也去
+逆置换（`key1` 缺省成 `0`，而 `0` 是个**合法种子**），规范字节会被
+当成构建产物解一遍，得到一串**看似合理**的助记符
+（实测：19 字节解出 19 条"指令"，首条 `push32 0x1` 被读成 `halt`）。
+
+⇒ `key1=None` 表示"不做逆置换"，`key1=0` 表示"种子为 0 的真实置换"。
+两者必须区分，且**反汇编与单步要共用同一个分支** ——
+否则会出现"反汇编对了但单步跳错"这种最难查的组合。
+
+### 2.57.7 判据锚：为什么解释器可信
+
+调试器的解释器**可能与 `src/vm.c` 漂移**。这是本阶段最大的诚实边界，
+所以判据不能是自证。锚点是既有的：
+
+`tests/unit_vm.vasm:7-12` 逐字写下六个宿主内存断言，
+它们由 `tests/vm_unit.c` 在**真机**上断言（门禁第 7 项）：
+
+```
+host[0x1000] = 0x1BAD2F5E   (nop + pushr/popr)
+host[0x1004] = 0x101        (setcon + pushcon)
+host[0x2000] = 0xC0F0       (lea + callind 间接调用子程序)
+host[0x302C] = 0xCAFEBABE   (move + storr32 寄存器索引写)
+host[0x3030] = 0xCAFEBABE   (loadr32 寄存器索引读)
+host[0]     = 0x2A2A        (brk CON=0 通过路径 + 整体成功标记)
+```
+
+`tools/vm_debug.py` 的解释器侧**复算这同一份断言**。
+两侧独立执行、结果必须一致 —— 这才是"解释器对了"的证据。
+
+### 2.57.8 更强的一条：四个真实镜像逐条比对
+
+上面的六个断言只覆盖 `unit_vm.vasm` 走过的指令。更强的判据是：
+
+对 `build/vm.blob` 的**四个真实镜像**（hash / mix / verify / gate），
+把调试器反汇编的结果与对应 `.vasm` 源码**逐条**比对（助记符 + 操作数 + 偏移）：
+
+```
+hash   len=88 key1=0xc9d425c80956e6e0 sem0=1 insns=28 src=28 MATCH
+mix    len=67 key1=0x27d1636669b44a40 sem0=0 insns=23 src=23 MATCH
+verify len=35 key1=0x5457583d9f26e95a sem0=0 insns=15 src=15 MATCH
+gate   len=51 key1=0x34905bb1247ad0ee sem0=1 insns=23 src=23 MATCH
+```
+
+其中 `hash` 与 `gate` 的 `sem0=1` 覆盖了**操作数大端**这一分支。
+这条判据验证的是 `key1` 逆置换真的对了 —— 而不只是"能跑出结果"。
+
+另有 **9/9 `.vasm`** 可反汇编并单步（用**逐个列名**而不是 `glob` ——
+`glob` 会在文件被删时静默缩小覆盖面，§2.53 同类）。
+
+### 2.57.9 接进 Studio 契约（计数不变）
+
+`tools/studio_core.py` 新增两条命令：
+
+| 命令 | args | data（要点） |
+|---|---|---|
+| `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` |
+| `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` |
+
+`debug.vm` 能力由 `planned` 改 **`ready`**；`debug.host` 仍 `partial`、
+`ui` 仍 `planned` —— **未做的不假装**。
+
+门禁侧**不新增项**：`tools/release_check.ps1` 第 42 项
+（`Studio 契约 (studio)`）的 body 追加 `vm_debug.py --selftest --quiet`
+即可 —— 它属于同一个"Studio 契约"，所以**计数 42/39 不变**，
+无需第二轮口径同步。
+
+### 2.57.10 验证表
+
+| 检查 | 结果 |
+|---|---|
+| `tools/vm_debug.py --selftest` | PASS: 39 条（含 5 条负向） |
+| 四个真实镜像逐条 MATCH | 4/4（含 sem0=1 大端场景） |
+| 9/9 `.vasm` 可反汇编 + 单步 | 9/9 |
+| `studio_core.py --selftest` | 41 条全 ok（新增 4b 组 11 条） |
+| NDJSON 端到端（单发 + 会话） | rc=0，两条命令均正确 |
+| `build/vm_unit.exe` | `vm_unit: PASS (Phase 1D + A4 ops verified)` |
+| 全门禁 | `PASS: 39 项检查全通过`，末项 `[ok] Studio 契约 (studio)` |
+| `build/_hygiene.py` | 15 文件 0 异常 |
+| `doccheck` / `docclaim` / `selftest_audit` | PASS（1121 处 0 错误 / 8 项 / 4 条判据） |
+
+### 2.57.11 诚实边界
+
+1. **解释器的正确性只被六个宿主断言 + 四个镜像的指令级比对覆盖。**
+   这**不等于** 47 条指令全部在真机上对过。
+2. **13 条指令未被任何 `.vasm` 使用**（`drop`/`sub`/`divu`/`modu`/`or`/`not`/
+   `cmpne`/`cmpleu`/`cmpgtu`/`cmpgeu`/`jnz`/`call`/`store8`），
+   由解释器自检覆盖，但**没有** `.vasm` 级别的端到端证据。
+3. **真机断点未做**：今天的断点都在解释器内。对被调试**副本**下真机断点
+   是独立一步（ST3 / 后续）。
+4. **`vm.run` / `vm.break` 尚未提升为协议命令**，见
+   `docs/STUDIO_PROTOCOL.md` §9.4。今天的协议层只有只读的
+   `vm.images` / `vm.disasm`。
+5. **本节的数字与判据均在本机复现**；CI 未提供证据（见 §2.57.12）。
+
+### 2.57.12 CI 实测：仍无证据
+
+提交 `7259dbb` 后 CI 仍为**调度层失败**（GitHub 帐单 / 支出上限），
+与 §2.50.12 / §2.53.9 / §2.55.13 / §2.56.13 同一形态。
+本节证据链**不依赖 CI**：39 条自检、四个镜像比对、9 个 `.vasm`、
+全门禁 39 项均在本机跑出。
+
+### 2.57.13 这条缺陷的一般形状（第 10 次同型）
+
+| 变体 | 具体 | 为什么没有检查会红 |
+|---|---|---|
+| 停判太窄（2.57.5） | 只认 `HALT` 不认 `BREAKPOINT` | 程序照跑到 halt，**看起来完全成功** |
+| 分支错位（2.57.6） | `key1=None` 与 `key1=0` 混淆 | 解出一串**看似合法**的指令，不报错 |
+| 复用残缺件（2.57.2） | 拿 `vm_reduce.py` 当调试器 | 它能跑、有输出，只是控制流全错 |
+| 新写第二份（2.57.4） | 行号表另写编码路径 | 映射静默漂移，指向错误的行 |
+
+共因还是那句：**「能跑」不等于「跑对了」。**
+第 10 次与第 1-9 次的差别在于，这一节的对象是**调试器本身** ——
+一个用来观察真相的工具，如果它自己会静默说谎，那么它观察到的一切
+都不可信。
+
+*2026-10-10 v35*
