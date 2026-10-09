@@ -7758,5 +7758,25 @@ rc=1  报错 17 条
 变成**显式的、可被反向守卫检验的代码**（§2.54 的 `CURRENT_FACING`、
 本节的 `SELF_AUTHORITATIVE`），并各配一条断言「它**不**管什么」的用例。
 
+### 2.55.13 CI 实测：**没有拿到证据**（调度层失败，非代码）
+
+提交 `ba7dcde` 之后 CI run `37916467674`：
+
+| job | status | conclusion |
+|---|---|---|
+| `linux-portability` | completed | **failure**（4s） |
+| `build-and-verify` | completed | **failure**（4s） |
+| `reproducible` | completed | skipped |
+| `sdk-package` | completed | skipped |
+
+一个 step 都没跑（`gh run view ... --log-failed` 报 `log not found`）。
+与 §2.50.12 / §2.53.9 是**同一形态的调度层失败**（GitHub 帐单 / 支出上限）。
+
+**对本节的影响 = 无**：§2.55 的证据链不依赖 CI ——
+2.55.7 的两方向判别力、2.55.8 的自检 69 项、2.55.10/2.55.11 的本机全门禁，
+全部在本机复现。CI 绿本来也不足以证明判据在其它工具链上同样工作
+（这一点由 §2.55.8 的负向用例覆盖，而那些用例**会**在 CI 上跑 ——
+只要 CI 能跑起来）。
+
 *2026-10-09 v33*
 
