@@ -223,7 +223,7 @@ RE_GATE_N  = re.compile(
 
 # 沿革记录 (`11/15/22/26/31 → **33**`) —— 记的是"曾经是这些值", 不是现值
 RE_DELTA = re.compile(r'(?:→|->|⇒)')
-DELTA_WORDS = re.compile(r'现为|曾|旧值?|已过期')
+DELTA_WORDS = re.compile(r'现为|曾|旧值?|已过期|后为')
 
 # 单条"第 N 项" —— 是序号不是总数
 RE_ORDINAL = re.compile(r'第\s*\d+\s*项')
@@ -279,6 +279,142 @@ CURRENT_FACING = re.compile(
 def is_current_facing(rel):
     """该文档是否属于「恒为现时」集合(通篇无历史语境)。"""
     return bool(CURRENT_FACING.match((rel or '').replace('\\', '/')))
+
+
+
+# --- 扫描面**外**的「自称权威」文档 (§2.55) ---
+#
+# §2.54 修的是**面内**代码块里的现值声明; 这一条修的是**面外**那一半。
+#
+# 实测(2026-10-09, build/_faceall.py + build/_blame55.py):
+#   面外 93 个 `.md` 里含门禁项数声明者 **10 文件 / 19 条**, 其中 18 条是历史
+#   计划文件里写死的旧值(11 / 14 / 18 / 21)。把它们并入扫描面会要求**篡改历史
+#   文档**才变绿 —— 那是 §2.40 反向守卫在防的同一类错误。
+#
+# 但 `docs/BLUEPRINT.md` 不是历史记录: 头部写
+#   `> 版本：2026-09-20 v1 · 状态：**总纲**（路线图与验收标准的单一来源）`
+# 而 `:128` 的 `| 发布门禁（39 项，默认 36） | 是**有人当现值在维护**的:
+#   `git log -1 -L 128,128:docs/BLUEPRINT.md` = **`7062039`**, 即"门禁第 39 项"
+#   落地那次提交, 它亲手把 `38 项，默认 35` 改成 `39 项，默认 36`。
+#   该文件不在面内 => 这个数字**再也没有任何判据在看**, 到 §2.51/§2.53 之后
+#   真值已是 41/38 而它仍写 39/36。
+#
+# => 判据的**目标函数**不是"让面外文件也有判据"(那会要求篡改历史), 而是:
+#      **面外 交 自称权威** => 其门禁项数声明必须对账。
+#
+# 措辞选型实测(build/_p55pick.py, 只看头部前 8 行):
+#   * 加粗 `总纲|单一来源|单一事实源` -> 面外唯一天然命中 BLUEPRINT;
+#   * `总纲` 是**弱词**: `docs/ADVANCED.md:6` / `docs/ADVANCED2.md:6` 那句是
+#     「关联：`docs/BUSINESS.md`（总纲）」= **引用别人**, 不是自称 => 不用它;
+#   * `单一来源|单一事实源` 是**自称权威的专有措辞**: 全库任意位置仅 9 处,
+#     其中**头部仅 1 处**(`docs/BLUEPRINT.md:3`), 其余 8 处是正文架构讨论
+#     => 用它, 判据"零误报且不为零命中"。
+#   * 刻意**不加**"排除头部含 `关联` 者"这一条: 那会让命中降到 **0**
+#     (BLUEPRINT 头部 `:5` 正是关联行) —— 让判据精确到**永不触发**同样是失效。
+SELF_AUTHORITATIVE = re.compile(
+    r'(?:\*\*\s*)?(单一来源|单一事实源)(?:\s*\*\*)?')
+AUTH_HEAD_LINES = 8
+AUTH_SKIP_DIRS = ('.git', '.vs', 'archive', 'node_modules', 'build', 'dist',
+                  '__pycache__')
+
+
+def self_authoritative_head(text, lines=AUTH_HEAD_LINES):
+    """头部前 `lines` 行(跳过代码块)是否自称"单一来源/单一事实源"。"""
+    inside = False
+    for l in text.split('\n')[:lines]:
+        if l.lstrip().startswith(FENCE):
+            inside = not inside
+            continue
+        if inside:
+            continue
+        if SELF_AUTHORITATIVE.search(l):
+            return True
+    return False
+
+
+def self_authoritative_files():
+    """扫描面**外**、头部自称权威的 `.md`(相对路径, 已排序)。
+
+    ⚠️ 返回空列表**不等于**"没有漂移" —— 调用方必须把它当"锚点可能整体消失"
+       处理(措辞被改 / 扫描器坏了 / 仓库根不对)。见
+       `check_self_authoritative_claims()` 的判据①。
+
+    `build/` 必须排除: 它装着发布暂存与产物副本, 里面会有这些 `.md` 的拷贝,
+    否则判据会在副本上重复开火。
+    """
+    inside_set = set(os.path.normcase(x) for x in TARGETS)
+    found = []
+    for root, dirs, files in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in AUTH_SKIP_DIRS]
+        for fn in files:
+            if not fn.lower().endswith('.md'):
+                continue
+            p = os.path.join(root, fn)
+            if os.path.normcase(p) in inside_set:
+                continue          # 面内文件已由主循环覆盖, 不重复判
+            rel = os.path.relpath(p, REPO).replace('\\', '/')
+            try:
+                tx = open(p, encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            if self_authoritative_head(tx):
+                found.append(rel)
+    return sorted(found)
+
+
+def check_self_authoritative_claims(docs=None, gate=None, rounds=None):
+    """面外「自称权威」文档里的门禁项数声明必须与真值一致 (§2.55)。
+
+    ## 判据
+      ① 待判集合**非空**(锚点守卫: 措辞被改 / 扫描器坏了 -> FAIL, 不得读成
+         "没有漂移");
+      ② 集合内每份文档的门禁项数声明(`N/N` 与 `N 项` 两形态, **比分母**)必须
+         落在 `GATE_OK` 内。判定走 `check_text()` —— 与生产**同一条**路径,
+         故 `沿革`/`序号`/`转述他文`/`自带日期` 等豁免照旧生效。
+
+    ## 参数
+      `docs=None`    -> 自行枚举(`self_authoritative_files()`);
+      `docs={rel:t}` -> **直接作为待判集合**(调用方保证它由"面外+自称权威"滤出;
+                        自检用这个入口逐条测判据, 滤网另有用例直接断言)。
+
+    ## ⚠️ 刻意**不**把这几份文件并入 `TARGETS`
+    它们会同时触发模糊表述与死链判据, 而那些是**历史文档的既成事实**
+    (实测 `docs/BLUEPRINT.md` 另有 4 条模糊表述报错), 一并要求修改等于篡改
+    历史(§2.40 反向守卫同类)。本判据只取两条门禁项数判据的报错。
+
+    ## 诚实边界
+      * 若哪天把 `docs/BLUEPRINT.md:128` 那行**整个删掉**, 本判据不会报错 ——
+        它守的是"写了就必须对", **不是**"必须写";
+      * 滤网只看头部 `AUTH_HEAD_LINES` 行, 把自称挪到正文深处的写法会漏
+        (但这也意味着它不再是"头部自称权威"的文档);
+      * 只判门禁**项数**, 不判这几份文档的其它数字(版本号/轮次/日期)。
+    """
+    if docs is None:
+        rels = self_authoritative_files()
+        docs = []
+        for rel in rels:
+            try:
+                tx = open(os.path.join(REPO, rel.replace('/', os.sep)),
+                          encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            docs.append((rel, tx))
+    else:
+        docs = sorted(docs.items())
+    if not docs:
+        return ['全库/注入面里找不到"面外 + 头部自称权威"的文档 —— '
+                '判据①失去锚点(措辞被改或扫描器坏了, '
+                '**不得**读成"没有漂移")']
+    if gate is None:
+        gate = actual_gate_count()
+    if rounds is None:
+        rounds = actual_rounds()
+    errors = []
+    for rel, tx in docs:
+        exc = {}
+        e, _w, _c = check_text(rel, tx, gate, rounds, exc)
+        errors.extend(x for x in e if '门禁项数声称' in x)
+    return errors
 
 
 class DocView(object):
@@ -2053,6 +2189,67 @@ def selftest():
             fails.append('%s: 既报了错又记了"代码块"豁免 %r —— 两者互斥'
                          % (name, _exc))
 
+    # --- 第八个入口: 扫描面**外**「自称权威」文档的门禁项数 (§2.55) ---
+    #
+    # 判据本体是 `check_self_authoritative_claims()`(内部走 `check_text`),
+    # 外加**滤网** `self_authoritative_head()` —— 两者都必须有负向证据。
+    #
+    # ⚠️ 用例 sa4 是本批**最重要**的一条: 面外但**不**自称权威的文件必须不报,
+    #    否则判据会要求篡改 18 条历史计划文件里的旧值才变绿 —— 那正是
+    #    §2.40 反向守卫在防的同类错误。
+    #
+    # 三种 kind:
+    #   'c' 判据本体(docs= 直接传入)  'p' 滤网+判据组合  'h' 只测滤网
+    _SA_DRIFT = '| 发布门禁（39 项，默认 36） | \u2705 |'
+    _SA_TRUE = '| 发布门禁（41 项，默认 38） | \u2705 |'
+    _SA_HEAD = '> 版本：2026-09-20 v1 · 状态：**总纲**（路线图的单一来源）'
+
+    def _mk_sa(rel, head, body=''):
+        txt = (head + '\n\n' + body + '\n') if body else (head + '\n')
+        return {rel: txt}
+
+    sa_cases = [
+        ('sa1 面外自称权威 + 项数漂移 -> 必须报', 'c',
+         _mk_sa('docs/A.md', _SA_HEAD, _SA_DRIFT), 1, '声称 39 项'),
+        ('sa2 面外自称权威 + 项数 = 真值 -> 不报', 'c',
+         _mk_sa('docs/A.md', _SA_HEAD, _SA_TRUE), 0, None),
+        ('sa3 两文件一漂移一正确 -> 恰 1 条', 'c',
+         dict(list(_mk_sa('docs/A.md', '# A\n\n> 单一来源', _SA_DRIFT).items())
+              + list(_mk_sa('docs/B.md', '# B\n\n> 单一事实源', _SA_TRUE).items())),
+         1, 'docs/A.md'),
+        ('sa4 滤网+判据: 面外但**未**自称权威 -> 不报（历史计划文件）', 'p',
+         _mk_sa('docs/C.md', '# C\n\n> 版本：2026-09-20 v1', _SA_DRIFT), 0, None),
+        ('sa5 带 → 的沿革 -> 不报', 'c',
+         _mk_sa('docs/A.md', '# A\n\n> 单一来源', '门禁 21/22 → 33 项'),
+         0, None),
+        ('sa6 「后为」的漂移记录 -> 不报（DELTA_WORDS 已含 后为）', 'c',
+         _mk_sa('docs/A.md', '# A\n\n> 单一来源',
+                '| 2 | `release_check 11/11` | 实际 **13**（后为 14） |'),
+         0, None),
+        ('sa7 待判集合为空 -> 必须报（失锚守卫）', 'c', {}, 1, '失去锚点'),
+        ('sa8 滤网: 不加粗的 `单一来源` -> 认', 'h',
+         '# A\n\n> 这是唯一的单一来源\n', 0, None),
+        ('sa9 滤网: 第 13 行才出现 -> 不认（只看头部）', 'h',
+         '# C\n' + '\n' * 12 + '> 单一来源\n', 1, '滤网不认'),
+        ('sa10 滤网: 「关联：`docs/B.md`（总纲）」是引用 -> 不认', 'h',
+         '# D\n\n> 关联：`docs/B.md`（总纲）\n', 1, '滤网不认'),
+    ]
+    for name, kind, payload, want, kw in sa_cases:
+        if kind == 'c':
+            e = check_self_authoritative_claims(docs=payload)
+        elif kind == 'p':
+            sel = {r: tx for r, tx in payload.items()
+                   if self_authoritative_head(tx)}
+            e = check_self_authoritative_claims(docs=sel) if sel else []
+        else:
+            e = [] if self_authoritative_head(payload) else ['滤网不认']
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
@@ -2090,8 +2287,15 @@ def selftest():
     for name, _rel_t, want, _kw in cf_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # 面外自称权威用例走第八个入口（`check_self_authoritative_claims`
+    # + 滤网 `self_authoritative_head`），同样必须一起打印、一起计数 ——
+    # 否则它们只是暗处运行、看起来不存在。
+    for name, _k, _p, want, _kw in sa_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
-             + len(sim_cases) + len(fc_cases) + len(cf_cases))
+             + len(sim_cases) + len(fc_cases) + len(cf_cases)
+             + len(sa_cases))
 
     # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
     #
@@ -2113,14 +2317,15 @@ def selftest():
     #   （删用例是重大动作，值得被强制看见），而新增用例只会让它更高。
     _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
                 ('ci_cases', ci_cases), ('sim_cases', sim_cases),
-                ('fc_cases', fc_cases), ('cf_cases', cf_cases))
+                ('fc_cases', fc_cases), ('cf_cases', cf_cases),
+                ('sa_cases', sa_cases))
     for _bn, _bl in _BATCHES:
         if not _bl:
             fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 59
+    _TOTAL_FLOOR = 69
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
@@ -2138,7 +2343,8 @@ def selftest():
            + len([c for c in ci_cases if c[4]])
            + len([c for c in sim_cases if c[4]])
            + len([c for c in fc_cases if c[2]])
-           + len([c for c in cf_cases if c[2]]))
+           + len([c for c in cf_cases if c[2]])
+           + len([c for c in sa_cases if c[3]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -2261,6 +2467,20 @@ def main(argv=None):
                 _nf += 1
         print('  [ok] 围栏配平: %d 份文档的 ``` 总数为偶数且带标记的围栏'
               '均在偶数序号' % _nf)
+
+    # --- 0g. 扫描面**外**「自称权威」文档的门禁项数（§2.55）---
+    # §2.54 修了面内代码块那一半; 这一半修的是"有人当现值在维护、却因不在
+    # 面内而无人对账"的声明。实测唯一命中 `docs/BLUEPRINT.md` —— 第 39 项
+    # 落地那次提交(`7062039`)亲手改过它的 `:128`, 之后无人再看, 到本轮真值
+    # 已是 41/38 而它仍写 39/36。
+    # ⚠️ 判据①是失锚守卫: 集合为空**必须报错**, 不得读成"没有漂移"。
+    sac = check_self_authoritative_claims()
+    if sac:
+        errors.extend(sac)
+    else:
+        _sa_l = self_authoritative_files()
+        print('  [ok] 面外自称权威文档: %d 份（%s）门禁项数与真值一致'
+              % (len(_sa_l), '、'.join(_sa_l)))
 
     exc = {}
     for f in TARGETS:
