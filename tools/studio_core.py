@@ -33,16 +33,17 @@
     r = sc.dispatch('plan.solve', {'profile': 'balanced'})
 
 ## 诚实边界（**不得**在别处被读成"已实现"）
-  · ST0 只交付**契约与骨架**。调试类能力在 `capabilities` 里如实标注为
-    `planned`, **不假装可用** —— 面板据此显示"未实现"而不是空列表。
+  · `debug.vm` 自 ST4 起为 `ready`（反汇编/单步/源码行号断点/视图）;
+    主机级断点仍属 ST3, `ui` 仍属 ST5, **均未做**。
   · `gate.items` 读的是 `Check` 的**静态清单**, **不是运行结果**。
     运行结果机读化是 ST2 的范围（今天门禁结果只有 PowerShell 转录）。
-  · 本模块**不启动进程**（那是 `studio_cli.py` / ST1-ST4 的事）。
+  · 本模块**不启动进程**（那是 `studio_cli.py` / ST1-ST3 的事）。
 """
 import io
 import json
 import os
 import re
+import struct
 import sys
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -236,10 +237,11 @@ def capabilities():
                 step='ST3',
                 note='工具自身 OpenProcess 可能触发目标反调试（实测 219）'),
             'debug.vm': cap(
-                'planned', 'tools/vm_reduce.py',
-                '已有"解密+逆置换+栈式模拟+轨迹"雏形; 缺行号表/断点/单步',
+                'ready', 'tools/vm_debug.py',
+                '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器视图',
                 step='ST4',
-                note='唯一新增基础设施 = .vasm sidecar 行号表'),
+                note='ST4.1 的 .vasm 行号表是 sidecar, 发布产物不携带。'
+                     '主机级断点仍属 ST3（未做）'),
             'ui': cap(
                 'planned', '（无）',
                 '全库零前端痕迹',
@@ -330,6 +332,83 @@ def cmd_gate_items(args):
     return gate_items()
 
 
+def cmd_vm_images(args):
+    """列出 vm.blob 里的镜像（名/长度/种子/CRC; 调试入口的索引）。"""
+    import vm_reduce as _vr
+    blob = args.get('blob') or os.path.join(REPO, 'build', 'vm.blob')
+    if not os.path.exists(blob):
+        raise StudioError('E_NOT_FOUND', 'vm.blob 不存在', {'blob': blob})
+    data = io.open(blob, 'rb').read()
+    if data[:8] != b'PROTVMB1':
+        raise StudioError('E_PARSE', '不是 v1 blob (magic=%r)' % data[:8],
+                          {'blob': blob})
+    count = struct.unpack_from('<I', data, 8)[0]
+    pos = 12
+    out = []
+    for _ in range(count):
+        nm = data[pos:pos + 16].split(b'\x00', 1)[0].decode('ascii')
+        code_len = struct.unpack_from('<I', data, pos + 16)[0]
+        key0 = struct.unpack_from('<Q', data, pos + 20)[0]
+        key1 = struct.unpack_from('<Q', data, pos + 28)[0]
+        crc = struct.unpack_from('<I', data, pos + 36)[0]
+        out.append({'name': nm, 'code_len': code_len,
+                    'key0': '0x%016x' % key0, 'key1': '0x%016x' % key1,
+                    'crc': '0x%08x' % crc, 'offset': pos})
+        pos += 40 + code_len
+    return {'blob': blob, 'count': len(out), 'images': out,
+            'backend': 'tools/vm_debug.py'}
+
+
+def cmd_vm_disasm(args):
+    """反汇编一个镜像或一个 `.vasm`（调试器入口）。
+
+    `source='blob'` 走**真实产物**路径（key1 逆置换）;
+    `source='asm'` 就地汇编 `.vasm`（规范 opcode, 不需要种子）。
+    """
+    import vm_debug as _vd
+    where = args.get('source', 'blob')
+    if where not in ('blob', 'asm'):
+        raise StudioError('E_BAD_ARGS', "source 必须是 'blob' 或 'asm'",
+                          {'given': where})
+    if where == 'asm':
+        path = args.get('asm')
+        if not path:
+            raise StudioError('E_BAD_ARGS', "source='asm' 需要 asm 参数",
+                              {'given': args})
+        ap = path if os.path.isabs(path) else os.path.join(REPO, path)
+        if not os.path.exists(ap):
+            raise StudioError('E_NOT_FOUND', '.vasm 不存在', {'asm': ap})
+        try:
+            code, off_to_line, _info = _vd.load_from_asm(ap)
+        except Exception as e:                              # noqa: BLE001
+            raise StudioError('E_PARSE', '汇编失败: %s' % e, {'asm': ap})
+        key1 = None
+        src = path
+    else:
+        name = args.get('name')
+        blob = args.get('blob') or os.path.join(REPO, 'build', 'vm.blob')
+        if not name:
+            raise StudioError('E_BAD_ARGS', "source='blob' 需要 name 参数",
+                              {'given': args})
+        try:
+            code, key1, _k0, _crc = _vd.load_from_blob(blob, name)
+        except Exception as e:                              # noqa: BLE001
+            raise StudioError('E_NOT_FOUND',
+                              '取镜像 %r 失败: %s' % (name, e),
+                              {'blob': blob, 'name': name})
+        off_to_line = {}
+        src = '%s:%s' % (os.path.relpath(blob, REPO).replace('\\', '/'), name)
+    try:
+        insns, sem0 = _vd.disassemble(code, key1)
+    except Exception as e:                                  # noqa: BLE001
+        raise StudioError('E_PARSE', '反汇编失败: %s' % e, {'src': src})
+    for r in insns:
+        r['line'] = off_to_line.get(r['off'])
+    return {'source': src, 'code_len': len(code), 'count': len(insns),
+            'sem0': sem0, 'has_lines': bool(off_to_line),
+            'insns': insns}
+
+
 # --- 注册表 ----------------------------------------------------------------
 
 COMMANDS = {
@@ -339,6 +418,8 @@ COMMANDS = {
     'plan.solve': cmd_plan_solve,
     'modules.list': cmd_modules_list,
     'gate.items': cmd_gate_items,
+    'vm.images': cmd_vm_images,
+    'vm.disasm': cmd_vm_disasm,
 }
 
 
@@ -415,11 +496,20 @@ def selftest(quiet=False):
     caps = dispatch('capabilities')
     case('capabilities 含 8 项能力',
          len(caps.get('capabilities', {})) == 8)
-    case('planned 项如实标注（debug.vm / ui / test.gate.results）',
+    case('planned 项如实标注（ui / test.gate.results / generate.build）',
          all(caps['capabilities'][k]['status'] == 'planned'
-             for k in ('debug.vm', 'ui', 'test.gate.results')))
+             for k in ('ui', 'test.gate.results', 'generate.build')))
+    # ST4 落地后 debug.vm 变 ready —— 但 `partial` 的 debug.host 与 **任何**
+    # 未声明为 ready 的项都不许出现在"已完成"里。这条断言跟着能力一起演进，
+    # 且**先断言存在**再断言取值（否则改名会让它静默变成永真）。
+    case('debug.vm 自 ST4 起为 ready',
+         caps['capabilities'].get('debug.vm', {}).get('status') == 'ready')
+    case('debug.host 仍如实标为 partial（主机级断点未做）',
+         caps['capabilities'].get('debug.host', {}).get('status') == 'partial')
     case('每项能力都有 evidence（不是形容词）',
          all(c.get('evidence') for c in caps['capabilities'].values()))
+    case('每项能力都有 step（知道属于哪个阶段）',
+         all(c.get('step') for c in caps['capabilities'].values()))
 
     if not quiet:
         lines.append('--- 2. 策略求解（复用 solve_profile, 不重写）---')
@@ -462,6 +552,46 @@ def selftest(quiet=False):
          gi['gated'] is not None
          and gi['default'] == gi['total'] - len(gi['gated']),
          'total=%d gated=%s' % (gi['total'], gi['gated']))
+
+    if not quiet:
+        lines.append('--- 4b. VM 调试（ST4: 复用 vm_debug, 不重写解释器）---')
+    vi = dispatch('vm.images')
+    case('vm.images 列出 4 个镜像（build/vm.blob）',
+         vi['count'] == 4, 'count=%d' % vi['count'])
+    case('vm.images 每条含 name/len/key1/crc',
+         all(all(k in im for k in ('name', 'code_len', 'key1', 'crc'))
+             for im in vi['images']))
+    # 反汇编必须与 .vasm **源码条数**一致 —— 这是 key1 逆置换真的对了的判据,
+    # 不是"能跑"。镜像长度对不上会被 vm_debug 拒绝, 所以这里再对一次条数。
+    da = dispatch('vm.disasm', {'source': 'blob', 'name': 'verify'})
+    case('vm.disasm(blob:verify) 解出 15 条（= license_verify.vasm 指令数）',
+         da['count'] == 15, 'count=%d' % da['count'])
+    case('vm.disasm 每条含 off/mnem/size',
+         all(all(k in r for k in ('off', 'mnem', 'size'))
+             for r in da['insns']))
+    case('vm.disasm 停机前首条是 push32（可读的反汇编, 不是垃圾）',
+         da['insns'][0]['mnem'] == 'push32', da['insns'][0]['mnem'])
+    # blob 路径没有行号表 ⇒ line 必须如实为 None, **不许编一个 0**。
+    case('blob 反汇编无行号表时 line 如实为 None（不编造）',
+         all(r.get('line') is None for r in da['insns']))
+    asm = dispatch('vm.disasm', {'source': 'asm',
+                                 'asm': 'tests/unit_vm_brk.vasm'})
+    case('vm.disasm(asm) 解出 7 条并带源行号',
+         asm['count'] == 7 and asm['has_lines'],
+         'count=%d has_lines=%s' % (asm['count'], asm['has_lines']))
+    case('vm.disasm(asm) 行号是有序的（可用于断点）',
+         [r['line'] for r in asm['insns']] == sorted(
+             r['line'] for r in asm['insns']))
+    ok, got = raises(lambda: dispatch('vm.disasm', {'source': 'nope'}),
+                     'E_BAD_ARGS')
+    case('**负向**: source 非法 -> E_BAD_ARGS', ok, got)
+    ok, got = raises(lambda: dispatch('vm.disasm', {'source': 'blob'}),
+                     'E_BAD_ARGS')
+    case('**负向**: blob 路径缺 name -> E_BAD_ARGS（不猜默认镜像）', ok, got)
+    ok, got = raises(lambda: dispatch('vm.disasm',
+                                      {'source': 'blob', 'name': 'nope'}),
+                     'E_NOT_FOUND')
+    case('**负向**: 不存在的镜像 -> E_NOT_FOUND', ok, got)
 
     if not quiet:
         lines.append('--- 5. **负向**（必须能抓错）---')

@@ -1267,6 +1267,13 @@ Check 'Studio 契约 (studio)' {
     & $py -X utf8 tools\studio_cli.py --selftest --quiet
     $rc = $LASTEXITCODE
     if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    # ST4: VM 级调试器。解释器与 src/vm.c 的语义漂移**只有**这条能抓 ——
+    # 判据是 tests/vm_unit.c 的六个宿主内存断言 (在**真机**上由 vm_unit
+    # 独立断言, 门禁第 7 项)。这里跑的是同一份断言的解释器侧复算。
+    & $py -X utf8 tools\vm_debug.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
     $rc -eq 0
 }
 

@@ -305,13 +305,17 @@ def load_symbols(build_path):
     return syms
 
 
-def parse_source(text):
+def parse_source(text, with_lines=False):
     """
     Split source text into statements.
     Returns list of tuples:
       ('label', name)
       ('insn', mnemonic, operand_or_None)
     `;` starts a comment anywhere on the line. Labels occupy a whole line.
+
+    `with_lines=True` 时每个元组**末尾追加源文件行号**(1-based)。
+    默认 False, 故既有调用方拿到的形状逐字不变 —— 只有 ST4.1 行号表
+    (assemble_source(info=...)) 会走 True 那条路。
     """
     stmts = []
     for lineno, raw in enumerate(text.splitlines(), 1):
@@ -322,7 +326,8 @@ def parse_source(text):
             name = line[:-1].strip()
             if not name or not name.replace('_', '').isalnum():
                 raise VasmError('line %d: bad label %r' % (lineno, line))
-            stmts.append(('label', name))
+            stmts.append(('label', name, lineno) if with_lines
+                         else ('label', name))
             continue
         parts = line.split()
         if len(parts) > 2:
@@ -331,11 +336,12 @@ def parse_source(text):
         if mnem not in INSTRUCTIONS:
             raise VasmError('line %d: unknown mnemonic %r' % (lineno, mnem))
         operand = parts[1] if len(parts) == 2 else None
-        stmts.append(('insn', mnem, operand))
+        stmts.append(('insn', mnem, operand, lineno) if with_lines
+                     else ('insn', mnem, operand))
     return stmts
 
 
-def assemble_source(text, symbols, perm=None, sem0=0):
+def assemble_source(text, symbols, perm=None, sem0=0, info=None):
     """
     Two-pass assembly.
     Pass 1: collect label offsets (size of each instruction is fixed).
@@ -345,10 +351,19 @@ def assemble_source(text, symbols, perm=None, sem0=0):
     字节序), imm32/imm64/rel32/labs 操作数字节按高位在前 (BE) 写出 ——
     src/vm.c vm_wfetch32/64 在同一构建下同步反转读回, 语义逐位一致。
     Returns plaintext bytearray.
+
+    `info` (ST4.1, 可选): 传入 dict 时**填入行号表**, 用于调试器把
+    `.vasm` 源行号映射到字节码偏移。键:
+      'lines'   -> [(offset, line, mnem), ...]  每条指令的起始偏移与源行号
+      'labels'  -> {label_name: offset}
+      'size'    -> 字节码总长
+    **不改变返回值**(仍是 bytes), 故既有调用方逐字不变。
+    为什么用可选参数而不是新函数: 汇编必须只做一次 —— 另写一份会与真实
+    编码路径漂移, 而漂移的映射会让调试器指向错误的行(比没有更坏)。
     """
     be = (sem0 & 1) != 0  # A2: 操作数字节序微变
 
-    stmts = parse_source(text)
+    stmts = parse_source(text, with_lines=(info is not None))
 
     # --- Pass 1: labels ---------------------------------------------------
     labels = {}
@@ -366,10 +381,13 @@ def assemble_source(text, symbols, perm=None, sem0=0):
 
     # --- Pass 2: encode ----------------------------------------------------
     code = bytearray()
+    lines = []
     for st in stmts:
         if st[0] == 'label':
             continue
         mnem, operand = st[1], st[2]
+        if info is not None:
+            lines.append((len(code), st[3], mnem))
         opcode, kind = INSTRUCTIONS[mnem]
         code.append(perm[opcode] if perm is not None else opcode)
         if kind is None:
@@ -411,7 +429,63 @@ def assemble_source(text, symbols, perm=None, sem0=0):
             if not (-(1 << 31) <= rel < (1 << 31)):
                 raise VasmError("'%s': rel32 out of range for '%s'" % (mnem, operand))
             code += struct.pack('>i' if be else '<i', rel)
+    if info is not None:
+        info['lines'] = lines
+        info['labels'] = dict(labels)
+        info['size'] = len(code)
     return bytes(code)
+
+
+# ---------------------------------------------------------------------------
+# ST4.1 行号表 (sidecar) — 调试器用: `.vasm` 源行号 <-> 字节码偏移
+#
+# 为什么是 sidecar 而不是写进镜像:
+#   · 改镜像头会撞 hashpatch / CRC 目标 / selfcrypt meta 的**四方一致**判据
+#     (门禁第 40 项), 也会让 selfcrypt 掩码区间错位;
+#   · sidecar 只在调试场景需要, **发布产物不必携带**;
+#   · 保持既有产物的**可复现性**(repro_check 与 CI 的 reproducible job 逐字节比对)。
+# 诚实边界: sidecar 只覆盖**我们自己生成**的镜像。攻击者视角的语义还原仍靠
+#   `tools/vm_reduce.py` 的**纯推导**(无 sidecar), 那条路径的强度不受本节影响。
+# ---------------------------------------------------------------------------
+VASM_MAP_MAGIC = 'VASMMAP1'
+
+
+def write_vasm_map(path, src_rel, info, key1=None, name=None):
+    """把 assemble_source(info=...) 填出的行号表写成 JSON sidecar。
+
+    键: magic / src / size / name / key1 / lines / labels
+    `lines` 是 [[offset, lineno, mnemonic], ...] —— 用 list 而非 dict,
+    因为**同一条源行可能对应多条指令**(目前是一行一条, 但不假设)。
+    """
+    doc = {
+        'magic': VASM_MAP_MAGIC,
+        'src': src_rel,
+        'size': info['size'],
+        'name': name,
+        'key1': ('0x%016x' % key1) if key1 is not None else None,
+        'lines': [[off, ln, mn] for (off, ln, mn) in info['lines']],
+        'labels': info['labels'],
+    }
+    ensure_parent(path)
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(doc, f, ensure_ascii=False, indent=1, sort_keys=True)
+        f.write('\n')
+    return doc
+
+
+def load_vasm_map(path):
+    """读回行号表; 缺失 / magic 不符 -> VasmError(**不返回 None**, 不静默回退)。"""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+    except (IOError, OSError) as e:
+        raise VasmError('vasm map not found: %s (%s)' % (path, e))
+    except ValueError as e:
+        raise VasmError('vasm map is not valid JSON: %s (%s)' % (path, e))
+    if doc.get('magic') != VASM_MAP_MAGIC:
+        raise VasmError('vasm map magic mismatch in %s: %r'
+                        % (path, doc.get('magic')))
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +792,11 @@ def cmd_assemble(args):
     perm, slot, sem0, sem1 = make_opcode_keymaps(perm_seed)
     if sorted(slot) != list(range(OPCODE_SLOTS)):
         raise VasmError('internal: slot permutation is broken')
-    plaintext = assemble_source(text, symbols, perm, sem0)
+    # ST4.1: `--map-out` 给定时顺便填行号表。**不传则 info=None**, 走的是与
+    # 改动前逐字相同的路径(不改返回值、不改产物字节) —— 这条对可复现构建是硬要求。
+    map_out = getattr(args, 'map_out', None)
+    info = {} if map_out else None
+    plaintext = assemble_source(text, symbols, perm, sem0, info=info)
     image_name = getattr(args, 'name', None) or 'g_vm_image'
     code_len, seed, crc = write_vm_c(args.out_c, args.out_h, plaintext, seed,
                                      perm_seed, image_name=image_name)
@@ -730,6 +808,11 @@ def cmd_assemble(args):
             raise VasmError('--bin-name too long (<= %d): %s'
                             % (BLOB_NAME_LEN - 1, args.bin_name))
         write_vm_bin(bin_out, args.bin_name, plaintext, seed, perm_seed)
+    if map_out:
+        doc = write_vasm_map(map_out, args.in_vasm.replace('\\', '/'),
+                             info, key1=perm_seed, name=image_name)
+        print('vmenc: wrote vasm map %s (%d lines, size=%d)'
+              % (map_out, len(doc['lines']), doc['size']))
     print('vmenc: assembled %d bytes (opcode perm seed=0x%016x, sem=[%d,%d]), crc=0x%08x, key=0x%016x'
           % (code_len, perm_seed, sem0, sem1, crc, seed))
     print('vmenc: wrote %s and %s' % (args.out_c, args.out_h))
@@ -1258,6 +1341,11 @@ def main(argv=None):
                     type=lambda s: int(s, 0), default=None,
                     help='deterministic opcode perm seed key1 (hex/dec; '
                          'default random)')
+    pa.add_argument('--map-out', dest='map_out', default=None,
+                    help='also write the ST4.1 line-number sidecar '
+                         '(.vasm map: source line <-> bytecode offset). '
+                         'Offsets are seed-independent, so this does not '
+                         'affect the produced image bytes at all.')
     pa.set_defaults(func=cmd_assemble)
 
     pb = sub.add_parser('pack', help='pack single-image bins into vm.blob')

@@ -1,6 +1,8 @@
 # Studio 协议 v1 — NDJSON over stdio
 
 > 版本：2026-10-09 v1 · 状态：**ST0 已实施**（`tools/studio_core.py` + `tools/studio_cli.py`）
+> ST4 追加：`vm.images` / `vm.disasm`（VM 级调试入口；单步与断点在
+> `tools/vm_debug.py` 的库/CLI 层，尚未提升为协议命令 —— 见 §9.4）。
 > 本文是**契约**：面板、测试、脚本、未来的编辑器扩展都按它对接后端。
 
 ## 1. 为什么需要一份协议文档
@@ -82,6 +84,26 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `plan.solve` | `profile` | `solve_profile.solve()` 的完整结果（`selected`/`excluded`/`auto_added`/`reasons`/`conflicts`/`order`/…）**外加** `_profile_file` 与 `_text` |
 | `modules.list` | — | `modules[]` `{name, maturity, caps, deps, conflicts_with, cost, header, source}` + `primitives` |
 | `gate.items` | — | `items[]` `{name, line, gated}` + `total`/`gated`/`default`/`source` |
+| `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` + `count`；`blob` 缺省 `build/vm.blob` |
+| `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
+
+**`vm.disasm` 的两种 `source`**（这是理解 ST4 的关键，不是两个别名）：
+
+- `source:"blob"` — 读**真实产物**（`build/vm.blob` 的某个镜像）。
+  镜像里的字节码是**置换过**的，必须用该镜像的 `key1` 逆置换才能解出助记符；
+  这条路径验证的是「调试器能打开**将要发布的东西**」。
+- `source:"asm"` — 就地汇编一个 `.vasm`（规范 opcode，**不需要种子也不需要
+  `vm_build.json`**）。这条路径**带源行号**（`line` 非 `null`），
+  因为行号来自本次汇编本身。
+
+⚠️ 两种路径的解码分支**必须一致**（同一个 `inv`/`sem0` 决策）。
+若把规范字节当成构建产物去逆置换，会得到一串**看似合理**的垃圾
+（错位但合法的助记符序列）—— 那比报错更坏，因为它不会失败。
+此条由 `tools/vm_debug.py --selftest` 的「四个真实镜像反汇编与 `.vasm`
+源码**逐条**一致」用例守住。
+
+**`line` 的诚实语义**：没有行号表时如实返回 `null`，**不编造 `0`**。
+`0` 是合法偏移，用它表示「不知道」会让面板把第一批指令全标在高亮第 0 行。
 
 **`capabilities` 为什么值得是第一条命令**：面板启动时先问它，
 就能**按现状渲染**（把 `planned` 的东西灰掉、把 `partial` 的边界标出来），
@@ -166,12 +188,16 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 2. **不支持跨行 JSON 请求。** 行就是消息边界；跨行会被判 `E_BAD_LINE`
    （这是刻意的，因为「一行一消息」正是 NDJSON 的全部价值）。
 3. **`gate.items` 只有声明，没有结果**（ST2 补）。
-4. **`debug.*` 尚未进入协议。** ST3/ST4 会新增 `debug.host.*` / `debug.vm.*`
-   命令（断点、单步、栈、内存），采用**同一套 NDJSON 信封**；
-   调试天生的流式事件（`stopped` / `output` / `exited`）将作为
-   **服务端主动推送**的响应行出现（`id` 为 `null`）—— 这需要协议 v1 的
-   「请求/响应严格配对」规则放宽为「响应可主动推送」，属于**向后兼容的扩展**
-   （老客户端只需忽略 `id=null` 的行），故不升版本。
+4. **主机级调试（`debug.host.*`）尚未进入协议。** ST3 会新增它（断点、单步、
+   栈、内存），采用**同一套 NDJSON 信封**；调试天生的流式事件
+   （`stopped` / `output` / `exited`）将作为**服务端主动推送**的响应行出现
+   （`id` 为 `null`）—— 这需要协议 v1 的「请求/响应严格配对」规则放宽为
+   「响应可主动推送」，属于**向后兼容的扩展**（老客户端只需忽略 `id=null`
+   的行），故不升版本。
+   ✅ **VM 级（ST4）已落地**：`vm.images` / `vm.disasm` 是**请求/响应**形态，
+   没有主动推送 —— 单步与断点在 `tools/vm_debug.py` 的 CLI/库层完成，
+   尚未提升为协议命令。下一步是把 `vm.run` / `vm.break` 加进来，
+   那时才真正需要上面那条推送扩展。
 5. **本文档不写 `> **最后核实**` 元数据** ⇒ 它不在 `tools/doccheck.py`
    的扫描面内。理由：它是**协议的规范说明**，不是「读者当下照着做」的
    现值声明；进面会要求它跟着门禁项数等数字一起漂移，
@@ -182,5 +208,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 - `docs/STUDIO_PLAN.md` — 阶段规划（ST0-ST6）与决策 D1-D8
 - `tools/studio_core.py` — 纯逻辑层（可无头 import，无 I/O 副作用）
 - `tools/studio_cli.py` — 进程边界（NDJSON over stdio）
+- `tools/vm_debug.py` — VM 级调试器（ST4：反汇编 / 单步 / 断点 / 视图）
+- `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）
 - `docs/DEBUG_CONSOLE_PLAN.md` — 既有调试控制台的边界与设计纪律
