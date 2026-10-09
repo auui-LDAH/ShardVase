@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **41** 项（默认 38）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **42** 项（默认 39）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -7780,3 +7780,183 @@ rc=1  报错 17 条
 
 *2026-10-09 v33*
 
+## 2.56 ST0：Studio 契约骨架落地 —— 自检两次抓到「看起来绿、实际不能失败」的用例（2026-10-09）
+
+本节记 Studio 阶段 0（ST0）的落地。规划见 `docs/STUDIO_PLAN.md`，协议见 `docs/STUDIO_PROTOCOL.md`。
+用户拍板逐字：「就这样，开始吧」。
+
+### 2.56.1 缘起
+
+`docs/STUDIO_PLAN.md` §0 给了两种读法（A. 体验像 VSCode / B. 就是 VSCode），§7 列了三件待拍板的事。
+用户拍板后按 §5 的顺序开工，ST0 = 契约与骨架。
+
+ST0 只做一件事：**先把「能力可以被无头调用」做成契约**。理由是规划 §2 的边界 1（后端先行）——
+面板不能是能力的唯一入口，否则门禁就没法验证它，而本仓库的既有纪律是「没有门禁的代码等于没有」。
+
+### 2.56.2 交付物
+
+| 文件 | 字节 | 作用 |
+|---|---|---|
+| `tools/studio_core.py` | 22893 | 能力层：把散落 CLI 收成 python 函数，返回 JSON 可序列化 dict |
+| `tools/studio_cli.py` | 16671 | 传输层：NDJSON over stdio 的会话模式与单发模式 |
+| `docs/STUDIO_PROTOCOL.md` | 9813 | 协议规范（请求 / 响应 / 错误码 / 退出码 / 版本兼容） |
+| `docs/STUDIO_PLAN.md` | 23033 | 阶段规划本身（ST0-ST6） |
+
+另加门禁第 42 项「Studio 契约 (studio)」。
+
+### 2.56.3 修法
+
+**`tools/studio_core.py` 的设计纪律是「调既有实现，不复制逻辑」**，逐条映射：
+
+| Studio 能力 | 复用对象 |
+|---|---|
+| 策略求解 | `tools/solve_profile.py` 的 `solve()` |
+| 依赖闭包 / 拓扑 | `tools/compose.py` 的 `closure()` / `topo_order()` |
+| 冲突检测 | `tools/compat.py` 的 `check_conflicts()` |
+| 模块契约 | `modules.json` |
+| 门禁静态清单 | `tools/release_check.ps1` 的 Check 调用点 |
+| 受开关控制的项 | `tools/doccheck.py` 的 `gated_check_names()` |
+
+新引入的只有三样：`PROTOCOL_VERSION` 常量、`StudioError`（带稳定机读 `code`）、
+`envelope()`（成功 / 失败统一外壳）。`capabilities()` 用 ready / partial / planned 三态**如实**报现状，
+八项里只有三项是 ready —— 把「还没有」写进契约，而不是假装有。
+
+**`tools/studio_cli.py` 的退出码与门禁三态对齐**：0 = 成功 / 1 = 命令失败 / 2 = 用法错误。
+面板侧必须把 2 读成「未验证」而不是「失败」，这与 `tools/release_check.ps1` 里 `[skip]` 的既有纪律同源。
+
+### 2.56.4 自检第一次抓到：**用 `split()` 解析 JSON**
+
+`--list` 的自检原本写 `x.split()[0]` 取命令名。而 `json.dumps` 的默认分隔符是 `', '` 与 `': '`，
+于是切出来的是碎片 `{"cmd":`。实测失败信息逐字：
+
+```
+--list 覆盖 core.COMMANDS 全部命令
+  得到 ['capabilities', 'gate.items', 'modules.list', 'ping', 'plan.list', 'plan.solve', '{"cmd":']
+```
+
+修法是 `json.loads(x)['cmd']`。这条**不是判据失效，而是判据的断言写错了** ——
+它红得对，只是红的原因不是被测对象的问题。
+
+### 2.56.5 自检第二次抓到：四个命令**没有 docstring**
+
+`--list` 会输出每个命令的 `doc`。而 `cmd_capabilities` / `cmd_plan_list` / `cmd_modules_list` /
+`cmd_gate_items` 四个函数都没有 docstring ⇒ `doc` 为空 ⇒ 面板上会显示一行**空白帮助**。
+关键在于：**这件事没有任何检查会红** —— 自检当时只比对命令名集合，不比对 `doc` 是否为空。
+于是补 docstring 之外，还在 `--list` 用例里加了断言「每条命令都有说明（不为空）」（失锚不静默）。
+
+### 2.56.6 自检第三次：一条**永远不会失败**的用例（运算符优先级）
+
+`studio_cli.py` 中文不转义的用例原本写成：
+
+```python
+'\u' not in o and '门禁' not in o or '检查' in o
+```
+
+Python 里 `and` 优先于 `or`，于是它的语义是 `(A and B) or C` ——
+**只要输出里出现「检查」二字就通过**，而门禁名里几乎必然出现「检查」。所谓「负向断言」实际恒真。
+修法是拆成两条独立断言：一条断言真实中文门禁名可读，一条断言没有被转义成 `\uXXXX`。
+
+### 2.56.7 计数上调后，`tools/doccheck.py` 自己的 4 条 fixture 变红
+
+把 `GATE_TOTAL` 从 41 调到 42 之后，`tools/doccheck.py --selftest` ⇒ `FAIL (4/69)`：
+
+```
+[X] 现时文件代码块内项数 = 真值 -> 不报 (期望 0 条)
+[X] sa1 面外自称权威 + 项数漂移 -> 必须报 (期望 1 条)
+[X] sa2 面外自称权威 + 项数 = 真值 -> 不报 (期望 0 条)
+[X] sa3 两文件一漂移一正确 -> 恰 1 条 (期望 1 条)
+```
+
+根因：§2.54 与 §2.55 新增的两批 fixture 把**真值写死**成 `41 / 38`
+（`_mk_cf('README.md', '# 门禁 41 项')`、`_SA_DRIFT` / `_SA_TRUE` 里硬编码的字面量）。
+真值一上调，**「= 真值 -> 不报」这条本该通过的用例反而变红**，
+而**「漂移 -> 必须报」那条则静默失效**（因为它写的「漂移值」正是新的真值）。
+
+> 这与 `tools/doccheck.py` 自己在 1836 行附近记的教训**完全同型**：
+> 硬编码锚点会在计数上调后失去锚点。
+
+修法：`_SA_TRUE` / `_mk_cf` 的真值改成由 `GATE_TOTAL` / `GATE_DEFAULT` 现读推导，
+漂移样例改成 `GATE_TOTAL - 2` / `GATE_DEFAULT - 2` 并断言它不等于真值（`漂移样例不得等于真值`）。
+⇒ 恢复 `PASS: 69 项（39 项负向注入 / 30 项合规豁免）`。
+
+### 2.56.8 计数 41/38 → 42/39：第一轮只做了一半
+
+第一轮只改了 `tools/doccheck.py` 的两个常量与 `.github/workflows/ci.yml` 的三种措辞，
+随后 `tools/doccheck.py` 本体**立刻报出 20 条**，把**全部漏掉的「现时值口径」位置**一次列了出来：
+
+```
+README.md 清单 38 条但默认跑 39 项 / README.md 散文「默认跑的全部 38 项」/ README.md 未列出「Studio 契约 (studio)」
+docs/BLUEPRINT.md:128 / .github/PULL_REQUEST_TEMPLATE.md:16 / CONTRIBUTING.md:67 / CONTRIBUTING.md:95
+README.md:107（两个数）/ README.md:132 / ShardVase-展示文档.md:163
+docs/CONTINUATION_PLAN.md:441 / :529 / :622 / :688 / :716 / docs/DEBUG_CONSOLE_PLAN.md:8
+publish/01-关于ShardVase.md:63 / publish/02-项目档案.md:116 / :168
+```
+
+**这正是这套判据存在的意义**：改数字的人不需要记住 20 个位置，判据会替他记。
+第二轮逐个改成真值（每处 `assert count`），其中 `README.md` 的清单还要**加一行**成员
+（doccheck 有「清单成员与默认跑的项双向唯一匹配」判据）⇒ 恢复 `检查数字 1091 处, 错误 0, 警告 0`。
+
+刻意**不动**的历史记录：`docs/CONTINUATION_PLAN.md:4` 的「最后核实」行（记当时 36 项）、
+`docs/HANDOVER.md` 的 §2.x 历史小节、`docs/DEBUG_CONSOLE_PLAN.md:155` 的 GUI 决策原文。
+
+### 2.56.9 自找的行尾回归：12 处异常
+
+第一轮改数字的脚本（`build/_st0_counts.py` / `build/_st0_counts2.py`）图省事把**所有**回写文件统一成 CRLF，
+违反卫生纪律（`.ps1` ⇒ BOM + 全 CRLF；其余 ⇒ 无 BOM + 全 LF）⇒ `文件卫生: 15 个文件, 12 处异常`。
+
+修法三步，**每一步都是被上一步的失败逼出来的**：
+
+1. `build/_st0_eol.py` 按 `git status --porcelain` 解路径，还原 10 个文件；
+2. 仍剩 3 个**中文名**文件 BAD —— `git` 把路径做了 C-quote，`ent[3:]` 解不出来。
+   改用 `-z` 的脚本报 `0 个变更路径`（同样解不出）；
+3. `build/_st0_eol3.py` 最终**直接点名**三个文件还原；断言「不该有 BOM」。
+
+⇒ 最终 `文件卫生: 15 个文件, 0 处异常`。
+
+### 2.56.10 验证
+
+| 检查 | 结果 |
+|---|---|
+| `tools/studio_core.py --selftest` | 6 组 27 条全 ok（含 7 条负向） |
+| `tools/studio_cli.py --selftest` | 全 ok（含中文不转义、坏行不跳过、退出码三态） |
+| `tools/doccheck.py` | `检查数字 1091 处, 错误 0, 警告 0` |
+| `tools/doccheck.py --selftest` | `PASS: 69 项（39 项负向注入 / 30 项合规豁免）` |
+| `tools/docclaim_check.py` | `PASS (8/8)`，含「gate-count 文档声称与实际一致: 42 项（2 份文档）」 |
+| `tools/selftest_audit.py` | 四条判据全 ok（31 个工具登记了自检 / 无孤儿 / 旗标全部已登记） |
+| 全门禁 | `PASS: 39 项检查全通过` |
+| 文件卫生 | 15 个文件 0 处异常 |
+
+### 2.56.11 诚实边界
+
+1. **ST0 只交付契约，没有交付面板**。`capabilities()` 里八项只有三项 ready ——
+   测试结果（ST2）、构建（ST1）、主机调试（ST3）、VM 调试（ST4）、UI（ST5）全部是 planned 或 partial。
+2. **门禁第 42 项验证的是「契约能自证」，不是「契约被面板用着」**。面板还不存在。
+3. **`gate.items` 返回的是静态声明，不是运行结果**。这一点写进了返回值本身
+   （`kind: 'static-declaration'` 与 `why_no_gated_breakdown`），而不是只写在文档里。
+4. **`tools/studio_cli.py` 没有超时与心跳**，长会话靠调用方自行管理（已记入 `docs/STUDIO_PROTOCOL.md` 的未决边界）。
+5. **本轮没有 CI 证据**（见 2.56.13）。
+
+### 2.56.12 这条缺陷的一般形状（第 9 次同型）
+
+本链条从 §2.36 起反复遇到同一形状，本节一次撞上三个变体：
+
+| 变体 | 表现 | 为什么危险 |
+|---|---|---|
+| 断言写错（2.56.4） | `split()` 当 JSON 解析 | 红得对，但红的原因不是被测对象的问题，容易被误修 |
+| 判据不看（2.56.5） | 命令没有 docstring | 面板显示空白帮助行，**没有任何检查会红** |
+| 恒真断言（2.56.6） | `A and B or C` | **用例永远不会失败**，比没有更危险（§3.8 的反面） |
+| 硬编码真值（2.56.7） | fixture 写死 41/38 | 真值一调，本该通过的变红、本该变红的静默失效 |
+
+共因仍是那句：**「能用」不等于「在用」；能被机器校验的东西改了，靠人眼维护的地方会漏。**
+差别只在于，这一节漏的已经不是产品代码，而是**判据自己的判据**。
+
+### 2.56.13 CI 实测
+
+`gh` 连通性此前一度报 `dial tcp 198.18.0.37:443`（本机 DNS 把 github 解析到保留地址段）。
+本轮**CI 仍未给出可用证据**：GitHub 帐单 / 支出上限未处理，提交后的 run 属调度层失败，
+与 §2.50.12 / §2.53.9 / §2.55.13 同一形态。
+
+**对本节的影响 = 无**：2.56.10 的全部检查（含两个新工具的 27 条自检、doccheck 69 项、全门禁 39 项）
+均在本机复现，证据链不依赖 CI。
+
+*2026-10-09 v34*

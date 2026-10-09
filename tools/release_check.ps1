@@ -1239,6 +1239,37 @@ Check '休眠自检审计 (selftest_audit)' {
     $rc -eq 0
 }
 
+# Studio 契约（ST0, 2026-10-09）—— 后端先行: 能力必须先能**无头调用**
+#
+# ## 这一项在防什么
+#   `tools/studio_core.py` 是纯逻辑层, `tools/studio_cli.py` 是 NDJSON 进程边界。
+#   两者都带 `--selftest`, 但**带了自检不等于自检被执行** —— 这正是第 41 项
+#   (`selftest_audit`) 自身要防的事: 一个登记了自检却没有任何执行者的工具,
+#   会在 README 里看起来"有验证", 而那条验证从未运行过。
+#   本项即这两个自检的执行者。
+#
+# ## 为什么两个都要跑
+#   · `studio_core` 证的是**契约与负向**(未知命令 / 参数类型 / 读缺失文件都不许静默回退)
+#   · `studio_cli` 证的是**进程边界**(退出码三态 0/1/2、坏请求行不中断会话、
+#     中文不被 \uXXXX 转义) —— 它会**真的起子进程**验证, 因为管道接错
+#     是只测函数测不出来的。
+#
+# ## 退出码三态
+#   `studio_cli.py` 的 2 = 用法/输入错误（门禁读成 SKIP）, 1 = 命令失败（读成 FAIL）。
+#   两者**必须分开**: 把用法错误当失败会让一次参数笔误显示成"防御失效";
+#   反过来把失败当跳过会让真的失败变成"未验证"。详见 `docs/STUDIO_PROTOCOL.md` §7。
+
+Check 'Studio 契约 (studio)' {
+    & $py -X utf8 tools\studio_core.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\studio_cli.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

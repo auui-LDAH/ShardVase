@@ -212,8 +212,14 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   写了负向用例、却**没有任何执行者**。判据用 AST 判"登记" + 在入口清单里做
 #   可达链搜索判"被执行", 并且本项自己就是那 6 个自检的执行者。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 41
-GATE_DEFAULT = 38
+# 2026-10-09: 41/38 -> 42/39 (新增 `Studio 契约 (studio)`, docs/STUDIO_PLAN.md ST0;
+#   它是 `tools/studio_core.py` + `tools/studio_cli.py` 两个自检的执行者。
+#   承上一项同一教训: 这两个工具刚建好、自检刚写绿, 若不同时接线, 它们会在
+#   落地那一刻就变成新的"登记了自检却无人执行"。`studio_cli` 的自检验的是
+#   **进程边界**(退出码三态 0/1/2、坏请求行不中断会话)——只测函数测不出来。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 42
+GATE_DEFAULT = 39
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
@@ -2153,7 +2159,9 @@ def selftest():
 
     cf_cases = [
         ('现时文件代码块内项数 = 真值 -> 不报',
-         _mk_cf('README.md', '# 门禁 41 项'), 0, None),
+         # ⚠️ 真值**由 GATE_TOTAL 推导**, 不写字面量: 计数上调一次
+         #    (41/38 -> 42/39) 就会让这条**本该通过**的用例变红。实测踩过。
+         _mk_cf('README.md', '# 门禁 %d 项' % GATE_TOTAL), 0, None),
         ('现时文件代码块内项数漂移(41->36) -> 必须报',
          _mk_cf('README.md', '# 门禁 36 项'), 1, '声称 36 项'),
         ('现时文件代码块内 N/N 漂移(41/41->36/36) -> 必须报',
@@ -2200,8 +2208,16 @@ def selftest():
     #
     # 三种 kind:
     #   'c' 判据本体(docs= 直接传入)  'p' 滤网+判据组合  'h' 只测滤网
-    _SA_DRIFT = '| 发布门禁（39 项，默认 36） | \u2705 |'
-    _SA_TRUE = '| 发布门禁（41 项，默认 38） | \u2705 |'
+    # ⚠️ 两个数**都由 GATE_TOTAL / GATE_DEFAULT 推导**, 不写字面量:
+    #    真值一变, 写死的"漂移样例"可能恰好等于新真值 ⇒ "必须报"这条
+    #    会静默失效 (2026-10-09 计数 41/38 -> 42/39 时实测踩到)。
+    _SA_TRUE = ('| 发布门禁（%d 项，默认 %d） | \u2705 |'
+                % (GATE_TOTAL, GATE_DEFAULT))
+    _DRIFT_T = GATE_TOTAL - 2
+    _DRIFT_D = GATE_DEFAULT - 2
+    assert (_DRIFT_T, _DRIFT_D) != GATE_OK, '漂移样例不得等于真值'
+    _SA_DRIFT = ('| 发布门禁（%d 项，默认 %d） | \u2705 |'
+                 % (_DRIFT_T, _DRIFT_D))
     _SA_HEAD = '> 版本：2026-09-20 v1 · 状态：**总纲**（路线图的单一来源）'
 
     def _mk_sa(rel, head, body=''):
@@ -2210,7 +2226,7 @@ def selftest():
 
     sa_cases = [
         ('sa1 面外自称权威 + 项数漂移 -> 必须报', 'c',
-         _mk_sa('docs/A.md', _SA_HEAD, _SA_DRIFT), 1, '声称 39 项'),
+         _mk_sa('docs/A.md', _SA_HEAD, _SA_DRIFT), 1, '声称 %d 项' % _DRIFT_T),
         ('sa2 面外自称权威 + 项数 = 真值 -> 不报', 'c',
          _mk_sa('docs/A.md', _SA_HEAD, _SA_TRUE), 0, None),
         ('sa3 两文件一漂移一正确 -> 恰 1 条', 'c',
