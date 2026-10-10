@@ -218,8 +218,19 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   落地那一刻就变成新的"登记了自检却无人执行"。`studio_cli` 的自检验的是
 #   **进程边界**(退出码三态 0/1/2、坏请求行不中断会话)——只测函数测不出来。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 43
-GATE_DEFAULT = 40
+# 2026-10-10: 42/39 -> 43/40 (新增 `Studio 外壳 (studio_server)`, ST5; 判据分两层
+#   且**两层不同源** —— 合成 UI 测服务端自身, 最后一条才检查真实 studio/ 资产。
+#   若拆成"只测合成 UI", 资产被删掉时门禁会全绿, 那是"检查器只在自己造的输入上
+#   正确"的经典失效。默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+# 2026-10-10: 43/40 -> 44/41 (新增 `文件编码 (bom_check)`; 补的是**已存在的纪律**
+#   —— `docs/HANDOVER.md:152-153` 与 `CONTRIBUTING.md` 都写了「含非 ASCII 的
+#   `.ps1` 必须带 BOM」, `tools/bom.py` 也提供了工具, 但**没有任何判据在看它**。
+#   实测反例 `tools/attacker/winpe_sympatcher/build.ps1` 无 BOM, PS 5.1 把它的
+#   中文注释读成乱码。判据**只判 `.ps1`**: 全库交叉表 .ps1 14/1、.c 7/65、
+#   .json 0/16 —— 后两者分布是散的, 判它们只会把既有无害状态判成失败。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 44
+GATE_DEFAULT = 41
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')

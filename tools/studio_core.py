@@ -1391,8 +1391,45 @@ def selftest(quiet=False):
     case('test.gate.results(latest) 逐项带 name/status',
          g1.get('count', 0) >= 1
          and all(x.get('name') and x.get('status') for x in g1['items']))
-    case('latest 的 pass_n 与 counts_json.pass 一致（同一真值, 两个出口）',
-         g1.get('pass_n') == (g1.get('counts_json') or {}).get('pass'))
+    # ⭐ 这里**不能**拿 `pass_n` 做断言。`pass_n` 来自 `[release_check] PASS: N 项
+    #   检查全通过` 那一句（`tools/gate_results.py:56 RE_PASSN`），而门禁失败时
+    #   写的是 `[release_check] FAIL: N/M 未通过` ⇒ **失败轮的 `pass_n` 恒为 None**
+    #   （`gate_results.py:162-163`）。于是 `None == <int>` 必假，而
+    #   `pick_latest` 读的是**最近一轮已完成**的轮次 ⇒ 只要上一轮门禁是红的，
+    #   本项就恒假 —— **一次失败会让门禁永久红下去，直到有人用一轮绿覆盖它**。
+    #   这是同型缺陷第 12 次: **断言用了只在成功路径上有定义的量**。
+    #   改用两个出口**都在场**的量: 文本出口与 NDJSON 出口各自的 pass 计数。
+    #   （历史轮次里 FAIL 行的分母 `pass+fail` 本身口径就不稳定 —— 实测
+    #   `20260930_221104` 写 `1/31` 而 pass+fail=30 ⇒ 也不能反推 `pass_n`。）
+    case('latest 的两个出口 pass 计数一致（同一真值, 两处表述）',
+         (g1.get('counts_text') or {}).get('pass')
+         == (g1.get('counts_json') or {}).get('pass'),
+         'text=%s json=%s' % ((g1.get('counts_text') or {}).get('pass'),
+                              (g1.get('counts_json') or {}).get('pass')))
+    # **负向**: 上一条表达式必须能对"两出口打架"的一轮判假 —— 否则它只是装饰。
+    # 用合成的一对 .log/.ndjson（文本 2 个 pass / JSON 1 个 pass）验证判别力。
+    import shutil as _sh
+    import tempfile as _tf
+    _td = _tf.mkdtemp(prefix='studio_twxo_')
+    try:
+        _stem = os.path.join(_td, 'release_check_29991231_235959')
+        io.open(_stem + '.log', 'w', encoding='utf-8', newline='\n').write(
+            'Windows PowerShell transcript start\n'
+            '[ok]  A\n[ok]  B\n[X]  C\n'
+            '[release_check] FAIL: 1/3 未通过\n')
+        io.open(_stem + '.ndjson', 'w', encoding='utf-8', newline='\n').write(
+            ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in (
+                {'seq': 1, 'name': 'A', 'status': 'pass'},
+                {'seq': 2, 'name': 'B', 'status': 'error'},
+                {'seq': 3, 'name': 'C', 'status': 'error'})))
+        _bad = dispatch('test.gate.results', {'query': 'latest', 'dir': _td})
+        case('**负向**: 两个出口 pass 打架时该表达式为假（断言不是装饰）',
+             ((_bad.get('counts_text') or {}).get('pass')
+              != (_bad.get('counts_json') or {}).get('pass')),
+             'text=%s json=%s' % ((_bad.get('counts_text') or {}).get('pass'),
+                                  (_bad.get('counts_json') or {}).get('pass')))
+    finally:
+        _sh.rmtree(_td, ignore_errors=True)
     # 负面: query 非法 / 非字符串 / 目录不存在 / diff 缺参
     ok, got = raises(lambda: dispatch('test.gate.results', {'query': 'nope'}),
                      'E_BAD_ARGS')

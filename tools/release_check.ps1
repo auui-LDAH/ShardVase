@@ -1370,6 +1370,46 @@ Check 'Studio 外壳 (studio_server)' {
     $rc -eq 0
 }
 
+# ## 第 44 项(2026-10-10): 「含非 ASCII 的 .ps1 必须带 BOM」
+#
+# 这条纪律 `docs/HANDOVER.md:152-153` 与 `CONTRIBUTING.md` 都写了,
+# `tools/bom.py` 也提供了工具 —— **但此前没有任何判据在看它**。
+# 后果实测(§2.62.7): `tools/attacker/winpe_sympatcher/build.ps1` 无 BOM,
+# PS 5.1 把它的中文注释读成 `# build.ps1 U+9225 U+003F U+93CB U+52EB U+7F13 WinPE-SymPatcher ...`。
+# 该文件当时**仍能跑**, 只因 6 行中文全在注释里; 一旦中文进了
+# `throw '...'` / `Write-Host '...'`, 就会得到莫名其妙的解析/运行错误
+# (同 `72b75eb`)。
+#
+# ## 为什么**只**判 `.ps1`（先量后改, 全库交叉表）
+#   扩展名 | 有非ASCII+有BOM | 有非ASCII 无BOM
+#   .ps1   |        14       |        1
+#   .c     |         7       |       65
+#   .json  |         0       |       16
+#   => `.c`/`.json` 的分布是**散的**, 判它们只会把既有的、无害的状态判成
+#      失败(同 §2.62.5)。`.ps1` 是唯一"约定已形成为不变量"的扩展名, 因为
+#      **只有 PS 5.1 真的会因此读错**; C 编译器与 `json.loads` 都按 UTF-8 处理。
+#
+# ## 为什么**不**判 CRLF
+#   `docs/HANDOVER.md:2741` 曾写「`.ps1` 的 CRLF-only 是硬不变量」——实测是错的
+#   (§2.62.6): 15 个 `.ps1` 里只有 6 个全 CRLF, 7 个纯 LF, 且
+#   `git ls-files --eol` 显示它们是 `i/lf w/lf`。判它只会制造字节 diff。
+#
+# ## 为什么**不**判「非 .ps1 不得带 BOM」
+#   全库 10 个非 `.ps1` 带 BOM, 其中 8 个是 `src/*.c`, 由
+#   `tools/add_license_headers.py` 写入, 其 docstring 明确要求"保留 BOM"。
+#   判它等于要求一次**无收益的大范围改写**。
+Check '文件编码 (bom_check)' {
+    & $py -X utf8 tools\bom_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\bom_check.py
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

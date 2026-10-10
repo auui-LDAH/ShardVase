@@ -201,7 +201,13 @@ def verify_run(run):
       ② 逐项**顺序与名字相同**, 且记号与 status 一一对应
          （pass<->[ok] / fail|error<->[X] / skip<->[skip] / not-run<->[info]）;
       ③ T7 不变量: 文本证据行数 == NDJSON 行数;
-      ④ `PASS: N 项检查全通过` 的 N == JSON 的 pass 数。
+      ④ `PASS: N 项检查全通过` 的 N == JSON 的 pass 数
+         —— ⚠️ **只在 PASS 轮可判**: 失败轮写的是 `FAIL: N/M 未通过`, 那一句里
+         **没有** `pass` 的真值。而且失败行的分母口径**历史上不稳定**（实测
+         `release_check_20260930_221104` 写 `1/31` 而 counts_text 的 pass+fail = 30）
+         ⇒ **不反推 `pass_n`**（反推等于编造一个被测对象从未承诺过的数字）。
+         失败轮照旧跑判据①②③ —— 那三条是**逐项**的, 与轮次成败无关,
+         故"本轮门禁红"与"两个出口互相打架"是两件不同的事。
     """
     problems = []
     info = {'run': run['name']}
@@ -246,6 +252,11 @@ def verify_run(run):
         if run['pass_n'] != jp:
             problems.append('PASS 文案 N=%d 但 JSON pass=%d' % (run['pass_n'], jp))
         info['pass_n'] = run['pass_n']
+    else:
+        # 失败轮: `pass_n` 无定义（见 docstring 判据④）。**如实记下"无法对账"**,
+        # 而不是静默跳过 —— 静默跳过会让这条判据在红轮上"看起来通过了"。
+        info['pass_n'] = None
+        info['pass_n_why'] = '非 PASS 轮: 汇总行不含 pass 真值, 不反推'
     return (not problems), problems, info
 
 
@@ -550,6 +561,30 @@ def selftest(quiet=False):
         ev15 = parse_evidence('[X]  某项: 检查写法错误（末值非布尔: True）\n')
         case('15 [X] 带诊断消息 -> 名字切在第一个 ": " 之前',
              len(ev15) == 1 and ev15[0][1] == '某项', str(ev15))
+
+        # 16 ⭐ 失败轮: 判据④**无法执行**, 必须如实记为"不反推"而不是静默跳过。
+        #    这一条是 §2.64 的直接来源: `pass_n` 只在 PASS 轮有定义, 拿它做
+        #    "两个出口一致"的断言 ⇒ 每一轮红门禁之后那个断言都必假。
+        LOG_FAIL = ('[ok]  A\n[ok]  B\n[X]  C\n'
+                    '[release_check] FAIL: 1/3 未通过\n')
+        ROWS_FAIL = [{'seq': 1, 'name': 'A', 'status': 'pass'},
+                     {'seq': 2, 'name': 'B', 'status': 'pass'},
+                     {'seq': 3, 'name': 'C', 'status': 'fail'}]
+        r16 = run_pair(LOG_FAIL, ROWS_FAIL, 'failround')
+        ok16, probs16, info16 = verify_run(r16)
+        case('16 失败轮: 逐项仍对得上 且 pass_n 记为不可对账（不反推）',
+             ok16 and not probs16 and info16.get('pass_n') is None
+             and bool(info16.get('pass_n_why')),
+             'ok=%s probs=%s info=%s' % (ok16, probs16, info16))
+
+        # 17 ⭐ 负向: 失败轮里两出口**真的打架**时, 判据①②③仍必须报
+        #    （证明"红轮判据④不执行"没有顺带让整条对账失效）。
+        rows17 = [dict(x) for x in ROWS_FAIL]
+        rows17[1]['status'] = 'fail'
+        r17 = run_pair(LOG_FAIL, rows17, 'failmix')
+        ok17, probs17, _i = verify_run(r17)
+        case('17 **负向**: 失败轮里记号打架仍必须报（判据④不执行 ≠ 整条失效）',
+             (not ok17) and any('记号不同' in x for x in probs17), str(probs17))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -559,7 +594,7 @@ def selftest(quiet=False):
             print('  %s %s%s' % ('ok  ' if ok else '[XX]', name,
                                  ('' if ok else '  <- ' + det)))
     nneg = sum(1 for n, _o, _d in cases if n.split(' ', 1)[0] in
-               ('3', '4', '5', '6', '7', '8', '9', '10', '11'))
+               ('3', '4', '5', '6', '7', '8', '9', '10', '11', '17'))
     print('[gate_results-selftest] %s: %d 条（含 %d 条负向）'
           % ('PASS' if npass == len(cases) else 'FAIL', len(cases), nneg))
     return 0 if npass == len(cases) else 1

@@ -1,4 +1,4 @@
-# build.ps1 — 构建 WinPE-SymPatcher (攻防工具, 仅自有产物演练)
+﻿# build.ps1 — 构建 WinPE-SymPatcher (攻防工具, 仅自有产物演练)
 #
 # 用法: powershell -ExecutionPolicy Bypass -File build.ps1
 # 输出: 本目录 winpe_sympatcher.exe
