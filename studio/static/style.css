@@ -1,0 +1,149 @@
+/* ShardVase Studio —— 零依赖样式表。
+   刻意不用任何框架/预处理器：本机 npm 不可用，且离线纪律要求零外部请求。
+   配色沿用 VS Code 的语义（活动栏 / 侧栏 / 面板），但只用系统字体。 */
+
+:root {
+  --bg: #1e1e1e;
+  --bg-2: #252526;
+  --bg-3: #2d2d30;
+  --bg-4: #333337;
+  --fg: #d4d4d4;
+  --fg-dim: #9d9d9d;
+  --line: #3f3f46;
+  --accent: #4ea1ff;
+  --ok: #4ec9b0;
+  --bad: #f14c4c;
+  --warn: #dcdcaa;
+  --skip: #808080;
+  --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg); color: var(--fg);
+  font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.boot { padding: 24px; color: var(--fg-dim); font-family: var(--mono); }
+.boot.err { color: var(--bad); }
+
+#app { display: flex; height: 100%; }
+
+/* ---- 左侧活动栏 ---- */
+.activity {
+  width: 52px; flex: 0 0 52px; background: var(--bg-3);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 4px;
+}
+.act {
+  width: 40px; height: 40px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--fg-dim); font-size: 15px; cursor: pointer;
+}
+.act:hover { background: var(--bg-4); color: var(--fg); }
+.act.on { color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* ---- 主区 ---- */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.titlebar {
+  height: 34px; flex: 0 0 34px; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px; background: var(--bg-3); border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 600; }
+.dim { color: var(--fg-dim); }
+.grow { flex: 1; }
+.status.ok { color: var(--ok); }
+.status.bad { color: var(--bad); }
+
+.split { flex: 1; display: flex; min-height: 0; }
+.pane { flex: 1; overflow: auto; padding: 14px 16px; min-width: 0; }
+.side {
+  width: 340px; flex: 0 0 340px; border-left: 1px solid var(--line);
+  overflow: auto; padding: 10px 12px; background: var(--bg-2);
+}
+.side h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--fg-dim); letter-spacing: .04em; }
+
+h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.row label { color: var(--fg-dim); }
+
+select, input, button {
+  background: var(--bg-4); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 3px; padding: 4px 8px; font: inherit;
+}
+input, select { min-width: 140px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { background: #3f3f46; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.danger { border-color: #6b2b2b; color: #ffb4b4; }
+button.danger:hover:not(:disabled) { background: #5a2222; }
+button.ghost { background: transparent; }
+
+.hint { color: var(--fg-dim); margin: 0 0 10px; }
+.hint.warn { color: var(--warn); }
+code { font-family: var(--mono); background: var(--bg-3); padding: 0 3px; border-radius: 2px; }
+
+/* ---- 输出 ---- */
+.out {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px;
+  padding: 8px 10px; font-family: var(--mono); font-size: 12px;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 46vh; overflow: auto; margin: 0 0 12px;
+}
+.out.small { max-height: 70vh; }
+.out:empty::before { content: "（无输出）"; color: var(--skip); }
+
+/* ---- 下方面板 ---- */
+.bottom { flex: 0 0 30%; min-height: 140px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.tabs { display: flex; gap: 2px; background: var(--bg-3); padding: 4px 6px 0; }
+.tab {
+  border: 0; border-radius: 3px 3px 0 0; background: transparent;
+  color: var(--fg-dim); padding: 5px 12px;
+}
+.tab.on { background: var(--bg); color: var(--fg); }
+.bottom-out { flex: 1; max-height: none; margin: 0; border: 0; border-radius: 0; overflow: auto; }
+
+/* ---- 列表 / 卡片 ---- */
+.list { display: flex; flex-direction: column; gap: 4px; }
+.item {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 5px 8px; border-radius: 3px; background: var(--bg-2); border-left: 3px solid var(--line);
+}
+.item .nm { flex: 1; font-family: var(--mono); }
+.item .why { color: var(--fg-dim); font-size: 12px; }
+.item.pass { border-left-color: var(--ok); }
+.item.fail, .item.error { border-left-color: var(--bad); }
+.item.skip, .item.not-run { border-left-color: var(--skip); }
+.pill {
+  font-size: 11px; padding: 1px 6px; border-radius: 8px;
+  background: var(--bg-4); color: var(--fg-dim); font-family: var(--mono);
+}
+.pill.pass { color: var(--ok); }
+.pill.fail, .pill.error { color: var(--bad); }
+.pill.gated { color: var(--warn); }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 10px; }
+.card h4 { margin: 0 0 6px; font-size: 13px; font-family: var(--mono); }
+.card .kv { display: flex; gap: 6px; font-size: 12px; color: var(--fg-dim); }
+.card .kv b { color: var(--fg); font-weight: 500; }
+.card .limits { margin-top: 6px; font-size: 12px; color: var(--warn); }
+.card .limits.none { color: var(--skip); }
+
+/* ---- 依赖图（纯 DOM，不用 canvas/库） ---- */
+.graph { margin-top: 8px; }
+.graph h3 { font-size: 12px; color: var(--fg-dim); margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+.nodes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.node {
+  font-family: var(--mono); font-size: 12px; padding: 3px 8px;
+  border-radius: 3px; background: var(--bg-4); border: 1px solid var(--line);
+}
+.node.prim { opacity: .7; font-style: italic; }
+.edges { font-family: var(--mono); font-size: 12px; color: var(--fg-dim); }
+.edges div { padding: 1px 0; }
+.edges .arrow { color: var(--accent); }
+.edges .dep { color: var(--warn); }
+.edges .conf { color: var(--bad); }

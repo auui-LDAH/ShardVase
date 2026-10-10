@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShardVase Studio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="boot" class="boot">正在读取令牌…</div>
+
+<div id="app" hidden>
+  <!-- 左侧活动栏 -->
+  <nav class="activity" role="tablist" aria-label="活动栏">
+    <button class="act" data-view="gen"    title="生成" aria-label="生成">生</button>
+    <button class="act" data-view="test"   title="测试" aria-label="测试">测</button>
+    <button class="act" data-view="vm"     title="VM 调试" aria-label="VM 调试">V</button>
+    <button class="act" data-view="host"   title="主机调试" aria-label="主机调试">H</button>
+    <button class="act" data-view="mods"   title="模块" aria-label="模块">块</button>
+    <button class="act" data-view="about"  title="关于" aria-label="关于">?</button>
+  </nav>
+
+  <!-- 主区 -->
+  <main class="main">
+    <header class="titlebar">
+      <span class="brand">ShardVase Studio</span>
+      <span class="sep">·</span>
+      <span id="ver" class="dim">—</span>
+      <span class="grow"></span>
+      <span id="status" class="status dim">未连接</span>
+    </header>
+
+    <div class="split">
+      <section class="pane" id="pane-main">
+        <!-- 生成 -->
+        <div class="view" id="view-gen" hidden>
+          <h2>生成面板</h2>
+          <div class="row">
+            <label>策略</label>
+            <select id="prof"></select>
+            <button id="btn-solve">求解</button>
+            <button id="btn-build-plan" class="ghost">构建（先看计划）</button>
+            <button id="btn-build" class="danger" disabled>执行构建</button>
+          </div>
+          <p class="hint" id="build-hint">构建是分钟级副作用操作：先看计划，再确认执行。</p>
+          <pre class="out" id="out-solve"></pre>
+          <div id="graph" class="graph"></div>
+        </div>
+
+        <!-- 测试 -->
+        <div class="view" id="view-test" hidden>
+          <h2>测试面板</h2>
+          <div class="row">
+            <label>查询</label>
+            <select id="gq">
+              <option value="latest">latest — 最近一轮逐项</option>
+              <option value="list">list — 历史轮次</option>
+              <option value="verify">verify — 文本 vs NDJSON 对账</option>
+              <option value="trend">trend — 趋势</option>
+            </select>
+            <button id="btn-gate">查询</button>
+            <button id="btn-gate-items" class="ghost">门禁清单（静态）</button>
+          </div>
+          <p class="hint">清单 = <b>声明</b>；结果 = <b>跑过的</b>。两者不是一回事，界面上也不合并。</p>
+          <div id="gate-list" class="list"></div>
+        </div>
+
+        <!-- VM 调试 -->
+        <div class="view" id="view-vm" hidden>
+          <h2>VM 级调试</h2>
+          <div class="row">
+            <label>镜像</label>
+            <select id="vmimg"></select>
+            <button id="btn-vmimages">列出镜像</button>
+            <button id="btn-vmdisasm">反汇编</button>
+          </div>
+          <pre class="out" id="out-vm"></pre>
+        </div>
+
+        <!-- 主机调试 -->
+        <div class="view" id="view-host" hidden>
+          <h2>主机级调试</h2>
+          <div class="row">
+            <button id="btn-doc">doctor</button>
+            <input id="sym" placeholder="符号名（逗号分隔）" value="g_wd_interval">
+            <button id="btn-sym">sym</button>
+            <button id="btn-mask">mask</button>
+          </div>
+          <div class="row">
+            <input id="exits" placeholder="退出码（逗号分隔）" value="219,0">
+            <button id="btn-exit">exit</button>
+          </div>
+          <p class="hint warn" id="adwarn">活体命令（read/patch/watch）会附着目标进程，
+            可能触发目标自己的反调试（退出码 219）。那<b>不是</b>防御失效，是观测留下的痕迹。</p>
+          <pre class="out" id="out-host"></pre>
+        </div>
+
+        <!-- 模块 -->
+        <div class="view" id="view-mods" hidden>
+          <h2>模块契约</h2>
+          <p class="hint">数据来自 <code>modules.json</code>（唯一来源）。<code>known_limits</code> 是模块自己承认的局限 —— 空值表示"没有登记"，不表示"没有局限"。</p>
+          <div id="mods" class="cards"></div>
+        </div>
+
+        <!-- 关于 -->
+        <div class="view" id="view-about" hidden>
+          <h2>关于 / 能力</h2>
+          <p class="hint">这张表声明<b>哪些能力到今天为止是真的</b>。<code>planned</code> 不是"快好了"，是"还没开始"。</p>
+          <div id="caps" class="list"></div>
+        </div>
+      </section>
+
+      <!-- 右侧：变量/详情 -->
+      <aside class="side">
+        <h3>详情</h3>
+        <pre class="out small" id="out-side">（选一条命令看结果）</pre>
+      </aside>
+    </div>
+
+    <!-- 下方：输出 -->
+    <section class="bottom">
+      <div class="tabs">
+        <button class="tab on" data-panel="output">输出</button>
+        <button class="tab" data-panel="problems">问题</button>
+        <button class="tab" data-panel="raw">原始 NDJSON</button>
+      </div>
+      <pre class="out bottom-out" id="panel-output"></pre>
+      <div class="out bottom-out" id="panel-problems" hidden></div>
+      <pre class="out bottom-out" id="panel-raw" hidden></pre>
+    </section>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -102,8 +102,18 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `debug.sym` | `symbols[]`, `exe?`, `map?` | `symbols[]`（表）+ `missing[]`（查不到的符号名）；**`symbols` 为空 ⇒ `E_BAD_ARGS`**，不是空结果 |
 | `debug.mask` | `symbols[]` \| `rva,len`, `exe?`, `map?` | `payload_key ∈ 'mask' / 'sym'` —— 如实透出「给了符号名时底层转成符号查询」，不替调用方抹平 |
 | `debug.exit` | `codes[]` | 退出码 → 语义；`unknown[]` 是**查不到的码**（不猜、不映射成最近的一个） |
-| `debug.read` | `sym` \| `addr`, `length?`, `pid?`, **`confirm`** | 读目标进程内存；`length` 缺省 16；`opened_process: true` |
-| `debug.patch` | `sym` \| `addr`, `bytes` \| `nop` \| `restore`, `pid?`, **`confirm`** | 改写目标进程内存；`opened_process: true` |
+| `debug.read` | `symbols[]`, `length?`, `pid?`, **`confirm`** | 读目标进程内存；`length` 缺省 16；`opened_process: true` |
+| `debug.patch` | `symbols[]`, `bytes` \| `nop` \| `restore`, `pid?`, **`confirm`** | 改写目标进程内存；`opened_process: true` |
+
+`debug.read` / `debug.patch` 的参数键是 **`symbols`（数组或字符串）**，与
+`debug.sym` / `debug.mask` 一致 —— 面板上「选中的符号」是一个**集合**，
+让这三条命令用同一个键名，前端就不必为每条命令记一套形状。
+
+⚠️ **错误码的先后顺序也是契约**：活体命令的检查顺序是
+**「先说清对象」→「再要授权」**。即 `symbols` 缺失/为空时报 `E_BAD_ARGS`
+（**不知道该读什么**），只有在对象明确之后才判 `confirm`
+（`E_CONFIRM_REQUIRED`）。反过来会在"什么都没指定"时就弹一个
+"要附着进程吗"的确认框 —— 用户点了确认，然后拿到一个参数错误。
 
 ### 5.1 流式命令（`build.run` / `debug.watch`）—— 一个请求，多行响应
 
@@ -369,12 +379,48 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
    现值声明；进面会要求它跟着门禁项数等数字一起漂移，
    而协议版本自己已经承担了「这份契约是第几版」的表达。
 
+## 11. Studio 外壳（`tools/studio_server.py`）
+
+协议本身与传输无关（§2 只定义「一行 = 一条消息」）。ST5 交付的**参考实现**是
+`tools/studio_server.py`：一个把 `studio_core.envelope()` / `stream_events()`
+的结果写进 HTTP 响应的**薄层**。它**不含任何业务判据** —— 判据在 `studio_core`
+与它下游的工具里。
+
+| 决定 | 取值 | 理由 |
+|------|------|------|
+| 绑定地址 | **只绑 `127.0.0.1`**，**不提供 `--host` 参数** | 一个能被写成 `0.0.0.0` 的开关，迟早会被写成 `0.0.0.0` |
+| 端口 | 缺省 **0**（内核分配） | 固定端口撞车表现为「服务起不来」，容易被误读成程序坏了 |
+| 鉴权 | 一次性 `secrets.token_urlsafe(24)`；`/api/**` 要求 **`X-Studio-Token` 头** | 头不进 URL、不进日志 |
+| 令牌交付 | 经 URL 的 **fragment**（`/index.html#t=...`） | fragment **不进 `Referer`**、不进服务端日志 |
+| 页面与静态资源 | **不要求令牌** | 它们不含数据；要求令牌只会让 UI 无法启动 |
+| `/api` 的方法 | 仅 **POST**；GET ⇒ **405** | 能被 GET 触发的副作用命令会被预取/历史恢复悄悄执行 |
+| `/favicon.ico` | **204**（不是 404） | 404 会刷控制台错误，把真错误淹掉 |
+| 令牌失败 | **401 `E_FORBIDDEN`**，`detail.query_token_accepted: false` | 明说「query 里的令牌**不**被接受」，省掉一轮排查 |
+| 浏览器 | **不自动打开** | 本项目要求命令静默执行（硬约束） |
+| 外部请求 | **零**（不引 CDN / 字体 / 前端库） | 离线可用；也避免把本地端口暴露给第三方 |
+
+**流式的 HTTP 映射**：`POST /api/stream` ⇒ `Content-Type: application/x-ndjson`，
+**不设 `Content-Length`**，结束由连接关闭界定；每个事件一行 `{"id":N,"ok":true,"event":{...}}`，
+**收尾补发一行 `{"id":N,"ok":true,"end":true}`** —— 让客户端不必为「最后一行没有换行符」
+写特例。
+
+**静态资源的路径安全**：`safe_join()` 四步 —— 统一解码 → 统一分隔符 → `normpath`
+→ `realpath` **前缀比对**。注释里写明它**不能**简化为 `'..' in rel`。
+
+**自检的判别力**：`tools/studio_server.py --selftest` = **21 项（含 9 项负向）**。
+其中 20 项跑在 `tempfile` 造的**合成 UI** 上；**第 21 项跑在真实 `studio/` 资产上**
+（断言三个资产存在、**无外部 URL 引用**、且资产里确实出现 `X-Studio-Token` 与 `/api`）。
+⚠️ 两者必须在**同一条命令**里跑完：若只测合成 UI，资产被删掉时门禁会**全绿** ——
+那是「检查器只在自己造的输入上成立」的经典失效。门禁第 43 项正是这条命令。
+
 ## 10. 参考
 
 - `docs/STUDIO_PLAN.md` — 阶段规划（ST0-ST6）与决策 D1-D8
 - `tools/studio_core.py` — 纯逻辑层（可无头 import，无 I/O 副作用）
 - `tools/studio_cli.py` — 进程边界（NDJSON over stdio）
 - `tools/vm_debug.py` — VM 级调试器（ST4：反汇编 / 单步 / 断点 / 视图）
+- `tools/studio_server.py` — Studio 外壳（HTTP/NDJSON 参考实现）
+- `studio/index.html` / `studio/static/app.js` / `studio/static/style.css` — 零依赖前端
 - `tools/prot_dbg.py` — 主机级调试后端（ST3：`doctor`/`sym`/`mask`/`exit`/`read`/`patch`/`watch`，**唯一实现**；`debug.*` 是它的结构化包装）
 - `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）

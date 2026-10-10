@@ -218,8 +218,8 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   落地那一刻就变成新的"登记了自检却无人执行"。`studio_cli` 的自检验的是
 #   **进程边界**(退出码三态 0/1/2、坏请求行不中断会话)——只测函数测不出来。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 42
-GATE_DEFAULT = 39
+GATE_TOTAL = 43
+GATE_DEFAULT = 40
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')

@@ -1354,6 +1354,22 @@ Check 'Studio 契约 (studio)' {
     $rc -eq 0
 }
 
+Check 'Studio 外壳 (studio_server)' {
+    # ST5: 本地浏览器 UI 的服务端。判据分两层, 且**两层不同源**:
+    #   ① --selftest: 用**合成 UI** 测服务端自身（令牌纪律 / 路径穿越 /
+    #      GET 不执行命令 / 流式 id 贯穿 / 只绑回环 ...），9 条负向。
+    #      合成 UI 是刻意的 —— 判据要测服务端, 不该因为资产被改名而变红。
+    #   ② --selftest 的最后一条**才**检查真实 studio/ 资产自洽
+    #      （存在 / 无外部引用 / 前端确实引用了协议字段）。
+    # 为什么同一条命令里做两件事: 若拆成"只测合成 UI", 资产被删掉时
+    # 门禁会**全绿**——那是"检查器只在自己造的输入上正确"的经典失效。
+    & $py -X utf8 tools\studio_server.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别
