@@ -8568,9 +8568,9 @@ UI 拿不到它，就会把每个模块都渲染成「无已知局限」—— �
 
 | 文件 | 变化 |
 |---|---|
-| `tools/studio_core.py` | 36694 → **62701 B**：`modules.list` 补 11 字段 + `maturity_scale`；`plan.graph`；`build_argv`/`build_events`/`stream_events`；`COMMANDS` 10 条 |
-| `tools/studio_cli.py` | **18805 B**：`respond_stream()` + `one_shot`/`session` 分流 |
-| `tools/release_check.ps1` | 第 42 项 body 追加 `studio_core`/`studio_cli` 两个自检调用（**计数 42/39 不变**） |
+| `tools/studio_core.py` | 36694 → **60893 B**：`modules.list` 补 11 字段 + `maturity_scale`；`plan.graph`；`build_argv`/`build_events`/`stream_events`；`COMMANDS` 10 条；自检 4d 组 +16 条 |
+| `tools/studio_cli.py` | 16671 → **18805 B**：`respond_stream()` + `one_shot`/`session` 分流 |
+| `tools/release_check.ps1` | **未改动**（ST1 不动门禁本体；第 42 项已有的四个自检调用分别在 ST0/ST4/ST2 就位，本轮新增的用例被其中第一个自动覆盖） |
 | `docs/STUDIO_PROTOCOL.md` | 13528 → **18524 B**：§5.1 流式命令 / §5.2 两种关系 / `E_STREAM_CMD` / 修正头部断句 |
 | `docs/STUDIO_PLAN.md` | 25577 → **27620 B**：v3 → v4，ST1 标 ✅ + 两条实施发现 |
 | `docs/HANDOVER.md` | 本节 |
@@ -8583,7 +8583,7 @@ UI 拿不到它，就会把每个模块都渲染成「无已知局限」—— �
 | `studio_cli.py --selftest` | PASS |
 | 流式端到端（`build/_st1_stream.py`） | 18/18 |
 | 交叉对账（`build/_st1_xcheck.py`） | 5 composition × 12 判据 + 4 profile 全过 |
-| `tools/doccheck.py` | 检查数字 1151 处, 错误 0, 警告 0 |
+| `tools/doccheck.py` | 错误 0, 警告 0, `[doccheck] PASS`（本节写入**前**实测 1166 处；写入后更高 —— 不写死在这里，理由见 §2.36.7「自计数不能写死在被它数的文件里」） |
 | `build/_hygiene.py` | 15 个文件 0 处异常 |
 
 **自检用例本身也要"被守"**：2.59.7 的去重与 2.59.8 的空集分流，
@@ -8620,5 +8620,34 @@ UI 拿不到它，就会把每个模块都渲染成「无已知局限」—— �
 与第 11 次（§2.58）相比，这次的观察对象从「门禁自己的输出」移到了
 **「喂给面板的数据」**。但共因没变：**一个装置只要"有输出"就被当成"输出了实情"，
 那么它沉默地丢掉的每一样东西，都会变成使用者的错误认知。**
+
+### 2.59.12 ⭐ 我自己在这一节的交付物表里写了一行假声明
+
+本节写完、提交之后，我核对 `git show --stat` 才发现：
+
+我原本在 2.59.9 的交付物表里写了
+
+> `tools/release_check.ps1` | 第 42 项 body 追加 `studio_core`/`studio_cli`
+> 两个自检调用（**计数 42/39 不变**）
+
+而**这次提交根本没有这个文件**。那四个自检调用分别来自
+ST0（`c2c68c4`，`studio_core` + `studio_cli`）、ST4（`vm_debug`）、
+ST2（`gate_results`）—— ST1 一行都没加。同表的 `studio_core.py` 大小
+也写错了（记 62701，实际 60893，是我改完又回退前的中间值）。
+
+**为什么会写错**：ST1 新增了命令与能力，按惯例**应当**接进门禁；
+而第 42 项跑的第一个自检正好就是 `studio_core.py --selftest` ——
+我这一轮把新用例加进了**那个**自检里，于是"新用例会被门禁执行"
+（真）被我记成了"我新增了接线"（假）。
+**"应当接"与"已经接"、"用例进去了"与"我加了调用"被混为一谈。**
+
+这与本节正文抓的四处**同型**（2.59.11 那句「有 ≠ 对」），
+只不过这次的对象是我自己的**记录**——而记录比代码更容易骗过人，
+因为没有任何检查器在读它。
+
+⇒ 处置：按实测改回数字、把那一行改成「**未改动**」并写明四个调用的真实来源，
+再把这条自我更正留在这里（记录里的错也要留痕，否则后来者会照它推断）。
+这也是本项目从 §2.54 起反复出现的同一类：**能被机器校验的东西改了，
+靠人眼维护的叙述会漏** —— 本次连"叙述"都算不上，是**凭印象填的数字**。
 
 *2026-10-10 v37*
