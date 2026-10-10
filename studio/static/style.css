@@ -147,3 +147,41 @@ code { font-family: var(--mono); background: var(--bg-3); padding: 0 3px; border
 .edges .arrow { color: var(--accent); }
 .edges .dep { color: var(--warn); }
 .edges .conf { color: var(--bad); }
+
+/* ---- VM 源码视图（ST5.3）：行号 + 断点槽 + 词法高亮 ---- */
+/* 断点槽必须**只有可执行行**可点。不可执行行上的槽位只是留白（不是禁用
+   的按钮）—— 一个禁用按钮会读成"暂时不可用"，而事实是"这里永远不是指令"。 */
+.vmwrap { display: flex; gap: 12px; align-items: flex-start; min-height: 0; }
+.vmsrc {
+  flex: 1; min-width: 0; max-height: 58vh; overflow: auto;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.45;
+}
+.vmsrc .ln { display: flex; white-space: pre; }
+.vmsrc .ln:hover { background: var(--bg-3); }
+.vmsrc .ln.cur { background: #2b3a4a; }
+.vmsrc .ln.bp .gut { color: var(--bad); }
+.vmsrc .gut {
+  flex: 0 0 62px; text-align: right; padding: 0 6px 0 0; user-select: none;
+  color: var(--skip); border-right: 1px solid var(--line); cursor: default;
+}
+.vmsrc .gut.hot { cursor: pointer; }
+.vmsrc .gut.hot:hover { background: var(--bg-4); color: var(--fg); }
+.vmsrc .tx { padding: 0 8px; }
+.vmsrc .tx .cmt { color: #6a9955; }
+.vmsrc .tx .mnem { color: #569cd6; }
+.vmsrc .tx .num { color: #b5cea8; }
+.vmsrc .tx .label { color: #dcdcaa; }
+.vmsrc .tx .sym { color: #4ec9b0; }
+.vmsrc .tx .bad { color: var(--bad); text-decoration: wavy underline; }
+.vmsrc .tx .ws { white-space: pre; }
+.vmside { flex: 0 0 320px; min-width: 0; }
+.vmside h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; color: var(--fg-dim); letter-spacing: .04em; }
+.vmside .list { margin-bottom: 12px; }
+.toolbar button { font-family: var(--mono); }
+.toolbar .pill { margin-left: 4px; }
+.frame { background: var(--bg-2); border-left: 3px solid var(--accent); }
+.frame.top { border-left-color: var(--ok); }
+.frame .nm { font-size: 12px; }
+.frame .why { font-size: 11px; }
+.unreliable { color: var(--warn); font-size: 12px; }

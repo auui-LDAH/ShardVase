@@ -96,6 +96,15 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `gate.items` | — | `items[]` `{name, line, gated}` + `total`/`gated`/`default`/`source` |
 | `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` + `count`；`blob` 缺省 `build/vm.blob` |
 | `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
+| `vm.source` | `asm` | 逐行视图：`rows[]` `{line, text, kind, tokens[][2], off?, asm_mnem?, breakable}` + `mnemonics[]`(47) / `symbols[]` / `executable_lines[]` / `assemble_error` / `breakpoint_key` / `rel`（相对仓库根的路径） |
+| `vm.open` | `source`, `name`\|`asm`, `blob?` | 建**调试会话**，返回 `session` + 会话状态（见 §5.4） |
+| `vm.state` | `session` | 会话当前状态（同 `vm.open` 的载荷） |
+| `vm.continue` | `session`, `max_steps?` | 跑到断点/停机；停机原因见 `stop_reason` |
+| `vm.step` | `session` | 执行**恰好一条**指令（断点**不**拦截单步） |
+| `vm.stepOver` | `session` | 跨过一条 `call`/`callind`；**被调函数内部的断点仍会命中** |
+| `vm.restart` | `session` | 回到初态；**保留断点**（重启不该悄悄清掉用户下的断点） |
+| `vm.breakpoints` | `session`, `lines[]` \| `add[]`/`remove[]` | `lines` = 整体替换（空数组 = 全清）；与 `add`/`remove` **不可同时给**（顺序有歧义） |
+| `vm.close` | `session` | 关闭会话；**对未知 id 也成功**（幂等），返回值里 `existed` 说明它是否真的存在过 |
 | `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
 | `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why}` + `counts_json`/`pass_n` |
 | `debug.doctor` | `exe?`, `map?` | 体检：`summary{ok, syms, mask_regions, n_errors, n_warns}`；**不开进程**（`opened_process: false`） |
@@ -114,6 +123,37 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 （**不知道该读什么**），只有在对象明确之后才判 `confirm`
 （`E_CONFIRM_REQUIRED`）。反过来会在"什么都没指定"时就弹一个
 "要附着进程吗"的确认框 —— 用户点了确认，然后拿到一个参数错误。
+
+
+### 5.4 VM 调试会话：`session` 是什么，以及它**不是**什么
+
+`vm.disasm` 是**一次性**的：把一段字节译成助记符，看一眼就结束。
+`vm.open` 建的是一个**跨多次调用活着的解释器**（`tools/vm_debug.py:class Session`）——
+「继续 / 单步 / 步过」这些动作要的是同一个解释器的下一次推进，而不是重放一遍。
+
+**会话状态字段**（`vm.open` / `vm.state` / `vm.continue` / … 都返回同一形状）：
+
+| 字段 | 含义 |
+|---|---|
+| `session` | 会话 id，形如 `vm-7`；**单调递增，不复用** —— 复用一个已关闭的 id 会让面板手里那个过期的 id 突然指向一个新会话 |
+| `line_at_ip` | 当前 IP 对应的**源行号**；没有行号表时为 `null`（**不编造 0**） |
+| `ip` / `steps` / `stack_depth` / `stack_top` / `br` / `r` / `con` / `mem_written` | 解释器快照（`stack_depth` 是**数据栈**深度） |
+| `call_depth` / `call_stack` | **调用栈**（影子记录），与 `stack_depth` **不是一回事**（见下） |
+| `stop_reason` / `stop_detail` | 停机原因；`terminated` 为真时面板应把「继续/单步」置灰 |
+| `breakpoints` / `breakpoints_supported` | 断点表与**是否支持按行号下断点** |
+| `hit_breakpoint` | 本次停止命中的断点行号；没命中为 `null` |
+
+⭐ **`call_stack` 为什么要单独记，而不是从 `stk` 里读**：
+`src/vm.c` 把 `call` 的返回地址压进**与数据同一个栈**（`stk`）。
+因此「`stk` 是纯数据栈」和「能从 `stk` 读出调用栈」这两件事**不可能同时成立**。
+Studio 的做法是**旁路记录**调用帧（`_note_call` / `_note_ret`），并且当 `ret` 弹出的值与
+最近一次 `call` 压入的不一致时，**如实把 `call_stack.reliable` 置为 `false`** 并给出
+`dirty_reason` —— 显示一张错的调用栈比不显示更糟，因为它会被当成证据。
+
+**会话的诚实边界**：会话活在 **Studio 服务进程内**。`tools/studio_cli.py --cmd` 每次
+是一个新进程，因此**拿不到上一次的会话**；服务重启或换进程后旧 id 失效，
+此时报 `E_NOT_FOUND` 并在 `detail.why` 里说明原因 —— **不静默重建**
+（静默重建会让面板以为还在调原来那个程序）。
 
 ### 5.1 流式命令（`build.run` / `debug.watch`）—— 一个请求，多行响应
 

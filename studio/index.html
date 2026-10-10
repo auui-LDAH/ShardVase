@@ -75,12 +75,43 @@
         <div class="view" id="view-vm" hidden>
           <h2>VM 级调试</h2>
           <div class="row">
-            <label>镜像</label>
+            <label>来源</label>
+            <select id="vmsrc">
+              <option value="asm">源码（.vasm，有行号表）</option>
+              <option value="blob">镜像（vm.blob，无行号表）</option>
+            </select>
+            <input id="vmasm" list="vasmlist" placeholder=".vasm 路径，如 tests/unit_vm_brk.vasm">
+            <datalist id="vasmlist"></datalist>
             <select id="vmimg"></select>
             <button id="btn-vmimages">列出镜像</button>
-            <button id="btn-vmdisasm">反汇编</button>
+            <button id="btn-vmopen">打开</button>
           </div>
-          <pre class="out" id="out-vm"></pre>
+          <p class="hint" id="vmhint">打开一个会话后，断点按<b>源行号</b>下（点左侧行号槽）。
+            只有带行号表的源码会话能下断点 —— 镜像会话会如实说"不支持"，而不是退化成按偏移下。</p>
+          <div class="row toolbar" id="vmtools" hidden>
+            <button id="btn-vmcontinue" title="跑到下一个断点/停机">继续</button>
+            <button id="btn-vmstep" title="执行恰好一条指令">单步</button>
+            <button id="btn-vmstepover" title="跨过一条 call（内部断点仍会命中）">步过</button>
+            <button id="btn-vmrestart" title="回到初态（保留断点）">重启</button>
+            <button id="btn-vmclose" title="关闭会话">停止</button>
+            <span class="pill" id="vmstate">（未打开）</span>
+          </div>
+          <div class="vmwrap">
+            <div class="vmsrc" id="vmlisting"></div>
+            <div class="vmside">
+              <h3>调用栈</h3>
+              <div id="vmstack" class="list small"></div>
+              <h3>状态</h3>
+              <pre class="out small" id="out-vm">（打开一个会话）</pre>
+            </div>
+          </div>
+          <details id="vmdiswrap"><summary>反汇编（只读）</summary>
+            <div class="row">
+              <button id="btn-vmdisasm">反汇编当前来源</button>
+              <span class="hint">只读路径：不建会话、不下断点，就是把字节译成助记符看一眼。</span>
+            </div>
+            <pre class="out" id="out-vmdisasm"></pre>
+          </details>
         </div>
 
         <!-- 主机调试 -->

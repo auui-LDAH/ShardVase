@@ -219,6 +219,16 @@ class Vm(object):
         self.steps = 0
         self.max_steps = max_steps
         self.history = []
+        # ST5.4 **影子调用栈**。见 `_exec` 里 call/callind/ret 三处: `stk` 是
+        # 数据栈与返回栈**混用**的（与 src/vm.c 一致）, 所以调用栈不可能从
+        # `stk` 反推出来, 只能在执行时旁路记录。
+        #   `frames[i] = {'call_off': call 指令偏移, 'ret_addr': 压入的返回
+        #   地址, 'dest': 跳转目标}`
+        # `frames_dirty` 在"ret 弹出的不是最近一次 call 压的返回地址"时置位
+        # —— 那一刻起这张表**不再是调用栈**, 必须如实说出来而不是继续显示
+        # 一个看起来很合理的假栈。
+        self.frames = []
+        self.frames_dirty = False
 
     # --- 内存（与 vm_mem_oob 同式: 回绕安全） -----------------------------
     def _oob(self, addr, width):
@@ -254,6 +264,53 @@ class Vm(object):
         if not self.stk:
             raise VmError(ERR_STACK_UNDERFLOW, '栈为空', ip=self.ip)
         return self.stk.pop()
+
+    # --- 影子调用栈 (ST5.4) ------------------------------------------------
+    def _note_call(self, call_off, ret_addr, dest):
+        """记录一次 call / callind。
+
+        调用发生在 `_push` **之前**（见 `_exec`: `call`/`callind` 都是先
+        `_note_call` 再 `_push`）—— 否则压进去的返回地址会被自己当成上一帧。
+        """
+        self.frames.append({'call_off': call_off, 'ret_addr': ret_addr,
+                            'dest': dest})
+
+    def _note_ret(self, at, ret_addr):
+        """记录一次 ret。**只以"弹出的值 == 最近一帧的返回地址"为配对依据。**
+
+        `src/vm.c` 把返回地址压进**数据栈**, 所以"这条 ret 对应哪次 call"
+        在字节层面并非自明 —— 一个 push32 的立即数完全可能长得像返回地址。
+        因此这里**不猜**: 对得上就弹帧, 对不上就把整张表标记为**不再可信**。
+        显示一张错的调用栈比不显示更糟（它会被当成证据）。
+        """
+        if self.frames and self.frames[-1]['ret_addr'] == ret_addr:
+            self.frames.pop()
+            return
+        self.frames_dirty = True
+
+    def call_stack(self):
+        """给面板用的调用栈快照。栈顶（当前帧）在**最后**。"""
+        depth = len(self.frames)
+        out = []
+        for i, f in enumerate(self.frames):
+            out.append({
+                'index': i,
+                'call_off': f['call_off'],
+                'ret_addr': f['ret_addr'],
+                'dest': f['dest'],
+                'is_top': (i == depth - 1),
+            })
+        return {
+            'depth': depth,
+            'frames': out,
+            # 如实透出可信度: 面板应当据 `reliable` 决定"显示还是报警",
+            # 而不是把一张已知不可信的表照常渲染。
+            'reliable': not self.frames_dirty,
+            'dirty_reason': ('检测到 ret 弹出的返回地址与最近一次 call 压入的'
+                             '不一致 -> 该 ret 可能只是数据栈上的一个值 '
+                             '(src/vm.c 的返回地址与数据共用 stk), 调用栈不再可信'
+                             ) if self.frames_dirty else None,
+        }
 
     # --- 单步 --------------------------------------------------------------
     def step(self):
@@ -353,10 +410,13 @@ class Vm(object):
             if (c == 0) if mnem == 'jz' else (c != 0):
                 self.ip = (ip + operand) & 0xFFFFFFFF
         elif mnem == 'call':
+            self._note_call(at, ip, (ip + operand) & 0xFFFFFFFF)
             self._push(ip)
             self.ip = (ip + operand) & 0xFFFFFFFF
         elif mnem == 'ret':
-            self.ip = self._pop() & 0xFFFFFFFF
+            ret_addr = self._pop() & 0xFFFFFFFF
+            self._note_ret(at, ret_addr)
+            self.ip = ret_addr
         elif mnem in ('load8', 'load32', 'load64'):
             n = {'load8': 1, 'load32': 4, 'load64': 8}[mnem]
             self._push(self._rd(self._pop(), n))
@@ -383,6 +443,7 @@ class Vm(object):
             self._push(self.con)
         elif mnem == 'callind':
             target = self._pop()
+            self._note_call(at, ip, target & 0xFFFFFFFF)
             self._push(ip)
             self.ip = target & 0xFFFFFFFF
         elif mnem == 'brk':
@@ -407,6 +468,7 @@ class Vm(object):
     # --- ST4.4 视图 --------------------------------------------------------
     def view(self):
         """机器可读的状态快照。面板用它渲染, CLI 也用它 —— **同一个来源**。"""
+        cs = self.call_stack()
         return {
             'ip': self.ip,
             'steps': self.steps,
@@ -418,6 +480,11 @@ class Vm(object):
             'mem_written': len(self.mem),
             'stop_reason': self.stop_reason,
             'stop_detail': self.stop_detail,
+            # ST5.4: 调用栈来自影子表, **不是**从 stk 反推的。`stack_depth`
+            # 是数据栈深度（含返回地址）, `call_stack.depth` 是调用深度;
+            # 两者**不相等**是正常的, 面板不得把它们混为一谈。
+            'call_depth': cs['depth'],
+            'call_stack': cs,
         }
 
     def view_text(self):
@@ -445,6 +512,172 @@ def run(vm, break_lines=None, off_to_line=None, max_steps=None):
                 return vm.stop_reason, vm.stop_detail
         if not vm.step():
             return vm.stop_reason, vm.stop_detail
+
+
+# ---------------------------------------------------------------------------
+# ST5.4 调试会话
+# ---------------------------------------------------------------------------
+# `run()` 是**一次性**的: 它从 ip=0 跑到底, 中间没有任何"暂停给用户看"的
+# 地方。调试工具条的"继续/单步/步过/重启/停止"要的是一件别的东西: 一个
+# **跨多次调用活着的解释器**。这就是本类存在的理由。
+class Session(object):
+    """一个可交互的 VM 调试会话。
+
+    与 `run()` 的关键差别:
+      * 状态**跨调用存活**（面板点一次"单步"就是一次 `step_once()`）;
+      * 停机**不清空** —— 停在断点/陷阱上之后仍然可以问"现在在哪、栈什么样";
+      * `step_over()` 有**真实的步过语义**, 不是"多走几步"。
+
+    诚实边界: 会话活在**进程内**。`tools/studio_cli.py --cmd` 每次是一个新
+    进程, 因此拿不到上一次的会话; 用它的 session 模式（从 stdin 逐行读）或
+    Studio 外壳（同一个 HTTP 服务进程）才跨调用有效。
+    """
+
+    def __init__(self, code, key1, off_to_line=None, line_to_asm=None,
+                 src=None, kind='asm', mem=None, mem_size=None,
+                 max_steps=200000):
+        self.code = code
+        self.key1 = key1
+        self.src = src
+        self.kind = kind                      # 'asm' | 'blob'
+        self.off_to_line = dict(off_to_line or {})
+        self.line_to_asm = dict(line_to_asm or {})
+        self._init_mem = dict(mem or {})
+        self._mem_size = mem_size
+        self._max_steps = max_steps
+        self.breakpoints = set()
+        self.stopped_hit_breakpoint = None
+        self.restart()
+
+    def restart(self):
+        """回到初始状态，**保留断点**（重启不该悄悄清掉用户下的断点）。"""
+        self.vm = Vm(self.code, self.key1, mem=dict(self._init_mem),
+                     max_steps=self._max_steps, mem_size=self._mem_size)
+        self.stopped_hit_breakpoint = None
+        return self.state()
+
+    # --- 断点 --------------------------------------------------------------
+    @property
+    def supports_breakpoints(self):
+        """只有带行号表的源码会话能按**源行号**下断点。
+
+        blob 会话没有行号表（ST4.1 的 sidecar 目前没有任何磁盘产物）,
+        此时**如实说不支持**, 而不是退化成"按偏移下断点却仍叫行号" ——
+        那会让面板显示一个用户没法从源码上指认的断点。
+        """
+        return bool(self.off_to_line)
+
+    def set_breakpoints(self, lines):
+        if not self.supports_breakpoints:
+            raise VmError('no-line-table',
+                          '该会话没有行号表 (来源 %r), 无法按源行号下断点。'
+                          '用 .vasm 源码打开会话才有行号表。' % self.kind)
+        bp = set()
+        for ln in (lines or []):
+            ln = int(ln)
+            if ln not in self.line_to_asm:
+                # **不静默接受**一个永远命不中的行号: 用户会以为断点生效了。
+                raise VmError('bad-breakpoint',
+                              '第 %d 行不是可执行指令行' % ln)
+            bp.add(ln)
+        self.breakpoints = bp
+        return sorted(bp)
+
+    def add_breakpoint(self, line):
+        return self.set_breakpoints(sorted(self.breakpoints | {int(line)}))
+
+    def clear_breakpoint(self, line):
+        return self.set_breakpoints(sorted(self.breakpoints - {int(line)}))
+
+    # --- 执行 --------------------------------------------------------------
+    def _at_breakpoint(self):
+        ln = self.off_to_line.get(self.vm.ip)
+        return ln if (ln is not None and ln in self.breakpoints) else None
+
+    def _hit(self, ln):
+        self.vm.stop_reason = USER_BREAK
+        self.vm.stop_detail = '命中断点 L%d (off=%d)' % (ln, self.vm.ip)
+        self.stopped_hit_breakpoint = ln
+
+    def run_until_stop(self, max_steps=None):
+        """"继续"：跑到断点 / 停机 / 步数上限。"""
+        if max_steps is not None:
+            self.vm.max_steps = max_steps
+        while True:
+            # ⚠️ **停机后不再前进**。`Vm.step()` 在 `stop_reason` 已置位时仍会
+            # 继续解码执行（它只在 step 内部检查），所以这里必须先判一次 ——
+            # 否则"停在 halt 上再点继续"会把 halt 之后的字节当成程序跑下去。
+            if self.vm.stop_reason is not None:
+                return self.state()
+            ln = self._at_breakpoint()
+            if ln is not None:
+                self._hit(ln)
+                return self.state()
+            if not self.vm.step():
+                return self.state()
+
+    def step_once(self):
+        """"单步"：执行**恰好一条**指令（断点不拦截单步 —— 用户已经在这里了）。"""
+        if self.vm.stop_reason is not None:
+            return self.state()
+        self.vm.step()
+        return self.state()
+
+    def step_over(self):
+        """"步过"：跨过一条 call, 而不是走进它。
+
+        实现 = 若当前指令是 `call`/`callind`, 则**跑到调用深度回到起点**;
+        否则等价于单步。与"单步三次然后说这是步过"的区别在于: 被调用函数
+        内部下过的断点**仍然会命中**（真调试器的步过就是这个语义 —— 步过
+        是"别停在调用内部", 不是"别让调用内部发生别的事"）。
+        """
+        if self.vm.stop_reason is not None:
+            return self.state()
+        cur = self.vm.ip
+        try:
+            mnem, _op, _sz, _kind = decode_one(self.code, cur, self.vm.inv,
+                                              self.vm.sem0)
+        except VmError:
+            return self.step_once()
+        if mnem not in ('call', 'callind'):
+            return self.step_once()
+        base = len(self.vm.frames)
+        self.vm.step()
+        while True:
+            if self.vm.stop_reason is not None:
+                return self.state()
+            ln = self._at_breakpoint()
+            if ln is not None:
+                self._hit(ln)
+                return self.state()
+            if len(self.vm.frames) <= base:
+                return self.state()
+            if not self.vm.step():
+                return self.state()
+
+    # --- 状态 --------------------------------------------------------------
+    def line_at_ip(self):
+        return self.off_to_line.get(self.vm.ip)
+
+    def state(self):
+        v = self.vm.view()
+        v.update({
+            'session_kind': self.kind,
+            'src': self.src,
+            'line_at_ip': self.line_at_ip(),
+            'breakpoints': sorted(self.breakpoints),
+            'breakpoints_supported': self.supports_breakpoints,
+            'hit_breakpoint': self.stopped_hit_breakpoint,
+            'terminated': self.vm.stop_reason is not None,
+        })
+        # 帧的源码行号（有行号表时才有）—— 面板要显示"从哪一行调过来的",
+        # 而不是只显示偏移。
+        cs = v.get('call_stack') or {}
+        for f in cs.get('frames', []):
+            f['call_line'] = self.off_to_line.get(f['call_off'])
+            f['ret_line'] = self.off_to_line.get(f['ret_addr'])
+        return v
+
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +722,124 @@ def merge_map(mapdoc):
     for off, ln, _mn in mapdoc.get('lines', []):
         off_to_line[int(off)] = int(ln)
     return off_to_line, mapdoc.get('src'), mapdoc.get('size')
+
+
+# ---------------------------------------------------------------------------
+# ST5.3 源码视图（高亮 + 行号 + 断点槽）
+# ---------------------------------------------------------------------------
+# 词表**从汇编器现读**, 不另抄一份 —— 少写一条助记符只会让某个词不亮,
+# 而那正是"看不出来的错"（§2.36 起反复记名的同型缺陷）。
+MNEMONIC_SET = frozenset(vmenc.INSTRUCTIONS)
+
+
+def classify_line(raw):
+    """把一行 `.vasm` 拆成可高亮的片段。
+
+    返回 `{'kind', 'tokens', 'mnemonic', 'label', 'executable'}`。
+    `kind` 取值: `blank` / `comment` / `label` / `code` / `error`。
+    `tokens` 是 `[(text, cls)]`, `cls ∈ {'cmt','mnem','num','label','sym',
+    'bad'}` —— **分类只做词法, 不做语义**（例如 `push32 0xzz` 这里只把
+    `0xzz` 标成 `num`, 说"这不是合法数字"是汇编器的事）。
+    """
+    code, _sep, cmt = raw.partition(';')
+    stripped = code.strip()
+    tokens = []
+    kind = 'blank'
+    mnemonic = None
+    label = None
+    # 先把注释之外的部分切出来, 再单独接上注释 —— 这样注释里的 ';' 之后
+    # 不会再被当代码扫描（`split(';', 1)` 已经保证了这一点, 这里只是显式化）。
+    lead = code[:len(code) - len(code.lstrip())]
+    if lead:
+        tokens.append((lead, 'ws'))
+    if stripped:
+        if stripped.endswith(':'):
+            kind = 'label'
+            label = stripped[:-1]
+            tokens.append((stripped, 'label'))
+        else:
+            parts = stripped.split()
+            kind = 'code'
+            mn = parts[0]
+            if mn.lower() in MNEMONIC_SET:
+                mnemonic = mn.lower()
+                tokens.append((mn, 'mnem'))
+            else:
+                tokens.append((mn, 'bad'))
+            for j, p in enumerate(parts[1:]):
+                # 只给"助记符之后的第一段"留空格, 其余按原文照排。
+                tokens.append((' ' if j == 0 else ' ', 'ws'))
+                low = p.lower()
+                if low in vmenc.RESERVED_SYMBOLS:
+                    tokens.append((p, 'sym'))
+                elif (low.startswith('0x') or low.startswith('0b')
+                        or low.isdigit()):
+                    tokens.append((p, 'num'))
+                else:
+                    # 标签引用。解析得出就标 label, 否则标 bad —— 但**仍然
+                    # 如实回显原文**, 不吞掉也不改写（回显是面板的职责,
+                    # 判断合法性是汇编器的职责）。
+                    tokens.append((p, 'label' if _is_label_ref(p) else 'bad'))
+    if _sep:
+        tokens.append((';' + cmt, 'cmt'))
+    return {'kind': kind, 'tokens': tokens, 'mnemonic': mnemonic,
+            'label': label,
+            # 只有 `code` 行能落断点: 标签/空行/注释都不是指令位置。
+            'executable': kind == 'code'}
+
+
+def _is_label_ref(tok):
+    t = tok.strip()
+    return bool(t) and t.replace('_', '').isalnum() and not t[0].isdigit()
+
+
+def source_view(path):
+    """读一个 `.vasm` 并给出逐行视图 + 行号表 + 断点槽信息。
+
+    行号表由**汇编器现算**（`off_to_line` 的逆）—— 没有 sidecar 也拿得到,
+    因为 `.vasm` 的偏移与种子无关（ST4.1）。
+    """
+    text = io.open(path, encoding='utf-8').read()
+    info = {}
+    assemble_error = None
+    try:
+        vmenc.assemble_source(text, default_symbols(), None, 0, info=info)
+    except Exception as e:                                  # noqa: BLE001
+        # 汇编不过**不是**读不了文件: 仍然把源码显示出来, 并把错误如实带上。
+        # 若在这里抛出去, 面板就只能显示"打不开" —— 而真正该看到的是源码
+        # 本身加上"第 N 行汇编不过"。
+        assemble_error = '%s: %s' % (type(e).__name__, e)
+    line_to_off = {}
+    line_mnem = {}
+    for off, ln, mn in info.get('lines', []):
+        line_to_off.setdefault(int(ln), int(off))
+        line_mnem.setdefault(int(ln), mn)
+    raw_lines = text.split('\n')
+    rows = []
+    for i, raw in enumerate(raw_lines, 1):
+        cl = classify_line(raw.rstrip('\r'))
+        cl.update({
+            'line': i,
+            'text': raw.rstrip('\r'),
+            'off': line_to_off.get(i),
+            'asm_mnem': line_mnem.get(i),
+            # 断点槽: **行号**是断点的唯一键（`tools/vm_debug.py:run` 按行号
+            # 命中), 所以面板的槽位必须与行号一一对应, 不能按"第几条指令"。
+            'breakable': i in line_to_off,
+        })
+        rows.append(cl)
+    return {
+        'path': path,
+        'size': len(text.encode('utf-8')),
+        'line_count': len(raw_lines),
+        'rows': rows,
+        'mnemonics': sorted(MNEMONIC_SET),
+        'symbols': sorted(vmenc.RESERVED_SYMBOLS),
+        'executable_lines': sorted(line_to_off),
+        'assemble_error': assemble_error,
+        # 与文件内容无关的常量, 面板不必自己猜: 断点按源行号下。
+        'breakpoint_key': 'line',
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +1026,19 @@ def selftest(quiet=False):
     def case(name, ok, want=None, got=None):
         cases.append((name, bool(ok), want, got))
 
+    def raises(fn, reason=None):
+        """调用必须抛 `VmError`（且 reason 匹配）。返回 True/False。
+
+        **不写 `try/except: pass`** —— 那样"没抛"和"抛了别的"都会被读成成功。
+        """
+        try:
+            fn()
+        except VmError as e:
+            return (reason is None) or (e.reason == reason)
+        except Exception:                                   # noqa: BLE001
+            return False
+        return False
+
     try:
         code, off_to_line, info = load_from_asm(
             os.path.join(REPO, 'tests', 'unit_vm.vasm'))
@@ -729,6 +1093,149 @@ def selftest(quiet=False):
          all(k in v for k in ('ip', 'steps', 'stack_depth', 'stack_top',
                               'br', 'r', 'con', 'stop_reason')), True,
          sorted(v.keys()))
+
+    # --- ST5.4: 影子调用栈 ------------------------------------------------
+    # ⚠️ 这四条**必须**用自造的嵌套 call 程序。实测全部 13 个 .vasm 里只有
+    # `tests/unit_vm.vasm` 有 1 次 call（而且立刻 ret 回来）—— 拿真实资产
+    # 测调用栈，会得到"深度恒为 0"的假绿。这与 §2.44「度量只存在于一次性
+    # 探针的输出里」是同一类: 证据必须来自**能覆盖该行为的输入**。
+    _nested = vmenc.assemble_source(
+        '\n    call f1\n    halt\nf1:\n    call f2\n    ret\nf2:\n    ret\n',
+        default_symbols(), None, 0)
+    _vmc = Vm(_nested, None)
+    _deps = []
+    _peak = None
+    while _vmc.step():
+        _csx = _vmc.call_stack()
+        _deps.append(_csx['depth'])
+        if _csx['depth'] == 2:
+            _peak = _csx
+    _cs = _vmc.call_stack()
+    case('嵌套 call 的调用栈深度达到 2 (而不是恒为 0)',
+         max(_deps) == 2 if _deps else False, 2, max(_deps) if _deps else None)
+    case('全部 ret 之后调用栈深度回到 0 且仍可信',
+         _cs['depth'] == 0 and _cs['reliable'] is True,
+         'depth=0 reliable=True', 'depth=%d reliable=%s'
+         % (_cs['depth'], _cs['reliable']))
+    case('深度 2 时的帧含 call_off/ret_addr/dest, 且仅栈顶 is_top',
+         _peak is not None
+         and all(k in f for f in _peak['frames']
+                 for k in ('call_off', 'ret_addr', 'dest', 'is_top'))
+         and [f['is_top'] for f in _peak['frames']] == [False, True],
+         '[False, True]',
+         [f['is_top'] for f in _peak['frames']] if _peak else None)
+    # **负向**: ret 弹出的值 ≠ 最近一次 call 压的返回地址 -> 必须自认不可信。
+    # 若不判这条, 一块数据栈上的普通立即数会被显示成"一个调用帧"。
+    _fake = vmenc.assemble_source(
+        '\n    call f1\n    halt\nf1:\n    push32 0x9999\n    ret\n',
+        default_symbols(), None, 0)
+    _vmf = Vm(_fake, None)
+    run(_vmf, None, {})
+    _csf = _vmf.call_stack()
+    case('**负向**: ret 弹出的不是返回地址 -> 调用栈标记为不可信',
+         _csf['reliable'] is False and bool(_csf['dirty_reason']),
+         'reliable=False + dirty_reason', 'reliable=%s reason=%s'
+         % (_csf['reliable'], bool(_csf['dirty_reason'])))
+    _v = Vm(_nested, None).view()
+    case('视图含 call_depth / call_stack 两个键',
+         'call_depth' in _v and 'call_stack' in _v, True,
+         [k for k in ('call_depth', 'call_stack') if k in _v])
+
+    # --- ST5.4: 调试会话（继续/单步/步过/重启/停止） -----------------------
+    # 同样必须用自造程序: 真实 .vasm 里没有嵌套调用, 拿它们测"步过"会得到
+    # "步过 == 单步"的假绿。
+    _sess_src = ('\n    push32 1\n    call f1\n    halt\nf1:\n    push32 2\n'
+                 '    call f2\n    drop\n    ret\nf2:\n    push32 3\n'
+                 '    drop\n    push32 4\n    drop\n    ret\n')
+    _s_info = {}
+    _s_code = vmenc.assemble_source(_sess_src, default_symbols(), None, 0,
+                                    info=_s_info)
+    _s_otl = {off: ln for (off, ln, _m) in _s_info['lines']}
+    _s_lta = {ln: m for (_o, ln, m) in _s_info['lines']}
+
+    def _mk_sess():
+        return Session(_s_code, None, _s_otl, _s_lta, src='<inline>',
+                       kind='asm')
+
+    _ss = _mk_sess()
+    _st0 = _ss.state()
+    case('会话初态: 未停机且位于首条可执行行',
+         _st0['terminated'] is False and _st0['line_at_ip'] == 2,
+         'L2', 'L%s terminated=%s' % (_st0['line_at_ip'],
+                                      _st0['terminated']))
+    _ss.step_once()
+    case('单步恰好走一条指令 (L2 push32 -> L3 call)',
+         _ss.state()['line_at_ip'] == 3, 3, _ss.state()['line_at_ip'])
+    # ⭐ 判别力核心: 单步会走进 f1, 步过必须跨过整个 f1/f2 子树。
+    _walk = _mk_sess()
+    _walk.step_once()
+    _walk.step_once()                 # 走进 call f1
+    _into = _walk.state()
+    _over = _mk_sess()
+    _over.step_once()
+    _over.step_over()
+    _ov = _over.state()
+    case('步过 call 停在调用之后的下一行 (而单步会走进被调函数)',
+         _into['call_depth'] >= 1 and _ov['call_depth'] == 0
+         and _ov['line_at_ip'] == 4,
+         '单步 depth>=1 / 步过 depth=0 @L4',
+         '单步 depth=%d @L%s / 步过 depth=%d @L%s'
+         % (_into['call_depth'], _into['line_at_ip'], _ov['call_depth'],
+            _ov['line_at_ip']))
+    # 停机后**不得前进**: Vm.step() 在 stop_reason 已置位时仍会解码执行,
+    # 所以"停在 halt 上再点继续"是把 halt 之后的字节当程序跑。
+    _done = _mk_sess()
+    _done.run_until_stop()
+    _d1 = _done.state()
+    _done.step_once()
+    _done.run_until_stop()
+    _d2 = _done.state()
+    case('停机后单步/继续都不得前进',
+         _d1['stop_reason'] == HALT
+         and (_d2['ip'], _d2['steps']) == (_d1['ip'], _d1['steps']),
+         'ip/steps 不变', 'ip %s->%s steps %s->%s'
+         % (_d1['ip'], _d2['ip'], _d1['steps'], _d2['steps']))
+    _rb = _mk_sess()
+    _rb.set_breakpoints([6])
+    _rb.run_until_stop()
+    _rb.restart()
+    _rst = _rb.state()
+    case('重启回到初态且**保留**断点',
+         _rst['line_at_ip'] == 2 and _rst['terminated'] is False
+         and _rst['breakpoints'] == [6], 'L2 + bp[6]',
+         'L%s bp%s' % (_rst['line_at_ip'], _rst['breakpoints']))
+    _rb.run_until_stop()
+    _hit = _rb.state()
+    case('继续 -> 命中源行断点, 且调用深度为 1 (在 f1 内)',
+         _hit['stop_reason'] == USER_BREAK and _hit['hit_breakpoint'] == 6
+         and _hit['call_depth'] == 1, 'bp6 depth=1',
+         'bp%s depth=%d' % (_hit['hit_breakpoint'], _hit['call_depth']))
+    # ⭐ 步过**不是**"忽略断点": 被调函数内部下过的断点仍必须命中。
+    _bo = _mk_sess()
+    _bo.set_breakpoints([11])
+    _bo.step_once()
+    _bo.step_over()
+    case('步过时被调函数内部的断点仍然命中 (步过 != 忽略断点)',
+         _bo.state()['hit_breakpoint'] == 11, 11,
+         _bo.state()['hit_breakpoint'])
+    # **负向**: 没有行号表的会话必须拒绝下断点, 而不是退化成按偏移下。
+    # ⚠️ 这里必须**判 reason**, 不能只判"抛了异常" —— 实测: 把这条守卫改成
+    # 永不触发, `set_breakpoints` 仍会因为"行号不在 line_to_asm 里"抛出
+    # `bad-breakpoint`, 于是"只判抛没抛"的用例**照样绿**（变异实测抓到）。
+    # 两个错误码对应两件不同的事: `no-line-table` = 这个会话根本不能按行号
+    # 下断点; `bad-breakpoint` = 这个行号不对。混为一谈会让面板显示错解释。
+    _nb = Session(b'\x00', None, {}, {}, src='blob:x', kind='blob')
+    _nbres = raises(lambda: _nb.set_breakpoints([1]), reason='no-line-table')
+    case('**负向**: 无行号表的会话以 no-line-table 拒绝 (不是 bad-breakpoint)',
+         _nbres is True, True, _nbres)
+    case('无行号表的会话如实标 breakpoints_supported=False',
+         _nb.state()['breakpoints_supported'] is False, False,
+         _nb.state()['breakpoints_supported'])
+    # **负向**: 不可执行行号必须报错, 不能静默接一个永远命不中的断点。
+    _bbres = raises(lambda: _mk_sess().set_breakpoints([1]),
+                    reason='bad-breakpoint')
+    case('**负向**: 不可执行行号 -> bad-breakpoint (不是静默接受)',
+         _bbres is True, True, _bbres)
 
     # --- 负向: 解释器必须**真的**报错, 不能静默继续 -----------------------
     vm3 = Vm(code, None)

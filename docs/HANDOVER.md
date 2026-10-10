@@ -9503,7 +9503,218 @@ C 编译器与 `json.loads` 都按 UTF-8 处理，BOM 与否无影响。
 `docs/HANDOVER.md` 引用为纪律的执行手段 —— 它唯一缺的是一个**调用它的判据**。
 **"有工具"与"有判据"是两个不同的事实，而只有后者会在下一次变红。**
 
-*2026-10-10 v43*
+## 2.65 ST5.3/ST5.4：把 Studio 的「看得见」变成「能下断点」—— 以及一条栈语义约束（2026-10-10）
+
+### 2.65.1 缘起
+
+`docs/STUDIO_PLAN.md:326-330` 原先逐字记着：ST5.3/ST5.4「**本阶段没有做**」，
+理由是「断点与单步要的是**编辑器部件**…把它塞进『面板外壳』阶段会让这一步既不是外壳
+也不是调试器；ST4 的解释器与行号表已经在那里，缺的是**外壳之上的调试会话**，
+那是 ST6 之后的事」，并留下诚实边界「今天 Studio 的「VM」视图能**看**反汇编，
+**不能**下断点单步」。本轮把这一条补完。
+
+### 2.65.2 当初的判断：部分被证实、部分被推翻
+
+**被证实的**：缺的确实是「外壳之上的调试会话」，不是外壳本身。因此本轮**没有**在
+`tools/studio_server.py`（HTTP 层）里写一行业务逻辑，而是补了一个**跨多次调用活着的
+解释器对象** —— `tools/vm_debug.py:class Session`。那才是缺的那一块。
+
+**被推翻的**：它不需要等到 ST6。会话对象与面板加起来约 400 行；而「没有会话」的代价是
+面板只能做一次性反汇编 —— **每点一次单步都要从头重跑整个程序**。
+
+### 2.65.3 ⭐ 一条栈语义约束：调用栈**不可能**从 `stk` 读出来
+
+`src/vm.c` 把 `call` 的返回地址压进**与数据同一个栈**（`tools/vm_debug.py:355-357`
+`self._push(ip); self.ip = (ip + operand) & 0xFFFFFFFF`，`:358-359 ret` 对应 `_pop()`）。
+于是两件事**不可能同时成立**：
+
+- 「`stk` 是纯数据栈」
+- 「能从 `stk` 里读出调用栈」
+
+这不是实现偷懒，是**被解释器语义决定的**。因此调用栈是**旁路记录**
+（`Vm._note_call` / `Vm._note_ret` / `Vm.call_stack`）：
+
+- `_note_call(call_off, ret_addr, dest)` —— **必须在 `_push` 之前调用**，否则压进去的
+  返回地址会被自己当成上一帧。
+- `_note_ret(at, ret_addr)` —— 配对依据**只有**「弹出的值 == 最近一帧的 `ret_addr`」。
+  对不上就置 `frames_dirty`，`call_stack()` 返回 `reliable: false` + `dirty_reason`。
+  逐字理由：「`src/vm.c` 把返回地址压进**数据栈**，所以『这条 `ret` 对应哪次 `call`』
+  在字节层面并非自明 … 因此这里**不猜** … **显示一张错的调用栈比不显示更糟
+  （它会被当成证据）**。」
+- `view()` 新增 `call_depth` / `call_stack` 两键，并注明 `stack_depth`（数据栈，含返回
+  地址）与 `call_depth`（调用深度）**不相等是正常的**，面板不得混为一谈。
+
+### 2.65.4 `source_view()`：高亮词表必须**现读**，不能另抄一份
+
+`tools/vm_debug.py:732 MNEMONIC_SET = frozenset(vmenc.INSTRUCTIONS)` —— 逐字理由：
+「词表**从汇编器现读**，不另抄一份 —— 少写一条助记符只会让某个词不亮，而那正是
+『看不出来的错』。」实测 `len(MNEMONIC_SET) == 47`，与 `tools/vmenc.py:145
+OPCODE_SLOTS = 0x2F` 一致。
+
+`classify_line(raw)` 给出 `{kind, tokens, mnemonic, label, executable}`：
+`kind ∈ blank/comment/label/code/error`，`tokens` 是 `[(text, cls)]`，
+`cls ∈ ws/cmt/mnem/num/label/sym/bad`。切分规则就是汇编器自己的规则
+（`code, _sep, cmt = raw.partition(';')`；标签行 = `stripped.endswith(':')`）。
+
+⭐ **`executable = (kind == 'code')`，只有 code 行能落断点**。这条直接决定面板行为：
+**不可执行行上的行号槽是留白，不是禁用的按钮** —— 一个禁用按钮会读成
+「暂时不可用」，而事实是「这里永远不是指令」。
+
+`source_view(path)` 的另一个决定：**汇编失败不抛异常**。逐字理由：「汇编不过**不是**
+读不了文件：仍然把源码显示出来 … 若在这里抛出去，面板就只能显示『打不开』」。
+错误进 `assemble_error`，源码照常返回。
+
+### 2.65.5 `class Session`：断点、单步、步过、重启
+
+- `supports_breakpoints` ⇒ `bool(off_to_line)`。镜像（blob）会话**如实说不支持**，
+  **不退化成按偏移下** —— 退化会让面板以为断点生效了。
+- `set_breakpoints` 两种拒绝：无行号表 ⇒ `no-line-table`；行号不在可执行表 ⇒
+  `bad-breakpoint`。**两个码对应两件不同的事**（这个会话根本不能按行号下断点
+  vs 这个行号不对），混为一谈会让面板显示错解释。
+- `run_until_stop` 循环顶**先判 `if self.vm.stop_reason is not None: return self.state()`**。
+  逐字理由：「`Vm.step()` 在 `stop_reason` 已置位时仍会继续解码执行 … 否则
+  『停在 `halt` 上再点继续』会把 `halt` 之后的字节当成程序跑下去」。
+- `step_over`：当前指令不是 `call`/`callind` 就等价于单步；否则记
+  `base = len(self.vm.frames)`，走一步后循环到 `len(self.vm.frames) <= base`。
+  逐字理由：「被调用函数内部下过的断点**仍然会命中**（真调试器的步过就是这个语义 ——
+  步过是『别停在调用内部』，不是『别让调用内部发生别的事』）」。
+- `restart()` **保留断点**：「重启不该悄悄清掉用户下的断点」。
+
+### 2.65.6 协议层：9 条新命令，会话活在服务进程内
+
+`tools/studio_core.py` 新增 `vm.source` / `vm.open` / `vm.state` / `vm.continue` /
+`vm.step` / `vm.stepOver` / `vm.restart` / `vm.breakpoints` / `vm.close`
+（`COMMANDS` 16 → 25 条）。会话表 `_SESSIONS` + `_SESSION_LOCK`；
+id 由 `itertools.count(1)` 生成，**单调递增、不复用** —— 逐字理由：「复用一个已关闭的
+id 会让面板手里那个过期的 id 突然指向一个新会话」。表满（`SESSION_MAX = 32`）丢最旧，
+理由：「会话是**可重建**的 … 丢东西不会丢用户的工作，只会丢一个 id」。
+
+`vm.breakpoints` 的三态：`lines`（整体替换，空数组 = 全清）与 `add`/`remove`
+**不能同时给** ⇒ `E_BAD_ARGS`，逐字理由：「顺序会有歧义，而面板不该靠猜知道
+『先加还是先替换』」。
+
+⭐ **`_vm_load(args)` 刻意与 `cmd_vm_disasm` 共用同一段解析**，逐字理由：
+「会话若能载入一个与反汇编视图不同的字节序列，面板上的行号就会与它单步走的位置对不上
+—— 那种错很难看出来」。
+
+⭐ **能力清单里 `ui` 从 `planned` 改为 `ready`**，同时把原先那条断言
+「`planned` 项如实标注（仅 `ui`）」**改写**为具名断言
+「`ui` 自 ST5 起为 ready」，并**新增**一条
+「能力 `status` 只取 `ready`/`partial`/`planned` 三态（拼错会被抓住）」。
+后者的理由：`status` 拼错（如 `'Ready'`）原先**没有任何判据看得见**，
+而面板正是拿它决定入口启不启用的。
+
+### 2.65.7 前端：把 `prompt()` 换成真的视图
+
+ST5.3 之前，「VM」视图的反汇编来源是**一个 `prompt()` 弹窗**
+（`studio/static/app.js` 原 `vmDisasm()`）—— 没有行号、没有断点、没有当前行。
+本轮把它整体替换为：
+
+- `#vmlisting`：逐行渲染，行号槽 `● + 行号`；**可执行行才挂 click**（⇒ `vmToggleBp`）。
+- `#vmtools`：继续 / 单步 / 步过 / 重启 / 停止 + `#vmstate` pill
+  （`stop_reason · ip · steps · 调用深度`）。**停机后三个推进按钮置灰** ——
+  点了没反应会被读成「卡住了」。
+- `#vmstack`：调用栈。**不可信时显示 `⚠️ 调用栈不可信：` + `dirty_reason`**；
+  空时显示「（没有活跃调用）」，**不是**显示一个空框（空框与「没有栈」无法区分）。
+- **一律 `textContent` 组装，不拼 HTML** —— 源码内容来自文件，拼字符串等于把文件内容
+  当标记解析。
+
+### 2.65.8 承重验证
+
+| 检查 | 结果 |
+|---|---|
+| `tools/vm_debug.py --selftest` | `PASS: 54 条 (含 8 条负向)`（原 44），rc=0 |
+| `tools/vm_debug.py` 变异判别力 `build/_st54_mut.py` | **8/8 全被抓**，还原后逐字节一致 = True |
+| 影子调用栈 `build/_st53_cs2.py` | A 嵌套峰值深度 **2**（不是恒 0）；B 假 `ret` ⇒ `reliable=False` + `dirty_reason` 有值 |
+| 会话行为 `build/_st54_sess.py` | A-J 10 组全过；**C 是关键**：步过停在 L4，而同样位置单步会走进 `f1` |
+| `tools/studio_core.py --selftest` | `PASS`（新增 21 条，`--- 4b2.` 段）rc=0 |
+| ST5 端到端 `build/_st5_e2e.py` | **PASS (0 项失败)**，含真实 HTTP 上 `vm.continue` 命中 L11（`user-break`） |
+| `_check_real_ui()` 新判据判别力 `build/_st53_uimut.py` | **4/4 全被抓**，还原后逐字节一致 = True |
+| `tools/studio_server.py --selftest` | `PASS: 21 项（含 9 项负向）` rc=0 |
+
+⭐ **自检用的程序是自造的，不是仓库里的 `.vasm`**。实测全部 13 个 `.vasm` 里
+**只有 `tests/unit_vm.vasm` 有 1 次 `call` 且立刻 `ret`**，其余 `call=0`/`ret=0`
+（即深度恒为 0）。拿真实资产测调用栈会得到**假绿** —— 这与
+`tools/vm_debug.py:774-840` 那条「`VASM` 清单逐个列名，`glob` 会在文件被删时静默
+缩小覆盖面」是同一种纪律。
+
+### 2.65.9 ⭐ 本轮我自己的四处错（老形状的新实例）
+
+① **负向用例只判「抛没抛」，不判「抛的是哪个」**。原写
+`raises(lambda: _nb.set_breakpoints([1]))` 而**没传 `reason`** ⇒ 把守卫改成永不触发后，
+`set_breakpoints` 仍因「行号不在 `line_to_asm`」抛 `bad-breakpoint`，
+于是**变异实测第 5 条照样绿**。修法 = 两处都补 `reason=`（`no-line-table` /
+`bad-breakpoint`）。这是「**能被机器校验的东西改了，靠人眼维护的清单会漏**」的负向版本：
+**判据抓到了错，但抓错了标签**，看起来却完全正常。
+
+② **`or True` 的永真断言**。写 `case(..., all(...) or True)` 后当场删除 ——
+与 §2.49/§3.8「一个只会通过的检查器比没有更危险」同型。
+
+③ **探针的锚点不唯一**：`ln = self._at_breakpoint()` 在 `run_until_stop` 与
+`step_over` **各出现一次** ⇒ `anchor x2 -- 跳过`。跳过看起来像「这条变异没意义」，
+实际是**探针没生效**。
+
+④ **探针自己的调用错误伪装成「判据抓到了」**：
+`subprocess.run([PY, '-X', 'utf8', 'tools', 'studio_server.py', '--selftest'])`
+把路径拆成**两个参数** ⇒ Python 报 `can't find '__main__' module in '…\tools'`
+（stderr 有内容、stdout 空）⇒ rc≠0 被读成「判据开火了」。**这正是 §2.45 记过的那一条，
+本轮又踩了一次** —— 说明它不是一个"已经修好的"缺陷，而是一个**反复出现的错误形状**。
+
+另有一处**不是错但值得记**：`build/_st53_uimut.py` 的第一版变异写成
+`b'vm.continue' -> b'vm.continueXX'`，而判据查的是子串 `in blob` ⇒ 替换后**仍然包含**
+`vm.continue`，变异根本没生效，看起来像「判据抓不到」。
+
+### 2.65.10 `_check_real_ui()`：同型的第二例
+
+`tools/studio_server.py:_check_real_ui()` 原有一条 ST3.2 留下的判据
+（构建配置下拉框必须覆盖 `BUILD_CONFIGS`，因为「后端支持、协议文档写了三个取值，
+而面板只发 `Dev`/`Release`」）。本轮按**同一形状**补了第二例：新命令必须**真被前端引用**
+（`vm.source`/`vm.open`/`vm.breakpoints`/`vm.continue`/`vm.stepOver`/`vm.restart`/`vm.close`），
+`#vmlisting`/`#vmtools`/`#vmstack` 三个落点必须存在，且 `prompt(` 不得再出现。
+
+⚠️ **这条判据只问「面板是否提到了这些命令」，不查它接得对不对**（那是
+`build/_st5_e2e.py` 的活体检查）。它防的是「**后端加完了，前端忘接线**」——
+与 `#cfg` 漏掉 `Debug` 同型：**不报错，只是够不着**。
+
+### 2.65.11 诚实边界
+
+① 会话活在 **Studio 服务进程内**，`tools/studio_cli.py --cmd` 每次是新进程 ⇒
+**CLI 拿不到上一次的会话**。这是设计约束，不是缺陷。
+② **宿主侧调用栈未做** —— 本阶段只做了 VM 侧的 `call/ret` 影子栈。
+`docs/STUDIO_PLAN.md:302` 原写「VM 的 `call/ret` 栈 + 宿主侧栈」，**后半句没兑现**。
+③ **ST5.5 的「点击跳转」仍未做**（需要「门禁项 → 文档/源码行」映射表，今天不存在）。
+④ `_check_real_ui()` 的两条 VM 判据是**子串检查**，不查参数形状与调用顺序。
+⑤ 前端**没有任何自动判据在浏览器里跑过**（UI 不入 CI）——
+`build/_st5_e2e.py` 验的是「资产被服务端正确读出且命令全通」，
+**不等于**「浏览器里渲染正确」。
+
+### 2.65.12 这条缺陷的一般形状（第 12 次同型）
+
+本轮的形状是：**「后端有、协议表里有」与「用户够得着」是两件不同的事**，
+而只有后者决定功能是否真的存在。它与此前 11 次的共同点是 ——
+**事实可得，但没有任何判据在用它**：
+
+| # | 节 | 事实在哪 | 谁在看 |
+|---|---|---|---|
+| 1-9 | §2.36–§2.50 | 枚举清单 / 扫描面 / 阈值 / 自检批次 | 无人，直到补上判据 |
+| 10 | §2.62.9 | 分叉三支 | 无人 |
+| 11 | §2.63 | 纪律与工具都在 | **没人被指定去跑它** |
+| **12** | **本节** | **命令在 `COMMANDS` 里、在协议文档里** | **面板有没有入口，无人看** |
+
+### 2.65.13 验证
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 单元 | `tools/vm_debug.py --selftest --quiet` | rc=0，`PASS: 54 条` |
+| 单元 | `tools/studio_core.py --selftest` | rc=0，`PASS` |
+| 单元 | `tools/studio_server.py --selftest` | rc=0，`PASS: 21 项` |
+| 单元 | `tools/studio_cli.py --selftest` | rc=0，`PASS` |
+| 端到端 | `build/_st5_e2e.py` | rc=0，`PASS (0 项失败)` |
+| 变异 | `build/_st54_mut.py` | 8/8 被抓 |
+| 变异 | `build/_st53_uimut.py` | 4/4 被抓 |
+| 文档 | `tools/doccheck.py` | rc=0，`错误 0, 警告 0` |
+
+*2026-10-10 v44*
 
 ---
 

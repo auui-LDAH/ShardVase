@@ -41,11 +41,13 @@
     故"纯库、零 I/O 副作用"只对**查询类**命令成立 —— 那些命令（`ping`/`capabilities`/`plan.*`/`modules.list`/`gate.items`/`vm.*`/`test.gate.results`）确实不碰外部状态, 而 `build.run` / `debug.*` 会。这条区分是 ST3 之前写错的地方。
 """
 import io
+import itertools
 import json
 import os
 import re
 import struct
 import sys
+import threading
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -250,15 +252,18 @@ def capabilities():
                      '每条活体响应都带 antidebug_interference 机读字段（ST3.4）'),
             'debug.vm': cap(
                 'ready', 'tools/vm_debug.py',
-                '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器视图',
+                '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器'
+                '视图 / 源码高亮 / 调试会话(继续·单步·步过·重启) / 影子调用栈',
                 step='ST4',
                 note='ST4.1 的 .vasm 行号表是 sidecar, 发布产物不携带。'
-                     '主机级断点仍属 ST3（未做）'),
+                     '主机级断点仍属 ST3（未做）。ST5.4 的会话活在**服务进程内**。'),
             'ui': cap(
-                'planned', '（无）',
-                '全库零前端痕迹',
+                'ready', 'tools/studio_server.py + studio/',
+                '本地浏览器外壳（零依赖, 只绑 127.0.0.1, 一次性令牌）: '
+                '生成/测试/VM/主机/模块/关于 六视图',
                 step='ST5',
-                note='本机 npm 不可用 ⇒ 默认本地浏览器 + 零依赖'),
+                note='VM 视图自 ST5.3/ST5.4 起支持源码高亮 + 行号 + 断点槽 + '
+                     '调试工具条 + 调用栈（会话活在**服务进程内**）'),
         },
     }
 
@@ -1117,6 +1122,273 @@ def debug_watch_events(args):
 
 
 
+# --- VM 源码视图与调试会话（ST5.3 / ST5.4）------------------------------------
+#
+# 这两组命令的后端**全部**在 `tools/vm_debug.py` 里: `source_view()` 给逐行
+# 高亮 + 行号 + 断点槽, `Session` 给"跨调用活着的解释器"。本层只做三件事:
+# 参数守卫、把 `VmError` 翻成稳定的 `E_*` 码、把会话存起来。
+#
+# ⚠️ 会话表是**进程内**的（`_SESSIONS`）。`tools/studio_cli.py --cmd` 每次是
+# 一个新进程 ⇒ 那条路径上"下断点"和"单步"会落在两个不同的表里。这不是
+# 缺陷, 是进程模型的直接后果; CLI 的 session 模式与 Studio 外壳（同一个
+# HTTP 服务进程）才跨调用有效。**如实写在协议文档里**, 不让调用方去猜。
+
+_SESSIONS = {}
+_SESSION_LOCK = threading.Lock()
+#: 会话 id 的计数器。**单调递增**, 不复用 —— 复用一个已关闭的 id 会让面板
+#: 手里那个过期的 id 突然指向一个新会话（它看起来"又能用了", 但状态是别人的）。
+_SESSION_SEQ = itertools.count(1)
+#: 会话表上限 —— 面板每次"打开"都建一个会话, 不设上限就是内存泄漏。
+#: 满了就丢**最旧**的（面板重新打开一次即可, 不影响正确性）。
+SESSION_MAX = 32
+
+
+def _vm_source_path(args):
+    """把 `source_view` 要读的 `.vasm` 解析成绝对路径（**不猜**）。"""
+    path = args.get('asm')
+    if not isinstance(path, str) or not path:
+        raise StudioError('E_BAD_ARGS', 'vm.source 需要 asm 参数（.vasm 路径）',
+                          {'given': args.get('asm')})
+    ap = path if os.path.isabs(path) else os.path.join(REPO, path)
+    if not os.path.exists(ap):
+        raise StudioError('E_NOT_FOUND', '.vasm 不存在', {'asm': ap})
+    return ap
+
+
+def cmd_vm_source(args):
+    """读一个 `.vasm` 的**逐行视图**（ST5.3 的断点槽 + 高亮数据）。
+
+    后端 `tools/vm_debug.py:source_view()`。行号表由**汇编器现算** ——
+    `.vasm` 的偏移与种子无关（ST4.1），所以不需要任何构建产物。
+
+    汇编不过**不是**错误: 源码照样返回, 错误在 `assemble_error` 里。
+    （若在这里抛出去, 面板就只能显示"打不开", 而用户要看的正是那段源码。）
+    """
+    import vm_debug as _vd
+    ap = _vm_source_path(args)
+    try:
+        view = _vd.source_view(ap)
+    except OSError as e:
+        raise StudioError('E_NOT_FOUND', '读 .vasm 失败: %s' % e, {'asm': ap})
+    view['rel'] = os.path.relpath(ap, REPO).replace('\\', '/')
+    view['backend'] = 'tools/vm_debug.py:source_view'
+    return view
+
+
+def _vm_load(args):
+    """载入 (code, key1, off_to_line, line_to_asm, src, kind) —— 与 `vm.disasm` 同源。
+
+    **刻意与 `cmd_vm_disasm` 共用同一段解析**: 会话若能载入一个与反汇编视图
+    不同的字节序列, 面板上的行号就会与它单步走的位置对不上 —— 那种错很难
+    看出来, 因为两边各自都"有数字"。
+    """
+    import vm_debug as _vd
+    where = args.get('source', 'asm')
+    if where not in ('blob', 'asm'):
+        raise StudioError('E_BAD_ARGS', "source 必须是 'blob' 或 'asm'",
+                          {'given': where})
+    if where == 'asm':
+        ap = _vm_source_path(args)
+        try:
+            code, off_to_line, info = _vd.load_from_asm(ap)
+        except Exception as e:                              # noqa: BLE001
+            raise StudioError('E_PARSE', '汇编失败: %s' % e, {'asm': ap})
+        lta = {ln: mn for (_o, ln, mn) in info.get('lines', [])}
+        return (code, None, off_to_line, lta,
+                os.path.relpath(ap, REPO).replace('\\', '/'), 'asm')
+    name = args.get('name')
+    if not name:
+        raise StudioError('E_BAD_ARGS', "source='blob' 需要 name 参数",
+                          {'given': args})
+    blob = args.get('blob') or os.path.join(REPO, 'build', 'vm.blob')
+    try:
+        code, key1, _k0, _crc = _vd.load_from_blob(blob, name)
+    except Exception as e:                                  # noqa: BLE001
+        raise StudioError('E_NOT_FOUND', '取镜像 %r 失败: %s' % (name, e),
+                          {'blob': blob, 'name': name})
+    return (code, key1, {}, {},
+            '%s:%s' % (os.path.relpath(blob, REPO).replace('\\', '/'), name),
+            'blob')
+
+
+def _vm_error(e):
+    """把 `vm_debug.VmError` 翻成 `StudioError`（**保留机读 reason**）。
+
+    reason 直接进 `detail['reason']` —— 面板据它分支（`no-line-table` 要
+    显示"这个会话没有行号表", `bad-breakpoint` 要显示"这个行号不对"）。
+    混成一个 `E_BAD_ARGS` 会让两件不同的事长得一样。
+    """
+    code = 'E_BAD_ARGS' if e.reason in ('no-line-table', 'bad-breakpoint',
+                                        'bad-session') else 'E_VM'
+    return StudioError(code, e.detail or e.reason,
+                       {'reason': e.reason, 'ip': getattr(e, 'ip', None)})
+
+
+def _session_id(args, required=True):
+    sid = args.get('session')
+    if sid is None:
+        if required:
+            raise StudioError('E_BAD_ARGS', '这条命令需要 session',
+                              {'given': args})
+        return None
+    if not isinstance(sid, str):
+        raise StudioError('E_BAD_ARGS', 'session 必须是字符串',
+                          {'given': sid})
+    with _SESSION_LOCK:
+        s = _SESSIONS.get(sid)
+    if s is None:
+        raise StudioError('E_NOT_FOUND', '会话不存在或已过期',
+                          {'session': sid, 'known': len(_SESSIONS),
+                           'why': '会话活在 Studio 服务进程内; 重启服务或'
+                                  '换一个进程都会让旧 id 失效'})
+    return sid
+
+
+def cmd_vm_open(args):
+    """开一个调试会话（ST5.4 的工具条都挂在它上面）。
+
+    `source='asm'`（默认）⇒ **有行号表**, 能按源行号下断点;
+    `source='blob'` ⇒ 没有行号表, `breakpoints_supported` 如实为 False
+    （不退化成"按偏移下断点却仍叫行号"）。
+    """
+    import vm_debug as _vd
+    code, key1, otl, lta, src, kind = _vm_load(args)
+    mem_size = args.get('mem_size')
+    if mem_size is not None and not isinstance(mem_size, int):
+        raise StudioError('E_BAD_ARGS', 'mem_size 必须是整数', {'given': mem_size})
+    sess = _vd.Session(code, key1, otl, lta, src=src, kind=kind,
+                       mem_size=mem_size)
+    sid = 'vm-%d' % (next(_SESSION_SEQ),)
+    with _SESSION_LOCK:
+        # 满了丢最旧的 —— 会话是**可重建**的（重新 open 一次即可）,
+        # 所以这里丢东西不会丢用户的工作, 只会丢一个 id。
+        while len(_SESSIONS) >= SESSION_MAX:
+            _SESSIONS.pop(next(iter(_SESSIONS)))
+        _SESSIONS[sid] = sess
+    st = sess.state()
+    st['session'] = sid
+    st['backend'] = 'tools/vm_debug.py:Session'
+    return st
+
+
+def cmd_vm_state(args):
+    """只读当前会话状态（**不前进**）。面板每次操作后都调它刷新。"""
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def _vm_vmerror():
+    import vm_debug as _vd
+    return _vd.VmError
+
+
+def cmd_vm_continue(args):
+    """“继续”：跑到断点 / 停机 / 步数上限。"""
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    ms = args.get('max_steps')
+    try:
+        s.run_until_stop(max_steps=ms if isinstance(ms, int) else None)
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_step(args):
+    """“单步”：恰好一条指令（断点**不**拦截单步 —— 用户已经在这里了）。"""
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    try:
+        s.step_once()
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_step_over(args):
+    """“步过”：跨过一条 `call`。被调函数**内部**的断点仍然命中。"""
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    try:
+        s.step_over()
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_restart(args):
+    """“重启”：回到初态, **保留断点**。"""
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    s.restart()
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_breakpoints(args):
+    """设置 / 增减 / 清空断点（按**源行号**；无行号表则如实拒绝）。
+
+    支持两种形态: `lines`（整体替换, 空列表 = 全清）或 `add`/`remove`。
+    两者同时给 ⇒ 报错 —— 顺序会有歧义, 而面板不该靠猜知道"先加还是先替换"。
+    """
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    has_lines = 'lines' in args and args.get('lines') is not None
+    has_edit = ('add' in args) or ('remove' in args)
+    if has_lines and has_edit:
+        raise StudioError('E_BAD_ARGS',
+                          'lines 与 add/remove 不能同时给（顺序有歧义）',
+                          {'given': sorted(args)})
+    try:
+        if has_lines:
+            lines = args.get('lines')
+            if not isinstance(lines, (list, tuple)):
+                raise StudioError('E_BAD_ARGS', 'lines 必须是数组',
+                                  {'given': lines})
+            s.set_breakpoints(lines)
+        elif has_edit:
+            for ln in (args.get('add') or []):
+                s.add_breakpoint(ln)
+            for ln in (args.get('remove') or []):
+                s.clear_breakpoint(ln)
+        else:
+            raise StudioError('E_BAD_ARGS',
+                              '需要 lines 或 add/remove 之一',
+                              {'given': sorted(args)})
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_close(args):
+    """关掉会话并释放它（面板关标签页时调）。对不存在的 id **也成功**。"""
+    sid = args.get('session')
+    if not isinstance(sid, str) or not sid:
+        raise StudioError('E_BAD_ARGS', 'session 必须是非空字符串',
+                          {'given': sid})
+    with _SESSION_LOCK:
+        existed = _SESSIONS.pop(sid, None) is not None
+    return {'session': sid, 'closed': True, 'existed': existed}
+
+
 # --- 注册表 ----------------------------------------------------------------
 
 COMMANDS = {
@@ -1128,6 +1400,15 @@ COMMANDS = {
     'gate.items': cmd_gate_items,
     'vm.images': cmd_vm_images,
     'vm.disasm': cmd_vm_disasm,
+    'vm.source': cmd_vm_source,
+    'vm.open': cmd_vm_open,
+    'vm.state': cmd_vm_state,
+    'vm.continue': cmd_vm_continue,
+    'vm.step': cmd_vm_step,
+    'vm.stepOver': cmd_vm_step_over,
+    'vm.restart': cmd_vm_restart,
+    'vm.breakpoints': cmd_vm_breakpoints,
+    'vm.close': cmd_vm_close,
     'test.gate.results': cmd_test_gate_results,
     'plan.graph': cmd_plan_graph,
     'debug.doctor': cmd_debug_doctor,
@@ -1245,12 +1526,20 @@ def selftest(quiet=False):
     case('capabilities 至少 9 项能力',
          len(caps.get('capabilities', {})) >= 9,
          'count=%d' % len(caps.get('capabilities', {})))
-    # 未完成的项**只有 ui**了: ST1 把 generate.build 从 planned 提到 partial
-    # (能流式给事件, 但默认不启动)。这条断言必须随实施一起改 ——
-    # 否则它要么永远红, 要么(更坏)被改成永真。
-    case('planned 项如实标注（仅 ui）',
-         all(caps['capabilities'][k]['status'] == 'planned'
-             for k in ('ui',)))
+    # ⭐ ST5 落地后 `ui` 变 ready —— 这是**最后一个** planned 项, 所以下面这条
+    # 断言必须随实施一起改（与 generate.build / generate.graph /
+    # test.gate.results / debug.vm 同一处理）: 不改它要么永远红, 要么（更坏）
+    # 被改成永真。改成"先断言存在、再断言取值"的形态, 并**顺带**守住状态
+    # 词表 —— `status` 拼错（如 `'Ready'`）原先没有任何判据看得见, 而面板
+    # 是拿它决定入口启不启用的。
+    _capst = {k: c.get('status') for k, c in caps['capabilities'].items()}
+    case('ui 自 ST5 起为 ready（本地浏览器外壳已落地）',
+         caps['capabilities'].get('ui', {}).get('status') == 'ready',
+         'status=%s' % caps['capabilities'].get('ui', {}).get('status'))
+    _bad_st = sorted(k for k, v in _capst.items()
+                     if v not in ('ready', 'partial', 'planned'))
+    case('能力 status 只取 ready/partial/planned 三态（拼错会被抓住）',
+         not _bad_st, '坏值: %s' % _bad_st)
     case('generate.build 自 ST1 起为 partial（能流式, 默认不启动）',
          caps['capabilities'].get('generate.build', {}).get('status') == 'partial')
     case('generate.graph 自 ST1 起为 ready（复用 compose/compat）',
@@ -1367,6 +1656,112 @@ def selftest(quiet=False):
                                       {'source': 'blob', 'name': 'nope'}),
                      'E_NOT_FOUND')
     case('**负向**: 不存在的镜像 -> E_NOT_FOUND', ok, got)
+
+    # --- 4b2. VM 源码视图 + 调试会话（ST5.3 / ST5.4）-----------------------
+    if not quiet:
+        lines.append('--- 4b2. VM 源码视图 + 调试会话（ST5.3/ST5.4）---')
+    sv = dispatch('vm.source', {'asm': 'tests/unit_vm_brk.vasm'})
+    case('vm.source 给出逐行视图 + 断点槽',
+         sv.get('line_count') == 16 and sv.get('breakpoint_key') == 'line',
+         'lines=%s key=%s' % (sv.get('line_count'), sv.get('breakpoint_key')))
+    case('vm.source 的 executable_lines 恰是可汇编的那些行（7 条）',
+         len(sv.get('executable_lines') or []) == 7,
+         sv.get('executable_lines'))
+    case('vm.source 每行都带 kind/tokens/breakable（面板据此渲染）',
+         all(all(k in r for k in ('line', 'text', 'kind', 'tokens',
+                                  'breakable')) for r in sv['rows']))
+    # ⭐ 断点槽必须**只有**可执行行亮起: 标签/注释/空行上给槽位会让用户
+    #   下一个永远命不中的断点, 而他还以为自己设上了。
+    case('断点槽只在可执行行亮起（注释/标签/空行不可下）',
+         all(r['breakable'] == (r['line'] in (sv['executable_lines'] or []))
+             for r in sv['rows']))
+    # ⭐ 高亮词表**从汇编器现读**, 所以条数必须等于 OPCODE_SLOTS。
+    case('vm.source 的助记符词表 = 汇编器的 47 条（现读, 不硬编码）',
+         len(sv.get('mnemonics') or []) == 47,
+         'count=%s' % len(sv.get('mnemonics') or []))
+    ok, got = raises(lambda: dispatch('vm.source', {}), 'E_BAD_ARGS')
+    case('**负向**: vm.source 缺 asm -> E_BAD_ARGS', ok, got)
+    ok, got = raises(lambda: dispatch('vm.source', {'asm': 'no/such.vasm'}),
+                     'E_NOT_FOUND')
+    case('**负向**: vm.source 路径不存在 -> E_NOT_FOUND（不猜）', ok, got)
+
+    # 会话: 用**真实可执行**的 .vasm（有行号表 ⇒ 支持断点）。
+    so = dispatch('vm.open', {'asm': 'tests/unit_vm_brk.vasm'})
+    _s1 = so['session']
+    case('vm.open(asm) 建会话且如实支持断点',
+         so['breakpoints_supported'] is True
+         and so['session_kind'] == 'asm' and so['terminated'] is False)
+    case('vm.open 初态 line_at_ip 是可执行行',
+         so['line_at_ip'] in (sv['executable_lines'] or []),
+         'line_at_ip=%s' % so['line_at_ip'])
+    # 断点: 设 → 继续 → 必须停在那一行。
+    _bl = (sv['executable_lines'] or [])[2]
+    sb = dispatch('vm.breakpoints', {'session': _s1, 'lines': [_bl]})
+    case('vm.breakpoints 设断点后回显它',
+         sb['breakpoints'] == [_bl], sb['breakpoints'])
+    cn = dispatch('vm.continue', {'session': _s1})
+    case('vm.continue 命中断点（line_at_ip == 所设行, 且带停机原因）',
+         cn['line_at_ip'] == _bl and cn['hit_breakpoint'] == _bl
+         and cn['stop_reason'] == 'user-break',
+         'line=%s hit=%s reason=%s' % (cn['line_at_ip'], cn['hit_breakpoint'],
+                                       cn['stop_reason']))
+    # 单步 / 重启 / 关会话。
+    st1 = dispatch('vm.step', {'session': _s1})
+    case('vm.step 状态里仍带 session（面板不必自己记）',
+         st1.get('session') == _s1)
+    rs = dispatch('vm.restart', {'session': _s1})
+    # ⭐ 重启**保留断点** —— 悄悄清掉会让用户以为断点丢了。
+    case('vm.restart 回到初态且**保留**断点',
+         rs['breakpoints'] == [_bl] and rs['terminated'] is False,
+         'bp=%s term=%s' % (rs['breakpoints'], rs['terminated']))
+    cl = dispatch('vm.close', {'session': _s1})
+    case('vm.close 关掉会话', cl.get('closed') is True and cl.get('existed') is True)
+    ok, got = raises(lambda: dispatch('vm.state', {'session': _s1}),
+                     'E_NOT_FOUND')
+    case('**负向**: 关掉后旧 session -> E_NOT_FOUND（不复用 id）', ok, got)
+    ok, got = raises(lambda: dispatch('vm.step', {}), 'E_BAD_ARGS')
+    case('**负向**: 缺 session -> E_BAD_ARGS', ok, got)
+    ok, got = raises(lambda: dispatch('vm.state', {'session': 123}), 'E_BAD_ARGS')
+    case('**负向**: session 非字符串 -> E_BAD_ARGS', ok, got)
+
+    # ⭐ blob 会话**没有行号表**: 必须如实拒绝按行号下断点, 且错误码是
+    #   `no-line-table` 而不是 `bad-breakpoint`（两件事不同: 会话根本不能按
+    #   行号下 vs 这个行号不对）。面板据 reason 显示不同的解释。
+    bo = dispatch('vm.open', {'source': 'blob', 'name': 'verify'})
+    _s2 = bo['session']
+    case('vm.open(blob) 如实标 breakpoints_supported=False（不退化）',
+         bo['breakpoints_supported'] is False
+         and bo['session_kind'] == 'blob')
+    try:
+        dispatch('vm.breakpoints', {'session': _s2, 'lines': [1]})
+        _nlt = None
+    except StudioError as e:
+        _nlt = (e.detail or {}).get('reason')
+    case('**负向**: blob 会话按行号下断点 -> reason=no-line-table',
+         _nlt == 'no-line-table', _nlt)
+    # 越界行号的 reason 必须是 bad-breakpoint（**不是** no-line-table）。
+    try:
+        dispatch('vm.breakpoints', {'session': _s2, 'lines': [1]})
+    except StudioError:
+        pass
+    _s3 = dispatch('vm.open', {'asm': 'tests/unit_vm_brk.vasm'})['session']
+    try:
+        dispatch('vm.breakpoints', {'session': _s3, 'lines': [1]})
+        _bb = None
+    except StudioError as e:
+        _bb = (e.detail or {}).get('reason')
+    case('**负向**: 不可执行行号 -> reason=bad-breakpoint（与上条不同码）',
+         _bb == 'bad-breakpoint', _bb)
+    ok, got = raises(lambda: dispatch('vm.breakpoints',
+                                      {'session': _s3, 'lines': [1],
+                                       'add': [2]}),
+                     'E_BAD_ARGS')
+    case('**负向**: lines 与 add 同时给 -> E_BAD_ARGS（顺序有歧义）', ok, got)
+    dispatch('vm.close', {'session': _s2})
+    dispatch('vm.close', {'session': _s3})
+    # 关一个不存在的会话**也算成功**（面板关标签页时不该因此报错）。
+    case('vm.close 对未知 id 也成功（幂等, 不报错）',
+         dispatch('vm.close', {'session': 'vm-nope'}).get('existed') is False)
 
     if not quiet:
         lines.append('--- 4c. 门禁结果历史（ST2: 复用 gate_results, 不重写解析）---')

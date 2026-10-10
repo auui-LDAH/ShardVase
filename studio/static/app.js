@@ -366,6 +366,11 @@ async function gateItems() {
 
 // ---------------------------------------------------------------- VM
 
+// ST5.3 / ST5.4: 一个**调试会话**（不是一次反汇编）。
+// 会话 id 存在 state.session 里，面板每次操作只传 id —— 解释器活在服务进程内。
+state.session = null;
+state.bp = [];          // 本地镜像服务端的断点表（服务端是唯一真值）
+
 async function vmImages() {
   const d = await call('vm.images');
   if (!d) return;
@@ -380,23 +385,216 @@ async function vmImages() {
   log('镜像 ' + d.count + ' 个: ' + d.images.map((i) => i.name).join(', '));
 }
 
+// 源码路径的历史：datalist 只给"最近打开过的"，不假装是全库索引
+// （真正的索引该由后端给；这里只是省一次输入）。
+function rememberAsm(p) {
+  const dl = $('vasmlist');
+  if (!p || Array.prototype.some.call(dl.options, (o) => o.value === p)) return;
+  const o = document.createElement('option');
+  o.value = p;
+  dl.appendChild(o);
+}
+
+async function vmOpen() {
+  const src = $('vmsrc').value;
+  const args = src === 'blob'
+    ? { source: 'blob', name: $('vmimg').value }
+    : { source: 'asm', asm: $('vmasm').value.trim() };
+  if (src === 'asm' && !args.asm) {
+    problem('请先填一个 .vasm 路径（例如 tests/unit_vm_brk.vasm）。');
+    return;
+  }
+  const d = await call('vm.open', args);
+  if (!d) return;
+  state.session = d.session;
+  state.bp = d.breakpoints || [];
+  if (src === 'asm') rememberAsm(args.asm);
+  $('vmtools').hidden = false;
+  log('会话 ' + d.session + ' 已打开（' + src + '，断点支持: ' +
+      d.breakpoints_supported + '）');
+  await vmRender(d);
+  if (src === 'asm') await vmListing();
+}
+
+// 逐行视图：行号槽 + 高亮 + 断点标记 + 当前行。
+// ⚠️ 一律用 textContent 组装，**不拼 HTML** —— 源码内容来自文件，
+// 拼字符串就等于把文件内容当标记解析。
+async function vmListing() {
+  const d = await call('vm.source', { asm: $('vmasm').value.trim() }, { quiet: true });
+  if (!d) return;
+  const box = $('vmlisting');
+  box.innerHTML = '';
+  d.rows.forEach((r) => {
+    const ln = document.createElement('div');
+    ln.className = 'ln';
+    ln.dataset.line = String(r.line);
+    const gut = document.createElement('span');
+    // 槽位内容：断点显示 ●，否则显示行号。可执行行才可点。
+    gut.className = 'gut' + (r.breakable ? ' hot' : '');
+    gut.textContent = '● ' + String(r.line).padStart(4, ' ');
+    gut.title = r.breakable
+      ? '第 ' + r.line + ' 行（可下断点）'
+      : '第 ' + r.line + ' 行不是指令行，不能下断点';
+    if (r.breakable) {
+      gut.addEventListener('click', () => vmToggleBp(r.line));
+    }
+    const tx = document.createElement('span');
+    tx.className = 'tx';
+    r.tokens.forEach((t) => {
+      const s = document.createElement('span');
+      s.className = t[1];
+      s.textContent = t[0];
+      tx.appendChild(s);
+    });
+    ln.appendChild(gut);
+    ln.appendChild(tx);
+    box.appendChild(ln);
+  });
+  if (d.assemble_error) {
+    problem('这个 .vasm 汇编不过：' + d.assemble_error +
+            '（源码仍然显示出来了 —— "读得到"和"汇编得过"是两件事。）');
+  }
+  await vmRender();
+}
+
+async function vmToggleBp(line) {
+  if (!state.session) return;
+  const has = state.bp.indexOf(line) >= 0;
+  const args = { session: state.session };
+  if (has) { args.remove = [line]; } else { args.add = [line]; }
+  const d = await call('vm.breakpoints', args, { quiet: true });
+  if (!d) return;
+  state.bp = d.breakpoints || [];
+  await vmRender(d);
+}
+
+// 一次操作后刷新**全部**视图：服务端状态是唯一真值，本地只镜像它。
+async function vmRender(d) {
+  if (!d) {
+    if (!state.session) return;
+    d = await call('vm.state', { session: state.session }, { quiet: true });
+    if (!d) return;
+  }
+  state.bp = d.breakpoints || state.bp;
+  // 行号槽：断点 + 当前行。
+  document.querySelectorAll('#vmlisting .ln').forEach((el) => {
+    const n = Number(el.dataset.line);
+    el.classList.toggle('bp', state.bp.indexOf(n) >= 0);
+    el.classList.toggle('cur', d.line_at_ip === n);
+  });
+  // 工具条状态：停机后"继续/单步"没有任何作用 —— 如实标出来，
+  // 而不是让按钮看起来还能用（点了没反应会读成"卡住了"）。
+  const stop = d.terminated
+    ? (d.stop_reason + (d.hit_breakpoint != null ? ' @L' + d.hit_breakpoint : ''))
+    : '运行中';
+  $('vmstate').textContent = stop + ' · ip=' + d.ip + ' · steps=' + d.steps +
+    ' · 调用深度=' + d.call_depth;
+  $('vmstate').className = 'pill ' + (d.terminated ? 'gated' : 'pass');
+  ['btn-vmcontinue', 'btn-vmstep', 'btn-vmstepover'].forEach((id) => {
+    $(id).disabled = !!d.terminated;
+  });
+  // 调用栈：**与数据栈分开显示** —— stk 里混着返回地址，两者不相等是正常的。
+  const st = $('vmstack');
+  st.innerHTML = '';
+  const cs = d.call_stack || {};
+  if (!cs.reliable) {
+    const w = document.createElement('div');
+    w.className = 'unreliable';
+    // ⭐ 不可信时**必须显示理由**：一张错的调用栈会被当成证据。
+    w.textContent = '⚠️ 调用栈不可信：' + (cs.dirty_reason || '（无理由）');
+    st.appendChild(w);
+  }
+  if (!cs.depth) {
+    const e = document.createElement('div');
+    e.className = 'item';
+    e.innerHTML = '';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = '（没有活跃调用）';
+    e.appendChild(nm);
+    st.appendChild(e);
+  } else {
+    cs.frames.slice().reverse().forEach((f) => {
+      const e = document.createElement('div');
+      e.className = 'item frame' + (f.is_top ? ' top' : '');
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = '#' + f.index + '  ' +
+        (f.call_line != null ? 'L' + f.call_line : 'off ' + f.call_off) +
+        ' -> ' + (f.ret_line != null ? 'L' + f.ret_line : 'off ' + f.ret_addr);
+      const why = document.createElement('span');
+      why.className = 'why';
+      why.textContent = f.is_top ? '（当前帧）' : '';
+      e.appendChild(nm);
+      e.appendChild(why);
+      st.appendChild(e);
+    });
+  }
+  $('out-vm').textContent = JSON.stringify({
+    session: d.session, src: d.src, line_at_ip: d.line_at_ip,
+    ip: d.ip, steps: d.steps, stop_reason: d.stop_reason,
+    stop_detail: d.stop_detail, stack_depth: d.stack_depth,
+    call_depth: d.call_depth, stack_top: d.stack_top,
+    br: d.br, r: d.r, con: d.con, mem_written: d.mem_written,
+    breakpoints: state.bp,
+    breakpoints_supported: d.breakpoints_supported,
+    terminated: d.terminated,
+  }, null, 2);
+}
+
+async function vmStep(cmd) {
+  if (!state.session) return;
+  const d = await call(cmd, { session: state.session }, { quiet: true });
+  if (!d) return;
+  await vmRender(d);
+}
+
+async function vmRestart() {
+  if (!state.session) return;
+  const d = await call('vm.restart', { session: state.session }, { quiet: true });
+  if (!d) return;
+  await vmRender(d);
+  log('重启会话 ' + state.session + '（断点保留: ' + state.bp.join(',') + '）');
+}
+
+async function vmClose() {
+  if (!state.session) return;
+  const sid = state.session;
+  state.session = null;
+  state.bp = [];
+  await call('vm.close', { session: sid }, { quiet: true });
+  $('vmtools').hidden = true;
+  $('vmlisting').innerHTML = '';
+  $('vmstack').innerHTML = '';
+  $('out-vm').textContent = '（会话已关闭）';
+  log('会话 ' + sid + ' 已关闭');
+}
+
+// 只读反汇编（保留 ST4 的能力；与上面那个可交互会话是**两条入口**）。
 async function vmDisasm() {
-  const src = prompt('反汇编来源：输入 .vasm 路径，或留空用 vm.blob 里的镜像名',
-    $('vmimg').value ? 'blob' : '');
-  if (src === null) return;
-  const args = src && src !== 'blob'
-    ? { source: 'asm', asm: src }
-    : { source: 'blob', name: $('vmimg').value };
+  const src = $('vmsrc').value;
+  const args = src === 'blob'
+    ? { source: 'blob', name: $('vmimg').value }
+    : { source: 'asm', asm: $('vmasm').value.trim() };
   const d = await call('vm.disasm', args);
   if (!d) return;
+  const w = $('vmdiswrap');
+  if (w) w.open = true;
   const lines = d.insns.map((i) =>
     String(i.off).padStart(5, '0') + '  ' +
     (i.line != null ? ('L' + String(i.line).padStart(4, ' ')) : '     ') + '  ' +
     i.mnem + (i.operand != null ? ' ' + i.operand : '') +
     (i.target != null ? '  -> ' + i.target : ''));
-  $('out-vm').textContent = lines.join('\n') +
+  $('out-vmdisasm').textContent = lines.join('\n') +
     '\n\n共 ' + d.count + ' 条；有行号表: ' + d.has_lines;
   log('反汇编 ' + d.count + ' 条（' + args.source + '）');
+}
+
+async function vmShowSource() {
+  // 来源切换：asm 时显示路径输入，blob 时显示镜像选择。
+  const isAsm = $('vmsrc').value === 'asm';
+  $('vmasm').style.display = isAsm ? '' : 'none';
+  $('vmimg').style.display = isAsm ? 'none' : '';
 }
 
 // ---------------------------------------------------------------- 主机调试
@@ -543,6 +741,16 @@ $('btn-gate') && $('btn-gate').addEventListener('click', gateQuery);
 $('btn-gate-items') && $('btn-gate-items').addEventListener('click', gateItems);
 $('btn-vmimages') && $('btn-vmimages').addEventListener('click', vmImages);
 $('btn-vmdisasm') && $('btn-vmdisasm').addEventListener('click', vmDisasm);
+$('btn-vmopen') && $('btn-vmopen').addEventListener('click', vmOpen);
+$('vmsrc') && $('vmsrc').addEventListener('change', vmShowSource);
+// ⚠️ 命令名**逐字写在这里**（不做字符串拼接推导）：面板调什么命令是一个
+// 事实，用条件表达式拼出来会让"到底调了哪条"无法被 grep、也无法被
+// build/_st5_e2e.py 的"前端调用的命令全部在协议表里"这条判据看见。
+$('btn-vmcontinue') && $('btn-vmcontinue').addEventListener('click', () => vmStep('vm.continue'));
+$('btn-vmstep') && $('btn-vmstep').addEventListener('click', () => vmStep('vm.step'));
+$('btn-vmstepover') && $('btn-vmstepover').addEventListener('click', () => vmStep('vm.stepOver'));
+$('btn-vmrestart') && $('btn-vmrestart').addEventListener('click', vmRestart);
+$('btn-vmclose') && $('btn-vmclose').addEventListener('click', vmClose);
 $('btn-doc') && $('btn-doc').addEventListener('click', () => hostCall('debug.doctor', {}));
 $('btn-sym') && $('btn-sym').addEventListener('click', () => hostCall('debug.sym', { symbols: syms() }));
 $('btn-mask') && $('btn-mask').addEventListener('click', () => hostCall('debug.mask', { symbols: syms() }));

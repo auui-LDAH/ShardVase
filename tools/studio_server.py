@@ -576,6 +576,24 @@ def _check_real_ui():
         if missing:
             return False, ('配置下拉框缺 %s（后端支持: %s；面板只有: %s）'
                            % (missing, wants, have))
+    # ST5.3/ST5.4 同型的第二例：**协议里的能力前端能否触达**。
+    # 反汇编视图原本只有一个 prompt() 弹窗（连行号都无法显示），断点/单步
+    # 这些命令即使后端全通，面板上没有入口就等于不存在 —— 而且不会报错。
+    # ⚠️ 判据只问「面板是否**提到**了这些命令」，不查它接得对不对（那是
+    #    build/_st5_e2e.py 的活体检查）。这里防的是"后端加完了,前端忘接线"。
+    vm_cmds = ('vm.source', 'vm.open', 'vm.breakpoints', 'vm.continue',
+               'vm.stepOver', 'vm.restart', 'vm.close')
+    absent = [c for c in vm_cmds if c not in blob]
+    if absent:
+        return False, ('前端没有引用 VM 调试命令 %s —— 后端支持而面板无入口'
+                       '（与 #cfg 漏掉 Debug 同型: 不报错, 只是够不着）' % absent)
+    for need in ('id="vmlisting"', 'id="vmtools"', 'id="vmstack"'):
+        if need not in blob:
+            return False, ('VM 视图缺少 %s —— 源码列表/调试工具条/调用栈'
+                           '三者缺一, ST5.3/ST5.4 就没有落点' % need)
+    if 'prompt(' in blob:
+        return False, ('前端仍在用 prompt() 取输入 —— ST5.3 的验收就是把它'
+                       '换成真的视图（prompt 里连行号都显示不了）')
     return True, '%d 个资产, 无外部引用' % (len(assets) + 1)
 
 
