@@ -8181,4 +8181,199 @@ gate   len=51 key1=0x34905bb1247ad0ee sem0=1 insns=23 src=23 MATCH
 一个用来观察真相的工具，如果它自己会静默说谎，那么它观察到的一切
 都不可信。
 
-*2026-10-10 v35*
+## 2.58 ST2：门禁的机器可读出口 —— 以及「给一个只会通过的检查器加出口」的四个陷阱（2026-10-10）
+
+`docs/STUDIO_PLAN.md` §5 的第二步（顺序 ST0 → **ST2** → ST1 → ST3 → ST5）。
+
+### 2.58.1 缘起：门禁结果是给人看的，机器读不了
+
+ST0 时 `capabilities()` 里 `test.gate.results` 如实标为 `planned`，附一句：
+「今天只有 PowerShell 转录, 无结构化结果」。这一节把它变成 `ready`。
+
+问题很具体：`tools/gate_log.ps1` 用 `Start-Transcript` 落的是**转录文本**
+（头部 16 行 `Windows PowerShell transcript start` 元数据），不是结构化格式。
+后果是「测试面板 / 失败重跑 / 历史趋势」今天**做不了** —— 要有面板，
+先得有机器可读的结果。
+
+### 2.58.2 硬约束：那条不能被碰的句子
+
+`PASS: N 项检查全通过` 这句话**逐字不得改**。理由是
+`tools/docclaim_check.py` 的 T7 不变量：
+
+    静态 Check 数 == [ok] + [X] + [skip] + [info] 四类证据行之和
+
+即**每个静态 `Check` 调用点在运行期必须恰好留下一枚证据行**。
+`:630-640` 还记着 2026-10-02 的修正：旧不变量曾断言「静态 33 == PASS 的 N(30) ==
+`[ok]` 行数(30)」，「**它曾经为真只是因为历史上 `Check` 恰好 30 个**；
+加法一改就假了 —— 而修正方向**不是**把 N 凑成 33（那会变成谎报"33 项全通过"）」。
+
+⇒ 由此推出 ST2 的第一条设计约束：**新增的任何输出行都不得以
+`[ok]` / `[X]` / `[skip]` / `[info]` 开头**。选定前缀 `[json]`
+（实测全文 `[json]` 出现 0 次）。
+
+### 2.58.3 五个出口，两种状态各记一次
+
+`Check` 的原始形态有**四个**出口（pass / fail / skip / error），
+外加**三处 gated 项未运行**的分支。ST2 给每一条都记了一条结构化结果：
+
+| 出口 | 触发条件 | status |
+|---|---|---|
+| `[ok]` | 末值为 `$true` | `pass` |
+| `[X]` | 末值为 `$false` | `fail` |
+| `[X]`（带"检查写法错误"） | 末值非布尔（2026-09-23 事故防线） | `error` |
+| `[skip]` | 显式 `return 'SKIP'` | `skip` |
+| `[info]` | 三处 `-With*` 未启用 | `not-run` |
+
+`skip` 与 `not-run` **不是一回事**：前者是「判据本可执行、环境缺东西」，
+后者是「这一轮根本没启用它」。两者都**不计入** `PASS: N`。
+
+### 2.58.4 我踩的四个陷阱（每一个都"看起来绿"）
+
+**① param 列表末项缺逗号** ⇒ `parse errors: 2`（`Missing ')' in function parameter list`）。
+在 `[string]$Python = ''` 之后追加 `[string]$Only = ''` 时忘了补逗号。
+
+**② PowerShell 变量名大小写不敏感** —— 这条最值得记：
+
+我插了一行 `$only = ''` 给计数器分区，而 param 里是 `[string]$Only`。
+**二者是同一个变量。** 后果是调用方传 `-Only '对外材料'` 后，
+`$only` 被初始化行抹成空串 ⇒ 过滤条件恒为空 ⇒ **`-Only` 被静默忽略**。
+
+这个失败模式最坏的地方在于它的**表象**：不是报错，而是
+「过滤好像没生效」—— 42 项照样全跑。如果不去核对，很容易读成
+「门禁不支持 -Only」而不是「我写了个 bug」。修法是**删掉那行**
+（param 的默认值 `''` 就是初值），并留注释警示。
+
+其余 PowerShell 陷阱：函数名与 `$With*` 常量同名的 `$only` 会遮盖 etc.
+
+**③ 接线插到了块末值之后 ⇒ `Check` 立刻抓到我**：
+
+我把 `gate_results.py` 的自检调用插在了 `Check 'Studio 契约 (studio)'`
+块**末尾的 `$rc -eq 0` 之后**。于是 scriptblock 的最后一个值变成了自检的
+**stdout 字符串**，而 `Check` 的末值必须是布尔 ——
+
+    [X]  Studio 契约 (studio): 检查写法错误（末值非布尔:
+         [gate_results-selftest] PASS: 15 条（含 9 条负向）)
+
+`FAIL: 1/39 未通过`。这是 2026-09-23 那次事故的**教科书式复现**
+（§2.58.2 记的原事故：`$ok = & $cond` 把全部 stdout 一起赋值 ⇒ 非空数组恒真）。
+这次是它的镜像：不是"恒真"，而是"末值类型错" ⇒ 被 `:215-220` 那条
+「末值非布尔 ⇒ 失败而非静默通过」的防线抓住。**防线生效了。**
+
+修法 = 把 `$rc -eq 0` 挪到插入段**之后**。
+
+**④ 搬移时弄丢了另一个调用的失败保护**：
+
+为了让 ③ 的 `$rc -eq 0` 落在最后，我搬动了三态判断块。结果
+`vm_debug.py` 那一段只剩 `-eq 2 ⇒ SKIP`，**`$rc` 被下一段覆写**，
+缺少 `-ne 0 ⇒ $false` ⇒ `vm_debug` 返回 1 会被静默吞掉。
+这是 §2.56「看起来绿、实际不能失败」的又一面孔。
+
+修法 = 补回 `if ($rc -ne 0) { return $false }`，并加**结构自查断言**：
+块内**每一个** `& $py` 之后必须紧跟 `$rc = $LASTEXITCODE` +
+`-eq 2` + `-ne 0` 三行。四个调用、四组三态，一个都不能少。
+
+### 2.58.5 `Add-Content -Encoding UTF8` 会写 BOM
+
+NDJSON 出口第一版用 `Add-Content -Encoding UTF8`，实测文件前 3 字节是
+`ef bb bf` ⇒ Python `json.loads` 首行直接
+`JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig)`。
+
+修法 = `New-Object System.Text.UTF8Encoding $false` +
+`[System.IO.File]::WriteAllText/AppendAllText`（实测前 3 字节 `7b 22 6e` = `{"n`）。
+
+同族的另一处：`ConvertTo-Json -Compress` **不受区域设置影响** ——
+把 `CurrentCulture` 设成 `de-DE` 后 `seconds` 仍输出 `1.234`
+（而 `.ToString()` 给 `1,2345`）⇒ **无需 InvariantCulture**。
+
+### 2.58.6 ⭐ 我自己的对账工具错了两处（"探针的错伪装成被测对象的性质"）
+
+**(a) 把真实日志的 BOM 当成损坏。** 第一版 `read_text()` 把"转录带 BOM"
+当硬错误 ⇒ 对所有真实日志直接抛异常。实测：`build/logs/release_check_*.log`
+**全部带 BOM**（`Start-Transcript` 就这么写）。修法 = 文本日志**剥 BOM 后接受**；
+BOM 只在 **NDJSON** 上是硬错误（那是我们自己写的，就不该有）。
+
+**(b) `RE_INFO` 要求"名字"与"未运行"之间有空格，而门禁不写空格。**
+
+    门禁实际： [info] 检查器变异测试未运行 (加 -WithMutation 启用)
+    我的正则： ^\[info\]\s+(?P<n>.*?)\s+未运行
+
+⇒ 三条 gated 行的 `not-run` **全漏**，而漏的结果是趋势图上少 3 项 ——
+不报错、不崩溃，只是数字悄悄不对。
+
+**(c) 一个探针口径假失败**：`_st2_fix2.py` 的最后一条断言，把我**自己刚写的
+注释**（逐字引用了那行代码）当成违规抓了出来。注释里引用代码是合法的；
+判据没有排除注释。修法 = 断言前先剥注释行。
+
+### 2.58.7 ⭐ `trend()` 的缺失键：`None` 与 `0` 是两回事
+
+`dict.get(k)` 对**缺失键**返回 `None`。第一版 `trend()` 直接
+`r['counts_json'].get('pass')` ⇒ 一次 `pass=0` 的运行（全 `not-run` 那种）
+在趋势图上显示 `None`。面板会把 `None` 渲染成**空白/未知**，
+而真相是"这一轮通过了 **0** 项"。
+
+实测证据（修前）：`20261010_113017  0  0  0  42` 里 `pass` 显示 `None`。
+修法 = 缺键一律补 0，并新增用例 13b：
+「trend 缺失键补 0 而不是 None（全 not-run 的 pass 是 0）」。
+
+### 2.58.8 交付物
+
+| 文件 | 变化 |
+|---|---|
+| `tools/release_check.ps1` | `$checks`（死变量）→ `$results`；新增 `Get-GateWhy` / `Add-GateResult`；四个出口 + 三处 gated 各记一次；新增 `-Only <正则>`；总结处写 NDJSON + 双面对照 |
+| `tools/gate_results.py` | **新建**：历史查询与**独立对账**（`latest`/`list`/`verify`/`diff`/`trend`） |
+| `tools/studio_core.py` | 新增 `test.gate.results`（复用 `gate_results`，不重写解析）；`test.gate.results` 由 `planned` → `ready` |
+| `docs/STUDIO_PROTOCOL.md` | 命令表 + 结果出口说明（两个出口必须逐项一致） |
+| `docs/STUDIO_PLAN.md` | ST2 标 ✅；记录一处**实施偏离** |
+
+⚠️ **实施偏离**：ST2.3 原写「core 暴露 `run(tests, filter)`」，
+实施时**没有**让 core 去启动门禁进程。理由同 ST4.2：**能力只实现一次**。
+让 core 另起进程"跑测试"，等于把「什么算通过」写两遍 ——
+两套口径中漂移的那一套会安静地给出另一组数字。
+故改为：门禁自己加 `-Only`（子集运行），core **读**结果做历史查询。
+
+### 2.58.9 验证
+
+| 检查 | 结果 |
+|---|---|
+| `-Only '对外材料'` 试运行 | 42 项 / `pass=1 not-run=41` / `PASS: 1 项检查全通过` / rc=0 |
+| NDJSON 形态 | 42 行、**BOM=False**、seq 连续、解析失败 0 |
+| 独立对账（`--verify`） | 文本证据行 42 == NDJSON 42 行；文本计数 == JSON 计数；rc=0 |
+| 全门禁 | rc=0，`PASS: 39 项检查全通过`；`[json] 双面对照: pass=39 fail=0 skip=0 not-run=3` |
+| **`tools/docclaim_check.py`** | **`PASS (8/8)`**（T7 未被破坏 —— ST2 的硬约束） |
+| `tools/gate_results.py --selftest` | **16 条（含 9 条负向）** |
+| `tools/studio_core.py --selftest` | 新增 11 条（4c 组）全 ok |
+| `tools/selftest_audit.py` | 4 条判据全 ok（新工具不产生孤儿） |
+| `tools/doccheck.py` | 错误 0 / 警告 0 |
+| 文件卫生 | 15 个文件 0 处异常 |
+
+### 2.58.10 诚实边界
+
+1. **`seconds` 是墙钟时间**，受机器负载影响；它适合"哪个慢"的相对判断，
+   不适合当性能基准（那是门禁第 30 项 `perf_baseline` 的事）。
+2. **双面对照在门禁内部做一次、在 `gate_results` 里再做一次**，
+   但两次都只比**计数与逐项记号**，不校验 `seconds` 的合理性。
+3. **历史轮次（ST2.1 之前）没有 NDJSON** ⇒ `verify` 对它们如实报
+   "无 .ndjson"而**不判通过**；趋势图里 `has_ndjson=False` 是**标注**，
+   不是缺陷。
+4. **`-Only` 过滤掉的项记为 `not-run` 而非 `skip`**：跳过原因不同
+   （人为过滤 vs 环境缺失），混在一起会让"这轮为什么没跑"失去线索。
+5. **门禁的 NDJSON 出口本身没有门禁看住**（谁能保证它不被删掉？）——
+   唯一的外部约束是 `gate_results.py --selftest` 进了第 42 项，
+   可它读的是**已有日志**。这是残留的人判断点。
+
+### 2.58.11 这条缺陷的一般形状（第 11 次同型）
+
+| 变体 | 具体 | 为什么没有检查会红 |
+|---|---|---|
+| 分支漏记（2.58.3） | 五个出口只记了三个 | 计数照样对，只是少几行 |
+| 大小写同名（2.58.4②） | `$only` 与 `$Only` 是同一个变量 | 不报错，只是过滤"没生效" |
+| 末值错位（2.58.4③） | 插到 `$rc -eq 0` 之后 | **这次红了**（防线生效） |
+| 保护被搬丢（2.58.4④） | `-ne 0` 分支只剩 SKIP | 该项永不失败 |
+| 探针口径反了（2.58.6a/b） | BOM 正当 / 空格假设 | 我的对账工具自己错 |
+
+共因仍是那句：**「有出口」不等于「出口说的是实话」。**
+与第 1-10 次不同的是，这一节的对象是**门禁自己的输出**——
+一个用来判定别人对错的装置，如果它自己的记录会静默丢项，
+那么它判定的一切都会连带失去可信度。
+
+*2026-10-10 v36*

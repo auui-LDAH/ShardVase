@@ -24,7 +24,10 @@ param(
     # 骨架回归（2026-09-23）: 构建一次骨架工程，验证 **DIY 用户路径**可用。
     # 约 30-60 秒；发版/CI 建议启用。
     [switch]$WithSkeleton,
-    [string]$Python = ''
+    [string]$Python = '',
+    # ST2.3: 只跑名字匹配该正则的检查项; 空 = 全跑。
+    #   被过滤的项**不执行判据**、如实记为未运行(仍留一枚 [info] 证据行)。
+    [string]$Only = ''
 )
 
 # ## D2（2026-09-29）: **验证互斥锁**
@@ -67,8 +70,15 @@ if (-not $py) {
 }
 if (-not $py) { foreach ($p in @('D:\environment\PYTHON\python.exe','C:\Python313\python.exe')) { if (Test-Path -LiteralPath $p) { $py = $p; break } } }
 
-$checks = @()
+# ST2.1(2026-10-10): 结构化出口。先前这里是**死变量** `$checks = @()`(全文再无第二处引用),
+#   现改为承载每项结果, 供 NDJSON 出口与总结处的双面对照使用。
+$results = @()
 $pass = 0; $fail = 0; $skip = 0
+$notrun = 0
+# ⚠️ 不要在这里写 `$only = ''` —— PowerShell 变量名**大小写不敏感**,
+#   那与 param 的 `[string]$Only` 是**同一个变量**, 会把调用方传的值抹掉,
+#   于是 -Only 被静默忽略(看起来「过滤没生效」而不是报错)。
+$gateStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 
 # ── 诊断打印（`Check` 的失败/跳过分支共用）────────────────────────────────
 #
@@ -161,7 +171,53 @@ function Show-Diag($out, [string]$prefix = '      | ') {
     }
 }
 
+function Get-GateWhy($out) {
+    # ST2.1: 失败原因取"最后一个非空诊断行" —— 与 Show-Diag 取值口径同源。
+    if ($null -ne $out -and $out.Count -gt 1) {
+        for ($i = $out.Count - 2; $i -ge 0; $i--) {
+            $t = ([string]$out[$i]).Trim()
+            if ($t -ne '') {
+                if ($t.Length -gt 200) { $t = $t.Substring(0, 200) + ' …' }
+                return $t
+            }
+        }
+    }
+    return $null
+}
+
+function Add-GateResult([string]$name, [string]$status, $seconds, $why) {
+    # ST2.1(2026-10-10): 门禁结果的**结构化**出口。
+    #   它与 Write-Host 的文本出口在**同一个分支里**产生, 因此天然同源;
+    #   总结处的"双面对照"比对 JSON 计数与文本侧计数器, 抓的是
+    #   "某天有人给文本加了新分支却忘了记录"(或反之)。
+    #   ⚠️ 真正的**独立**对账是 `tools/gate_results.py --verify`:
+    #   它去读 transcript 里的**实际行**, 而不是信任这里的计数器。
+    #   status 取值与文本记号一一对应:
+    #     pass=[ok] / fail=[X] / error=[X]检查写法错误 /
+    #     skip=[skip] / not-run=[info] 未运行
+    $r = [ordered]@{
+        seq     = $script:results.Count + 1
+        name    = $name
+        status  = $status
+        seconds = [math]::Round([double]$seconds, 3)
+        why     = $why
+    }
+    $script:results += , $r
+}
+
 function Check([string]$name, [scriptblock]$cond) {
+    # ST2.3(2026-10-10): `-Only <正则>` 只跑匹配项, 其余如实记为未运行。
+    #   ⚠️ 过滤必须在 **scriptblock 之前**发生 —— "未运行"要真的是没运行,
+    #   不能跑完再假装没跑。仍打印一枚 `[info] ... 未运行` 证据行:
+    #   docclaim 的 T7 不变量要求**每个静态 Check 调用点在运行期恰好留下
+    #   一枚证据行**(通过/失败/跳过/未运行)。
+    if ($script:Only -and $name -notmatch $script:Only) {
+        $script:notrun++
+        Add-GateResult $name 'not-run' 0 ('--Only 过滤 (不匹配 /{0}/)' -f $script:Only)
+        Write-Host ("[info] {0} 未运行 (--Only 过滤) — 未验证 != 通过" -f $name) -ForegroundColor DarkYellow
+        return
+    }
+    $t0 = Get-Date
     try {
         # ⚠️ 必须只取 scriptblock 的**最后一个值**来判断成败。
         #
@@ -181,6 +237,7 @@ function Check([string]$name, [scriptblock]$cond) {
         # 修法: 收集 scriptblock 输出，**只取最后一个值**作为判定结果。
         $out = @(& $cond)
         $ok = if ($out.Count -gt 0) { $out[-1] } else { $null }
+        $sec = ((Get-Date) - $t0).TotalSeconds
 
         # ── SKIP 判据（2026-10-02）────────────────────────────────────────
         #
@@ -205,6 +262,7 @@ function Check([string]$name, [scriptblock]$cond) {
         #      与 `[info] 未运行 — 未验证 != 通过` 同纪律。
         if ($ok -is [string] -and $ok -eq 'SKIP') {
             $script:skip++
+            Add-GateResult $name 'skip' $sec '前置不满足（判据从未执行）'
             Write-Host ("[skip] {0} —— 前置不满足，本项未验证（未验证 != 通过）" -f $name) -ForegroundColor DarkYellow
             Show-Diag $out
             return
@@ -214,18 +272,22 @@ function Check([string]$name, [scriptblock]$cond) {
         # 则视为检查写法错误 -> **失败而非静默通过**（P3: 不设可绕过的门禁）。
         if ($ok -isnot [bool]) {
             $script:fail++
+            $__why = ($ok | Out-String).Trim()
+            Add-GateResult $name 'error' $sec ('检查写法错误（末值非布尔: {0}）' -f $__why)
             Write-Host ("[X]  {0}: 检查写法错误（末值非布尔: {1}）" -f `
                 $name, ($ok | Out-String).Trim()) -ForegroundColor Red
             return
         }
-        if ($ok) { $script:pass++; Write-Host ("[ok]  {0}" -f $name) -ForegroundColor Green }
+        if ($ok) { $script:pass++; Add-GateResult $name 'pass' $sec $null; Write-Host ("[ok]  {0}" -f $name) -ForegroundColor Green }
         else {
             $script:fail++
+            Add-GateResult $name 'fail' $sec (Get-GateWhy $out)
             Write-Host ("[X]  {0}" -f $name) -ForegroundColor Red
             Show-Diag $out
         }
     } catch {
-        $script:fail++; Write-Host ("[X]  {0}: {1}" -f $name, $_.Exception.Message) -ForegroundColor Red
+        $script:fail++; Add-GateResult $name 'fail' ((Get-Date) - $t0).TotalSeconds $_.Exception.Message
+        Write-Host ("[X]  {0}: {1}" -f $name, $_.Exception.Message) -ForegroundColor Red
     }
 }
 
@@ -397,7 +459,9 @@ if ($WithMutation) {
         & $py tools\mutate_check.py; $LASTEXITCODE -eq 0
     }
 } else {
-    Write-Host '[info] 检查器变异测试未运行 (加 -WithMutation 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
+    $script:notrun++
+    Add-GateResult '检查器变异测试 (mutate_check)' 'not-run' 0 '加 -WithMutation 启用'
+    Write-Host '[info] 检查器变异测试 (mutate_check) 未运行 (加 -WithMutation 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 # W6.2(协议治理): **兼容性套件自检 + 对本仓库注册表的合规检查**。
@@ -635,7 +699,9 @@ if ($WithSkeleton) {
         & $py tools\skeleton_check.py --quiet; $LASTEXITCODE -eq 0
     }
 } else {
-    Write-Host '[info] 骨架回归未运行 (加 -WithSkeleton 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
+    $script:notrun++
+    Add-GateResult '骨架回归 (skeleton_check)' 'not-run' 0 '加 -WithSkeleton 启用'
+    Write-Host '[info] 骨架回归 (skeleton_check) 未运行 (加 -WithSkeleton 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 # W5.7(验证框架): **迁移成本门禁** —— 防止 W1.6 的成果回退。
@@ -666,7 +732,9 @@ if ($WithMigration) {
         & $py tools\migration_gate.py --quiet; $LASTEXITCODE -eq 0
     }
 } else {
-    Write-Host '[info] 迁移成本门禁未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
+    $script:notrun++
+    Add-GateResult '迁移成本 (migration_gate)' 'not-run' 0 '加 -WithMigration 启用'
+    Write-Host '[info] 迁移成本 (migration_gate) 未运行 (加 -WithMigration 启用) — 未验证 != 通过' -ForegroundColor DarkYellow
 }
 
 # 构建状态自检（A-d，2026-09-25）
@@ -1274,6 +1342,15 @@ Check 'Studio 契约 (studio)' {
     & $py -X utf8 tools\vm_debug.py --selftest --quiet
     $rc = $LASTEXITCODE
     if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+
+    # ST2: 测试面板的机读出口。它读的是**实际日志行**(而不是信任门禁自己的
+    # 计数器), 所以能抓"某天有人给 Write-Host 加了新行却既没记 JSON 也没加
+    # 计数器" —— 那正是门禁内部"双面对照"抓不到的那一类。
+    & $py -X utf8 tools\gate_results.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
     $rc -eq 0
 }
 
@@ -1325,6 +1402,46 @@ Write-Host ''
 # 门禁落日志: 把路径再报一次（人读的是结尾；失败时尤其关键）
 $__log = [string](Get-Variable -Name '__GateLogPath' -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
 if ($__log) { Write-Host ("[log] 本轮完整输出: {0}" -f $__log) -ForegroundColor DarkGray }
+
+# ## ST2.1(2026-10-10): 门禁的**第二个出口** —— NDJSON, 以及**双面对照**
+#   文本出口是给人读的, 也是 docclaim T7 的锚; NDJSON 出口是给面板与
+#   历史趋势读的。两者在 `Add-GateResult` 处同源产生, 这里在同一轮内对账。
+#   ⚠️ 本段输出**不得**以 [ok]/[X]/[skip]/[info] 开头 —— T7 按**行首**
+#   锚定这些记号, 多一枚就会被判成"某个调用点留下了两行证据"。
+#   ⚠️ 本轮 ndjson 在**总结之后**才写完, 所以"读日志做独立对账"只能验
+#   **上一轮**的配对 —— 那是 `tools/gate_results.py --verify` 的职责;
+#   这里的对照比的是 JSON 计数与文本侧计数器(同一来源, 抓单边漏改)。
+$jsonPath = ''
+if ($__log) { $jsonPath = [System.IO.Path]::ChangeExtension($__log, '.ndjson') }
+else { $jsonPath = Join-Path $Root ('build\logs\release_check_{0}.ndjson' -f $gateStamp) }
+$nok = @($results | Where-Object { $_.status -eq 'pass' }).Count
+$nx  = @($results | Where-Object { $_.status -eq 'fail' -or $_.status -eq 'error' }).Count
+$nsk = @($results | Where-Object { $_.status -eq 'skip' }).Count
+$nnr = @($results | Where-Object { $_.status -eq 'not-run' }).Count
+$jsonErr = ''
+try {
+    $jdir = Split-Path -Parent $jsonPath
+    if (-not (Test-Path -LiteralPath $jdir)) { New-Item -ItemType Directory -Force -Path $jdir | Out-Null }
+    if (Test-Path -LiteralPath $jsonPath) { Remove-Item -LiteralPath $jsonPath -Force }
+    # ⚠️ 必须显式 UTF8Encoding($false): `Add-Content -Encoding UTF8` 实测会写
+    #    BOM(前 3 字节 ef bb bf), 而 BOM 会让 json.loads 首行直接报
+    #    "Unexpected UTF-8 BOM"。NDJSON 每行都必须能独立解析。
+    $enc = New-Object System.Text.UTF8Encoding $false
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $results) { [void]$sb.AppendLine(($r | ConvertTo-Json -Compress -Depth 4)) }
+    [System.IO.File]::WriteAllText($jsonPath, $sb.ToString(), $enc)
+} catch { $jsonErr = $_.Exception.Message }
+if ($jsonErr -ne '') {
+    # ST2.5: 出口损坏**必须报错**, 不得静默产出一个空文件让面板显示"0 项全过"。
+    Write-Host ("[json] FAIL: NDJSON 出口损坏 — {0}" -f $jsonErr) -ForegroundColor Red
+    exit 1
+}
+if ($nok -ne $pass -or $nx -ne $fail -or $nsk -ne $skip -or $nnr -ne $notrun) {
+    Write-Host ("[json] FAIL: 双面对照不一致 — JSON(pass={0} fail={1} skip={2} not-run={3}) vs 文本(pass={4} fail={5} skip={6} not-run={7})" -f $nok, $nx, $nsk, $nnr, $pass, $fail, $skip, $notrun) -ForegroundColor Red
+    exit 1
+}
+Write-Host ("[json] {0} 项 -> {1}" -f $results.Count, $jsonPath) -ForegroundColor DarkGray
+Write-Host ("[json] 双面对照: pass={0} fail={1} skip={2} not-run={3}" -f $nok, $nx, $nsk, $nnr) -ForegroundColor DarkGray
 # ## 总结必须**如实分开**三态（2026-10-02）
 #   `[skip]` 项既不是通过也不是失败: 它的判据**从未执行**。
 #   若把它算进 PASS 的分子，"N 项检查全通过"就会**谎报**（`docclaim` 的

@@ -2,6 +2,7 @@
 
 > 版本：2026-10-09 v1 · 状态：**ST0 已实施**（`tools/studio_core.py` + `tools/studio_cli.py`）
 > ST4 追加：`vm.images` / `vm.disasm`（VM 级调试入口；单步与断点在
+> ST2 追加：`test.gate.results`（门禁结果的**历史查询**；文本出口不变，新增 NDJSON 出口）。
 > `tools/vm_debug.py` 的库/CLI 层，尚未提升为协议命令 —— 见 §9.4）。
 > 本文是**契约**：面板、测试、脚本、未来的编辑器扩展都按它对接后端。
 
@@ -86,6 +87,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `gate.items` | — | `items[]` `{name, line, gated}` + `total`/`gated`/`default`/`source` |
 | `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` + `count`；`blob` 缺省 `build/vm.blob` |
 | `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
+| `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why}` + `counts_json`/`pass_n` |
 
 **`vm.disasm` 的两种 `source`**（这是理解 ST4 的关键，不是两个别名）：
 
@@ -116,7 +118,19 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 **`gate.items` 的诚实边界**：它列的是 `tools/release_check.ps1` 里的
 **静态 `Check` 调用点**（声明），**不是运行结果**。响应里带
 `kind: "static-declaration"` 就是让消费方无法把它误读成「这一项通过了」。
-运行结果属于 ST2（`test.gate.results`，当前 `planned`）。
+运行结果由 **`test.gate.results`** 提供（ST2 已落地）。
+
+**门禁的两个出口必须逐项一致**（ST2.1 的硬约束）：
+
+- **文本**（人读，**格式不变**）：`[ok]` / `[X]` / `[skip] …… 前置不满足` / `[info] ……未运行`，以及结尾那句 `PASS: N 项检查全通过`。
+  ⚠️ 这句话被 `tools/docclaim_check.py` 的 T7 不变量拿去与 `[ok]` 行数对账，**逐字不得改**。
+- **NDJSON**（机读）：`build/logs/release_check_<ts>.ndjson`，每行一项，五态 `pass` / `fail` / `error` / `skip` / `not-run`。
+
+`not-run` 与 `skip` **不是一回事**：`skip` = 前置不满足（判据本可执行但环境缺东西），`not-run` = 加了 `-With*` 开关才跑的项这一轮没启用（或 `-Only` 过滤掉了）。
+两者都**不计入** `PASS: N`——否则"N 项全通过"会谎报。
+
+`query=verify` 是**独立对账**：它读**实际日志行**逐项比对，不信任门禁自己的计数器（同轮门禁也自对照，两处独立）。
+历史轮次（ST2.1 之前）只有 `.log` 没有 `.ndjson`，`verify` 对它们会**如实报"无 .ndjson"而不是判通过**。
 
 ## 6. 错误码
 
@@ -187,7 +201,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 1. **没有超时与心跳。** 会话模式靠 EOF/断开结束。等 ST5 需要长连接时再加。
 2. **不支持跨行 JSON 请求。** 行就是消息边界；跨行会被判 `E_BAD_LINE`
    （这是刻意的，因为「一行一消息」正是 NDJSON 的全部价值）。
-3. **`gate.items` 只有声明，没有结果**（ST2 补）。
+3. ~~`gate.items` 只有声明，没有结果~~ ⇒ ✅ **ST2 已补**：`test.gate.results` 提供运行结果（含历史与对账）。
 4. **主机级调试（`debug.host.*`）尚未进入协议。** ST3 会新增它（断点、单步、
    栈、内存），采用**同一套 NDJSON 信封**；调试天生的流式事件
    （`stopped` / `output` / `exited`）将作为**服务端主动推送**的响应行出现
@@ -211,4 +225,5 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 - `tools/vm_debug.py` — VM 级调试器（ST4：反汇编 / 单步 / 断点 / 视图）
 - `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）
+- `tools/gate_results.py` — `test.gate.results` 的数据来源（门禁 NDJSON 的解析与对账，**唯一实现**）
 - `docs/DEBUG_CONSOLE_PLAN.md` — 既有调试控制台的边界与设计纪律

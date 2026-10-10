@@ -223,10 +223,10 @@ def capabilities():
                 step='ST0',
                 note='这是**声明**不是**运行结果**'),
             'test.gate.results': cap(
-                'planned', 'tools/release_check.ps1',
-                '今天只有 PowerShell 转录, 无结构化结果',
+                'ready', 'tools/gate_results.py',
+                '门禁结果历史（NDJSON）: latest / list / verify / diff / trend',
                 step='ST2',
-                note='门禁结果机读化（文本 + NDJSON 双出口, 同轮对照）'),
+                note='verify 读**实际日志行**做独立对账, 不信任门禁自己的计数器'),
             'generate.build': cap(
                 'planned', 'build.ps1',
                 '构建可跑, 但无流式进度事件',
@@ -252,6 +252,97 @@ def capabilities():
 
 
 # --- 命令实现 --------------------------------------------------------------
+
+GATE_QUERIES = ('latest', 'list', 'verify', 'diff', 'trend')
+
+
+def cmd_test_gate_results(args):
+    """门禁结果的**历史查询**（ST2.3 / ST2.4）。
+
+    复用 `tools/gate_results.py` —— 那是门禁日志解析的**唯一实现**。
+    这里不重写解析: 重写会漂移成两套口径, 而漂移的那一套会安静地给出
+    另一组数字（同 `vm_reduce.py` 与 `vm_debug.py` 的教训）。
+
+    query 取值（缺省 `latest`）:
+      latest  最近一轮已完成的结果（逐项）
+      list    发现的轮次（含"只有 .log、没有 .ndjson"的历史轮次）
+      verify  文本出口 vs NDJSON 出口**逐项**对账（独立于门禁自己的对照）
+      diff    两次运行的差异（需 a / b 参数）
+      trend   历次运行的通过数时间线
+    """
+    import gate_results as _gr
+
+    q = args.get('query') or 'latest'
+    if not isinstance(q, str):
+        raise StudioError('E_BAD_ARGS', 'query 必须是字符串',
+                          {'given': type(q).__name__, 'available': list(GATE_QUERIES)})
+    if q not in GATE_QUERIES:
+        raise StudioError('E_BAD_ARGS', 'query 取值非法',
+                          {'given': q, 'available': list(GATE_QUERIES)})
+    log_dir = args.get('dir') or _gr.LOG_DIR
+    if not os.path.isdir(log_dir):
+        raise StudioError('E_NOT_FOUND', '日志目录不存在', {'dir': log_dir})
+
+    def _stem(spec):
+        p = spec if os.path.isabs(spec) else os.path.join(log_dir, spec)
+        for ext in ('.log', '.ndjson'):
+            if p.endswith(ext):
+                p = p[:-len(ext)]
+        return p
+
+    if q == 'list':
+        rows = []
+        for stem in _gr.discover(log_dir):
+            r = _gr.load_run(stem, log_dir)
+            rows.append({'run': r['name'], 'log': bool(r.get('log')),
+                         'ndjson': bool(r.get('ndjson')),
+                         'done': bool(r.get('done', False)),
+                         'load_errors': r.get('load_errors') or []})
+        return {'query': q, 'dir': log_dir, 'runs': rows, 'count': len(rows)}
+
+    if q == 'trend':
+        rows = _gr.trend(_gr.discover(log_dir), log_dir)
+        rows.reverse()
+        return {'query': q, 'dir': log_dir, 'trend': rows, 'count': len(rows)}
+
+    if q == 'diff':
+        a, b = args.get('a'), args.get('b')
+        if not a or not b:
+            raise StudioError('E_BAD_ARGS', 'diff 需要 a 与 b 两个轮次名',
+                              {'a': a, 'b': b})
+        ra, rb = _gr.load_run(_stem(a), log_dir), _gr.load_run(_stem(b), log_dir)
+        changes, summ = _gr.diff_runs(ra, rb)
+        return {'query': q, 'a': ra['name'], 'b': rb['name'],
+                'changes': changes, 'summary': summ, 'count': len(changes)}
+
+    if q == 'verify':
+        spec = args.get('run')
+        run = _gr.load_run(_stem(spec), log_dir) if spec else _gr.pick_latest(log_dir)
+        if run is None:
+            raise StudioError('E_NOT_FOUND',
+                              '找不到同时有 .log 与 .ndjson 的轮次 —— 无法对账',
+                              {'dir': log_dir,
+                               'hint': 'ST2.1 之前的历史轮次只有 .log; 这是诚实边界'})
+        ok, problems, info = _gr.verify_run(run)
+        return {'query': q, 'ok': ok, 'info': info, 'problems': problems}
+
+    # latest（默认）
+    run = _gr.pick_latest(log_dir)
+    if run is None:
+        raise StudioError('E_NOT_FOUND',
+                          '找不到同时有 .log 与 .ndjson 的轮次',
+                          {'dir': log_dir,
+                           'hint': 'ST2.1 之前的历史轮次只有 .log; 这是诚实边界, 不是缺陷'})
+    return {'query': 'latest', 'run': run['name'],
+            'pass_n': run.get('pass_n'),
+            'counts_text': run.get('counts_text'),
+            'counts_json': run.get('counts_json'),
+            'items': [{'seq': r.get('seq'), 'name': r.get('name'),
+                       'status': r.get('status'), 'seconds': r.get('seconds'),
+                       'why': r.get('why')} for r in (run.get('rows') or [])],
+            'count': len(run.get('rows') or [])}
+
+
 
 def cmd_ping(args):
     """最小握手: 客户端用它确认协议版本与仓库位置。"""
@@ -420,6 +511,7 @@ COMMANDS = {
     'gate.items': cmd_gate_items,
     'vm.images': cmd_vm_images,
     'vm.disasm': cmd_vm_disasm,
+    'test.gate.results': cmd_test_gate_results,
 }
 
 
@@ -496,9 +588,13 @@ def selftest(quiet=False):
     caps = dispatch('capabilities')
     case('capabilities 含 8 项能力',
          len(caps.get('capabilities', {})) == 8)
-    case('planned 项如实标注（ui / test.gate.results / generate.build）',
+    case('planned 项如实标注（ui / generate.build）',
          all(caps['capabilities'][k]['status'] == 'planned'
-             for k in ('ui', 'test.gate.results', 'generate.build')))
+             for k in ('ui', 'generate.build')))
+    # ST2 落地后 test.gate.results 变 ready —— 同 debug.vm 的处理:
+    # 断言存在再断言取值, 且未完成的项**不得**混进 ready。
+    case('test.gate.results 自 ST2 起为 ready',
+         caps['capabilities'].get('test.gate.results', {}).get('status') == 'ready')
     # ST4 落地后 debug.vm 变 ready —— 但 `partial` 的 debug.host 与 **任何**
     # 未声明为 ready 的项都不许出现在"已完成"里。这条断言跟着能力一起演进，
     # 且**先断言存在**再断言取值（否则改名会让它静默变成永真）。
@@ -592,6 +688,46 @@ def selftest(quiet=False):
                                       {'source': 'blob', 'name': 'nope'}),
                      'E_NOT_FOUND')
     case('**负向**: 不存在的镜像 -> E_NOT_FOUND', ok, got)
+
+    if not quiet:
+        lines.append('--- 4c. 门禁结果历史（ST2: 复用 gate_results, 不重写解析）---')
+    gl = dispatch('test.gate.results', {'query': 'list'})
+    case('test.gate.results(list) 列出轮次', gl.get('count', 0) >= 1)
+    case('轮次行有 log/ndjson 两个布尔（历史轮次如实标 False）',
+         all(isinstance(x.get('log'), bool) and isinstance(x.get('ndjson'), bool)
+             for x in gl['runs']))
+    gt = dispatch('test.gate.results', {'query': 'trend'})
+    case('test.gate.results(trend) 每轮一条且计数非负',
+         all(isinstance(x.get(k), int) and x[k] >= 0
+             for x in gt['trend'] for k in ('pass', 'fail', 'skip', 'not-run')))
+    # ⭐ trend 的零值必须是 0 而不是 None —— 一次全 not-run 的运行 pass 是 0,
+    #   不是"不知道"。面板会把 None 渲染成空白（这条曾在 gate_results 里真错过）。
+    case('trend 不含 None（缺失键补 0）',
+         all(all(x.get(k) is not None for k in ('pass', 'fail', 'skip', 'not-run'))
+             for x in gt['trend']))
+    gv = dispatch('test.gate.results', {'query': 'verify'})
+    case('test.gate.results(verify) 报 ok 且无 problems',
+         gv.get('ok') is True and gv.get('problems') == [])
+    g1 = dispatch('test.gate.results', {'query': 'latest'})
+    case('test.gate.results(latest) 逐项带 name/status',
+         g1.get('count', 0) >= 1
+         and all(x.get('name') and x.get('status') for x in g1['items']))
+    case('latest 的 pass_n 与 counts_json.pass 一致（同一真值, 两个出口）',
+         g1.get('pass_n') == (g1.get('counts_json') or {}).get('pass'))
+    # 负面: query 非法 / 非字符串 / 目录不存在 / diff 缺参
+    ok, got = raises(lambda: dispatch('test.gate.results', {'query': 'nope'}),
+                     'E_BAD_ARGS')
+    case('**负向**: query 非法 -> E_BAD_ARGS（不静默回落 latest）', ok, got)
+    ok, got = raises(lambda: dispatch('test.gate.results', {'query': ['latest']}),
+                     'E_BAD_ARGS')
+    case('**负向**: query 传非字符串 -> E_BAD_ARGS 而非 E_INTERNAL', ok, got)
+    ok, got = raises(lambda: dispatch('test.gate.results',
+                                      {'query': 'list', 'dir': 'no/such/dir'}),
+                     'E_NOT_FOUND')
+    case('**负向**: 日志目录不存在 -> E_NOT_FOUND', ok, got)
+    ok, got = raises(lambda: dispatch('test.gate.results',
+                                      {'query': 'diff', 'a': 'x'}), 'E_BAD_ARGS')
+    case('**负向**: diff 缺 b -> E_BAD_ARGS', ok, got)
 
     if not quiet:
         lines.append('--- 5. **负向**（必须能抓错）---')
