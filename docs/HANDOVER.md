@@ -9713,4 +9713,47 @@ TypeError: argument should be integer or bytes-like object, not 'str'
 
 ### 2.64.13 全门禁与提交
 
-见工作区提交 `fix(studio)!: ...` 的同批记录。
+全门禁（`& powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+tools\release_check.ps1 -SkipDirtyCheck`，后台作业执行）⇒ **rc=0**：
+
+```
+[ok]  e2e T1-T30
+[ok]  selfcrypt meta 布局四方一致 (selfcrypt_meta)
+[ok]  Studio 契约 (studio)          ← 本节修复的目标, 已转绿
+[ok]  Studio 外壳 (studio_server)
+[ok]  文件编码 (bom_check)
+[json] 44 项 -> build\logs\release_check_20261011_004703.ndjson
+[json] 双面对照: pass=41 fail=0 skip=0 not-run=3
+[release_check] PASS: 41 项检查全通过
+```
+
+⭐ 一处值得注意的效果：本轮修复**一次性解除了自锁**。因为第 43 项读的是
+「最近一轮**已完成**的轮次」，而当时最新的已完成轮次正是红轮
+`release_check_20261010_235103` —— 新断言在红轮上同样成立（两出口的 `pass`
+都是 40），所以**不需要先跑出一轮绿再覆盖**，这一次就直接转绿了。
+
+提交 `268f738`：`fix(gate)!: BOM 判据 (第 44 项) + 「同一真值两个出口」的断言换量`
+（**17 files / +776 −28**，create `tools/bom_check.py`），push
+`8c83840..268f738` rc=0，`git status --short` 干净，
+`build/_hygiene.py` ⇒ 25 个文件 0 处异常。
+
+#### 2.64.13.1 ⚠️ CI：**没有证据**（又一次调度层失败）
+
+CI run `38069974506`（head `268f738`）`completed / failure`，四个 job 全部
+**`steps=0`**（一个步骤都没执行）：`build-and-verify` / `linux-portability`
+`conclusion=failure`，`reproducible` / `sdk-package` `skipped`。
+`gh run view --log-failed` 报 `log not found: 114265217013`。
+
+这与 §2.50.12 / §2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 同形态，也与前一提交
+`8c83840`（run `38059590559`，同样 4 s / `failure`）一致 ⇒ **不是代码问题**，
+是 GitHub 帐单/支出上限导致的调度层拒绝。
+
+同时本轮期间有一段时间连 `gh run list` 都报
+`dial tcp 198.18.0.37:443: connectex: A connection attempt failed` ——
+`198.18.0.0/15` 是**保留地址段**（RFC 2544 基准测试用），说明本机 DNS/代理把
+`api.github.com` 解析到了黑洞地址；`Remove-Item Env:https_proxy` 无效。
+
+**边界**：① 这一批修复**没有 CI 证据**（本机全门禁绿、CI 未执行）；
+② CI 绿本来也不能证明「同型缺陷不会再出现」—— 真正的证据是
+§2.64.5 的承重差分与 §2.64.8 的负向用例；③ 帐单属**外部基础设施状态**，
+不在本仓库可修范围。
