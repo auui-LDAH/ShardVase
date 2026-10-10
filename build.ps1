@@ -5,16 +5,19 @@
 #
 # 参数:
 #   -MachineId <值>   覆盖 machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
-#   -Config <Release|Dev>  Release=发行加固 (/DEBUG:NONE /OPT:REF,ICF + 版本资源 + 签名);
-#                           Dev=默认开发构建
+#   -Config <Release|Dev|Debug>
+#                           Release=发行加固 (/DEBUG:NONE /OPT:REF,ICF + 版本资源 + 签名);
+#                           Dev=默认开发构建;
+#                           Debug=/Zi + /DEBUG:FULL, 产物与状态入 build\debug（ST3.2）
 #   -VcVars <路径>    显式指定 vcvars64.bat; 缺省自动探测 (vswhere/MSVC 常见路径)
 #   -Python <路径>    显式指定 python.exe; 缺省自动探测
 #   -SeedsFile <json> 确定性种子表 (RELEASE I3 可复现构建): {"images": {"<镜像名>": {"key0": "0x..", "key1": "0x.."}}}
-#   -RecordSeeds      构建后把本次种子写 build\seeds.json
+#   -RecordSeeds      构建后把本次种子写 <build>\seeds.json (Debug 变体 -> build\debug\seeds.json)
 #   -D2b              N1 调用级解密 (D2b) — PROT_SELFCRYPT_D2B
 #   -Drill            演练钩子 (ATTACK framework) — PROT_DRILL_HOOK
 #   -Help             打印本帮助 (INFRA_PLAN I4)
-# 输出: build\demo.exe / build\vm_unit.exe / build\manifest.json (产物清单)
+# 输出: <build>\demo.exe / <build>\vm_unit.exe / <build>\manifest.json (产物清单)
+#       <build> = build (Dev/Release) 或 build\debug (Debug 变体)
 param(
     [string]$MachineId = 'auto',
     [string]$Config = 'Dev',
@@ -157,11 +160,12 @@ if ($Help) {
 
 选项:
   -MachineId <值>   machine_id (十进制/0x16进制/"0"/"auto"); 默认 auto=绑定本机
-  -Config <Type>    Release|Dev (Release: 发行加固/签名/可复现)
+  -Config <Type>    Release|Dev|Debug (Release: 发行加固/签名/可复现;
+                    Debug: /Zi + /DEBUG:FULL, 产物与状态隔离到 build\debug)
   -VcVars <path>    vcvars64.bat 路径 (缺省自动探测)
   -Python <path>    python.exe 路径 (缺省自动探测)
   -SeedsFile <json> 确定性种子表 (I3 可复现)
-  -RecordSeeds      记录本次种子到 build\seeds.json
+  -RecordSeeds      记录本次种子到 <build>\seeds.json (Debug -> build\debug\seeds.json)
   -SkipSign         跳过数字签名
   -SkipSmoke        跳过构建期冒烟测试 (跨机绑定构建用)
   -D2b              N1 调用级解密 (D2b) — Release 默认开启 (WIN_ENHANCE W1)
@@ -172,13 +176,14 @@ if ($Help) {
                     可选: full / standard / hardened / minimal
   -Help             打印本帮助
 
-输出: build\demo.exe / build\vm_unit.exe / build\syscall_probe.exe /
-      build\manifest.json (产物清单)
+输出: <build>\demo.exe / <build>\vm_unit.exe / <build>\syscall_probe.exe /
+      <build>\manifest.json (产物清单)
+      <build> = build (Dev/Release) 或 build\debug (Debug 变体)
 '@
     exit 0
 }
-if ($Config -notin @('Dev', 'Release')) {
-    Write-Host "build FAILED: -Config must be Dev or Release (got $Config)" -ForegroundColor Red
+if ($Config -notin @('Dev', 'Release', 'Debug')) {
+    Write-Host "build FAILED: -Config must be Dev, Release or Debug (got $Config)" -ForegroundColor Red
     exit 2
 }
 if ($SeedsFile -and -not (Test-Path -LiteralPath $SeedsFile)) {
@@ -190,6 +195,21 @@ if ($MachineId -and $MachineId -notmatch '^(auto|0|[0-9]+|0x[0-9a-fA-F]+)$') {
     exit 2
 }
 $isRelease = ($Config -eq 'Release')
+# ## ST3.2 构建变体（2026-10-10）：`Debug` 调试构建
+#
+#   `Debug` = 编译加 `/Zi`、链接加 `/DEBUG:FULL`（生成 PDB，供 Studio ST3 的
+#   主机级调试面板使用），并把**产物与状态**全部落到 `build\debug\`。
+#
+#   **为什么必须隔离**（两条实测理由）：
+#     ① 直接覆盖 `build\demo.exe` -> 发布产物丢失，之后 e2e / 门禁 读到的
+#        就是带 PDB 的调试产物（节布局已不同）。
+#     ② `build/section_baseline.json` 是**只增不减**的归一化基线 ->
+#        调试构建节更大 -> 基线被抬高 -> 改变 **Release** 的填充尺寸 ->
+#        破坏 I3 可复现（字节比对必然 MISMATCH）。
+#
+#   变体为空时（Dev / Release）所有路径与引入本参数前**逐字符相同**。
+$isDebug = ($Config -eq 'Debug')
+$variant = if ($isDebug) { 'debug' } else { '' }
 # W1 (WIN_ENHANCE): Release 默认 D2b (运行期间隙密文, 缩明文窗口);
 # Dev 默认 D2a (调试平坦). -NoD2b / -D2b 显式覆盖.
 $scDef = if ($D2b -or (-not $NoD2b -and $isRelease)) { ' /DPROT_SELFCRYPT_D2B' } else { '' }
@@ -326,9 +346,19 @@ $genDir = $genDir.Trim()
 #   快照比对实测: `build/_composition_srcs.txt` 与
 #   `build/section_baseline.json` 被**两平台都写** -> 泄漏
 #   （前者会让 Windows 用错源清单；后者会互相抬高归一化基线）。
-$buildDir = (& $py tools\genpaths.py --platform win --print-build-dir 2>$null | Select-Object -First 1)
+#   变体（ST3.2）同样由 genpaths 单点决定：`--variant` 只在非空时传，
+#   避免 PowerShell 把空串参数丢掉（`--variant --print-build-dir` 会被
+#   argparse 读成 `--variant` 的值是 `--print-build-dir`）。
+$gpArgs = @('tools\genpaths.py', '--platform', 'win')
+if ($variant) { $gpArgs += @('--variant', $variant) }
+$buildDir = (& $py @gpArgs --print-build-dir 2>$null | Select-Object -First 1)
 if (-not $buildDir) { throw 'build FAILED: 无法取得 build 目录' }
 $buildDir = $buildDir.Trim()
+#   `$outRel` = build 目录**相对仓库根**的路径（`build` 或 `build\debug`）。
+#   所有 `/Fe:` / `--out` 都用它，从而不必在本脚本里散落第二套目录规则。
+$outRel = (& $py @gpArgs --print-out-rel 2>$null | Select-Object -First 1)
+if (-not $outRel) { throw 'build FAILED: 无法取得 build 相对路径 ($outRel)' }
+$outRel = $outRel.Trim()
 $vmJson = $vmJson.Trim()
 
 # 状态文件路径（A-c）: 由 genpaths 决定（win: demo\vm_build.json；linux: build/linux/vm_build.json）
@@ -370,8 +400,10 @@ if (-not (Test-Path -LiteralPath $jsonPath)) {
 if (-not (Test-Path -LiteralPath $genDir)) {
     New-Item -ItemType Directory -Path $genDir | Out-Null
 }
-if (-not (Test-Path -LiteralPath 'build')) {
-    New-Item -ItemType Directory -Path 'build' | Out-Null
+if (-not (Test-Path -LiteralPath $outRel)) {
+    # `-Force` 让 `build\debug` 这类两级路径一次建成；Dev/Release 下
+    # `$outRel` 就是 `build`，与原行为等价。
+    New-Item -ItemType Directory -Path $outRel -Force | Out-Null
 }
 
 # 2. 重算期望常量 (machine_id 默认 auto=绑定本机; 可 --MachineId 覆盖)
@@ -421,7 +453,7 @@ Set-Content -LiteralPath (Join-Path $genDir 'expect_default.c') -Value $expC -En
 #     对该 json 的 serial/machine_id 签发 -> build\license.txt (供下发与测试用)
 & $py tools\vmenc.py keygen --key-out "build\keys\license_priv.json" --blob-out "${genDir}\license_pubkey.c"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py keygen' }
-& $py tools\vmenc.py sign --key "build\keys\license_priv.json" --json "${vmJson}" --out "build\license.txt" --print
+& $py tools\vmenc.py sign --key "build\keys\license_priv.json" --json "${vmJson}" --out "$outRel\license.txt" --print
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py sign' }
 
 # 3. 汇编 + 加密 VM 镜像 (ROADMAP Phase 2a: 一个校验逻辑拆成 3 个独立小 VM,
@@ -443,7 +475,7 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py assemble (gate)' }
 # 3c. 打包 VM blob (DBI launcher, 技术债 #3): demo.exe 不再静态嵌入 VM 密文,
 #     启动时由 launcher 装载 build\vm.blob (缺失/损坏 -> 0xB10B)。
 #     BLOB_SIGN_PLAN: --sign 用 A1 私钥签 v1 blob (防伪造)
-& $py tools\vmenc.py pack --sign "build\keys\license_priv.json" --out build\vm.blob "${genDir}\vm_hash_blob.bin" "${genDir}\vm_mix_blob.bin" "${genDir}\vm_verify_blob.bin" "${genDir}\vm_gate_blob.bin"
+& $py tools\vmenc.py pack --sign "build\keys\license_priv.json" --out $outRel\vm.blob "${genDir}\vm_hash_blob.bin" "${genDir}\vm_mix_blob.bin" "${genDir}\vm_verify_blob.bin" "${genDir}\vm_gate_blob.bin"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: vmenc.py pack' }
 
 # 3b. 汇编 VM 指令集单测镜像 (ROADMAP Phase 1d, 每个新指令都要有测试用例)
@@ -523,9 +555,34 @@ if ($isRelease) {
 #   Release 恒开（原有行为不变）。Dev **默认仍关**（保留 /INCREMENTAL 等开发
 #   体验、也不改变既有 Dev 产物字节）；但 CI 的 reproducible job 用 Dev，
 #   故新增显式 `-Brepro` 让调用方按需打开，而不去动 Dev 的默认语义。
+#   ST3.2: `Debug` 保留调试目录（`/DEBUG:FULL` -> 产出 PDB）。
+#
+#   ## 为什么**不**加 `/OPT:NOREF /OPT:NOICF`（2026-10-10 实测）
+#     初版按"调试友好"的惯例加了 `/OPT:NOREF /OPT:NOICF`（保留未被引用
+#     的函数、不折叠相同函数，方便下断点）。实测 **`build\debug\demo.exe`
+#     自检失败**：打印「完整性校验失败，程序可能已被篡改。」rc=2989 (0xBAD)。
+#     根因**不是**校验逻辑错，而是 `src/integrity.c:461` 的
+#     `uint8_t mask[0x40000]` —— **256KB 运行期掩码上限**：
+#       · Release `.text` VirtualSize = 140144  -> 远低于上限
+#       · Debug   `.text` VirtualSize = 458688  -> **超出上限**
+#     `src/integrity.c:503  if (len > sizeof(mask)) return PROT_ERR_INTEGRITY;`
+#     把"缓冲区装不下"**静默**报成了"被篡改"（`/Od` 的调试代码体积本就
+#     约为 `/O2` 的 3.3 倍，`/OPT:NOICF` 让它再涨一截）。
+#     `docs/BLOB_SIGN_PLAN.md:163` 已记过一次同型事故：
+#     「修复 integrity.c mask 数组 128KB→256KB（.text 随新代码增长超限
+#       导致 0xBAD 误报）」。
+#     => 保留 `/OPT:REF /OPT:ICF`（与 Release 同口径），`.text` 回落到上限
+#        内，Debug 构建自检通过、能跑到「校验通过，欢迎使用！」。
+#        代价：断点可能落在被 ICF 合并的等价函数上 —— 可接受，因为
+#        `PROT_NOISE` / `REPLICAS`（R3.2-c 三副本）本就在制造等价函数。
+#   **刻意不加 `/Brepro`** —— 调试构建不追求字节可复现。
 $linkHard = if ($isRelease) { ' /DEBUG:NONE /OPT:REF /OPT:ICF /Brepro' }
+            elseif ($isDebug) { ' /DEBUG:FULL /OPT:REF /OPT:ICF /INCREMENTAL:NO' }
             elseif ($Brepro) { ' /Brepro' }
             else { '' }
+#   `/Zi` 是编译期开关；`/Fd` 把编译器 PDB 钉进变体目录，避免 `cl` 默认把
+#   `vc143.pdb` 丢在**仓库根**（本脚本第 6.5 步只清理 `*.obj`）。
+$dbgDef = if ($isDebug) { " /Zi /Fd${outRel}\compiler.pdb" } else { '' }
 $resObj = if ($isRelease) {  ' ' + (Join-Path $genDir 'version.res')  } else { '' }
 
 $compName = if ($Composition) { $Composition } else { 'full' }
@@ -596,7 +653,7 @@ Write-Host ("build: composition '{0}' — {1} 源文件" -f $compName, $compSrcs
 # 阶段1(第二支柱): -DPROT_USE_GENERATED_SECTIONS 让 include/protect/
 # prot_sections.h 采用 demo\gen 下的**随机节名**（覆盖其默认值）。
 # 不定义该宏的独立构建（skeleton/examples/tests）沿用默认节名，不受影响。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`" /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`" /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj$dbgDef /Fe:${outRel}\demo.exe $compSrcJoined /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:${outRel}\demo.map$linkHard"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 
 # 5b. 编译并运行 VM 指令集单测
@@ -613,11 +670,11 @@ if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl' }
 #   另一处在 §7 附近，为 Invoke-Unit 版本）。两处都需同步。
 # S1-ALLOW: 单元测试**刻意只链接被测模块**（vm.c + crc32 + 平台层）——用完整组合会让"单元测试"变成"整套构建测试"，丧失定位能力。
 #   平台层为必需: vm.c 的熵源已改走 prot_plat_monotonic_ns（L6b）。
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`" /Fe:build\vm_unit.exe src\vm.c src\crc32.c src\platform\prot_platform_win.c `"${genDir}\vm_unit_blob.c`" `"${genDir}\vm_unit_brk_blob.c`" tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`"$dbgDef /Fe:${outRel}\vm_unit.exe src\vm.c src\crc32.c src\platform\prot_platform_win.c `"${genDir}\vm_unit_blob.c`" `"${genDir}\vm_unit_brk_blob.c`" tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (vm_unit)' }
 
 # 5c. 编译 A6 direct syscall 单测 (直调结果须与 API 路径一致)
-cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
+cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include$dbgDef /Fe:${outRel}\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (syscall_probe)' }
 
 # 5d. 阶段2(第二支柱): 节填充（统一节尺寸，消除"组合可推断"）
@@ -641,7 +698,7 @@ if (-not $NoPad) {
     # 本脚本用相对路径（无 $REPO 变量）
 
     # 量测当前产物（第一遍编译已完成）
-    & $py tools\measure_sections.py build\demo.exe --out-json build\section_actual.json --sections-json (Join-Path $genDir 'prot_sections.json')
+    & $py tools\measure_sections.py $outRel\demo.exe --out-json $outRel\section_actual.json --sections-json (Join-Path $genDir 'prot_sections.json')
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: measure_sections.py' }
 
     # 基线维护: **只增不减**（取"旧基线"与"本次实际"的较大值）
@@ -652,7 +709,7 @@ if (-not $NoPad) {
     # 组合间尺寸不一致（实测 minimal 229376 vs full 229888，差 512 字节）。
     #
     # 改为每次合并取 max -> 基线自动跟进"最大组合"，无需人工干预。
-    & $py tools\merge_baseline.py --baseline $baselineFile --actual build\section_actual.json
+    & $py tools\merge_baseline.py --baseline $baselineFile --actual $outRel\section_actual.json
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: merge_baseline.py' }
 
     # 生成填充源（若无需填充则产出空文件）
@@ -680,8 +737,8 @@ if (-not $NoPad) {
         (Get-Content -LiteralPath $padSrc -Raw) } else { '' }
     if ($padBody -match '__declspec\(allocate') {
         Write-Host 'build: 应用节填充（二次编译）'
-        Set-Content -LiteralPath build\_d9026_cmd.txt -Value $clCmd2 -Encoding UTF8
-        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`" /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj /Fe:build\demo.exe $compSrcJoined $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:build\demo.map$linkHard"
+        Set-Content -LiteralPath $outRel\_d9026_cmd.txt -Value $clCmd2 -Encoding UTF8
+        cmd /c "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I `"${genDir}`" /DPROT_USE_GENERATED_SECTIONS=1 /DPROT_BUILD_SALT=$buildSalt$scDef$resObj$dbgDef /Fe:${outRel}\demo.exe $compSrcJoined $padSrc /link /SUBSYSTEM:CONSOLE bcrypt.lib winhttp.lib advapi32.lib user32.lib /MAP:${outRel}\demo.map$linkHard"
         if ($LASTEXITCODE -ne 0) { throw 'build FAILED: cl (填充后重编译)' }
     } else {
         Write-Host 'build: 无需填充（当前组合已是最大尺寸）'
@@ -702,11 +759,15 @@ if ($ExtraSelfCrypt) {
     }
 }
 if ($compName -eq 'full') { $scExtraArgs += '--require-all' }
-& $py tools\selfcrypt_proto.py build\demo.exe build\demo.map @scExtraArgs --sections-json "$sectionsJson"
+#   ⚠️ `--mask-out` **必须显式给**（实测缺陷）: `tools/selfcrypt_proto.py:451`
+#   的默认值是硬编码的 `build/selfcrypt_mask.txt` -> Debug 变体会把掩码写到
+#   **共享**目录，既覆盖 Release 的掩码，又让本变体那侧读不到自己的掩码
+#   （`$maskArgs` 为空 -> hashpatch 少带掩码）。
+& $py tools\selfcrypt_proto.py $outRel\demo.exe $outRel\demo.map @scExtraArgs --sections-json "$sectionsJson" --mask-out (Join-Path $outRel 'selfcrypt_mask.txt')
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: selfcrypt_proto.py' }
 $maskArgs = @()
-if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
-    foreach ($ln in (Get-Content -LiteralPath 'build\selfcrypt_mask.txt')) {
+if (Test-Path -LiteralPath (Join-Path $outRel 'selfcrypt_mask.txt')) {
+    foreach ($ln in (Get-Content -LiteralPath (Join-Path $outRel 'selfcrypt_mask.txt'))) {
         $maskArgs += '--mask', $ln.Trim()
     }
 }
@@ -729,7 +790,7 @@ if (Test-Path -LiteralPath 'build\selfcrypt_mask.txt') {
 #     tools/check_crc_targets.py 与判据守护。
 $hasIntegrity = $compSrcs -match 'integrity\.c$'
 if ($hasIntegrity) {
-    & $py tools\hashpatch.py build\demo.exe @maskArgs --sections-json "$sectionsJson"
+    & $py tools\hashpatch.py $outRel\demo.exe @maskArgs --sections-json "$sectionsJson"
     if ($LASTEXITCODE -ne 0) { throw 'build FAILED: hashpatch.py' }
 } else {
     Write-Host 'build: hashpatch SKIPPED (组合不含 integrity, 无 .protcrc 段可烧录)'
@@ -752,7 +813,7 @@ if ($hasIntegrity) {
 #   在签名**之前**（否则签名失效）。
 $tailTarget = if ($null -ne $env:PROT_TAIL_TARGET) {
     $env:PROT_TAIL_TARGET } else { '327680' }
-& $py tools\normalize_tail.py build\demo.exe --target $tailTarget `
+& $py tools\normalize_tail.py $outRel\demo.exe --target $tailTarget `
     $(if ($sectionsSeed) { @('--seed', $sectionsSeed) } else { @() }) --quiet
 if ($LASTEXITCODE -ne 0) { throw 'build FAILED: normalize_tail.py' }
 
@@ -800,9 +861,9 @@ function Sign-Binary([string]$exe) {
 if (-not $SkipSign) {
     $pfx = 'build\keys\codesign.pfx'
     if (Test-Path -LiteralPath $pfx) {
-        Sign-Binary 'build\demo.exe'
-        Sign-Binary 'build\vm_unit.exe'
-        Sign-Binary 'build\syscall_probe.exe'
+        Sign-Binary "$outRel\demo.exe"
+        Sign-Binary "$outRel\vm_unit.exe"
+        Sign-Binary "$outRel\syscall_probe.exe"
     } else {
         Write-Host 'build: codesign.pfx absent - skip signing (RELEASE self-signed cert)'
     }
@@ -820,7 +881,7 @@ function Invoke-Unit([string]$exe, [string]$clCmd, [string]$failMsg) {
     for ($try = 1; $try -le 4; $try++) {
         $rc = 0
         try {
-            & ".\build\$exe" 2>&1 | Out-Null
+            & ".\$outRel\$exe" 2>&1 | Out-Null
             $rc = $LASTEXITCODE
         } catch {
             $rc = 4551
@@ -834,7 +895,7 @@ function Invoke-Unit([string]$exe, [string]$clCmd, [string]$failMsg) {
             cmd /c "`"$vcvars`" >nul 2>&1 && $clCmd"
             if ($LASTEXITCODE -ne 0) { throw "build FAILED: recompile $exe" }
             if (-not $SkipSign -and (Test-Path -LiteralPath 'build\keys\codesign.pfx')) {
-                Sign-Binary "build\$exe"
+                Sign-Binary "$outRel\$exe"
             }
         }
     }
@@ -861,9 +922,9 @@ $platSrc = 'src\platform\prot_platform_win.c'
 #   整串外层是双引号（PowerShell 会插值 `${genDir}`），
 #   若内层也用双引号 -> **嵌套冲突** -> 解析错误。
 #   PowerShell 允许 `"... '...' ..."`（内层单引号为字面量）。
-$unitCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I ${genDir} /Fe:build\vm_unit.exe src\vm.c src\crc32.c $platSrc '${genDir}\vm_unit_blob.c' '${genDir}\vm_unit_brk_blob.c' tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
+$unitCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /I ${genDir}$dbgDef /Fe:${outRel}\vm_unit.exe src\vm.c src\crc32.c $platSrc '${genDir}\vm_unit_blob.c' '${genDir}\vm_unit_brk_blob.c' tests\vm_unit.c /link /SUBSYSTEM:CONSOLE advapi32.lib winhttp.lib"
 # syscall_probe 只用 syscall.c（无平台层依赖）—— 保持不变
-$probeCl = 'cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include /Fe:build\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE'
+$probeCl = "cl /nologo /O2 /W4 /WX /std:c11 /utf-8 /I include$dbgDef /Fe:${outRel}\syscall_probe.exe src\syscall.c tests\syscall_probe.c /link /SUBSYSTEM:CONSOLE"
 Invoke-Unit 'vm_unit.exe' $unitCl 'vm_unit.exe (Phase 1D ops)'
 Invoke-Unit 'syscall_probe.exe' $probeCl 'syscall_probe.exe (A6 direct syscall)'
 
@@ -894,7 +955,7 @@ if (-not $SkipSmoke) {
             $smokeLog = Join-Path $env:TEMP 'prot_smoke_out.txt'
             $smokeIn = Join-Path $env:TEMP 'prot_smoke_in.txt'
             [System.IO.File]::WriteAllText($smokeIn, $smokeSerial)
-            cmd /c ".\build\demo.exe --license-file build\license.txt --vm-blob build\vm.blob < `"$smokeIn`" > `"$smokeLog`" 2>nul"
+            cmd /c ".\$outRel\demo.exe --license-file $outRel\license.txt --vm-blob $outRel\vm.blob < `"$smokeIn`" > `"$smokeLog`" 2>nul"
             $rc = $LASTEXITCODE
             if (Test-Path -LiteralPath $smokeLog) {
                 $smokeOut = @(Get-Content -LiteralPath $smokeLog -ErrorAction SilentlyContinue)
@@ -937,7 +998,7 @@ Get-ChildItem -LiteralPath $genDir -Filter 'vm_*_blob.c' -File | ForEach-Object 
 $jb = Get-Content -LiteralPath "${vmJson}" -Raw | ConvertFrom-Json
 $machineAuto = ($MachineId -in @('auto', '0'))
 $toolchain = ''
-if (Test-Path -LiteralPath build\demo.exe) {
+if (Test-Path -LiteralPath (Join-Path $outRel 'demo.exe')) {
     $clTmp = Join-Path $env:TEMP 'prot_clver.txt'
     cmd /c "`"$vcvars`" >nul 2>&1 && cl > `"$clTmp`" 2>&1"
     if (Test-Path -LiteralPath $clTmp) {
@@ -969,9 +1030,9 @@ $manifest = [ordered]@{
                      (git rev-parse --short HEAD 2>$null)
                  } else { 'no-git' }
     vm_seeds   = $seedPairs
-    demo_exe_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath build\demo.exe).Hash
+    demo_exe_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $outRel 'demo.exe')).Hash
 }
-$manifest | ConvertTo-Json | Set-Content -LiteralPath build\manifest.json -Encoding utf8
+$manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outRel 'manifest.json') -Encoding utf8
 
 # 7.6. I3 可复现构建: 记录本次种子 -> build\seeds.json (入库?否; 随发布归档)
 if ($RecordSeeds) {
@@ -1009,8 +1070,8 @@ if ($RecordSeeds) {
         $seedOut['indirect'] = $indirectSeed[1] -replace '^0x', ''
     }
     $seedOut | ConvertTo-Json -Depth 4 |
-        Set-Content -LiteralPath build\seeds.json -Encoding utf8
-    Write-Host "build: recorded seeds -> build\seeds.json (strgen=$strgenSeed indirect=$($seedOut.indirect) sections=$sectionsSeed salt=$buildSalt mid=$($seedOut.machine_id))"
+        Set-Content -LiteralPath (Join-Path $outRel 'seeds.json') -Encoding utf8
+    Write-Host "build: recorded seeds -> $outRel\seeds.json (strgen=$strgenSeed indirect=$($seedOut.indirect) sections=$sectionsSeed salt=$buildSalt mid=$($seedOut.machine_id))"
 }
 
 # 8.

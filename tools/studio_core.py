@@ -37,7 +37,8 @@
     主机级断点仍属 ST3, `ui` 仍属 ST5, **均未做**。
   · `gate.items` 读的是 `Check` 的**静态清单**, **不是运行结果**。
     运行结果机读化是 ST2 的范围（今天门禁结果只有 PowerShell 转录）。
-  · 本模块**不启动进程**（那是 `studio_cli.py` / ST1-ST3 的事）。
+  · 本模块**会**启动子进程（ST1 起 `build_events()` 跑 `build.ps1`, ST3 起 `_prot_dbg_run()` 跑 `prot_dbg.py`）。
+    故"纯库、零 I/O 副作用"只对**查询类**命令成立 —— 那些命令（`ping`/`capabilities`/`plan.*`/`modules.list`/`gate.items`/`vm.*`/`test.gate.results`）确实不碰外部状态, 而 `build.run` / `debug.*` 会。这条区分是 ST3 之前写错的地方。
 """
 import io
 import json
@@ -239,9 +240,12 @@ def capabilities():
                 step='ST1'),
             'debug.host': cap(
                 'partial', 'tools/prot_dbg.py',
-                'sym/mask/exit/read/patch/watch 已可用; 无断点/单步/反汇编',
+                '只读: doctor/sym/mask/exit（ST3.1, 零进程）；'
+                '活体: read/patch/watch（ST3.3, 需 confirm）—— '
+                '无断点/单步/反汇编',
                 step='ST3',
-                note='工具自身 OpenProcess 可能触发目标反调试（实测 219）'),
+                note='工具自身 OpenProcess 可能触发目标反调试（实测 219）; '
+                     '每条活体响应都带 antidebug_interference 机读字段（ST3.4）'),
             'debug.vm': cap(
                 'ready', 'tools/vm_debug.py',
                 '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器视图',
@@ -603,7 +607,7 @@ def cmd_plan_graph(args):
 
 
 # 流式命令: 不在 COMMANDS 里 —— 它们**一个请求产出多行响应**, 形态不同。
-STREAM_COMMANDS = ('build.run',)
+STREAM_COMMANDS = ('build.run', 'debug.watch')
 
 # build.ps1 的失败诊断首行判据（与 build.ps1 自己的 "build FAILED:" 措辞对齐,
 # 但不依赖它: 有些失败是 PowerShell 自己的错误记录, 形如 "... : 消息"）。
@@ -769,6 +773,337 @@ def cmd_vm_disasm(args):
             'insns': insns}
 
 
+# --- 主机级调试（ST3：包装 tools/prot_dbg.py）-------------------------------
+
+PROT_DBG = os.path.join(REPO, 'tools', 'prot_dbg.py')
+
+#: prot_dbg 的只读子命令（第 1 步，**零进程**：不 OpenProcess、不 attach）
+DBG_READONLY = ('doctor', 'sym', 'mask', 'exit')
+#: prot_dbg 的活体子命令（第 2 步，会**拉起或附着**目标进程）
+DBG_LIVE = ('read', 'patch', 'watch')
+
+
+def _prot_dbg_run(cli, timeout=120.0):
+    """跑一次 `tools/prot_dbg.py` 并取回它的 `--json` 产物。
+
+    为什么走**子进程 + --json** 而不是 import 它的内部函数:
+
+    1. **唯一实现路径。** 参数拼装、错误码解释、符号解析、掩码归属判定
+       都已经在 `prot_dbg.py` 里写过一遍。在 core 里再写一遍, 就等于把
+       "什么算成功"定义两次 —— 两套口径中漂移的那一套会安静地给出另一组
+       数字（同 ST4.2 的 `vm_reduce` 教训）。
+    2. **验收要求"与 CLI 输出一致"** 时, 子进程是唯一能自证这件事的做法:
+       我拿到的就是 CLI 自己写下的那一份。
+    3. 代价是每次 ~0.12 s 的进程启动（实测 doctor/sym/mask/exit 都是 0.11
+       ~ 0.15 s）, 对面板可忽略。
+
+    ⚠ **`cli_rc` 是结果, 不是异常。** 只有两种情形抛异常:
+      · `rc == 2` -> `E_BAD_ARGS`。那是 prot_dbg 自己的**用法**错误,
+        即 core 把 argv 拼错了。把它读成数据结果, 面板会显示
+        "符号不在 map 中"而真相是参数写错了 —— 这正是要分开的理由。
+      · 完全读不到 JSON（工具在写盘前就死了）-> `E_INTERNAL`。
+    其余（`rc == 0` 与 `rc == 1`）一律**如实返回** `cli_rc` / `cli_ok`,
+    由调用方决定怎么渲染。`rc == 1` 的含义是"工具跑完了, 结论是负的"
+    （符号不在 map、退出码未知、doctor 发现产物缺失）—— 那是**信息**,
+    不是故障。
+    """
+    import subprocess
+    import tempfile
+
+    if not os.path.exists(PROT_DBG):
+        raise StudioError('E_NOT_FOUND', 'prot_dbg.py 不存在',
+                          {'path': PROT_DBG})
+    fd, jp = tempfile.mkstemp(prefix='studio_protdbg_', suffix='.json')
+    os.close(fd)
+    argv = ([sys.executable, '-X', 'utf8', PROT_DBG] + [str(x) for x in cli]
+            + ['--quiet', '--json', jp])
+    rec = {'backend': 'tools/prot_dbg.py', 'argv': argv[2:], 'cli_rc': None,
+           'cli_ok': False, 'payload': None, 'stderr': '', 'timeout_s': None}
+    try:
+        try:
+            p = subprocess.run(argv, cwd=REPO, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, timeout=timeout)
+            rec['cli_rc'] = p.returncode
+            rec['stderr'] = p.stderr.decode('utf-8', 'replace').strip()
+        except subprocess.TimeoutExpired:
+            rec['timeout_s'] = timeout
+            rec['stderr'] = 'prot_dbg.py 超时 (%gs) -> 如实报告, 不假装有结果' % timeout
+            raise StudioError(
+                'E_TIMEOUT', 'prot_dbg.py 超时',
+                {'argv': rec['argv'], 'timeout_s': timeout,
+                 'note': '活体命令会跑满 --seconds 观察窗口, 故超时上限随窗口放大'})
+        raw = io.open(jp, 'rb').read()
+        if not raw.strip():
+            raise StudioError(
+                'E_INTERNAL', 'prot_dbg --json 没有写出任何内容',
+                {'argv': rec['argv'], 'cli_rc': rec['cli_rc'],
+                 'stderr': rec['stderr'][:400]})
+        try:
+            rec['payload'] = json.loads(raw.decode('utf-8'))
+        except ValueError as e:
+            raise StudioError('E_PARSE', 'prot_dbg --json 不是合法 JSON: %s' % e,
+                              {'argv': rec['argv'], 'bytes': len(raw)})
+        if rec['cli_rc'] == 2:
+            raise StudioError(
+                'E_BAD_ARGS', 'prot_dbg 用法错误 (rc=2) -> core 拼错了 argv',
+                {'argv': rec['argv'], 'stderr': rec['stderr'][:400],
+                 'why_not_data': 'rc=2 是用法错误, 不是数据结果'})
+        rec['cli_ok'] = rec['cli_rc'] == 0
+        # `step` = prot_dbg 自己的阶段号（1 = 只读 / 2 = 活体）。**从工具
+        # 自己的产物里取**, 而不是 core 按命令行猜 —— 面板要靠它决定
+        # "这次有没有碰目标进程", 猜错会让只读操作被渲染成危险操作。
+        rec['step'] = rec['payload'].get('step')
+        return rec
+    finally:
+        try:
+            os.remove(jp)
+        except OSError:
+            pass
+
+
+def _dbg_common(args):
+    """`--exe` / `--map` 透传（面板可以指向非默认产物）。"""
+    out = []
+    for key, flag in (('exe', '--exe'), ('map', '--map')):
+        v = args.get(key)
+        if v:
+            out += [flag, str(v)]
+    return out
+
+
+def _dbg_names(args, key, what):
+    """取一组名字; **空 = 调用方没说 -> 错误**（不是"没有结果"）。"""
+    v = args.get(key)
+    if v is None:
+        v = []
+    if isinstance(v, str):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        raise StudioError('E_BAD_ARGS', '%s 必须是字符串或字符串数组' % key,
+                          {'given': type(v).__name__})
+    out = [str(x) for x in v]
+    if not out:
+        raise StudioError(
+            'E_BAD_ARGS', '%s 为空 -> 不知道该%s什么' % (key, what),
+            {'given': args, 'note': '"没说"与"没有"是两件事: 前者是调用方'
+                                   '的错误, 后者才是结果'})
+    return out
+
+
+def cmd_debug_doctor(args):
+    """（ST3.1）主机级只读体检：产物/map/掩码**解析链路**。不打开进程。"""
+    rec = _prot_dbg_run(['doctor'] + _dbg_common(args))
+    doc = (rec['payload'] or {}).get('doctor') or {}
+    rec['summary'] = {'ok': doc.get('ok'), 'syms': doc.get('syms'),
+                      'mask_regions': doc.get('mask_regions'),
+                      'n_errors': len(doc.get('errors') or []),
+                      'n_warns': len(doc.get('warns') or [])}
+    rec['opened_process'] = False
+    return rec
+
+
+def cmd_debug_sym(args):
+    """（ST3.1）符号 -> RVA / 链接时 VA / `.text` 内偏移 / 掩码归属。"""
+    names = _dbg_names(args, 'symbols', '查')
+    rec = _prot_dbg_run(['sym'] + names + _dbg_common(args))
+    tab = (rec['payload'] or {}).get('sym') or {}
+    rec['symbols'] = tab
+    rec['missing'] = sorted(n for n, v in tab.items() if v is None)
+    rec['opened_process'] = False
+    return rec
+
+
+def cmd_debug_mask(args):
+    """（ST3.1）掩码区清单；**给了符号时 prot_dbg 会转成 sym 查询**。
+
+    ⚠ 这是 prot_dbg 的真实行为（`cmd_mask` 在 `names` 非空时直接
+    `return cmd_sym(...)`), 故 `payload` 的键会从 `mask` 变成 `sym`。
+    core **如实透出**这件事（`payload_key`）, 而不是替调用方抹平 ——
+    抹平会让"我要看全区, 你只给了我一个符号"这件事变得看不出来。
+    """
+    names = args.get('symbols')
+    if isinstance(names, str):
+        names = [names]
+    cli = ['mask'] + ([str(x) for x in names] if names else []) + _dbg_common(args)
+    rec = _prot_dbg_run(cli)
+    pay = rec['payload'] or {}
+    rec['payload_key'] = next((k for k in ('mask', 'sym') if k in pay), None)
+    rec['opened_process'] = False
+    return rec
+
+
+def cmd_debug_exit(args):
+    """（ST3.1）退出码 -> 语义（表来自 `include/protect/*.h`, 解析而非硬编码）。"""
+    codes = args.get('codes')
+    if codes is None:
+        codes = []
+    if not isinstance(codes, (list, tuple)):
+        codes = [codes]
+    codes = [str(c) for c in codes]
+    if not codes:
+        raise StudioError('E_BAD_ARGS', 'codes 为空 -> 不知道该解释哪个退出码',
+                          {'given': args})
+    rec = _prot_dbg_run(['exit'] + codes)
+    rec['codes'] = (rec['payload'] or {}).get('exit') or {}
+    rec['unknown'] = sorted(k for k, v in rec['codes'].items()
+                            if not (v or {}).get('known'))
+    rec['opened_process'] = False
+    return rec
+
+
+def _need_confirm(args, what, argv):
+    """活体命令的**安全闸**。
+
+    为什么单独一个错误码而不是 `E_BAD_ARGS`: 参数没有错, 少的是**授权**。
+    报成 E_BAD_ARGS 会让面板显示"你传错了参数", 而正确动作是弹一个
+    "要拉起 demo 进程吗"的确认 —— 报错文案决定 UI 行为（同 §2.59 里
+    `E_STREAM_CMD` 与 `E_UNKNOWN_CMD` 必须分开的理由）。
+    """
+    if args.get('confirm'):
+        return
+    raise StudioError('E_CONFIRM_REQUIRED',
+                      '%s 会拉起动/附着目标进程 -> 必须显式 confirm: true' % what,
+                      {'what': what, 'argv': argv, 'given': args,
+                       'how': '这是刻意的安全默认, 与 build.run 同一纪律'})
+
+
+def cmd_debug_read(args):
+    """（ST3.3）读目标进程内存。**需 `confirm: true`**（会拉起/附着进程）。"""
+    names = _dbg_names(args, 'symbols', '读')
+    n = args.get('length')
+    cli = ['read', names[0], '--len', str(int(n) if n else 16)] + _dbg_common(args)
+    _need_confirm(args, 'read（打开目标进程）', cli)
+    if args.get('pid'):
+        cli += ['--pid', str(int(args['pid']))]
+    rec = _prot_dbg_run(cli, timeout=180.0)
+    rec['read'] = (rec['payload'] or {}).get('read')
+    rec['opened_process'] = True
+    return rec
+
+
+def cmd_debug_patch(args):
+    """（ST3.3）改写目标进程内存。**需 `confirm: true`**（这是写入）。"""
+    names = _dbg_names(args, 'symbols', '改')
+    cli = ['patch', names[0]] + _dbg_common(args)
+    if args.get('bytes'):
+        cli += ['--bytes', str(args['bytes'])]
+    if args.get('nop'):
+        cli += ['--nop', str(int(args['nop']))]
+    if args.get('restore'):
+        cli += ['--restore']
+    _need_confirm(args, 'patch（写入目标进程内存）', cli)
+    if args.get('pid'):
+        cli += ['--pid', str(int(args['pid']))]
+    rec = _prot_dbg_run(cli, timeout=180.0)
+    rec['patch'] = (rec['payload'] or {}).get('patch')
+    rec['opened_process'] = True
+    return rec
+
+
+def debug_watch_events(args):
+    """（ST3.3）`watch` 的**流式**形态 —— 生成器, 逐条 yield 事件。
+
+    诚实设计（读这段再改）:
+
+    1. **不带 `confirm: true` 只给计划。** 同 `build.run`: watch 会拉起一个
+       demo 进程并跑满观察窗口, 是有副作用且秒级的操作。
+    2. **采样事件的文本是 prot_dbg 自己的输出**, core 只逐行转发,
+       **不重新解析**成结构化采样。理由: 重新解析会制造第二套口径, 而它
+       漂移时不会报错 —— 只会安静地少报几次变化。结构化结果来自工具
+       自己写的 `--json`（`changes` / `n_changes` / `first` / `last`）。
+       故**每次采样都有一条事件**这件事由 `plan` 的 `interval`/`seconds`
+       与 `result` 的 `changes` 共同表达, 而不是假装我解析了它们。
+    3. `interval` / `seconds` 在 `plan` 事件里**结构化可见**（ST3.3 的验收
+       点就是这一条）。
+    """
+    import subprocess
+
+    names = _dbg_names(args, 'symbols', '观测')
+    n = args.get('length')
+    interval = float(args.get('interval') or 0.0)
+    seconds = float(args.get('seconds') or 0.0)
+    cli = (['watch', names[0], '--len', str(int(n) if n else 4)]
+           + _dbg_common(args))
+    if interval:
+        cli += ['--interval', str(interval)]
+    if seconds:
+        cli += ['--seconds', str(seconds)]
+    for pn in (args.get('patch') or []):
+        cli += ['--patch', str(pn)]
+    if args.get('pid'):
+        cli += ['--pid', str(int(args['pid']))]
+    if args.get('no_keep_alive'):
+        cli += ['--no-keep-alive']
+
+    confirm = bool(args.get('confirm'))
+    yield {'event': 'plan', 'cmd': 'debug.watch', 'argv': cli, 'cwd': REPO,
+           'sym': names[0], 'len': int(n) if n else 4,
+           'interval': interval or None, 'seconds': seconds or None,
+           'prepatch': [str(x) for x in (args.get('patch') or [])],
+           'confirm_required': not confirm,
+           'note': 'interval/seconds 为 null 表示用 prot_dbg 的默认值'}
+    if not confirm:
+        yield {'event': 'done', 'started': False,
+               'note': '未启动观测（需要 confirm: true）—— 刻意不替调用方做决定'}
+        return
+
+    if not os.path.exists(PROT_DBG):
+        yield {'event': 'exit', 'rc': None, 'error': 'prot_dbg.py 不存在'}
+        yield {'event': 'done', 'started': True, 'ok': False}
+        return
+
+    fd, jp = None, None
+    import tempfile
+    fd, jp = tempfile.mkstemp(prefix='studio_watch_', suffix='.json')
+    os.close(fd)
+    argv = [sys.executable, '-X', 'utf8', PROT_DBG] + cli + ['--json', jp]
+    # 超时上限随观察窗口放大 —— 否则长窗口会被看门狗式地砍掉,
+    # 而"被砍掉"与"观察完成"在事件里长得一样。
+    budget = (seconds or 6.0) + 120.0
+    yield {'event': 'start', 'argv': argv[2:], 'timeout_s': budget}
+    n_lines = 0
+    rc = None
+    try:
+        p = subprocess.Popen(argv, cwd=REPO, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        try:
+            for bline in p.stdout:
+                line = bline.decode('utf-8', 'replace').rstrip('\r\n')
+                if not line.strip():
+                    continue
+                n_lines += 1
+                yield {'event': 'line', 'text': line,
+                       'tag': 'sample' if line.lstrip().startswith('[') else None}
+        finally:
+            p.stdout.close()
+            rc = p.wait()
+    except Exception as e:                                       # noqa: BLE001
+        yield {'event': 'line', 'text': 'core 侧异常: %s: %s'
+                                         % (type(e).__name__, e), 'tag': 'error'}
+    finally:
+        result = None
+        try:
+            if jp and os.path.exists(jp):
+                rawb = io.open(jp, 'rb').read()
+                if rawb.strip():
+                    result = json.loads(rawb.decode('utf-8'))
+        except (OSError, ValueError) as e:
+            result = {'__unreadable__': '%s: %s' % (type(e).__name__, e)}
+        if jp:
+            try:
+                os.remove(jp)
+            except OSError:
+                pass
+        yield {'event': 'result', 'rc': rc, 'lines': n_lines,
+               'interval': interval or None, 'seconds': seconds or None,
+               'watch': (result or {}).get('watch'),
+               'antidebug_interference':
+                   (result or {}).get('antidebug_interference'),
+               'raw_ok': (result or {}).get('ok')}
+        yield {'event': 'done', 'started': True, 'ok': rc == 0, 'rc': rc}
+
+
+
 # --- 注册表 ----------------------------------------------------------------
 
 COMMANDS = {
@@ -782,6 +1117,12 @@ COMMANDS = {
     'vm.disasm': cmd_vm_disasm,
     'test.gate.results': cmd_test_gate_results,
     'plan.graph': cmd_plan_graph,
+    'debug.doctor': cmd_debug_doctor,
+    'debug.sym': cmd_debug_sym,
+    'debug.mask': cmd_debug_mask,
+    'debug.exit': cmd_debug_exit,
+    'debug.read': cmd_debug_read,
+    'debug.patch': cmd_debug_patch,
 }
 
 
@@ -801,6 +1142,8 @@ def stream_events(cmd, args=None):
     args = args if isinstance(args, dict) else {}
     if cmd == 'build.run':
         return build_events(args)
+    if cmd == 'debug.watch':
+        return debug_watch_events(args)
     raise StudioError('E_UNKNOWN_CMD', '流式命令未实现', {'cmd': cmd})
 
 
@@ -1156,6 +1499,79 @@ def selftest(quiet=False):
     case('**负向**: plan.graph 的 modules 非字符串列表 -> E_BAD_ARGS',
          raises(lambda: dispatch('plan.graph', {'modules': 'crc32'}),
                 'E_BAD_ARGS'))
+    if not quiet:
+        lines.append('--- 4e. 主机级调试（ST3: 包装 prot_dbg, 不重写解析）---')
+    dr = dispatch('debug.doctor')
+    case('debug.doctor 返回 step=1 与 backend',
+         dr.get('step') == 1 and dr.get('backend') == 'tools/prot_dbg.py')
+    case('debug.doctor 如实标注**没有打开进程**',
+         dr.get('opened_process') is False)
+    case('debug.doctor 保留工具原始 payload（"与 CLI 一致"可自证）',
+         isinstance((dr.get('payload') or {}).get('doctor'), dict))
+    case('debug.doctor 摘要字段齐全（ok/syms/mask_regions）',
+         all(k in (dr.get('summary') or {})
+             for k in ('ok', 'syms', 'mask_regions', 'n_errors', 'n_warns')))
+    ds = dispatch('debug.sym', {'symbols': ['g_wd_interval']})
+    case('debug.sym 已知符号带 rva/va',
+         (ds['symbols'].get('g_wd_interval') or {}).get('rva'))
+    case('debug.sym 无缺失时 missing 为空', ds.get('missing') == [])
+    dsb = dispatch('debug.sym', {'symbols': ['g_wd_interval', 'no_such_xyz']})
+    case('debug.sym 未知符号如实例在 missing（不静默）',
+         dsb.get('missing') == ['no_such_xyz'] and dsb.get('cli_ok') is False)
+    case('debug.sym 单字符串也能当 symbols（面板常见形态）',
+         dispatch('debug.sym', {'symbols': 'g_wd_interval'})['symbols']
+         .get('g_wd_interval') is not None)
+    de = dispatch('debug.exit', {'codes': ['219']})
+    case('debug.exit 已知码 known=True',
+         (de['codes'].get('219') or {}).get('known') is True)
+    deu = dispatch('debug.exit', {'codes': ['4242']})
+    case('debug.exit 未知码 known=False 且 cli_rc=1（**是结果, 不是异常**）',
+         (deu['codes'].get('4242') or {}).get('known') is False
+         and deu.get('cli_rc') == 1 and deu.get('cli_ok') is False)
+    dm = dispatch('debug.mask', {})
+    case('debug.mask 无符号时 payload_key=mask', dm.get('payload_key') == 'mask')
+    dms = dispatch('debug.mask', {'symbols': ['g_sc_d2b_enabled']})
+    case('debug.mask 带符号时如实透出 payload_key=sym（工具的委托行为）',
+         dms.get('payload_key') == 'sym')
+    dd = dispatch('debug.doctor', {'exe': 'build/no_such_product.exe'})
+    case('debug.doctor 产物缺失 -> 是**返回的负结果**（cli_rc=1）而不是异常',
+         dd.get('cli_rc') == 1 and (dd.get('summary') or {}).get('ok') is False)
+    # ---- 活体: 安全闸必须是自己的错误码, 不能与"参数写错"混同 ----
+    ok, got = raises(lambda: dispatch('debug.read', {'symbols': ['g_wd_interval']}),
+                     'E_CONFIRM_REQUIRED')
+    case('**负向**（安全闸）: debug.read 无 confirm -> E_CONFIRM_REQUIRED',
+         ok, got)
+    ok, got = raises(lambda: dispatch('debug.patch',
+                                      {'symbols': ['g_wd_interval']}),
+                     'E_CONFIRM_REQUIRED')
+    case('**负向**（安全闸）: debug.patch 无 confirm -> E_CONFIRM_REQUIRED',
+         ok, got)
+    ok, got = raises(lambda: dispatch('debug.sym', {'symbols': []}),
+                     'E_BAD_ARGS')
+    case('**负向**: debug.sym 空 symbols -> E_BAD_ARGS（"没说"不是"没有"）',
+         ok, got)
+    ok, got = raises(lambda: dispatch('debug.exit', {'codes': []}),
+                     'E_BAD_ARGS')
+    case('**负向**: debug.exit 空 codes -> E_BAD_ARGS', ok, got)
+    # ---- 流式 watch: 间隔与窗口必须在事件里可见 ----
+    wev = []
+    for _e in stream_events('debug.watch',
+                            {'symbols': ['g_wd_interval'], 'interval': 0.5,
+                             'seconds': 2.0}):
+        wev.append(_e)
+    case('debug.watch 首事件是 plan 且带 interval/seconds（ST3.3 验收点）',
+         wev[0].get('event') == 'plan' and wev[0].get('interval') == 0.5
+         and wev[0].get('seconds') == 2.0)
+    case('debug.watch 不带 confirm 只给计划, 不启动（末事件 started=False）',
+         wev[-1].get('event') == 'done' and wev[-1].get('started') is False
+         and not any(e.get('event') == 'start' for e in wev))
+    case('debug.watch 的 plan 里 prepatch 结构化可见',
+         wev[0].get('prepatch') == [])
+    ok, got = raises(lambda: dispatch('debug.watch', {'symbols': ['x']}),
+                     'E_STREAM_CMD')
+    case('**负向**: debug.watch 走 dispatch -> E_STREAM_CMD（不是 UNKNOWN）',
+         ok, got)
+
     if not quiet:
         lines.append('--- 5. **负向**（必须能抓错）---')
     ok, got = raises(lambda: dispatch('no.such.cmd'), 'E_UNKNOWN_CMD')

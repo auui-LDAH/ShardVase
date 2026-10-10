@@ -79,7 +79,12 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 ## 5. 命令清单（协议 v1）
 
 命令名是**点分命名空间**（`域.动作`）：`ping` / `capabilities` / `plan.*` /
-`modules.*` / `gate.*`。新增命令**只能追加**，不得改变已有命令的语义。
+`modules.*` / `gate.*` / `vm.*` / `test.*` / `debug.*`。
+新增命令**只能追加**，不得改变已有命令的语义。
+
+`debug.*` 里**只读**的一组（`doctor` / `sym` / `mask` / `exit`）**不碰目标进程**；
+`read` / `patch` 会附着进程，因此**额外要求 `confirm: true`**（见 §6 的
+`E_CONFIRM_REQUIRED`）。
 
 | `cmd` | `args` | `data`（要点） |
 |---|---|---|
@@ -93,12 +98,18 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
 | `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
 | `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why}` + `counts_json`/`pass_n` |
+| `debug.doctor` | `exe?`, `map?` | 体检：`summary{ok, syms, mask_regions, n_errors, n_warns}`；**不开进程**（`opened_process: false`） |
+| `debug.sym` | `symbols[]`, `exe?`, `map?` | `symbols[]`（表）+ `missing[]`（查不到的符号名）；**`symbols` 为空 ⇒ `E_BAD_ARGS`**，不是空结果 |
+| `debug.mask` | `symbols[]` \| `rva,len`, `exe?`, `map?` | `payload_key ∈ 'mask' / 'sym'` —— 如实透出「给了符号名时底层转成符号查询」，不替调用方抹平 |
+| `debug.exit` | `codes[]` | 退出码 → 语义；`unknown[]` 是**查不到的码**（不猜、不映射成最近的一个） |
+| `debug.read` | `sym` \| `addr`, `length?`, `pid?`, **`confirm`** | 读目标进程内存；`length` 缺省 16；`opened_process: true` |
+| `debug.patch` | `sym` \| `addr`, `bytes` \| `nop` \| `restore`, `pid?`, **`confirm`** | 改写目标进程内存；`opened_process: true` |
 
-### 5.1 流式命令（`build.run`）—— 协议至今唯一的例外
+### 5.1 流式命令（`build.run` / `debug.watch`）—— 一个请求，多行响应
 
-`build.run` **不在** `dispatch()` 的命令表里：一个请求产出**多行响应**。
-它必须走 `stream_events()` / `respond_stream()`，而 `dispatch('build.run', …)`
-会返回 **`E_STREAM_CMD`**。
+`build.run` 与 `debug.watch` **都不在** `dispatch()` 的命令表里：一个请求产出
+**多行响应**。它们必须走 `stream_events()` / `respond_stream()`，而
+`dispatch('build.run', …)` 会返回 **`E_STREAM_CMD`**。
 
 **为什么错误码不沿用 `E_UNKNOWN_CMD`**：报「未知命令」并附 `available` 列表，
 会让面板把「这个命令要用流式调用」读成「名字拼错了」，于是去翻候选清单
@@ -122,6 +133,22 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
   分开读会让事件顺序错乱）。
 - **同一条流的每个响应行共用同一个 `id`** —— 这是调用方把多行归并为
   「一次调用」的依据。
+
+`debug.watch`（ST3.3）用同一套机制，事件序列不同：
+
+| 事件 | 字段 | 说明 |
+|---|---|---|
+| `plan` | `argv`, `sym`, `len`, `interval`, `seconds`, `prepatch`, `confirm_required` | **采样间隔与观测窗口在事件里结构化可见**（ST3.3 的验收点） |
+| `start` | `timeout_s` | **只有 `confirm: true` 才出现** |
+| `line` | `text`, `tag` | `tag='sample'` 表示这一行是采样输出 |
+| `result` | `watch`, `antidebug_interference`, `raw_ok` | 结构化结果**来自被调工具自己的 `--json`** |
+| `done` | `started`, `ok`, `rc?`, `note?` | 未启动时 `started:false` |
+
+- **不重新解析采样文本。** 事件里的变化计数直接取自 `tools/prot_dbg.py --json`
+  的 `changes` / `n_changes` / `first` / `last`。重新解析会制造**第二套口径**，
+  而它漂移时不会报错 —— 只会安静地少报几次变化。
+- **超时预算 = 观测窗口 + 120 秒固定余量**（附着与清理的开销与窗口无关，
+  按窗口比例给预算会在短窗口上给得太少）。
 
 ### 5.2 `plan.graph`：`deps` 与 `ordering` 是两种关系，不可混画
 
@@ -194,6 +221,45 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 `query=verify` 是**独立对账**：它读**实际日志行**逐项比对，不信任门禁自己的计数器（同轮门禁也自对照，两处独立）。
 历史轮次（ST2.1 之前）只有 `.log` 没有 `.ndjson`，`verify` 对它们会**如实报"无 .ndjson"而不是判通过**。
 
+### 5.3 `Debug` 构建配置：为什么必须产物隔离
+
+`build.ps1 -Config` 有三个取值：`Dev`（缺省）/ `Release` / `Debug`（ST3.2 新增）。
+`Debug` 加 `/Zi`（编译器 PDB，用 `/Fd` 钉进变体目录）与 `/DEBUG:FULL`（链接器 PDB）。
+
+**产物落 `build/debug/`，不是 `build/`。** 这不是洁癖，有两条实证理由：
+
+1. 同名覆盖会**丢掉发布产物** —— 调试版 `demo.exe` 与发布版同名。
+2. **`section_baseline.json` 只增不减**（`tools/merge_baseline.py` 的语义是
+   「基线只允许变大」）。调试构建的节尺寸与发布不同，若共用一份基线，
+   调试构建会**抬高**发布构建的基线 → 改变发布填充尺寸 → **破可复现性（I3）**。
+
+隔离由 `tools/genpaths.py` 的**构建变体**承担（`--variant debug`，
+或环境变量 `PROT_BUILD_VARIANT`）：`build_dir` 与它派生的一切（`b()`、
+`out_rel()`）自动带上变体段。`variant` 为空时**所有路径与引入变体之前逐字符相同** ——
+这是「发布构建字节逐字节不变」的前提。
+
+⚠️ **隔离必须查「工具自己的默认值」，不能只看命令行里写了什么路径。**
+实测：`tools/selfcrypt_proto.py` 的 `--mask-out` 有硬编码默认
+`build/selfcrypt_mask.txt`，第一次改造时该文件被调试构建**悄悄覆盖**，
+而本变体侧的文件根本不存在（于是 Hashpatch 少带掩码、且发布侧掩码被污染）。
+修法是 `build.ps1` **显式传** `--mask-out`。
+
+⚠️ **`/OPT:NOREF /OPT:NOICF` 与运行期完整性校验不兼容。** 初版给 `Debug` 加了这两个
+开关，结果 `demo.exe` 一律报「完整性校验失败」（rc `2989` / `0xBAD`）。根因是
+`src/integrity.c` 的段 CRC 缓冲是**栈上的 `uint8_t mask[0x40000]`**（256 KB），
+而它把「缓冲区装不下」**与「被篡改」报成同一个错误**：
+
+```c
+if (len > sizeof(mask)) return PROT_ERR_INTEGRITY;   /* 实为容量不足 */
+```
+
+实测 `/Od` 无优化代码体积约为 `/O2` 的 3.3 倍，`.text` 达 458688 B > 262144 B ⇒
+必然触发。此上限历史上已被撞到过一次（`docs/BLOB_SIGN_PLAN.md` 记 128 KB→256 KB 扩容）。
+**因此 `Debug` 与 `Release` 采用同一套优化开关**（`/OPT:REF /OPT:ICF`），
+只加调试信息：调试版 `demo.exe` 与发布版**同尺寸**、行为逐字一致。
+代价是断点可能落在被 ICF 合并的等价函数上 —— 而 `PROT_NOISE` / `REPLICAS`
+本就在刻意制造等价函数，这与保护机制的方向一致，不是缺陷。
+
 ## 6. 错误码
 
 | `code` | 含义 | 谁的问题 |
@@ -204,6 +270,8 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `E_PARSE` | 文件存在但不是合法 JSON | 仓库状态 |
 | `E_BAD_LINE` | **请求行**不是合法 JSON 对象（协议层） | 调用方 |
 | `E_STREAM_CMD` | 该命令**必须**用流式调用（多行响应），不能走 `dispatch`；`detail.stream_commands` 给出清单 | 调用方 |
+| `E_CONFIRM_REQUIRED` | 参数都合法，**只缺 `confirm: true`**（活体操作：跑构建、附着进程）；`detail.how` 说明该做什么 | 调用方（缺授权） |
+| `E_TIMEOUT` | 子进程超时；`detail` 带上限秒数 | 环境（不是被测对象的结论） |
 | `E_INTERNAL` | 兜底。**出现它就说明有未预料的路径**，应当被修掉 | 后端缺陷 |
 
 **`E_BAD_ARGS` 与 `E_INTERNAL` 必须分清**：若把「用户传了个数组」
@@ -211,6 +279,14 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 「你的参数写错了」—— 这句话决定了用户接下来去看文档还是去看日志。
 `studio_core.load_profile()` 因此做了**独立的类型守卫**（不是靠 `if not name`，
 那会漏掉非空非字符串的值）。此条由 `--selftest` 的负向用例守住。
+
+**`E_CONFIRM_REQUIRED` 不许降级成 `E_BAD_ARGS`。** 参数没有错，少的是**授权**。
+报成「参数写错了」，面板会显示成「你传错了参数」，而正确动作是**弹一个确认框** ——
+错误码必须指向正确的下一步动作（与 §5.1 里 `E_STREAM_CMD` 不许降级成
+`E_UNKNOWN_CMD` 是同一条理由）。
+
+**`E_TIMEOUT` 不许降级成「失败」。** 超时说的是**我们没等到结论**，
+不是「结论是不通过」。报成失败会把一次环境抖动记成一次防御失效。
 
 **`E_NOT_FOUND` 也不许静默回退**：读文件失败时**返回错误**，
 不返回 `None`、不用默认值。否则面板会显示一个空列表，
@@ -265,12 +341,20 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 2. **不支持跨行 JSON 请求。** 行就是消息边界；跨行会被判 `E_BAD_LINE`
    （这是刻意的，因为「一行一消息」正是 NDJSON 的全部价值）。
 3. ~~`gate.items` 只有声明，没有结果~~ ⇒ ✅ **ST2 已补**：`test.gate.results` 提供运行结果（含历史与对账）。
-4. **主机级调试（`debug.host.*`）尚未进入协议。** ST3 会新增它（断点、单步、
-   栈、内存），采用**同一套 NDJSON 信封**；调试天生的流式事件
-   （`stopped` / `output` / `exited`）将作为**服务端主动推送**的响应行出现
-   （`id` 为 `null`）—— 这需要协议 v1 的「请求/响应严格配对」规则放宽为
-   「响应可主动推送」，属于**向后兼容的扩展**（老客户端只需忽略 `id=null`
-   的行），故不升版本。
+4. **主机级调试（`debug.*`）已落地（ST3），但只到「附着式读写观测」。**
+   命令名是 `debug.doctor` / `debug.sym` / `debug.mask` / `debug.exit`
+   （只读）与 `debug.read` / `debug.patch`（活体，需 `confirm`），
+   外加流式的 `debug.watch`。
+   **原生断点与单步本阶段不做** —— 那是**服务端主动推送**的形态：
+   `stopped` / `output` / `exited` 会在**没被问的时候**说话（`id` 为 `null`）。
+   这需要把协议 v1 的「请求/响应严格配对」放宽为「响应可主动推送」，
+   属于**向后兼容的扩展**（老客户端只需忽略 `id=null` 的行），故不升版本。
+   ⚠️ 还有一条**被测对象反过来干扰观测者**的边界：`tools/prot_dbg.py`
+   自己 `OpenProcess` 会触发目标的反调试扫描（实测退出码 `219`）。
+   这不是防御失效，而是**观测行为本身留下的痕迹**；因此每条活体响应
+   都带机读字段 `antidebug_interference`（`possible` / `exit_code_if_detected` /
+   `cannot_be_used_as` / `how_to_judge`），面板必须据此提示，
+   而不是把 `219` 当成一次防御胜利或一次防御失败。
    ✅ **VM 级（ST4）已落地**：`vm.images` / `vm.disasm` 是**请求/响应**形态，
    没有主动推送 —— 单步与断点在 `tools/vm_debug.py` 的 CLI/库层完成，
    尚未提升为协议命令。下一步是把 `vm.run` / `vm.break` 加进来，
@@ -291,6 +375,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 - `tools/studio_core.py` — 纯逻辑层（可无头 import，无 I/O 副作用）
 - `tools/studio_cli.py` — 进程边界（NDJSON over stdio）
 - `tools/vm_debug.py` — VM 级调试器（ST4：反汇编 / 单步 / 断点 / 视图）
+- `tools/prot_dbg.py` — 主机级调试后端（ST3：`doctor`/`sym`/`mask`/`exit`/`read`/`patch`/`watch`，**唯一实现**；`debug.*` 是它的结构化包装）
 - `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）
 - `tools/compose.py` / `tools/compat.py` / `tools/solve_profile.py` —

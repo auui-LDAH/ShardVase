@@ -532,8 +532,29 @@ def _default_target(ctx, pid):
     return Target(k32, proc.pid, base, exe, proc=proc)
 
 
-def _adwarn(quiet, no_adwarn, where):
-    """第 4 步验收: 提示文本必须出现在 `patch`/`watch` 的输出里；`--quiet` 可关。"""
+def _adwarn(quiet, no_adwarn, where, js=None):
+    """第 4 步验收: 提示文本必须出现在 `patch`/`watch` 的输出里；`--quiet` 可关。
+
+    ⚠ 2026-10-10 (ST3.4) 更正: **`--quiet` 只关人读文本, 不关事实**。
+    原实现在 `quiet or no_adwarn` 时直接 `return` —— 于是自动化调用方
+    (取数据一律走 `--quiet`, 免得混进人读文本) **恰好永远看不到这条提示**,
+    而它正是"不要把 219 读成守卫失效"的唯一防线（2026-09-30 差点误读）。
+    ⇒ 现在无论是否打印, 都往 `js` 写入机读记录; `shown` 如实区分印没印。
+    """
+    rec = {
+        'possible': True,
+        'why': '本工具用 OpenProcess/ReadProcessMemory 打开目标进程, '
+               '**这本身就是调试行为**, 可能被目标的自身反调试检测到',
+        'exit_code_if_detected': EXIT_DEBUG_DETECTED,
+        'cannot_be_used_as': '守卫有效/失效的判据',
+        'why_not': '该退出码只说明"检测到了", 不说明"检测准不准"',
+        'how_to_judge': '用**被观测符号自己的值**'
+                        '（read 读回的字节 / watch 看到的变化）',
+        'command': where,
+        'shown': not (quiet or no_adwarn),
+    }
+    if js is not None:
+        js['antidebug_interference'] = rec
     if quiet or no_adwarn:
         return
     print('')
@@ -1107,7 +1128,7 @@ def _rtline(t, info):
 
 def cmd_read(ctx, operands, quiet, js, a):
     """读目标进程内存（**读不到就报错，绝不返回 0**）。"""
-    _adwarn(quiet, a.no_adwarn, 'read')
+    _adwarn(quiet, a.no_adwarn, 'read', js)
     if not operands:
         print('用法: prot_dbg read <符号> [--len N] [--pid P]')
         return 2
@@ -1165,7 +1186,7 @@ def cmd_read(ctx, operands, quiet, js, a):
 
 def cmd_patch(ctx, operands, quiet, js, a):
     """写目标进程内存 + **读回验证**（纪律 ⑦）。"""
-    _adwarn(quiet, a.no_adwarn, 'patch')
+    _adwarn(quiet, a.no_adwarn, 'patch', js)
     if not operands:
         print('用法: prot_dbg patch <符号> [--bytes "31 C0 C3" | --nop N | --restore] '
               '[--pid P] [--no-keep-alive]')
@@ -1274,7 +1295,7 @@ def _ec_note(ec):
 
 def cmd_watch(ctx, operands, quiet, js, a):
     """轮询被观测符号的字节变化 —— **判据是它自己的值，不是进程死没死**（纪律 ⑨）。"""
-    _adwarn(quiet, a.no_adwarn, 'watch')
+    _adwarn(quiet, a.no_adwarn, 'watch', js)
     if not operands:
         print('用法: prot_dbg watch <符号> [--len N] [--interval S] [--seconds S] '
               '[--patch <符号>]… [--pid P]')
