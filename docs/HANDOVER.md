@@ -8650,4 +8650,31 @@ ST2（`gate_results`）—— ST1 一行都没加。同表的 `studio_core.py` �
 这也是本项目从 §2.54 起反复出现的同一类：**能被机器校验的东西改了，
 靠人眼维护的叙述会漏** —— 本次连"叙述"都算不上，是**凭印象填的数字**。
 
-*2026-10-10 v37*
+
+### 2.59.13 CI 实测：**没有拿到证据**（调度层失败，非代码）
+
+CI run `38033743710`（head `0dadf0f`）四个 job：
+
+| job | 结论 | 起始 |
+|---|---|---|
+| `linux-portability` | failure | 2026-10-10T07:14:34Z |
+| `build-and-verify` | failure | 2026-10-10T07:14:35Z |
+| `reproducible` | **skipped** | — |
+| `sdk-package` | **skipped** | — |
+
+`gh run view --log-failed` 报 `log not found: 114159798237`
+⇒ **一个 step 都没有真正执行**。这与 §2.50.12 / §2.53.9 / §2.55.13 是同一形态：
+GitHub 帐单/支出上限导致的**调度层**失败，不是代码问题。
+
+**对本节的影响：没有影响。** 本节的证据链全部来自本机实跑：
+`studio_core.py --selftest`、`studio_cli.py --selftest`、流式端到端 18/18、
+交叉对账 5 composition × 12 判据、全门禁 `PASS: 39 项检查全通过`
+（日志 `build/logs/release_check_20261010_144516.log`）+
+`tools/gate_results.py --verify` 独立对账
+（`文本证据行 42 条 / NDJSON 42 行`，两侧计数一致）。
+
+⚠️ 但要说清楚一条边界：**CI 绿本来也不能证明什么**。
+它可以证明这些命令在 MSVC 14.51 + Python 3.12.10 上也跑得通 ——
+而这一点**本轮确实没有验证**。
+
+*2026-10-10 v38*
