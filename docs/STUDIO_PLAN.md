@@ -1,12 +1,13 @@
 # 阶段规划 — 从「生成工具」到 Studio（生成 + 测试 + 调试器 + 面板）
 
-> 版本：2026-10-10 v3 · 状态：**实施中**（ST0 ✅ / ST4 ✅ / ST2 ✅ / ST1·ST3·ST5 未开始）
+> 版本：2026-10-10 v4 · 状态：**实施中**（ST0 ✅ / ST4 ✅ / ST2 ✅ / ST1 ✅ / ST3·ST5 未开始）
 > 缘起：用户提出「由单纯的生成工具扩展到生成与测试工具，并具备齐全的调试器和面板，
 > 做成 vscode 那样，就像我们调试 java 一样的」。
 > 定位：本文档是**阶段划分与判据**，不是实施记录；每一步做没做、验没验，另见 HANDOVER。
 > 关联：`docs/WORKBENCH_ROADMAP.md`（W1-W6，编排/协议/唯一性侧）、
 > `docs/DEBUG_CONSOLE_PLAN.md`（调试控制台，第 1/2/4 步已交付）、
-> `docs/MODULE_PROTOCOL_SPEC.md`（模块契约）、`docs/CONTRACT.md`（VM 指令集与布局）。
+> `docs/MODULE_PROTOCOL_SPEC.md`（模块契约）、`docs/CONTRACT.md`（VM 指令集与布局）、
+> `docs/STUDIO_PROTOCOL.md`（后端契约；每阶段的命令追加都记在那里）。
 
 ---
 
@@ -151,17 +152,36 @@
 **风险**：低。**成本**：S。**注意**：本阶段**不产出任何新能力**，只把已有能力收口 ——
 但它是 ST1-ST6 的地基，跳过它后面每一步都要重复一遍路径解析。
 
-### ST1 — 生成面板（策略 → 计划 → 构建）
+### ST1 — 生成面板（策略 → 计划 → 构建）✅ 已实施（2026-10-10，见 HANDOVER §2.59）
 
 | 步 | 做什么 | 验收 |
 |----|--------|------|
-| ST1.1 | core 暴露 `plan(strategy)` → 结构化构建计划（复用 `solve_profile.py` 的 7 步求解），含**每模块为何被选/为何被排除** | 同一策略两次调用结果逐字节一致 |
-| ST1.2 | core 暴露 `build(plan, config)` → 调用 `build.ps1`，**流式**推送进度事件 | 事件流可被消费；失败含诊断首行 |
-| ST1.3 | `modules` 视图数据：13 模块的 caps/deps/maturity/known_limits（源自 `modules.json`） | 与 `modules.json` 一致（**不复制常量，运行时读**） |
-| ST1.4 | 冲突/依赖的可视化数据：拓扑序 + 冲突边（复用 `modcheck` 的单一实现） | 与 `modcheck` 结论一致 |
+| ST1.1 | core 暴露 `plan(strategy)` → 结构化构建计划（复用 `solve_profile.py` 的 7 步求解），含**每模块为何被选/为何被排除** | **✅ 已在 ST0 交付**（`plan.solve`，`reasons` 逐模块带理由）； 同一策略两次调用结果逐字节一致 |
+| ST1.2 | core 暴露 `build(plan, config)` → 调用 `build.ps1`，**流式**推送进度事件 | **✅ 已落地**（`build_events()` 生成器 + `stream_events()` + `studio_cli.respond_stream()`； 事件流可被消费；失败含诊断首行 |
+| ST1.3 | `modules` 视图数据：13 模块的 caps/deps/maturity/known_limits（源自 `modules.json`） | **✅ 已落地**（补齐 11 个缺失字段，`known_limits` 在列； 与 `modules.json` 一致（**不复制常量，运行时读**） |
+| ST1.4 | 冲突/依赖的可视化数据：拓扑序 + 冲突边（复用 `modcheck` 的单一实现） | **✅ 已落地**（`plan.graph`；与 `modcheck`/`compat` 交叉对账 12 条判据全过； 与 `modcheck` 结论一致 |
 
 **风险**：中 —— W3.4 的「计划」是**文本清单 + JSON 旁路**，要确认旁路是否完整（缺字段则补）。
-**成本**：S-M。
+**成本**：S-M。**实际**：旁路**不完整**（缺 11 字段，ST1.3 的缺口比预期大），其余按计划。
+
+**实施发现（2026-10-10，两条都是"看文档会写错"的）**：
+
+1. **`deps` 与 `ordering` 是两种不同的关系，不可混画。**
+   `tools/compose.py:topo_order` 的注释早已写明（2026-09-23）：`deps` = 运行时
+   **能力**依赖，`ordering` = **链接顺序**；混成一张图会产生**假环**。
+   原设计里 `plan.graph` 只回一套 `edges` + `topo`，面板按 topo 排列、按 edges
+   画箭头 ⇒ 画出**自相矛盾的图**（实测每个组合两处相反）。已改为分两套边
+   （`edges` / `order_edges`）+ `relations.why_not_mixed` + `topo_dep_violations`。
+   ⇒ **这条是 ST1.4 的真实技术内容，不是包装**：原以为"复用 modcheck 即可"，
+   实际要做的是**把两种关系分开陈述**。
+2. **`modules.list` 的旁路缺 11 个字段**（含验收点名的 `known_limits`）。
+   缺它会让 UI 把每个模块都渲染成「无已知局限」—— 那是**静默的谎**，
+   比不显示更坏（项目 P4 诚实边界纪律）。
+
+**实施偏离**：ST1.2 原写「core 暴露 `build(plan, config)`」，实施时 core **不接收
+`plan` 对象**、只接收构建参数（`build_argv`）—— 因为「计划」与「构建命令行」之间
+没有可靠的映射：`plan` 的产物是模块集合，而 `build.ps1` 吃的是 `-Composition` 名
+或源码列表，两者的转换属 `compose.py` 的职责，塞进 core 会造出第二份口径。
 
 ### ST2 — 测试面板（结果机读化）✅ 已实施（2026-10-10，见 HANDOVER §2.58）
 

@@ -141,6 +141,38 @@ def respond(req_id, cmd, args):
                           'detail': {'cmd': cmd}}}
 
 
+def respond_stream(req_id, cmd, args):
+    """流式命令 -> **响应对象列表**（一行一个）。
+
+    形态: 每个事件一行 `{id, ok, event: {...}}`, **同一个 id 贯穿整条流**
+    —— 调用方据此把多行归并成一次请求。
+
+    失败语义: 生成器中途抛错也**不终止会话**; 抛错那一行带 `error`
+    且 `ok=false`, 让面板能显示"跑到第 N 行死了"而不是一片空白。
+    """
+    out = []
+    try:
+        gen = sc.stream_events(cmd, args)
+    except sc.StudioError as e:
+        return [{'id': req_id, 'ok': False, 'error': e.to_dict()}]
+    except Exception as e:                                   # pragma: no cover
+        return [{'id': req_id, 'ok': False,
+                 'error': {'code': 'E_INTERNAL',
+                           'message': '%s: %s' % (type(e).__name__, e),
+                           'detail': {'cmd': cmd}}}]
+    try:
+        for ev in gen:
+            out.append({'id': req_id, 'ok': True, 'event': ev})
+    except Exception as e:                                   # pragma: no cover
+        out.append({'id': req_id, 'ok': False,
+                    'error': {'code': 'E_INTERNAL',
+                              'message': '流式命令中断: %s: %s'
+                                         % (type(e).__name__, e),
+                              'detail': {'cmd': cmd,
+                                         'events_emitted': len(out)}}})
+    return out
+
+
 def dumps(obj):
     """统一的响应序列化（**非 ASCII 转义关闭**）。"""
     return json.dumps(obj, ensure_ascii=False, sort_keys=False)
@@ -172,6 +204,14 @@ def session(inp=None, out=None, err=None):
                 out.write(dumps({'id': None, 'ok': False,
                                  'error': e.to_dict()}) + '\n')
                 continue
+            if cmd in sc.STREAM_COMMANDS:
+                rows = respond_stream(req_id, cmd, args)
+                if not all(r.get('ok') for r in rows):
+                    n_fail += 1
+                for r in rows:
+                    out.write(dumps(r) + '\n')
+                out.flush()
+                continue
             resp = respond(req_id, cmd, args)
             if not resp.get('ok'):
                 n_fail += 1
@@ -198,6 +238,13 @@ def one_shot(cmd, args_text=None):
                                'message': '--args 必须是 JSON 对象',
                                'detail': {'type': type(args).__name__}}}))
         return RC_USAGE
+    if cmd in sc.STREAM_COMMANDS:
+        # 流式: 每个事件一行。rc 反映**整体**成败(任何一行 ok=false 即失败),
+        # 这样 shell 的 `if cmd; then` 仍然可用。
+        rows = respond_stream(None, cmd, args)
+        for r in rows:
+            print(dumps(r))
+        return RC_OK if all(r.get('ok') for r in rows) else RC_CMD_FAIL
     resp = respond(None, cmd, args)
     print(dumps(resp))
     return RC_OK if resp.get('ok') else RC_CMD_FAIL

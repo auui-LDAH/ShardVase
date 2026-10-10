@@ -1,9 +1,13 @@
 # Studio 协议 v1 — NDJSON over stdio
 
-> 版本：2026-10-09 v1 · 状态：**ST0 已实施**（`tools/studio_core.py` + `tools/studio_cli.py`）
-> ST4 追加：`vm.images` / `vm.disasm`（VM 级调试入口；单步与断点在
-> ST2 追加：`test.gate.results`（门禁结果的**历史查询**；文本出口不变，新增 NDJSON 出口）。
-> `tools/vm_debug.py` 的库/CLI 层，尚未提升为协议命令 —— 见 §9.4）。
+> 版本：2026-10-10 v1 · 状态：**ST0 / ST4 / ST2 / ST1 已实施**
+> （`tools/studio_core.py` + `tools/studio_cli.py`）
+> 逐阶段追加（每行自成一句）：
+> · ST4 追加 `vm.images` / `vm.disasm`（VM 级调试入口；单步与断点尚在
+>   `tools/vm_debug.py` 的库/CLI 层，未提升为协议命令 —— 见 §9.4）。
+> · ST2 追加 `test.gate.results`（门禁结果的**历史查询**；文本出口不变，新增 NDJSON 出口）。
+> · ST1 追加 `plan.graph`（依赖/冲突图）与**流式命令** `build.run`
+>   （一个请求产出多行响应 —— 这是协议第一次出现非请求/响应形态，见 §5.1）。
 > 本文是**契约**：面板、测试、脚本、未来的编辑器扩展都按它对接后端。
 
 ## 1. 为什么需要一份协议文档
@@ -83,11 +87,69 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `capabilities` | — | `items[]`，每项 `{name, status, backend, evidence, note?, step?}`；`status ∈ ready/partial/planned` |
 | `plan.list` | — | `profiles[]` `{name, description, threats, strength, performance_budget}` + `count` |
 | `plan.solve` | `profile` | `solve_profile.solve()` 的完整结果（`selected`/`excluded`/`auto_added`/`reasons`/`conflicts`/`order`/…）**外加** `_profile_file` 与 `_text` |
-| `modules.list` | — | `modules[]` `{name, maturity, caps, deps, conflicts_with, cost, header, source}` + `primitives` |
+| `modules.list` | — | `modules[]` `{name, maturity, caps, deps, conflicts_with, cost, header, source, known_limits, evidence, ordering, phases, consumes, produces, modifies_text, verifies_text, needs_writable_dir, page_align, host_hooks, abi_version}` + `primitives` + `maturity_scale`（分级**依据**，不是形容词） |
 | `gate.items` | — | `items[]` `{name, line, gated}` + `total`/`gated`/`default`/`source` |
 | `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` + `count`；`blob` 缺省 `build/vm.blob` |
 | `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
+| `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
 | `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why}` + `counts_json`/`pass_n` |
+
+### 5.1 流式命令（`build.run`）—— 协议至今唯一的例外
+
+`build.run` **不在** `dispatch()` 的命令表里：一个请求产出**多行响应**。
+它必须走 `stream_events()` / `respond_stream()`，而 `dispatch('build.run', …)`
+会返回 **`E_STREAM_CMD`**。
+
+**为什么错误码不沿用 `E_UNKNOWN_CMD`**：报「未知命令」并附 `available` 列表，
+会让面板把「这个命令要用流式调用」读成「名字拼错了」，于是去翻候选清单
+而不是改成流式调用 —— 错误码必须指向**正确的下一步动作**。
+
+事件序列与两处刻意的默认值：
+
+| 事件 | 字段 | 说明 |
+|---|---|---|
+| `plan` | `argv`, `confirm_required` | **总是先出计划**，让人看见将执行的命令行 |
+| `start` | `argv` | **只有 `confirm: true` 才出现** |
+| `line` | `text`, `tag` | `tag='build'` 表示 `build.ps1` 自己的进度行 |
+| `exit` | `rc`, `lines`, `first_diag` | `first_diag` 是**第一个像诊断的行** |
+| `done` | `started`, `ok`, `rc`, `first_diag`, `note?` | 未启动时 `started:false` |
+
+- **不带 `confirm: true` 只返回计划、不启动构建。** 一次完整构建是**分钟级
+  副作用操作**（会改写 `build/` 产物）；默认不执行与项目「先计划后执行」的
+  纪律一致。面板要有明确的「执行」按钮，而不是把构建绑在一次查询上。
+- **`first_diag` 找不到就如实说找不到，不编造。** 里层是 `stderr=STDOUT` 合并
+  （实测 PowerShell 原生命令的错误走 stderr 而 `build.ps1` 的进度走 stdout，
+  分开读会让事件顺序错乱）。
+- **同一条流的每个响应行共用同一个 `id`** —— 这是调用方把多行归并为
+  「一次调用」的依据。
+
+### 5.2 `plan.graph`：`deps` 与 `ordering` 是两种关系，不可混画
+
+`tools/compose.py:topo_order` 的注释逐字：
+
+> **`deps` 不参与链接顺序图**（2026-09-23 实测修正）。初版把 `deps` 当作
+> 「被依赖者先」的边 -> 产生**假环**：`integrity.deps` 含 `selfcrypt`
+> （运行时**能力**依赖），而 `selfcrypt.ordering.after` 含 `integrity`
+> （**链接顺序**）。**结论**：`deps` = 能力依赖，`ordering` = 链接顺序。
+
+因此 `plan.graph` **分两套边**：
+
+- `edges[]` —— 含 `relation: 'dep' | 'conflict'`。**dep 边不能画进顺序图**，
+  否则画出来是**自相矛盾的图**（实测每个组合都有两处方向相反：
+  `selfcrypt->integrity`、`syscall->antidebug`）。
+- `order_edges[]` —— 拓扑序**真正遵循**的关系，面板的顺序图按它画。
+  已按 `(from, to)` 去重（同一约束常被两侧各说一遍：
+  `vm.before=[blob]` 与 `blob.ordering.after=[vm]`）。
+- `topo_dep_violations[]` —— 如实列出「按 topo 排列时方向相反的 dep 边」。
+  这是**语义差异的机读证据，不是错误**；`relations.why_not_mixed` 给出理由，
+  否则面板会把它读成「工具算错了」。
+
+**策略求解出 0 个模块是合法结果，不是参数错误。** `profiles/minimal-cost.json`
+实测就是：威胁 `piracy` 推导所需能力 `respond`，而 13 个模块**没有一个**提供
+`respond`（`license` / `revoke` / `hostid` / `blob` 都是 `verify`）。
+此时返回**合法空图** + `notes` 说明原因；只有调用方**显式**给
+`modules: []` 才是 `E_BAD_ARGS`。报成参数错误会让面板说「你传错了参数」，
+而真相是「这个策略什么都不选」—— 后者才是用户需要看见的信息。
 
 **`vm.disasm` 的两种 `source`**（这是理解 ST4 的关键，不是两个别名）：
 
@@ -141,6 +203,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `E_NOT_FOUND` | 路径或对象不存在；`detail` 常带候选清单 | 调用方 |
 | `E_PARSE` | 文件存在但不是合法 JSON | 仓库状态 |
 | `E_BAD_LINE` | **请求行**不是合法 JSON 对象（协议层） | 调用方 |
+| `E_STREAM_CMD` | 该命令**必须**用流式调用（多行响应），不能走 `dispatch`；`detail.stream_commands` 给出清单 | 调用方 |
 | `E_INTERNAL` | 兜底。**出现它就说明有未预料的路径**，应当被修掉 | 后端缺陷 |
 
 **`E_BAD_ARGS` 与 `E_INTERNAL` 必须分清**：若把「用户传了个数组」
@@ -212,6 +275,11 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
    没有主动推送 —— 单步与断点在 `tools/vm_debug.py` 的 CLI/库层完成，
    尚未提升为协议命令。下一步是把 `vm.run` / `vm.break` 加进来，
    那时才真正需要上面那条推送扩展。
+   ✅ **流式已先落地在 ST1**：`build.run`（§5.1）已经是一个请求产出多行响应，
+   但它**不是**服务端主动推送 —— 每行仍是对**同一个请求**的响应，
+   `id` 贯穿整条流。区别在于「谁先说话」：`build.run` 是调用方发一次、
+   服务端连答多行；`debug.host.*` 则是服务端**在没被问的时候**说话
+   （`id=null`）。后者仍待 ST3。
 5. **本文档不写 `> **最后核实**` 元数据** ⇒ 它不在 `tools/doccheck.py`
    的扫描面内。理由：它是**协议的规范说明**，不是「读者当下照着做」的
    现值声明；进面会要求它跟着门禁项数等数字一起漂移，
@@ -225,5 +293,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 - `tools/vm_debug.py` — VM 级调试器（ST4：反汇编 / 单步 / 断点 / 视图）
 - `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）
+- `tools/compose.py` / `tools/compat.py` / `tools/solve_profile.py` —
+  `plan.graph` 与 `plan.solve` 的数据来源（拓扑序、冲突检查、策略求解，**唯一实现**）
 - `tools/gate_results.py` — `test.gate.results` 的数据来源（门禁 NDJSON 的解析与对账，**唯一实现**）
 - `docs/DEBUG_CONSOLE_PLAN.md` — 既有调试控制台的边界与设计纪律

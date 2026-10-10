@@ -228,8 +228,14 @@ def capabilities():
                 step='ST2',
                 note='verify 读**实际日志行**做独立对账, 不信任门禁自己的计数器'),
             'generate.build': cap(
-                'planned', 'build.ps1',
-                '构建可跑, 但无流式进度事件',
+                'partial', 'tools/studio_core.py',
+                'build_events() 流式事件（plan/line/exit/done）；'
+                '**默认不启动** —— 需 confirm: true',
+                step='ST1',
+                note='不带 confirm 只回计划: 一次完整构建是分钟级副作用操作'),
+            'generate.graph': cap(
+                'ready', 'tools/compose.py + tools/compat.py',
+                '依赖闭包 + 拓扑序 + 冲突边（复用, 不重写）',
                 step='ST1'),
             'debug.host': cap(
                 'partial', 'tools/prot_dbg.py',
@@ -400,10 +406,25 @@ def cmd_modules_list(args):
             'maturity': m.get('maturity'),
             'caps': sorted(m.get('caps', [])),
             'deps': sorted(m.get('deps', [])),
-            'conflicts_with': sorted(m.get('conflicts_with', [])),
+            'conflicts_with': sorted(m.get('conflicts_with', []) or []),
             'cost': None,                    # 由 solve_profile.COST 提供
             'header': m.get('header'),
             'source': m.get('source'),
+            # ST1.3: 面板要显示"这个模块的边界在哪", 而不只是 id 与依赖。
+            # 缺 `known_limits` 会让 UI 把每个模块都渲染成"无已知局限" ——
+            # 那是**静默的谎**, 比不显示更坏(项目的 P4 诚实边界纪律)。
+            'known_limits': list(m.get('known_limits', []) or []),
+            'evidence': list(m.get('evidence', []) or []),
+            'ordering': m.get('ordering') or {},
+            'phases': list(m.get('phases', []) or []),
+            'consumes': list(m.get('consumes', []) or []),
+            'produces': list(m.get('produces', []) or []),
+            'modifies_text': bool(m.get('modifies_text', False)),
+            'verifies_text': bool(m.get('verifies_text', False)),
+            'needs_writable_dir': bool(m.get('needs_writable_dir', False)),
+            'page_align': m.get('page_align'),
+            'host_hooks': list(m.get('host_hooks', []) or []),
+            'abi_version': m.get('abi_version'),
         })
     try:
         import solve_profile as _sp
@@ -413,9 +434,257 @@ def cmd_modules_list(args):
         pass                                  # 成本是附加信息, 缺失不致命
     return {'modules': out, 'count': len(out),
             'primitives': sorted(reg.get('primitives', {})),
+            'maturity_scale': reg.get('_maturity_scale') or {},
             'protocol_version': reg.get('_protocol_version'),
             'format_version': reg.get('_format_version'),
             'source': 'modules.json'}
+
+
+def cmd_plan_graph(args):
+    """依赖闭包 + 拓扑序 + 冲突边（ST1.4）。
+
+    ## 三个复用, 一个都不重写
+      · 依赖闭包 -> `tools/compose.py` 的 `closure()`
+      · 拓扑排序 -> `tools/compose.py` 的 `topo_order()`（**返回 (order, cycle)**,
+        不是列表 —— 把它当列表用会拿到元组, 且 `cycle` 那一半永远看不到）
+      · 冲突检测 -> `tools/compat.py` 的 `check_conflicts()`（**返回四元组**
+        (errors, warnings, infos, conflicts), 冲突在**第 4 个**位置）
+
+    参数: `profile`（策略名, 走 solve_profile 求解）或 `modules`（模块名列表）。
+    两者都给时 `modules` 优先 —— 面板里"手动改过之后再画图"是常见动作。
+    """
+    import compose as _cp
+    import compat as _compat
+
+    reg = registry()
+    names = args.get('modules')
+    if names is None:
+        prof = args.get('profile')
+        if not prof:
+            raise StudioError('E_BAD_ARGS', '需要 profile 或 modules 之一',
+                              {'available_profiles': profile_names()})
+        if not isinstance(prof, str):
+            raise StudioError('E_BAD_ARGS', 'profile 必须是字符串',
+                              {'given': type(prof).__name__})
+        import solve_profile as _sp
+        # load_profile 返回**元组** (profile_dict, base_name) —— 不是 dict。
+        # 直接 `_sp.solve(load_profile(x), reg)` 会把元组喂进 solve, 报
+        # `AttributeError: 'tuple' object has no attribute 'get'`, 且错在
+        # solve_profile 内部, 看起来像那边坏了。
+        pf, _pfname = load_profile(prof)
+        r = _sp.solve(pf, reg)
+        names = list(r.get('selected') or [])
+        src = {'kind': 'profile', 'profile': _pfname,
+               'profile_file': 'profiles/%s.json' % _pfname}
+    else:
+        if not isinstance(names, (list, tuple)) or not all(
+                isinstance(x, str) for x in names):
+            raise StudioError('E_BAD_ARGS', 'modules 必须是字符串列表',
+                              {'given': type(names).__name__})
+        names = list(names)
+        src = {'kind': 'modules'}
+
+    if not names:
+        # 两种情况**必须分开**:
+        #   · `modules: []`  -> 调用方确实什么都没给 => 参数错误
+        #   · `profile` 解得 0 个模块 -> **合法结果**(实测
+        #     profiles/minimal-cost.json 就是: threat `piracy` 推导所需能力
+        #     `respond`, 而没有任何模块提供它) => 返回空图 + 说明原因。
+        # 把它报成参数错误会让面板说"你传错了参数", 而真相是
+        # "这个策略什么都不选" —— 后者才是用户需要看见的信息。
+        if src['kind'] == 'profile':
+            return {'source': src, 'requested': [], 'selected': [],
+                    'auto_added': [], 'nodes': [], 'edges': [],
+                    'order_edges': [], 'topo': [], 'cycle': [],
+                    'conflicts': [], 'errors': [], 'warnings': [], 'infos': [],
+                    'topo_dep_violations': [],
+                    'relations': {},
+                    'notes': ['策略 %r 求解出 **0 个模块** —— 这是求解器的'
+                              '**合法结果**, 不是错误。'
+                              '常见原因: 该策略声明的威胁推导出的所需能力'
+                              '没有任何模块提供(或全部被策略约束排除)。'
+                              '用 plan.solve 看逐模块的排除理由。' % src['profile']],
+                    'backend': 'tools/compose.py + tools/compat.py'}
+        raise StudioError('E_BAD_ARGS', 'modules 是空列表 —— 没有模块可画',
+                          {'modules': names})
+
+    known = set(reg.get('modules', {})) | set(reg.get('primitives', {}))
+    unknown = sorted(set(names) - known)
+    if unknown:
+        raise StudioError('E_BAD_ARGS', '含未登记模块',
+                          {'unknown': unknown, 'known_count': len(known)})
+
+    full = sorted(_cp.closure(names, reg))
+    order, cycle = _cp.topo_order(full, reg)
+    errors, warnings, infos, conflicts = _compat.check_conflicts(reg, set(full))
+
+    mods = reg.get('modules', {})
+    edges = []
+    for n in full:
+        for d in mods.get(n, {}).get('deps', []):
+            if d in full:
+                edges.append({'from': d, 'to': n, 'kind': 'dep',
+                              'relation': 'dep'})
+    # 冲突边**直接来自 check_conflicts 的结论**, 不从注册表自己推。
+    # 实测教训: integrity/selfcrypt 同时有两条冲突 —— `kind='declared'`
+    # (声明冲突: integrity 校验 .text 而 selfcrypt 原地改写) 与
+    # `kind='derived'`(派生冲突: 两者都要求页对齐)。若按**模块对**去重,
+    # 派生冲突会被整条吞掉, 而图上就只剩一条线 —— 面板据此会以为
+    # "只有一处冲突"。故按 (a, b, kind) 去重。
+    seen_c = set()
+    for c in conflicts:
+        key = (c.get('a'), c.get('b'), c.get('kind'))
+        if key in seen_c:
+            continue
+        seen_c.add(key)
+        edges.append({'from': c.get('a'), 'to': c.get('b'),
+                      'kind': 'conflict', 'relation': 'conflict',
+                      'conflict_kind': c.get('kind'),
+                      'reason': c.get('reason'),
+                      'resolution': c.get('resolution'),
+                      'severity': c.get('severity')})
+
+    # 链接顺序边: 来自 `ordering.after`/`before` —— **这才是 topo 遵循的关系**。
+    # 与 `edges` 的 dep 边语义不同(见 `relations`), 故分开给。
+    # 同一约束常被两侧各说一遍(`vm.before=[blob]` 与
+    # `blob.ordering.after=[vm]`)⇒ 必须按 (from,to) **去重**, 否则
+    # 面板会画 5 条箭头表示 3 个约束(实测 paranoid-analysis: decl=3 out=5)。
+    order_edges, _seen_oe = [], set()
+    for n in full:
+        o = mods.get(n, {}).get('ordering') or {}
+        for x in (o.get('after') or []):
+            if x in full and (x, n) not in _seen_oe:
+                _seen_oe.add((x, n))
+                order_edges.append({'from': x, 'to': n, 'relation': 'order'})
+        for y in (o.get('before') or []):
+            if y in full and (n, y) not in _seen_oe:
+                _seen_oe.add((n, y))
+                order_edges.append({'from': n, 'to': y, 'relation': 'order'})
+
+    # 如实列出"按 topo 排列时方向相反的 dep 边" —— **不是错误**, 是这条
+    # 语义差异的机读证据(每个组合实测都有 2 条: selfcrypt->integrity,
+    # syscall->antidebug)。面板据此可以只显示其中一张图, 或并排显示。
+    _pos = {n: i for i, n in enumerate(order)}
+    dep_violations = [{'from': e['from'], 'to': e['to']}
+                      for e in edges if e['kind'] == 'dep'
+                      and _pos.get(e['from'], -1) > _pos.get(e['to'], -1)]
+
+    return {'source': src, 'requested': sorted(names), 'selected': full,
+            'order_edges': order_edges,
+            'topo_dep_violations': dep_violations,
+            'relations': {
+                'dep': '能力依赖(运行时): 本模块需要对方的**运行时能力**。'
+                       '**不决定链接顺序。**',
+                'order': '链接顺序: 来自 ordering.after/before。'
+                         'topo 只遵循这一种关系。',
+                'conflict': '冲突(声明 + 派生), 见 conflicts。',
+                'why_not_mixed':
+                    '两种关系语义不同, 混在一张图里会产生**假环**。'
+                    'compose.topo_order 的注释逐字记录了 2026-09-23 的实测: '
+                    'integrity.deps 含 selfcrypt(需其掩码豁免) 而 '
+                    'selfcrypt.ordering.after 含 integrity(链接顺序) -> '
+                    '报"环"。故本响应把两者分开, 并把方向相反的 dep 边'
+                    '如实列在 topo_dep_violations 里 —— 那不是错误。',
+            },
+            'auto_added': sorted(set(full) - set(names)),
+            'nodes': [{'name': n,
+                       'maturity': mods.get(n, {}).get('maturity'),
+                       'modifies_text': bool(mods.get(n, {}).get('modifies_text', False)),
+                       'verifies_text': bool(mods.get(n, {}).get('verifies_text', False)),
+                       'is_primitive': n not in mods}
+                      for n in full],
+            'edges': edges,
+            'topo': list(order), 'cycle': list(cycle),
+            'conflicts': [{'kind': c.get('kind'), 'a': c.get('a'), 'b': c.get('b'),
+                           'reason': c.get('reason'), 'resolution': c.get('resolution'),
+                           'severity': c.get('severity')} for c in conflicts],
+            'errors': list(errors), 'warnings': list(warnings), 'infos': list(infos),
+            'backend': 'tools/compose.py + tools/compat.py'}
+
+
+# 流式命令: 不在 COMMANDS 里 —— 它们**一个请求产出多行响应**, 形态不同。
+STREAM_COMMANDS = ('build.run',)
+
+# build.ps1 的失败诊断首行判据（与 build.ps1 自己的 "build FAILED:" 措辞对齐,
+# 但不依赖它: 有些失败是 PowerShell 自己的错误记录, 形如 "... : 消息"）。
+_BUILD_DIAG = re.compile(
+    r'(?i)build FAILED|FAILED:|error|错误|异常|Exception|cannot|failed')
+
+
+def build_argv(args):
+    """把参数翻成 build.ps1 的命令行（**只拼装, 不执行**; 便于面板先展示）。"""
+    cfg = args.get('config') or 'Dev'
+    if cfg not in ('Dev', 'Release'):
+        raise StudioError('E_BAD_ARGS', 'config 必须是 Dev 或 Release',
+                          {'given': cfg})
+    argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', os.path.join(REPO, 'build.ps1'), '-Config', cfg]
+    if args.get('composition'):
+        argv += ['-Composition', str(args['composition'])]
+    if args.get('machine_id'):
+        argv += ['-MachineId', str(args['machine_id'])]
+    if args.get('user_id'):
+        argv += ['-UserId', str(args['user_id'])]
+    if args.get('seeds_file'):
+        argv += ['-SeedsFile', str(args['seeds_file'])]
+    for k, flag in (('skip_smoke', '-SkipSmoke'), ('no_d2b', '-NoD2b'),
+                    ('skip_sign', '-SkipSign')):
+        if args.get(k):
+            argv.append(flag)
+    return argv
+
+
+def build_events(args):
+    """流式构建（ST1.2）—— **生成器**, 逐条 yield 事件 dict。
+
+    诚实设计（读这段再改）:
+
+    1. **不带 `confirm: true` 就只给计划, 不启动构建。** 一次完整构建是分钟级
+       的副作用操作, 而 `build.ps1` 会**改写 build/ 下的产物**。让一个面板
+       点击直接触发它, 与项目的"先计划后执行"纪律相反。故默认 `plan_only`,
+       要真跑必须显式 `confirm`。
+    2. **失败必须带诊断首行**。退出码 1 本身对面板没有信息量;
+       故扫描输出, 取第一个像诊断的行一并回传（找不到就如实说找不到,
+       **不编造**）。
+    3. 进程用 `stderr=STDOUT` 合并 —— 实测 PowerShell 的原生命令错误走 stderr,
+       而 `build.ps1` 的自述进度走 stdout; 分开读会让事件顺序错乱。
+    """
+    import subprocess
+
+    argv = build_argv(args)
+    yield {'event': 'plan', 'argv': argv, 'cwd': REPO,
+           'confirm_required': not bool(args.get('confirm'))}
+
+    if not args.get('confirm'):
+        yield {'event': 'done', 'started': False,
+               'note': '未启动构建（需要 confirm: true）—— 这是刻意的安全默认'}
+        return
+
+    yield {'event': 'start', 'argv': argv}
+    p = subprocess.Popen(argv, cwd=REPO, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT)
+    diag = None
+    n_lines = 0
+    try:
+        for bline in p.stdout:
+            line = bline.decode('utf-8', 'replace').rstrip('\r\n')
+            if not line.strip():
+                continue
+            n_lines += 1
+            if diag is None and _BUILD_DIAG.search(line):
+                diag = line.strip()
+            tag = None
+            if line.startswith('build: '):
+                tag = 'build'
+            yield {'event': 'line', 'text': line, 'tag': tag}
+    finally:
+        p.stdout.close()
+        rc = p.wait()
+    yield {'event': 'exit', 'rc': rc, 'lines': n_lines,
+           'first_diag': diag}
+    yield {'event': 'done', 'started': True, 'ok': rc == 0, 'rc': rc,
+           'first_diag': diag}
+
 
 
 def cmd_gate_items(args):
@@ -512,7 +781,27 @@ COMMANDS = {
     'vm.images': cmd_vm_images,
     'vm.disasm': cmd_vm_disasm,
     'test.gate.results': cmd_test_gate_results,
+    'plan.graph': cmd_plan_graph,
 }
+
+
+def stream_events(cmd, args=None):
+    """流式命令 -> **生成器**, 逐条产出事件 dict。
+
+    为什么单独一条通路: 流式命令一个请求产出**多行**响应, 与 `dispatch()`
+    的"一问一答"形态不同。若把它们塞进 `COMMANDS`, 调用方会拿到一个
+    生成器却当成 dict 用 —— 那种错会以
+    `AttributeError: 'generator' object has no attribute 'get'`
+    的形式出现在**调用方**里, 看起来像调用方自己写错了。
+    """
+    if cmd not in STREAM_COMMANDS:
+        raise StudioError('E_BAD_ARGS', '不是流式命令',
+                          {'cmd': cmd,
+                           'stream_commands': list(STREAM_COMMANDS)})
+    args = args if isinstance(args, dict) else {}
+    if cmd == 'build.run':
+        return build_events(args)
+    raise StudioError('E_UNKNOWN_CMD', '流式命令未实现', {'cmd': cmd})
 
 
 def dispatch(cmd, args=None):
@@ -522,6 +811,14 @@ def dispatch(cmd, args=None):
     因为面板与脚本都会因拼错名字而撞上它（§2.53 的"失锚不静默"）。
     """
     if cmd not in COMMANDS:
+        # 流式命令走另一条通路 —— 必须**分开报**。报成 E_UNKNOWN_CMD
+        # 会让面板把"这个命令要流式调用"读成"我把名字拼错了", 于是它
+        # 去翻 available 列表(里面当然没有), 而不是改成流式调用。
+        if cmd in STREAM_COMMANDS:
+            raise StudioError(
+                'E_STREAM_CMD',
+                '%r 是流式命令, 请用 stream_events() 或 CLI 流式入口' % (cmd,),
+                {'cmd': cmd, 'stream_commands': list(STREAM_COMMANDS)})
         raise StudioError('E_UNKNOWN_CMD', '未知命令 %r' % (cmd,),
                           {'cmd': cmd, 'available': sorted(COMMANDS)})
     if args is None:
@@ -586,11 +883,22 @@ def selftest(quiet=False):
     case('ping 回传协议版本', r.get('protocol_version') == PROTOCOL_VERSION)
     case('ping 含 repo 与平台', bool(r.get('repo')) and bool(r.get('platform')))
     caps = dispatch('capabilities')
-    case('capabilities 含 8 项能力',
-         len(caps.get('capabilities', {})) == 8)
-    case('planned 项如实标注（ui / generate.build）',
+    # 用 >= 而非 ==: 能力项随阶段增加(ST0/ST2/ST4/ST1 各加过)。写死数字会在
+    # 下次加项时变成噪音, 而真正要守的三件事是下面三条 + evidence/step 两条。
+    # 下限紧贴当前值(9), 不留余量 —— 留余量会让它对"能力项被删掉"失明。
+    case('capabilities 至少 9 项能力',
+         len(caps.get('capabilities', {})) >= 9,
+         'count=%d' % len(caps.get('capabilities', {})))
+    # 未完成的项**只有 ui**了: ST1 把 generate.build 从 planned 提到 partial
+    # (能流式给事件, 但默认不启动)。这条断言必须随实施一起改 ——
+    # 否则它要么永远红, 要么(更坏)被改成永真。
+    case('planned 项如实标注（仅 ui）',
          all(caps['capabilities'][k]['status'] == 'planned'
-             for k in ('ui', 'generate.build')))
+             for k in ('ui',)))
+    case('generate.build 自 ST1 起为 partial（能流式, 默认不启动）',
+         caps['capabilities'].get('generate.build', {}).get('status') == 'partial')
+    case('generate.graph 自 ST1 起为 ready（复用 compose/compat）',
+         caps['capabilities'].get('generate.graph', {}).get('status') == 'ready')
     # ST2 落地后 test.gate.results 变 ready —— 同 debug.vm 的处理:
     # 断言存在再断言取值, 且未完成的项**不得**混进 ready。
     case('test.gate.results 自 ST2 起为 ready',
@@ -729,6 +1037,125 @@ def selftest(quiet=False):
                                       {'query': 'diff', 'a': 'x'}), 'E_BAD_ARGS')
     case('**负向**: diff 缺 b -> E_BAD_ARGS', ok, got)
 
+
+    # --- 4d. 生成面板（ST1: 复用 compose / compat / solve_profile, 不重写）---
+    ml = dispatch('modules.list')
+    _by = {m['name']: m for m in ml['modules']}
+    # ST1.3 的验收原话点名了 known_limits。缺它 UI 会把每个模块渲染成
+    # "无已知局限" —— 那是**静默的谎**, 比不显示更坏(P4 诚实边界纪律)。
+    case('modules.list 暴露 known_limits（ST1.3 规格点名）',
+         all('known_limits' in m for m in ml['modules']))
+    case('至少一个模块真的写了已知局限（不是空字段凑数）',
+         bool(_by.get('vm', {}).get('known_limits')),
+         'vm=%d 条' % len(_by.get('vm', {}).get('known_limits') or []))
+    case('modules.list 带 maturity_scale（分级的**依据**, 不是形容词）',
+         bool(ml.get('maturity_scale', {}).get('_why_breached')))
+    case('modules.list 的字段与 modules.json 对齐（不复制常量）',
+         all(k in _by.get('integrity', {})
+             for k in ('deps', 'conflicts_with', 'ordering', 'phases',
+                       'consumes', 'produces', 'evidence')))
+
+    g = dispatch('plan.graph', {'profile': 'balanced'})
+    _nodes = [n['name'] for n in g['nodes']]
+    case('plan.graph(profile) 覆盖 requested + auto_added',
+         set(_nodes) == set(g['selected']),
+         'nodes=%d selected=%d auto=%d' % (len(_nodes), len(g['selected']),
+                                           len(g['auto_added'])))
+    case('plan.graph 拓扑序覆盖全部节点（无遗漏）',
+         sorted(g['topo']) == sorted(_nodes))
+    case('plan.graph 依赖无环（cycle 为空）', not g['cycle'])
+    case('plan.graph 有依赖边（否则图画不出来）', bool(g['edges']))
+    # integrity 声明了与 selfcrypt 的冲突(原地改写 .text), 故只要 integrity
+    # 被选中就必然出现一条 conflict 边 —— 这是"冲突可视化"的实际用例。
+    # 边与冲突不必**等基数** —— 一条"模块对"可以有两种冲突(声明 + 派生)。
+    # 真正要守的是"每条冲突都画得出来", 且边能区分两种来源。
+    _ce = [e for e in g['edges'] if e['kind'] == 'conflict']
+    case('plan.graph 每条冲突都有对应的边（不丢冲突）',
+         len(_ce) == len(g['conflicts']),
+         'edges=%d conflicts=%d' % (len(_ce), len(g['conflicts'])))
+    case('plan.graph 冲突边带 conflict_kind（声明 vs 派生可区分）',
+         all(e.get('conflict_kind') for e in _ce) if _ce else True,
+         'kinds=%s' % sorted({e.get('conflict_kind') for e in _ce}))
+    case('plan.graph 派生冲突未被按模块对去重吞掉',
+         len({e['conflict_kind'] for e in _ce}) >= 2 if len(_ce) >= 2 else True,
+         'kinds=%s' % sorted({e.get('conflict_kind') for e in _ce}))
+    case('plan.graph 冲突边带 resolution（不只报错, 还说怎么办）',
+         all(c.get('resolution') for c in g['conflicts']) if g['conflicts'] else True)
+    case('plan.graph 区分 primitive 与 module 节点',
+         all(n['is_primitive'] == (n['name'] not in {m['name'] for m in ml['modules']})
+             for n in g['nodes']))
+
+    # modules 优先于 profile: 面板里"手动改过之后再画图"是常见动作。
+    g2 = dispatch('plan.graph', {'profile': 'balanced', 'modules': ['crc32']})
+    case('plan.graph 里 modules 优先于 profile（手动改动能画图）',
+         g2['source']['kind'] == 'modules' and g2['selected'] == ['crc32'],
+         'kind=%s selected=%s' % (g2['source']['kind'], g2['selected']))
+
+    # --- ST1.4 ⭐ 两种关系必须**分开陈述**（2026-09-23 的设计结论）---
+    # `tools/compose.py:topo_order` 的注释逐字: 「deps 不参与链接顺序图…
+    # deps = 能力依赖（运行时）, ordering = 链接顺序。二者语义不同, 不可混用。」
+    # 我在 build/_st1_xcheck.py 里曾断言"拓扑序里每条 dep 边 from 都在 to 前"
+    # ⇒ 7 条 FAIL —— **我断言了一条设计明确拒绝的性质**。
+    # 于是 plan.graph 分两套边 + 一句说明: 面板若把 dep 边画进顺序图,
+    # 画出来的是**自相矛盾的图**（实测每个组合两处相反）。
+    case('plan.graph 每条边都带 relation（面板据此分三种图）',
+         all(e.get('relation') in ('dep', 'conflict') for e in g['edges']),
+         'relations=%s' % sorted({e.get('relation') for e in g['edges']}))
+    case('plan.graph 给出 order_edges（拓扑序真正遵循的关系）',
+         bool(g.get('order_edges')))
+    _oe = [(e['from'], e['to']) for e in (g.get('order_edges') or [])]
+    case('plan.graph order_edges 无重复（否则箭头多于约束）',
+         len(_oe) == len(set(_oe)), 'n=%d uniq=%d' % (len(_oe), len(set(_oe))))
+    _pos = {n: i for i, n in enumerate(g['topo'])}
+    case('plan.graph 拓扑序对 order 关系合法（dep 不参与, 故不在此判）',
+         not [1 for (f, t) in _oe if _pos.get(f, -1) > _pos.get(t, -1)])
+    case('plan.graph 说明 dep 与 order 为何不可混用（否则被读成算错了）',
+         bool((g.get('relations') or {}).get('why_not_mixed')))
+    case('plan.graph 如实列出 topo_dep_violations（是证据, 不是错误）',
+         isinstance(g.get('topo_dep_violations'), list))
+
+    # ⭐ 策略求解出 **0 个模块** 是**合法结果**, 不是参数错误。
+    # 实测 profiles/minimal-cost.json: threat `piracy` 推导所需能力 `respond`,
+    # 而 13 个模块没有一个提供它 ⇒ selected=[]（plan.solve 同样如此）。
+    # 报成 E_BAD_ARGS 会让面板说"你传错了参数", 而真相是"这个策略什么都不选"。
+    ge = dispatch('plan.graph', {'profile': 'minimal-cost'})
+    case('plan.graph 策略解得空集 -> 合法空图（不是 E_BAD_ARGS）',
+         ge['selected'] == [] and ge['nodes'] == [] and bool(ge.get('notes')),
+         'notes=%d' % len(ge.get('notes') or []))
+    case('plan.graph 空集时仍带 source（面板知道是谁解出来的）',
+         ge['source'].get('kind') == 'profile')
+    case('**负向**: plan.graph 显式给空 modules -> 仍是 E_BAD_ARGS',
+         raises(lambda: dispatch('plan.graph', {'modules': []}), 'E_BAD_ARGS'))
+
+
+    # --- ST1.2 流式构建: 只拼装/只出计划, **默认不启动** ---
+    argv = build_argv({'config': 'Dev'})
+    case('build_argv 默认 Dev 且指向 build.ps1',
+         'build.ps1' in argv[-3] or any('build.ps1' in a for a in argv),
+         ' '.join(argv[-4:]))
+    case('build_argv 带上 composition 等参数',
+         '-Composition' in build_argv({'composition': 'minimal'})
+         and '-SkipSmoke' in build_argv({'skip_smoke': True}))
+    ev = list(build_events({}))
+    case('build_events 不带 confirm 只回计划, 不启动构建',
+         ev[0]['event'] == 'plan' and ev[0]['confirm_required']
+         and not any(e['event'] == 'start' for e in ev),
+         'events=%s' % [e['event'] for e in ev])
+    case('build_events 的 done 如实说明没启动（不是假装跑过）',
+         ev[-1].get('started') is False and bool(ev[-1].get('note')))
+
+    case('**负向**: plan.graph 含未登记模块 -> E_BAD_ARGS',
+         raises(lambda: dispatch('plan.graph', {'modules': ['no_such_mod']}),
+                'E_BAD_ARGS'))
+    case('**负向**: plan.graph 空集合 -> E_BAD_ARGS（无法画图）',
+         raises(lambda: dispatch('plan.graph', {'modules': []}), 'E_BAD_ARGS'))
+    case('**负向**: plan.graph 两参数都不给 -> E_BAD_ARGS',
+         raises(lambda: dispatch('plan.graph', {}), 'E_BAD_ARGS'))
+    case('**负向**: build_argv 非法 config -> E_BAD_ARGS',
+         raises(lambda: build_argv({'config': 'Prod'}), 'E_BAD_ARGS'))
+    case('**负向**: plan.graph 的 modules 非字符串列表 -> E_BAD_ARGS',
+         raises(lambda: dispatch('plan.graph', {'modules': 'crc32'}),
+                'E_BAD_ARGS'))
     if not quiet:
         lines.append('--- 5. **负向**（必须能抓错）---')
     ok, got = raises(lambda: dispatch('no.such.cmd'), 'E_UNKNOWN_CMD')
