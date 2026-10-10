@@ -233,7 +233,9 @@ def capabilities():
                 'build_events() 流式事件（plan/line/exit/done）；'
                 '**默认不启动** —— 需 confirm: true',
                 step='ST1',
-                note='不带 confirm 只回计划: 一次完整构建是分钟级副作用操作'),
+                note='不带 confirm 只回计划: 一次完整构建是分钟级副作用操作; '
+                     'config 取 ' + ' / '.join(BUILD_CONFIGS) +
+                     '（Debug 产物入 build/debug, 发布产物不受影响）'),
             'generate.graph': cap(
                 'ready', 'tools/compose.py + tools/compat.py',
                 '依赖闭包 + 拓扑序 + 冲突边（复用, 不重写）',
@@ -615,12 +617,23 @@ _BUILD_DIAG = re.compile(
     r'(?i)build FAILED|FAILED:|error|错误|异常|Exception|cannot|failed')
 
 
+# build.ps1 -Config 的三个取值（ST3.2 起）。**这是唯一清单** —— 面板的下拉框
+# 与这里的元组必须一致, 否则 ST3.2 的 Debug 构建从 Studio 里根本调不到,
+# 而那种缺口不会让任何判据变红（面板只是少一个选项）。
+BUILD_CONFIGS = ('Dev', 'Release', 'Debug')
+
+
 def build_argv(args):
-    """把参数翻成 build.ps1 的命令行（**只拼装, 不执行**; 便于面板先展示）。"""
+    """把参数翻成 build.ps1 的命令行（**只拼装, 不执行**; 便于面板先展示）。
+
+    三态与 build.ps1 自己的校验 (`-Config must be Dev, Release or Debug`)
+    逐字一致 —— 面板报 `E_BAD_ARGS` 时必须与 CLI 报的是同一件事,
+    两处各写一套取值就会出现「CLI 能跑、面板说参数错」。
+    """
     cfg = args.get('config') or 'Dev'
-    if cfg not in ('Dev', 'Release'):
-        raise StudioError('E_BAD_ARGS', 'config 必须是 Dev 或 Release',
-                          {'given': cfg})
+    if cfg not in BUILD_CONFIGS:
+        raise StudioError('E_BAD_ARGS', 'config 必须是 %s' % ' / '.join(BUILD_CONFIGS),
+                          {'given': cfg, 'allowed': list(BUILD_CONFIGS)})
     argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', os.path.join(REPO, 'build.ps1'), '-Config', cfg]
     if args.get('composition'):
@@ -1257,6 +1270,21 @@ def selftest(quiet=False):
          all(c.get('evidence') for c in caps['capabilities'].values()))
     case('每项能力都有 step（知道属于哪个阶段）',
          all(c.get('step') for c in caps['capabilities'].values()))
+    # BUILD_CONFIGS 与 build.ps1 的校验点必须一致。**这是我自己刚引入的一条
+    # "必须同步"承诺**: 我把 build.ps1:185 的三取值抄进了本文件, 两处各写一套
+    # 就会出现「CLI 能跑、面板说参数错」。判据现读 build.ps1 的取值表, 不抄写
+    # —— 抄写的话两处一起漂移时它照样绿。
+    _bs = os.path.join(REPO, 'build.ps1')
+    _want = None
+    if os.path.isfile(_bs):
+        _m = re.search(
+            r'\$Config\s+-notin\s+@\(([^)]*)\)',
+            io.open(_bs, encoding='utf-8-sig', errors='replace').read())
+        if _m:
+            _want = tuple(re.findall(r"'([^']+)'", _m.group(1)))
+    case('BUILD_CONFIGS 与 build.ps1 -Config 校验一致（失锚即失败）',
+         _want is not None and _want == BUILD_CONFIGS,
+         'build.ps1=%s core=%s' % (_want, BUILD_CONFIGS))
 
     if not quiet:
         lines.append('--- 2. 策略求解（复用 solve_profile, 不重写）---')

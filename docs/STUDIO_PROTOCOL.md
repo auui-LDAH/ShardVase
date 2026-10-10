@@ -129,7 +129,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 
 | 事件 | 字段 | 说明 |
 |---|---|---|
-| `plan` | `argv`, `confirm_required` | **总是先出计划**，让人看见将执行的命令行 |
+| `plan` | `argv`, `confirm_required` | **总是先出计划**，让人看见将执行的命令行；`config` 三档见 §5.3 |
 | `start` | `argv` | **只有 `confirm: true` 才出现** |
 | `line` | `text`, `tag` | `tag='build'` 表示 `build.ps1` 自己的进度行 |
 | `exit` | `rc`, `lines`, `first_diag` | `first_diag` 是**第一个像诊断的行** |
@@ -235,6 +235,14 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 
 `build.ps1 -Config` 有三个取值：`Dev`（缺省）/ `Release` / `Debug`（ST3.2 新增）。
 `Debug` 加 `/Zi`（编译器 PDB，用 `/Fd` 钉进变体目录）与 `/DEBUG:FULL`（链接器 PDB）。
+
+**三档必须从 Studio 全部可触达**。`build.run` 接受 `config`（见 §5.1 的 `plan`
+事件），取值集合由 `studio_core.BUILD_CONFIGS` **单点定义**，面板的配置下拉框
+（`#cfg`）必须与它一致。这条不是洁癖：起初 `build_argv()` 只认 `Dev`/`Release`
+（ST1 时点的取值），ST3.2 加 `Debug` 后**后端仍拒收**，而面板连下拉框都没有 ——
+于是 `Debug` 构建从 Studio 里**根本调不到，且不报任何错**（面板只是少一个选项）。
+现在两处都由判据看住：`studio_server` 自检比对 `<select id="cfg">` 的选项与
+`BUILD_CONFIGS`，e2e 再断言 `build_argv()` 接受全部三档。
 
 **产物落 `build/debug/`，不是 `build/`。** 这不是洁癖，有两条实证理由：
 

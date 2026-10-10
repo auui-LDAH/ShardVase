@@ -255,7 +255,8 @@ async function doBuildPlan() {
   $('panel-output').textContent = '';
   state.buildPlan = null;
   log('=== 构建计划（还没有执行） ===');
-  await callStream('build.run', { profile: prof }, (ev) => {
+  await callStream('build.run', { profile: prof, config: $('cfg').value },
+                   (ev) => {
     if (ev.event === 'plan') {
       state.buildPlan = ev;
       log('将执行: ' + (ev.argv || []).join(' '));
@@ -277,8 +278,14 @@ async function doBuild() {
   $('btn-build').disabled = true;
   setStatus('构建中…', '');
   const t0 = Date.now();
-  log('=== 执行构建（' + prof + '）===');
-  await callStream('build.run', { profile: prof, confirm: true }, (ev) => {
+  const cfg = $('cfg').value;
+  log('=== 执行构建（' + prof + ' / ' + cfg + '）===');
+  if (cfg === 'Debug') {
+    log('Debug: 产物写入 build/debug/ —— 发布产物 build/ 不受影响。');
+  }
+  await callStream('build.run',
+                   { profile: prof, config: $('cfg').value, confirm: true },
+                   (ev) => {
     if (ev.event === 'plan') {
       log('$ ' + (ev.argv || []).join(' '));
     } else if (ev.event === 'start') {

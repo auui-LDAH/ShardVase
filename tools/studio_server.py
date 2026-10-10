@@ -561,6 +561,21 @@ def _check_real_ui():
     for needle in ('X-Studio-Token', '/api'):
         if needle not in blob:
             return False, '资产里找不到 %s —— 前端与协议可能已经脱节' % needle
+    # 构建配置的下拉框必须覆盖 BUILD_CONFIGS。**这一条与上面的 needle 同类,
+    # 但方向相反**: needle 查「前端是否用了协议」, 它查「协议里的能力前端能否
+    # 触达」。ST3.2 新增 Debug 时正是这里漏掉的 —— 后端支持、协议文档写了三个
+    # 取值, 而面板只发 Dev/Release ⇒ Debug 构建从 Studio 里调不到, 且不会报错。
+    wants = list(getattr(sc, 'BUILD_CONFIGS', ()))
+    if wants:
+        m = _re.search(r'<select[^>]*id="cfg"[^>]*>(.*?)</select>', blob,
+                       _re.S)
+        if not m:
+            return False, '生成面板缺少配置下拉框 (#cfg) —— 构建配置无处可选'
+        have = _re.findall(r'<option[^>]*value="([^"]+)"', m.group(1))
+        missing = [c for c in wants if c not in have]
+        if missing:
+            return False, ('配置下拉框缺 %s（后端支持: %s；面板只有: %s）'
+                           % (missing, wants, have))
     return True, '%d 个资产, 无外部引用' % (len(assets) + 1)
 
 

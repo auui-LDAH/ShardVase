@@ -9085,4 +9085,243 @@ job 未启动。**本条对本节的结论没有任何影响** —— 证据链�
 （MSVC 14.51 + Python 3.12.10 上的 Studio 外壳本轮**未验证**）。
 本条如实留痕，而不是拿「本机通过」当「全平台通过」。
 
-*2026-10-10 v40*
+## 2.62 ST5 交付后审计：一个真缺陷、两条度量错、一句错的不变量（2026-10-10）
+
+> 本节是 §2.61 的**收尾核对**, 不是新功能。§2.61 提交为 `8e11938`。
+> 核对方式是**在这套东西自己身上用一遍**: 把「Studio 能不能真的调到我做的东西」
+> 当作待验证命题, 而不是默认它成立。
+
+### 2.62.1 缘起
+
+§2.61 落地后, 我按惯例做交付后审计。本轮审计有两条具体入口:
+
+1. **路径完整性**: 每一个新能力是否**从 Studio 可达**（不只是"后端实现了"）。
+2. **判据完整性**: 我在这一轮里**新造**的同步承诺, 是否已有判据在看它。
+
+第二条是这次审计真正抓到东西的地方, 而抓到的东西**两个方向都有**: 既有缺陷,
+以及**我自己刚引入的**缺陷。
+
+### 2.62.2 ⭐ 真缺陷: `Debug` 构建从 Studio 里根本调不到
+
+**现象**: `docs/STUDIO_PROTOCOL.md:236` 逐字写着
+「`build.ps1 -Config` 有三个取值：`Dev`（缺省）/ `Release` / `Debug`（ST3.2 新增）」,
+而 `studio_core.build_argv()` 的实现是:
+
+```python
+    cfg = args.get('config') or 'Dev'
+    if cfg not in ('Dev', 'Release'):
+        raise StudioError('E_BAD_ARGS', 'config 必须是 Dev 或 Release',
+                          {'given': cfg})
+```
+
+即 **ST3.2 新增的 `Debug` 被后端拒收**。更关键的是**前端连下拉框都没有** ——
+`studio/index.html` 的生成面板只有「策略」一个 `<select>`。
+⇒ `Debug` 构建（PDB、`/DEBUG:FULL`、`build/debug/` 产物隔离）**从 Studio 里
+完全调不到**, 而且在界面上**不报任何错** —— 面板只是**少一个选项**。
+
+**为什么这比"功能缺失"更值得记**: 这是 §2.54/§2.55 那条链条的**又一副面孔**,
+但它的藏身处不同 —— 不是「豁免规则遮住了它」, 也不是「扫描面边界把它划在外面」,
+而是**一个 UI 控件根本不存在**。前两者的判据是「文字与真值是否一致」;
+这一个连**文字都没有**, 所以任何基于文本比对的判据都看不见它。
+**缺一个下拉框不会让任何东西变红。**
+
+**修法（三处, 单点定义）**:
+
+1. `studio_core.BUILD_CONFIGS = ('Dev', 'Release', 'Debug')` —— **唯一的取值清单**。
+   `build_argv()` 改为 `if cfg not in BUILD_CONFIGS`, 报错文案由该元组生成,
+   并在 `detail` 里带上 `allowed`（面板可以据此渲染, 而不是自己再抄一份）。
+2. `studio/index.html` 补 `<select id="cfg">` 三档, 选项文案标明 Debug 的产物去向。
+3. `studio/static/app.js` 两处 `build.run` 调用都带上 `config`, 且 **Debug 时在输出面板
+   明说「产物写入 build/debug/, 发布产物 build/ 不受影响」** —— 否则用户会以为
+   调试构建覆盖了发布产物。
+
+### 2.62.3 ⭐ 第二条真缺陷: 我刚抄了一份取值表, 于是新造了一条同步承诺
+
+`build.ps1:185` 有自己的校验:
+
+```powershell
+if ($Config -notin @('Dev', 'Release', 'Debug')) {
+```
+
+我在 2.62.2 里把这三个取值**抄**进 `studio_core.BUILD_CONFIGS`。
+这构成一条新的「必须同步」承诺, 而仓库里**没有判据在看它** ——
+正是 §2.46（ci.yml 项数注释）/ §2.48（ci_sim 工具集）的同一型。
+
+**判据**（加在 `studio_core.selftest()` 里, 与常量同处一个被门禁执行的入口）:
+现读 `build.ps1` 的 `$Config -notin @(...)` 取值表, 与 `BUILD_CONFIGS` 比对,
+**失锚（正则匹配不到）即失败**。
+
+**为什么不直接抄写**: 抄写的话两处**一起漂移**时它照样绿 ——
+判据必须读**另一个真值源**, 而不是读常量自己（同 §2.45 的教训:
+用常量断言常量, 等于没有断言）。
+
+**承重验证**（`build/_st5_cfgload2.py`, 真实文件注入 + `finally` 逐字节还原）:
+
+| 注入 `build.ps1` | 自检 |
+|---|---|
+| A 基线 | rc=0 |
+| B `'Debug'` -> `'DbgX'` | **rc=1**（`build.ps1=('Dev','Release','DbgX') core=('Dev','Release','Debug')`）|
+| C 删掉 `'Dev'` | **rc=1**（`build.ps1=('Release','Debug')`）|
+| D 校验点整行失锚 | **rc=1**（`build.ps1=None`）|
+| E 还原后 | rc=0, **逐字节一致 = True** |
+
+D 用例是这一条的要点: **失锚必须报错, 不能读成"没有漂移"**。
+
+### 2.62.4 前端侧判据: 「协议里的能力前端能否触达」
+
+2.62.2 的缺陷之所以能存在, 是因为既有的前端判据只查**一个方向**:
+「`app.js` 调用的命令是否都在协议表里」（防前端调不存在的命令）。
+反方向 —— **协议里的能力前端是否够得着** —— 没有判据。
+
+新增两条, 落在 `studio_server` 自检的最后一层（真实资产层）:
+
+1. `<select id="cfg">` 必须存在, 且其 `<option>` 的 value 集合**等于** `BUILD_CONFIGS`。
+2. 承重验证（`build/_st5_cfgload.py`）: 把 `value="Debug"` 改成 `value="DbgX"` ⇒ 自检 rc=1;
+   把整个 `<select>` 删掉 ⇒ 自检 rc=1; 还原后 rc=0 且逐字节一致 = True。
+
+另在 ST5 的 e2e（`build/_st5_e2e.py`）加三条: 下拉框选项 == `BUILD_CONFIGS` /
+`build_argv` 接受三档 / **负向** `config='dbg'` 报 `E_BAD_ARGS`（不是静默回退到 Dev）。
+e2e 由 26 项增至 **29 项**, 全 PASS。
+
+### 2.62.5 ⭐ 我的第一条度量错: 卫生判据的"扫描面"不是 glob
+
+§2.61.10 诚实边界第 3 条记名: 「`build/_hygiene.py` 的 15 文件清单不含新建的 4 个文件,
+实测它们合格, 但**未纳入任何自动判据**」。本题的自然修法是**把清单换成 glob**
+（扫 `tools/**` + `studio/**`）。**我先量了, 没直接改** —— 结果 glob 面**不可用**:
+
+实测（`build/_st5_hyg.py`, 扫六个活源目录, 即 `tools`、`tests`、`examples`、
+`sdk_service`、`prot_sdk`、`studio`, 共 **118** 个 `.py/.ps1/.html/.css/.js`）⇒ **11 处既有违反**:
+
+| 文件 | 实测 |
+|---|---|
+| `tools/build_dotnet_gate.ps1` | bom=True crlf=**0** bareLF=192 |
+| `tools/ci_linux.ps1` | bom=True crlf=**0** bareLF=181 |
+| `tools/clean_build.ps1` | bom=True crlf=**0** bareLF=42 |
+| `tools/deploy_harden.ps1` | bom=True crlf=**0** bareLF=265 |
+| `tools/gen_changelog.ps1` | bom=True crlf=**0** bareLF=41 |
+| `tools/repro_check.ps1` | bom=True crlf=**0** bareLF=130 |
+| `tools/verify_lock.ps1` | bom=True crlf=**0** bareLF=187 |
+| `tools/attacker/winpe_sympatcher/build.ps1` | **bom=False** 且有 85 个汉字 |
+| `examples/tool_demo/build_example.ps1` | bom=True crlf=**0** bareLF=164 |
+| `tests/attacks.py` | bom=True（非 `.ps1`）crlf=0 |
+| `tests/e2e.py` | bom=True（非 `.ps1`）crlf=0 |
+
+⇒ 若把 `_hygiene.py` 的清单换成 glob, 它会**当场报 11 条**, 其中绝大多数是**无关本轮的既有状态**。
+**结论: 不换。** 这条判据的适用面是「有人按纪律手工维护的那批文件」,
+不是「目录里所有文件」—— 换成 glob 只是把**人维护的清单**换成**人维护的豁免表**。
+
+### 2.62.6 ⭐ 我的第二条度量错: 「CRLF 是硬不变量」这句话是错的
+
+`docs/HANDOVER.md:3750-3751`（§2.36 时期我自己写的）逐字:
+
+> 本项目的卫生纪律（`build/_hygiene.py`）是
+> **`.ps1` ⇒ BOM=True + CRLF only；其余一律 BOM=False + LF only**
+
+`docs/HANDOVER.md:2741` 也写着「`.ps1` 的 CRLF-only 是仓库硬不变量」。
+
+**实测反例**（`build/_st5_ps1rule.py`, 全库 15 个 `.ps1`）:
+
+- `BOM=True` = **14 / 15**（唯一例外 `tools/attacker/winpe_sympatcher/build.ps1`，
+  无 BOM 且有 **85 个汉字** —— 这是真缺陷, 见 2.62.7）
+- **全 CRLF** = **6 / 15**
+- 即 **7 个 `.ps1` 是纯 LF**: `examples/tool_demo/build_example.ps1`（crlf=0 lf=164）/
+  `tools/build_dotnet_gate.ps1`（0/192）/ `tools/ci_linux.ps1`（0/181）/
+  `tools/clean_build.ps1`（0/42）/ `tools/deploy_harden.ps1`（0/265）/
+  `tools/gen_changelog.ps1`（0/41）/ `tools/repro_check.ps1`（0/130）/ `tools/verify_lock.ps1`（0/187）
+
+**为什么会这样（机制）**: 仓库根有 `.gitattributes`, 内容逐字含
+`*.ps1 text eol=crlf`。但 `core.autocrlf=true`, 而 `git ls-files --eol` 实测这 7 个文件
+全为 **`i/lf w/lf attr/text eol=crlf`** —— 即 **git 索引里存的是 LF**, 与
+`.gitattributes` 声明的 `eol=crlf` 不一致, **检出时并未被转换成 CRLF**。
+对照 `tools/release_check.ps1` 是 **`i/lf w/crlf`**（这个确实转过）。
+
+⇒ 所以 **CRLF 根本不是不变量, 它只是 `_hygiene.py` 那份 15 文件清单在**各自**时点的状态**。
+把它写成「仓库硬不变量」是**过度声称**; 更糟的是, 任何人照那条去"修"那 7 个文件,
+都会制造 7 处**无意义的 diff**（改的是字节而不是内容, 且 `git` 下次检出又变回 LF）。
+
+**守住的部分**: `BOM` 是真不变量, 而且有一个真实反例（2.62.7）。
+**BOM 的规则不是"`.ps1` 必须带"**, 精确表述是:
+> **`.ps1` 若含非 ASCII（中文注释）就必须带 BOM** —— PS 5.1 无 BOM 时按 ANSI/GBK 解析,
+> 会破坏中文字符串（`docs/HANDOVER.md:152-153` 记的同一条, 成因 `72b75eb`）。
+
+### 2.62.7 由 2.62.6 暴露的真实缺陷
+
+`tools/attacker/winpe_sympatcher/build.ps1`：**1948 B / 43 行 / 无 BOM / 85 个汉字**,
+`git ls-files --eol` = `i/lf w/lf attr/text eol=crlf`。
+它是**唯一**违反「含中文的 `.ps1` 必须带 BOM」的活源文件。
+
+**它为什么一直没被发现**: 同 2.62.2 的机制 —— 没有判据看这件事。
+`_hygiene.py` 的清单里没有它; `tools/bom.py` 只在**被显式调用时**检查单个文件;
+门禁 43 项里没有一项扫「活源文件的 BOM 与中文的关系」。
+它今天仍能跑, 是因为调用它的人/流程**未必**走到中文字符串 —— 一旦走到,
+PS 5.1 就会以 GBK 解读那些字节, 表现为**莫名其妙的语法错误**（同 `72b75eb` 的症状）。
+
+**本轮处置**: 如实记名, **不在本轮顺手修**。理由: 修它要动一个**攻击者视角工具**的
+构建脚本, 而本轮的主题是 Studio 审计; 把它塞进来会让这次提交同时含两件无关的事,
+且它**需要单独验证**（改完必须真的跑一次 `build.ps1`, 而那会调 MSVC）。
+⇒ 记为**待办**（见 2.62.10）。**记名不等于已修, 未修不等于不重要。**
+
+### 2.62.8 顺带核实: 两类文件确实不在任何自动判据里
+
+§2.61.10 边界第 3 条已记名 `studio/*` 与 `tools/studio_server.py` 不在 `_hygiene.py` 清单内。
+实测（`build/_st5_hyg.py`）: 它们在 **glob 面内**（`in_glob=True`），
+只是因为 glob 面不可用（2.62.5）而没有自动判据。
+本轮的处置是**把 7 个新文件加进 `_hygiene.py` 的清单**（`tools/studio_server.py` /
+`studio_core.py` / `studio_cli.py` / `vm_debug.py` / `studio/index.html` /
+`studio/static/app.js` / `studio/static/style.css` / `docs/STUDIO_PLAN.md` /
+`docs/STUDIO_PROTOCOL.md`）—— 即**继续用人维护的清单**, 但**把缺口补上**,
+而不是把清单换成 glob。
+
+### 2.62.9 这次审计的一般形状（第 10 次同型, 但分叉成三支）
+
+§2.32 起这条链条一直是同一个形状: **判据的作用域是配置出来的, 而配置不会因为它漏掉了什么而变红。**
+本轮它**分叉成三支**, 且三支的藏身处不同:
+
+| 支 | 藏身处 | 为什么既有判据看不见 | 抓到它的是什么 |
+|---|---|---|---|
+| 2.62.2 | **不存在的 UI 控件** | 判据全是**文本比对**, 缺失的控件连文字都没有 | **人工走一遍「能力→出口」路径** |
+| 2.62.5 | **扫描面选宽** | 换 glob 会报 11 条**无关**既有违反 | **先量后改**（想改之前先数一遍） |
+| 2.62.6 | **我写下的断言本身** | 判据不检查**自己对不变量的描述** | **量真值**（15 个 `.ps1` 逐个数） |
+
+三支的共同教训: **「已验证」的边界不是「有判据」, 而是「判据的输入面 == 我想说的那个面」。**
+2.62.2 缺的是输入面（控件不存在）; 2.62.5 是输入面**过宽**;
+2.62.6 是**我把输入面的结论写成了不变量**。
+
+### 2.62.10 诚实边界
+
+1. **`tools/attacker/winpe_sympatcher/build.ps1` 未修**（2.62.7）。只记名, 未验证修复,
+   也未在真机上跑过它的构建。**未修 != 不重要。**
+2. **`Debug` 构建从 Studio 的端到端未实测**：本轮只验到「下拉框有选项 / `build_argv` 接受 /
+   负向拒绝未登记值」。**没有**真点一次「执行构建（Debug）」并核对 `build/debug/` 出 17 个产物
+   —— 那需要分钟级构建, 且会写 `build/debug/`（ST3.2 的隔离语义本身已由 §2.60.7 独立验证）。
+3. **CRLF 那 7 个 `.ps1` 我一个都没动**（2.62.6）。修它们无收益, 且会制造字节 diff。
+   本节只是**撤回一句错的断言**, 不是宣布它们"应该"是什么样。
+4. **`_hygiene.py` 仍是 15 → 24 文件的人维护清单**（实为 9 个新文件加入）。它**不覆盖**
+   全库 118 个活源文件, 也不覆盖 `docs/**`（除本轮加入的两份 Studio 文档）。
+   **这是刻意的**（2.62.5 的结论）, 但它意味着「文件卫生」这句话在本仓库
+   **只对清单内的文件成立**。
+5. **BOM 判据仍没有自动化**（2.62.7）: 本轮只是**发现了唯一反例**, 没有建判据。
+   下一轮若有人再写一个新的无 BOM 中文 `.ps1`, **仍然不会有东西变红**。
+
+### 2.62.11 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/studio_core.py --selftest` | PASS（新增 1 条 BUILD_CONFIGS 对账；含负向）|
+| `tools/studio_server.py --selftest --quiet` | `PASS: 21 项（含 9 项负向）` |
+| `build/_st5_e2e.py` | **29 项全 PASS**（原 26 + 新 3）|
+| `build/_st5_cfgload.py`（下拉框承重）| A rc=0 / B rc=1 / C rc=1 / 还原后 rc=0 **逐字节一致** |
+| `build/_st5_cfgload2.py`（build.ps1 对账承重）| A rc=0 / B rc=1 / C rc=1 / D rc=1 / 还原后 rc=0 **逐字节一致** |
+| `tools/doccheck.py` | `检查数字 1196 处, 错误 0, 警告 0` |
+| 全门禁 | `PASS: 40 项检查全通过`（43 项定义 / 3 项 `-With*`；日志 `release_check_20261010_215229.log`）|
+
+### 2.62.12 CI 实测：**没有拿到证据**（调度层失败, 非代码）
+
+与 §2.50.12 / §2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 同形态：GitHub 帐单/支出上限。
+CI run `38053117322`（head `8e11938`）`completed / failure`,
+`build-and-verify` 与 `linux-portability` 均 **steps=0**（**一个步骤都没执行**）,
+`reproducible` / `sdk-package` `skipped` —— 即**调度层失败, 不是代码失败**。
+**对本节结论无影响**: 全部证据链（自检 / e2e / 承重验证 / 全门禁）都是本机实跑。
+
+*2026-10-10 v41*
+
