@@ -1465,6 +1465,27 @@ Check 'Studio 真浏览器 (studio_ui)' {
     if ($rc -ne 0) { return $false }
     $rc -eq 0
 }
+# ## 第 46 项: Studio 协议 (studio_proto)
+#   协议文档 `docs/STUDIO_PROTOCOL.md` §5 是**契约**: 前端照着它写。
+#   本项把「文档说了什么」与 `studio_core.COMMANDS` 实现的**实际载荷**对账。
+#   §2.68 的 loadCaps 就是这条判据要防的形状 —— 文档声明 `items[]`,
+#   而载荷发的是 `capabilities{}`, 前端照着写 => 「关于」页一直是空的,
+#   且三条既有判据**全都看不见** (它们都在问"运输", 没有一条问"消费")。
+#   三条: ① 命令集合双向一致 (代码新增/文档残留) ② 文档声明的 `x[]`/`x{}`
+#   键必须真的存在于 `dispatch()` 的载荷 ③ 失锚必须失败 (解析不出行、
+#   命令表为空、一条载荷都没对账上 —— 都不算通过)。
+#   自检 9 项(含 8 项负向注入) + 解析器 5 项, 不启浏览器, 秒级。
+Check 'Studio 协议 (studio_proto)' {
+    & $py -X utf8 tools\studio_proto_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\studio_proto_check.py --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    $rc -eq 0
+}
 
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #

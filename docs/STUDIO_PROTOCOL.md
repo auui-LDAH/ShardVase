@@ -476,6 +476,27 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 ⚠️ **三态**：本机没有 Edge ⇒ `rc=2`（**SKIP**，不是通过）。CI runner 上没有 Edge
 ⇒ 这一项在 CI 上恒为 SKIP；`PASS: N 项` 只数 `[ok]`。
 
+**契约对账**（门禁第 **46** 项 `Studio 协议 (studio_proto)`，
+`tools/studio_proto_check.py`）：**本文档是契约** —— 前端照着 §5 写。
+在此之前，**契约与实现之间一条判据都没有**：如实测（§2.69.2），把
+`plan.list` 从 §5 表格里整行删掉，`doccheck` / `studio_core` 自检 /
+`studio_server` 自检 / `docclaim` **四个判据全是 rc=0**。
+
+判据三条：
+
+1. **命令集合双向一致** —— `studio_core.COMMANDS`（25 条）+ `STREAM_COMMANDS`
+   （2 条）与 §5 表格（含 §5.1 标题里的两条流式命令）必须相等。
+   代码有文档没有 ⇒ 文档漏项；文档有代码没有 ⇒ 文档陈旧。
+2. **声明的 `x[]` / `x{}` 键必须真的存在于 `dispatch()` 的载荷**。
+   这一条防的正是 `loadCaps`：文档声明了一个后端从来不发的键，
+   而消费方会读到 `undefined`。
+3. **失锚必须失败** —— 解析不出行 / 命令表为空 / 一条载荷都没对账上，
+   都不算通过。
+
+⚠️ 判据只认 `[]` / `{}` 这一种**无歧义**形态。`data` 列里另有**枚举值**与
+**函数名**（`latest`、`E_BAD_ARGS`、`solve_profile.solve()` …），
+按裸标识符对账会要求**篡改正确的文档**才能变绿。
+
 ## 10. 参考
 
 - `docs/STUDIO_PLAN.md` — 阶段规划（ST0-ST6）与决策 D1-D8
@@ -487,6 +508,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 - `tools/prot_dbg.py` — 主机级调试后端（ST3：`doctor`/`sym`/`mask`/`exit`/`read`/`patch`/`watch`，**唯一实现**；`debug.*` 是它的结构化包装）
 - `tools/vmenc.py` — `.vasm` 汇编器；`--map-out` 产出行号表 sidecar
 - `tools/release_check.ps1` — `gate.items` 的数据来源（静态 `Check` 调用点）
+- `tools/studio_proto_check.py` — 本文档与 `studio_core` 的**契约对账**（门禁第 46 项）
 - `tools/compose.py` / `tools/compat.py` / `tools/solve_profile.py` —
   `plan.graph` 与 `plan.solve` 的数据来源（拓扑序、冲突检查、策略求解，**唯一实现**）
 - `tools/gate_results.py` — `test.gate.results` 的数据来源（门禁 NDJSON 的解析与对账，**唯一实现**）
