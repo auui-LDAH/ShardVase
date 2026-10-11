@@ -107,7 +107,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `vm.breakpoints` | `session`, `lines[]` \| `add[]`/`remove[]` | `lines` = 整体替换（空数组 = 全清）；与 `add`/`remove` **不可同时给**（顺序有歧义） |
 | `vm.close` | `session` | 关闭会话；**对未知 id 也成功**（幂等），返回值里 `existed` 说明它是否真的存在过 |
 | `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
-| `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why, src, src_line}` + `jump_unresolved[]` + `counts_json`/`pass_n` |
+| `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回 `items[]` 逐项 `{seq, name, status, seconds, why, src, src_line}` + `jump_unresolved[]` + `counts_json`/`pass_n` |
 | `debug.doctor` | `exe?`, `map?` | 体检：`summary{ok, syms, mask_regions, n_errors, n_warns}`；**不开进程**（`opened_process: false`） |
 | `debug.sym` | `symbols[]`, `exe?`, `map?` | `symbols[]`（表）+ `missing[]`（查不到的符号名）；**`symbols` 为空 ⇒ `E_BAD_ARGS`**，不是空结果 |
 | `debug.mask` | `symbols[]` \| `rva,len`, `exe?`, `map?` | `payload_key ∈ 'mask' / 'sym'` —— 如实透出「给了符号名时底层转成符号查询」，不替调用方抹平 |
@@ -525,6 +525,31 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 ⚠️ **诚实边界**：只判**键名**，不判参数**类型**、不判「必填/可选」、
 不判二选一关系（`bytes` \| `nop` \| `restore`）；行为臂只对**跑得动**的
 命令生效（跑不动的落进 skip，**不判**不等于**判过**）。
+
+**响应子键（花括号写法）对账**（同属第 46 项，2026-10-11 追加）：上面两条
+查的是「顶层键在不在」与「参数名对不对」，这一条查花括号里写出的**子键**。
+
+| 写法 | 语义 | 落点 |
+|---|---|---|
+| `` `items[]` `` | 顶层数组 | 直接查 |
+| `` `capabilities{}` `` | 顶层对象 | 直接查 |
+| `` `summary{a, b}` `` | 父键内联子键 | 在 `summary` **自身**上查 |
+| `` `items[]` `{a, b}` `` | 数组元素键 | 在 `items` 的**每个元素**上查 |
+
+**为什么单独一条**：判据原先只认「反引号紧跟 `[]`/`{}`」这一种形态，
+于是上表后两种写法**结构上匹配不到** —— 实测把 `debug.doctor` 的 5 个
+`summary` 子键、`modules.list` 的 20 个元素键全改成垃圾名字，
+判据报错**都是 0 条**（§2.72.3）。子键本身当时**是对的**，所以这不是
+「文档写错了」，而是「判据读不到它」；两者的区别在**下一次改动**上。
+
+**可选子键**：带 `?` 的（`note?` / `off?` / `target?`）不在元素里**不算错**。
+**空数组**（`items` 是 `[]`）无从核对，如实记进 `shape_skipped`，
+**不静默当通过**。
+
+⚠️ **诚实边界**：只判子键**在不在**，不判类型、不判嵌套深度
+（`tokens[][2]` 只判 `tokens` 键存在）；元素形状不一致时**逐元素判**，
+任一元素缺该键就报；花括号里写散文说明（`{见下文}`）时判据**沉默**
+（收窄换来的 —— 宽化会产生 §2.70 记过的 9 条假阳性）。
 
 ## 10. 参考
 

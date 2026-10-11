@@ -183,6 +183,84 @@ def declared_keys(row):
     return sorted({m.group(1) for m in _DECL_KEY.finditer(row.get('data', ''))})
 
 
+# `X[]` / `X{}`：**容器声明**。空花括号表示「以名字为键的表」（值是声明形状）。
+_CONTAINER_KEY = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(\[\]|\{\})$')
+
+# `summary{a, b}`：父键**内联**子键 —— 子键在对象**自身**上，不是它某一层的值。
+_INLINE_SUBS = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\{(.*)\}$')
+
+# data 列里的一个反引号词元。
+_BACKTICK = re.compile(r'`([^`]*)`')
+
+# 子键名后缀：`tokens[][2]` / `list[]` —— 判前剥掉。
+_SUB_SUFFIX = re.compile(r'(?:\[\])|(?:\[\d+\])$')
+
+
+def _sub_names(blob):
+    """从 `{ok, syms, note?, tokens[][2]}` 的花括号内部取子键。
+
+    返回 `[(名字, 是否可选)]`。**只认标识符** —— 花括号里的散文（`{略}`）
+    一律丢弃，避免把说明文字当成键名（§2.70 记过宽化扫描面的 9 条假阳性）。
+    """
+    out = []
+    for raw in blob.split(','):
+        s = raw.strip()
+        if not s:
+            continue
+        opt = s.endswith('?')
+        if opt:
+            s = s[:-1].strip()
+        while True:
+            m = _SUB_SUFFIX.search(s)
+            if not m:
+                break
+            s = s[:m.start()].strip()
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', s) and (s, opt) not in out:
+            out.append((s, opt))
+    return out
+
+
+def declared_shapes(cell):
+    """data 列里用 `{...}` 写出的子键集合。
+
+    返回 `[(parent, kind, [(名字, 可选)])]`，`parent` 为 None = 悬空块
+    （文档写了一个花括号子键表，但它不属于任何已声明的容器）。
+
+    ⭐ 为什么需要它：`_DECL_KEY` 要求反引号**紧跟** `[]`/`{}`，于是
+
+      - `` `summary{ok, syms, ...}` ``（父键内联子键）
+      - `` `items[]` `{name, line, gated}` ``（数组元素键）
+
+    两种写法都**结构上匹配不到** ⇒ 把它们全改成垃圾名字，判据照样全绿。
+    实测见 §2.72：改坏 5 个 `summary` 子键与 20 个 `modules[]` 元素键，
+    报错都是 0 条。
+
+    kind ∈ `arr`（元素）/ `vals`（以名字为键的表的值）/ `self`（对象自身）。
+    """
+    out = []
+    last = None              # (parent, kind) —— 最近一个容器声明
+    for m in _BACKTICK.finditer(cell):
+        t = m.group(1).strip()
+        if t.startswith('{') and t.endswith('}'):
+            subs = _sub_names(t[1:-1])
+            if subs:
+                if last is None:
+                    out.append((None, 'self', subs))
+                else:
+                    out.append((last[0], last[1], subs))
+            continue
+        mc = _CONTAINER_KEY.match(t)
+        if mc:
+            last = (mc.group(1), 'arr' if mc.group(2) == '[]' else 'vals')
+            continue
+        mi = _INLINE_SUBS.match(t)
+        if mi:
+            subs = _sub_names(mi.group(2))
+            if subs:
+                out.append((mi.group(1), 'self', subs))
+    return out
+
+
 def arg_keys(row):
     """从 args 列里提取参数键名（`symbols[]` / `exe?` / `confirm` 三种形态）。"""
     cell = row.get('args', '')
@@ -309,7 +387,8 @@ def judge_args(doc, plain, literals=None, behavior=True, dispatch_fn=None,
     return problems, info
 
 
-def judge(doc, plain, stream, check_payload=True, sample_args=None):
+def judge(doc, plain, stream, check_payload=True, sample_args=None,
+          check_shapes=True):
     """纯函数：返回 `(problems, info)`。空 problems 表示一致。"""
     problems = []
     info = {}
@@ -376,6 +455,122 @@ def judge(doc, plain, stream, check_payload=True, sample_args=None):
 
     info['only_code'] = only_code
     info['only_doc'] = only_doc
+
+    # ---- ③ 花括号子键（`summary{a,b}` / `items[]` `{a,b}`）----
+    # 与 ② 同属「响应侧」，但落点算法不同（② 是 `k in payload`，③ 要先
+    # 按 `[]`/`{}` 判定往下走一层）⇒ 分成两条判据，缺一条就漏一个方向。
+    if check_payload and check_shapes:
+        sp, sinfo = judge_shapes(doc, plain, sample_args=sample_args)
+        problems.extend(sp)
+        info.update(sinfo)
+    return problems, info
+
+
+def _elem_dict(payload, parent, kind):
+    """按 kind 从载荷里取出「一组应当带这些子键的对象」。
+
+    - `arr`：`parent` 是列表 ⇒ 取**每个**元素（元素可能形状不一，
+      所以返回列表而不是一个）。
+    - `vals`：`parent` 是「以名字为键的表」 ⇒ 取**每个**值。
+    - `self`：`parent` 就是那个对象本身。
+
+    返回 `(objs, why)`：`why` 非空表示取不到（父键缺失/类型不对），
+    调用方必须**报错**而不是静默跳过 —— 否则文档写错父键名时，
+    这条判据会退化成「什么都查不到 = 通过」。
+    """
+    if parent not in payload:
+        return [], '载荷里没有父键 `%s`' % parent
+    v = payload[parent]
+    if kind == 'self':
+        if not isinstance(v, dict):
+            return [], '`%s` 不是对象（%s）' % (parent, type(v).__name__)
+        return [v], ''
+    if kind == 'arr':
+        if not isinstance(v, list):
+            return [], '`%s` 不是数组（%s）' % (parent, type(v).__name__)
+        objs = [e for e in v if isinstance(e, dict)]
+        if not objs and v:
+            return [], '`%s` 的元素不是对象' % parent
+        return objs, ''
+    if kind == 'vals':
+        if not isinstance(v, dict):
+            return [], '`%s` 不是对象（%s）' % (parent, type(v).__name__)
+        objs = [e for e in v.values() if isinstance(e, dict)]
+        return objs, ''
+    return [], '未知的声明形态 %r' % kind
+
+
+def judge_shapes(doc, plain, sample_args=None, require_anchor=True):
+    """纯函数：**花括号子键**对账。返回 `(problems, info)`。
+
+    与 `judge()` 的 ② 是同一条判据的两半：② 查「顶层键在不在」，
+    这里查「声明的子键在不在」。分开写是因为两者的**落点算法不同** ——
+    顶层键直接 `k in payload`，子键要先按 `[]`/`{}` 判定往下走几层。
+    """
+    problems = []
+    info = {}
+    sample_args = SAMPLE_ARGS if sample_args is None else sample_args
+    rows = (doc or {}).get('rows') or {}
+    if not rows:
+        return ['%s 里解析不出任何命令行 —— 响应子键对账失去锚点' % DOC_REL], info
+
+    import studio_core as sc
+    has_shapes = any(declared_shapes(r.get('data', '')) for r in rows.values())
+    checked = 0
+    keys_checked = 0
+    skipped = []
+    for c in sorted(rows):
+        shapes = declared_shapes(rows[c].get('data', ''))
+        if not shapes or c not in plain:
+            continue
+        try:
+            payload = sc.dispatch(c, dict(sample_args.get(c, {})))
+        except Exception as e:
+            skipped.append('%s(%s)' % (c, type(e).__name__))
+            continue
+        if not isinstance(payload, dict):
+            continue
+        checked += 1
+        for parent, kind, subs in shapes:
+            if parent is None:
+                problems.append('文档 %s:%d 的 %s：有一个 `{...}` 子键表，'
+                                '但它前面没有任何 `名称[]`/`名称{}` 容器声明 —— '
+                                '读的人不知道这些子键属于谁'
+                                % (DOC_REL, rows[c]['line'], c))
+                continue
+            objs, why = _elem_dict(payload, parent, kind)
+            if why:
+                problems.append('文档 %s:%d 的 %s 声明了 `%s%s` 的子键，但%s '
+                                '—— 照着文档写的消费方会读不到东西'
+                                % (DOC_REL, rows[c]['line'], c, parent,
+                                   '[]' if kind == 'arr' else
+                                   ('{}' if kind == 'vals' else ''),
+                                   why))
+                continue
+            if not objs:
+                # 空数组：没有元素就无从核对。如实计数，不静默当通过。
+                skipped.append('%s(%s 为空)' % (c, parent))
+                continue
+            for name, opt in subs:
+                keys_checked += 1
+                missing = [i for i, o in enumerate(objs) if name not in o]
+                if missing and not opt:
+                    idx = ', '.join(str(i) for i in missing[:4])
+                    if len(missing) > 4:
+                        idx += ' 等 %d 个' % len(missing)
+                    problems.append('文档 %s:%d 的 %s 声明 `%s` 带子键 `%s`，'
+                                    '但第 %s 个元素里没有 —— 照着文档写的消费方'
+                                    '会读到 undefined（§2.68 的 loadCaps 就是这个形状）'
+                                    % (DOC_REL, rows[c]['line'], c, parent, name,
+                                       idx))
+    info['shape_cmds'] = checked
+    info['shape_keys'] = keys_checked
+    info['shape_skipped'] = skipped
+    # 失锚守卫：文档里**有**花括号子键表，却一条都没能对账 ⇒ 不能当通过。
+    # 反过来（文档里根本没有这种写法）是正常的沉默，不报。
+    if require_anchor and has_shapes and checked == 0:
+        problems.append('文档里有花括号子键表，但一条命令的响应子键都没能对账'
+                        '（全部需要参数？）—— 判据失去锚点，不能当通过')
     return problems, info
 
 
@@ -460,6 +655,130 @@ def selftest(quiet=False):
     case('文档只有流式命令、没有表格 -> 必须报（失锚）',
          {'rows': {}, 'stream': ['build.run']}, {'ping'}, {'build.run'},
          False, '失去锚点', check_payload=False)
+
+    total = ncase
+    if fails:
+        print('[studio_proto_check-selftest] FAIL: %d/%d' % (len(fails), total))
+        for f in fails:
+            print('  [X] %s' % f)
+        return RC_FAIL
+    if not quiet:
+        print('[studio_proto_check-selftest] PASS: %d 项（含 %d 项负向注入）'
+              % (total, nneg))
+    return RC_OK
+
+
+# ---------------------------------------------------------------- 响应子键自检
+
+def _shape_fixture(cells, cmds=None):
+    """造一份只关心 data 列花括号写法的 doc。"""
+    names = list(cmds or ['ping'])
+    rows = {}
+    for i, c in enumerate(names):
+        rows[c] = {'line': 90 + i, 'args': '—', 'data': cells[i]}
+    return {'rows': rows, 'stream': []}
+
+
+def shape_selftest(quiet=False):
+    """造坏输入喂 judge_shapes() —— 证明这条判据**会**红。
+
+    ⚠️ 每个用例都自带一份**补丁后的 dispatch**（`patch` 参数），而不是靠真实
+    后端 ——否则「改了 studio_core 的载荷形状」会让用例红，而这恰恰是判据
+    要检测的东西，不是判据自身的缺陷。
+    """
+    fails = []
+    ncase = 0
+    nneg = 0
+    import studio_core as sc
+
+    real_dispatch = sc.dispatch
+
+    def run(doc, plain, patch=None, require_anchor=True):
+        orig = sc.dispatch
+        if patch is not None:
+            def fake(cmd, args, _p=patch, _o=orig):
+                if cmd in _p:
+                    return _p[cmd]
+                return _o(cmd, args)
+            sc.dispatch = fake
+        try:
+            return judge_shapes(doc, plain, sample_args={},
+                                require_anchor=require_anchor)
+        finally:
+            sc.dispatch = orig
+
+    def case(name, doc, plain, want, sub=None, patch=None, anchor=True):
+        nonlocal ncase, nneg
+        ncase += 1
+        if not want:
+            nneg += 1
+        probs, _info = run(doc, plain, patch, anchor)
+        got = not probs
+        good = (got == want)
+        det = 'problems=%s' % (probs[:1] if probs else [])
+        if good and sub is not None:
+            good = any(sub in p for p in probs)
+            if not good:
+                det += ' (缺少子串 %r)' % sub
+        if not good:
+            fails.append('%-52s want_ok=%s %s' % (name, want, det))
+        elif not quiet:
+            print('  ok  %-52s %s' % (name, det))
+
+    # ---- 合规 ----
+    case('合规：`items[]` + 元素键全在 -> 通过',
+         _shape_fixture(['`items[]` `{name, line}`'], ['ping']), {'ping'},
+         True, patch={'ping': {'items': [{'name': 'a', 'line': 1}]}})
+    case('合规：`cap{...}` 值表 + 子键全在 -> 通过',
+         _shape_fixture(['`cap{}`，每项 `{status, backend}`'], ['ping']),
+         {'ping'}, True,
+         patch={'ping': {'cap': {'x': {'status': 'ready', 'backend': 'b'}}}})
+    case('合规：父键内联 `summary{a, b}` -> 通过',
+         _shape_fixture(['`summary{ok, n_warns}`'], ['ping']), {'ping'},
+         True, patch={'ping': {'summary': {'ok': True, 'n_warns': 0}}})
+
+    # ---- ★ 本轮发现的两种不可见形态，各来一条 ----
+    case('★ 父键内联 `summary{n_warnz}`：子键不存在 -> 必须报',
+         _shape_fixture(['`summary{ok, n_warnz}`'], ['ping']), {'ping'},
+         False, 'n_warnz', patch={'ping': {'summary': {'ok': True,
+                                                       'n_warns': 0}}})
+    case('★ 数组元素键 `{name, gatedd}`：元素里没有 -> 必须报',
+         _shape_fixture(['`items[]` `{name, gatedd}`'], ['ping']), {'ping'},
+         False, 'gatedd', patch={'ping': {'items': [{'name': 'a',
+                                                     'gated': True}]}})
+
+    # ---- 父键问题 ----
+    case('父键不在载荷里 -> 必须报（不是静默）',
+         _shape_fixture(['`missing[]` `{name}`'], ['ping']), {'ping'},
+         False, '没有父键', patch={'ping': {'items': []}})
+    case('父键类型不对（声明数组、实际是对象）-> 必须报',
+         _shape_fixture(['`items[]` `{name}`'], ['ping']), {'ping'},
+         False, '不是数组', patch={'ping': {'items': {'name': 'a'}}})
+    case('悬空花括号（前面没有容器声明）-> 必须报',
+         _shape_fixture(['逐项 `{name, line}`'], ['ping']), {'ping'},
+         False, '没有任何', patch={'ping': {'items': [{'name': 'a'}]}})
+
+    # ---- 可选子键：不在不算错 ----
+    case('可选子键 `note?` 不在元素里 -> 不算错（不是负向）',
+         _shape_fixture(['`items[]` `{name, note?}`'], ['ping']), {'ping'},
+         True, patch={'ping': {'items': [{'name': 'a'}]}})
+    case('可选子键 `note?` 存在也不算错',
+         _shape_fixture(['`items[]` `{name, note?}`'], ['ping']), {'ping'},
+         True, patch={'ping': {'items': [{'name': 'a', 'note': 'x'}]}})
+    case('子键后缀 `tokens[][2]` 剥掉后按 `tokens` 判 -> 通过',
+         _shape_fixture(['`rows[]` `{line, tokens[][2]}`'], ['ping']),
+         {'ping'}, True,
+         patch={'ping': {'rows': [{'line': 1, 'tokens': [['a', 0]]}]}})
+
+    # ---- 失锚 ----
+    case('文档里没有花括号写法 -> 沉默（不是失锚）',
+         _shape_fixture(['`items[]`'], ['ping']), {'ping'}, True,
+         patch={'ping': {'items': []}}, anchor=True)
+    case('文档里有花括号写法、却一条都没对账 -> 必须报（失锚）',
+         _shape_fixture(['`items[]` `{name}`'], ['ping']), set(), False,
+         '失去锚点', patch={'ping': {'items': [{'name': 'a'}]}})
+    case('文档解析出 0 行 -> 必须报（失锚）',
+         {'rows': {}, 'stream': []}, {'ping'}, False, '失去锚点')
 
     total = ncase
     if fails:
@@ -618,7 +937,8 @@ def main(argv=None):
         rc1 = _parse_selftest(args.quiet)
         rc2 = selftest(args.quiet)
         rc3 = arg_selftest(args.quiet)
-        return RC_FAIL if (rc1 or rc2 or rc3) else RC_OK
+        rc4 = shape_selftest(args.quiet)
+        return RC_FAIL if (rc1 or rc2 or rc3 or rc4) else RC_OK
 
     doc_path = os.path.join(REPO, DOC_REL.replace('/', os.sep))
     if not os.path.isfile(doc_path):
@@ -642,11 +962,16 @@ def main(argv=None):
             sys.stdout.write('  [X] %s\n' % p)
         return RC_FAIL
     sys.stdout.write('[studio_proto_check] PASS: 命令 %d 条（文档 %d 条）双向一致；'
-                     '声明键对账 %s 条命令%s；参数键对账 %d 条命令'
+                     '声明键对账 %s 条命令%s；响应子键对账 %s 条命令 / %d 个子键%s；'
+                     '参数键对账 %d 条命令'
                      '（词法臂 %d / 行为臂 %d 命中）\n'
                      % (info['code'], info['doc'], info.get('verified', 0),
                         ('，%d 条因需要参数未对账' % len(info['skipped']))
                         if info.get('skipped') else '',
+                        info.get('shape_cmds', 0), info.get('shape_keys', 0),
+                        ('，%d 条因空数组/需要参数未对账'
+                         % len(info['shape_skipped']))
+                        if info.get('shape_skipped') else '',
                         ainfo.get('arg_judged', 0), ainfo.get('arg_lex', 0),
                         ainfo.get('arg_beh', 0)))
     return RC_OK
