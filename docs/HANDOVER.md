@@ -11114,9 +11114,34 @@ rc=0 且**没有判据⑥ 这一行** ⇒ 构成干净差分。
 它就会和一整类缺陷一起安静地绿下去 —— 而写下它的那份文档，
 不会有任何东西因为它过期而变红。**
 
+### 2.76.13 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
+
+推送 `b8fb235` 之后 `gh run list --limit 3` 显示最近三轮（`38177560267` /
+`38162641961` / `38151809268`）全部 `completed / failure` 且耗时都是 **4 s**。
+逐 job 读 `38177560267`（head `b8fb235`）：
+
+| job | conclusion | steps |
+|---|---|---|
+| `build-and-verify` | failure | **0** |
+| `linux-portability` | failure | **0** |
+| `reproducible` | skipped | 0 |
+| `sdk-package` | skipped | 0 |
+
+**一个步骤都没有执行** ⇒ 这是**调度层**失败（同 §2.50.12 / §2.53.9 / §2.55.13 /
+§2.59.13 / §2.61.11 / §2.69.13 / §2.75.9 形态），注解逐字为
+`The job was not started because recent account payments have failed or your
+spending limit needs to be increased`。
+
+**边界**：① 这一批修复**没有 CI 证据** —— 证据全部来自本机（§2.76.11 的验证表）；
+② CI 绿本来也不能证明「同型缺陷不会再出现」，真正的证据是 `build/_mutc6.py`
+的注入差分与 F9/F10 两条负向用例；③ 帐单属**外部基础设施状态**，不在本仓库
+可修范围。另：`gh run list` 期间有一段时间连查询都报
+`dial tcp 198.18.0.37:443`（`198.18.0.0/15` 是 RFC 2544 保留段）⇒ 本机 DNS/代理
+把 `api.github.com` 解析到了黑洞地址，`Remove-Item Env:https_proxy` 无效。
+
 ---
 
-*2026-10-12 v51*
+*2026-10-12 v52*
 
 ---
 
