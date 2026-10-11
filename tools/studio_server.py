@@ -41,6 +41,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import secrets
 import sys
 import time
@@ -152,15 +153,43 @@ class Handler(BaseHTTPRequestHandler):
                                    'detail': detail or {}}}, code)
 
     def _read_body(self):
+        """读出请求体。
+
+        ⭐ 调用它的位置很重要：**任何提前返回之前都必须先把体读掉**。
+
+        `protocol_version = 'HTTP/1.1'` 意味着连接默认 keep-alive，而
+        `BaseHTTPRequestHandler` 会在同一条连接上接着解析"下一个请求行" ——
+        没被读走的 body 字节会被当成那个请求行。实测（`build/_srv_desync.py`）：
+        发一个"带 body 但令牌不符"的 POST（401，体未读），紧接着发一个合法
+        请求，第二条得到
+
+            400 Bad request syntax ('{"cmd": "ping"}POST /api HTTP/1.1')
+
+        体量放大到 1KB 时更直白：`501 Unsupported method ('XXXX…POST')`。
+        而关闭连接时 Windows 还会对未读数据发 RST，把**已经发出**的那个 401
+        一起丢掉 ⇒ 客户端拿到 `ConnectionAbortedError: [WinError 10053]`
+        —— 这正是门禁第 43 项偶发失败的那条报错。
+        """
         try:
             n = int(self.headers.get('Content-Length') or 0)
         except ValueError:
+            self.close_connection = True
             return None, 'Content-Length 不是整数'
         if n < 0 or n > MAX_BODY:
+            # 超限就不读了，但**必须断开**：留在缓冲区里的字节会让下一个
+            # 请求失步，比拒绝这个大请求更糟。
+            self.close_connection = True
             return None, '请求体过大（上限 %d 字节）' % MAX_BODY
         if n == 0:
             return b'', None
         return self.rfile.read(n), None
+
+    def _drain_body(self):
+        """读掉并丢弃请求体：给**不需要体**的路径用（GET / HEAD 的提前返回）。
+
+        与 `_read_body` 同源 —— 存在的唯一理由是"不读就应答"会让连接失步。
+        """
+        _raw, _err = self._read_body()
 
     # ---- 路由 ----
 
@@ -178,6 +207,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api'):
             # GET 不该执行命令。一条能被 GET 触发的副作用命令会被
             # 浏览器的预取 / 历史恢复悄悄执行。
+            # ⭐ 提前返回前读掉请求体（同上：不读 ⇒ 下一条请求失步）。
+            self._drain_body()
             self._send_error_json(405, 'E_BAD_ARGS',
                                   'API 只接受 POST（命令不是幂等的，GET 会被预取触发）',
                                   {'method': 'GET', 'use': 'POST /api'})
@@ -209,12 +240,16 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(parsed.path)
         if path not in ('/api', '/api/stream'):
+            # ⭐ 提前返回前把请求体读掉：不读 ⇒ 残留字节被当成下一个请求行
+            #    （连接失步 / WinError 10053）。见 `_read_body` 的 docstring。
+            self._drain_body()
             self._send_error_json(404, 'E_NOT_FOUND', '没有这个端点',
                                   {'path': path, 'endpoints': ['/api', '/api/stream']})
             return
         if not self._token_ok():
             # 令牌只认请求头。放在 query 里会被 Referer / 日志 / 截图带出去，
             # 而这条路径的唯一目的就是不让别人拿到它。
+            self._drain_body()
             self._send_error_json(401, 'E_FORBIDDEN', '缺少或错误的令牌',
                                   {'header': TOKEN_HEADER,
                                    'how': '页面从 URL fragment（#t=...）取令牌后放进请求头',
@@ -339,6 +374,71 @@ def _http(port, method, path, body=None, token=None, timeout=20.0):
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
+
+
+def _raw_post(path, obj, token=None):
+    """拼一个 POST 请求（含 JSON 体），返回**原始字节**。
+
+    与 `_http` 的区别：它不建连接、不发请求 —— 因为要测的是"同一条连接上
+    连续两个请求"，那必须自己控制 socket 的生命周期。
+    """
+    body = json.dumps(obj).encode('utf-8')
+    return _raw_post_raw(path, body, token=token)
+
+
+def _raw_post_raw(path, body, token=None, method='POST'):
+    head = ('%s %s HTTP/1.1\r\nHost: %s\r\n'
+            'Content-Type: application/json\r\n'
+            'Content-Length: %d\r\n' % (method, path, HOST, len(body)))
+    if token:
+        head += '%s: %s\r\n' % (TOKEN_HEADER, token)
+    head += '\r\n'
+    return head.encode('ascii') + body
+
+
+def _raw_status(sock, timeout=4.0):
+    """从 socket 读一个完整 HTTP 应答，返回状态行。"""
+    sock.settimeout(timeout)
+    buf = b''
+    while b'\r\n\r\n' not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    head, _sep, rest = buf.partition(b'\r\n\r\n')
+    status = head.split(b'\r\n', 1)[0].decode('latin-1')
+    clen = 0
+    for line in head.split(b'\r\n')[1:]:
+        if line.lower().startswith(b'content-length:'):
+            try:
+                clen = int(line.split(b':', 1)[1].strip())
+            except ValueError:
+                clen = 0
+    while len(rest) < clen:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        rest += chunk
+    return status
+
+
+def _raw_two(port, first_bytes, second_bytes, timeout=4.0):
+    """同一条 keep-alive 连接上依次发两个请求，返回**第二个**的状态行。
+
+    这条判据的全部价值就在"第二个"上：第一个请求在两种实现下都正常。
+    """
+    import socket
+    s = socket.create_connection((HOST, port), timeout=timeout + 1.0)
+    try:
+        s.sendall(first_bytes)
+        _raw_status(s, timeout)
+        s.sendall(second_bytes)
+        return _raw_status(s, timeout)
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
 
 
 def _stream_lines(port, path, body, token, timeout=60.0):
@@ -514,15 +614,72 @@ def selftest(quiet=False):
             case('启动 URL 把令牌放在 fragment（#t=），不落进请求行',
                  ('#t=' in url) and ('?' not in url.split('#')[0].split('://', 1)[1]),
                  'url=%s' % url.replace(tok, '<tok>'))
+
+            # 20 ⭐ 提前返回的分支必须把请求体读掉（否则连接失步）
+            #
+            #    `_read_body` 的 docstring 记了机制。这条用例**直接复现那个后果**：
+            #    同一条 keep-alive 连接上，先发一个"带 body 但会被提前拒绝"的
+            #    请求（401 无令牌 / 404 未知端点 / 405 GET-api），再发一个合法
+            #    请求 —— 若体没被读走，第二个请求会把残留字节当成请求行，得到
+            #    `400 Bad request syntax (...)` 或 `501 Unsupported method (...)`。
+            #
+            #    ⚠️ 这条判据不能被"只看第一发"的写法替代：第一发在两种实现下
+            #       都是正确的 401/404/405，**差别只在连接的下一个请求**。
+            #    ⚠️ 四个分支都要在这里各有一条 —— 少写一条，那个分支被改回
+            #       "不读体"时就没有判据会红（405 那条是实测补上的：只删 404
+            #       的 drain，本用例会因**更早**的用例先崩而根本不执行）。
+            desync = []
+            for _lbl, _first in (
+                    ('401+body', _raw_post('/api', {'cmd': 'ping'})),
+                    ('404+body', _raw_post('/nope', {'cmd': 'ping'})),
+                    ('401+1KB', _raw_post_raw('/api', b'X' * 1024)),
+                    ('405+body', _raw_post_raw('/api', b'{"cmd":"ping"}',
+                                               method='GET'))):
+                _st2 = _raw_two(port, _first,
+                                _raw_post('/api', {'cmd': 'ping'}, token=tok))
+                if not _st2.startswith('HTTP/1.1 200'):
+                    desync.append('%s->%s' % (_lbl, _st2[:48]))
+            case('提前返回的请求会读掉请求体（同连接下一个请求不失步）',
+                 not desync,
+                 '; '.join(desync) if desync else '4/4 连接可复用')
         finally:
             httpd.shutdown()
             httpd.server_close()
             time.sleep(0.1)
 
-        # 20 真实 UI 资产存在且自洽（这一条才检查仓库里的 studio/）
-        #    ⚠️ 它与上面 19 条**不同源**：上面用合成 UI 测服务端，这里测资产。
+        # 21 真实 UI 资产存在且自洽（这一条才检查仓库里的 studio/）
+        #    ⚠️ 它与上面 20 条**不同源**：上面用合成 UI 测服务端，这里测资产。
         real_ok, det = _check_real_ui()
         case('真实 studio/ 资产存在、可解析、无外部引用', real_ok, det)
+
+        # 22 ⭐ 接线判据**自己的**判别力（`_check_wiring` 是纯函数, 可造输入）
+        #
+        #    ⚠️ 上面第 21 条只在真实资产上跑一次。若 `_check_wiring` 被改成
+        #       `return True, '...'`，第 21 条**照旧绿**（真实资产本来就是好的）
+        #       —— 那是"检查器只在自己造的输入上成立"的反面：**只在真实输入
+        #       上成立，于是它失效时没人发现**。这 6 条造的就是坏输入。
+        _H = ('<button id="a"></button>\n<button id="b"></button>\n'
+              '<div id="view-x"></div>\n<div id="view-y"></div>\n')
+        _J = ("function f(){}\nfunction g(){}\n"
+              "const p = $('a');\n"
+              "['x', 'y'].forEach((v) => { const el = $('view-' + v); });\n"
+              "$('b') && $('b').addEventListener('click', f);\n")
+        _wcases = [
+            ('合规输入必须通过（防假红）', _H, _J, True),
+            ('引用了不存在的 id 必须报',
+             _H, _J.replace("$('a')", "$('missing')"), False),
+            ('动态族成员缺失必须报',
+             _H.replace('id="view-y"', 'id="pane-y"'), _J, False),
+            ('处理器未定义必须报',
+             _H, _J.replace('addEventListener(\'click\', f)',
+                            'addEventListener(\'click\', nosuchfn)'), False),
+            ('重复 id 必须报', _H.replace('id="b"', 'id="a"'), _J, False),
+            ('扫描面为空必须报（失锚）', '<p>no ids</p>', _J, False),
+        ]
+        for _nm, _h, _j, _want in _wcases:
+            _ok, _d = _check_wiring(_h, _j)
+            case('**负向** 接线: %s' % _nm, bool(_ok) == _want,
+                 ('ok' if _ok else _d)[:70])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -538,6 +695,115 @@ def selftest(quiet=False):
     return RC_OK if not bad else RC_FAIL
 
 
+def _html_ids(html):
+    """`index.html` 里声明的元素 id（**按出现顺序**，便于后面查重复）。"""
+    return re.findall(r'\bid="([^"]+)"', html)
+
+
+def _js_literal_ids(js):
+    """`app.js` 里用 `$('字面量')` 取过的 id。"""
+    return set(re.findall(r"\$\('([^']+)'\)", js))
+
+
+def _js_dyn_ids(js):
+    """展开 `['a','b'].forEach((v) => $('view-' + v))` 这类**动态族**取法。
+
+    返回 `{前缀: {展开出的 id}}`。返回空集表示"看不出这一族有哪些成员"。
+
+    ⚠️ 只判"前缀下至少有一个 id"是**不够的**：把 `view-vm` 改成 `pane-vm`
+    时，同族还有 `view-gen` 等 ⇒ 前缀检查照旧通过，而面板上那一页永远打不开。
+    实测（`build/_wire_neg.py` 的变异 E）第一版就是这么漏的。
+    """
+    out = {}
+    pat = re.compile(r"\[([^\]]{2,400}?)\]\s*\.forEach\(\s*"
+                     r"\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*\{?[^}]{0,400}?"
+                     r"\$\('([^']*?-)'\s*\+\s*\2\s*\)", re.S)
+    for m in pat.finditer(js):
+        arr, _var, pre = m.group(1), m.group(2), m.group(3)
+        vals = re.findall(r"'([^']+)'", arr)
+        if vals:
+            out.setdefault(pre, set()).update(vals)
+    return out
+
+
+def _js_dyn_prefixes(js):
+    """`app.js` 里 `$('view-' + v)` 这类**动态前缀**取法（返回 `view-`）。"""
+    return set(re.findall(r"\$\('([^']*?-)\s*'\s*\+", js))
+
+
+def _js_handlers(js):
+    """`addEventListener('evt', FN)` 里出现的具名处理器。"""
+    return set(re.findall(
+        r"addEventListener\(\s*'[a-z]+'\s*,\s*([A-Za-z_$][\w$]*)", js))
+
+
+def _js_fns(js):
+    """`app.js` 里定义的函数名（`function F` 与 `const F = (...) =>` 两种形态）。"""
+    a = set(re.findall(
+        r'(?m)^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)', js))
+    b = set(re.findall(
+        r'(?m)^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*'
+        r'(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)', js))
+    return a | b
+
+
+def _check_wiring(html, js):
+    """元素 id 的双向对账：**每一处 `$('x')` 都得在 html 里存在。**
+
+    ⚠️ 这条判据防的是**第三种静默**（前两种见 `_check_real_ui` 的 needle 与
+    `#cfg`）：不是"前端没用协议"，也不是"协议能力前端够不着"，而是
+    **面板元素接错了线**。把 `id="btn-vmcontinue"` 改成别的名字，或把
+    `addEventListener` 的处理器名写错，运行期**不报错**：`$()` 返回 null，
+    那个按钮永远点不动，而端到端检查（发命令、看响应）全绿。
+
+    实测：五个只改 id/处理器的变异（`build/_ui_gap.py`）在**所有**既有判据上
+    都是 0 条错误。
+
+    ⚠️ 只做**正向**对账（引用了必须存在）。反向"html 里每个 id 都必须被 `$()`
+    引用"**会误报 9 处**：`adwarn`/`vmhint` 是纯提示元素，`pane-main` 与六个
+    `view-*` 由 `$('view-' + v)` / `$('panel-' + p)` 动态取 —— 所以反向只做
+    "动态前缀至少命中一个 id"。
+    """
+    hids = _html_ids(html)
+    if not hids:
+        return False, 'index.html 里一个 id 都没有 —— 判据失去锚点'
+    if len(hids) != len(set(hids)):
+        dup = sorted(i for i in set(hids) if hids.count(i) > 1)
+        return False, 'index.html 有重复 id %s —— 浏览器只认第一个' % dup
+    dollar = _js_literal_ids(js)
+    if not dollar:
+        return False, 'app.js 里没有任何 $(\'字面量\') 取元素 —— 判据失去锚点'
+    hset = set(hids)
+    missing = sorted(d for d in dollar if d not in hset)
+    if missing:
+        return False, ('前端引用了不存在的元素 id %s —— $() 会静默返回 null, '
+                       '那个入口永远点不动而不会报错' % missing)
+    for pre in sorted(_js_dyn_prefixes(js)):
+        if not any(h.startswith(pre) for h in hset):
+            return False, ('前端用 %s* 动态取元素, 但 index.html 里没有任何 '
+                           '这样的 id —— 整族元素被改名了' % pre)
+    # ⚠️ 前缀存在**不等于**族内成员都在：`view-vm` 单独被改掉时前缀检查照旧
+    #    通过。故把 forEach 数组展开，逐个成员核对（变异 E 实测的缺口）。
+    for pre, members in sorted(_js_dyn_ids(js).items()):
+        gone = sorted(m for m in members if (pre + m) not in hset)
+        if gone:
+            return False, ('前端按 %s* 取元素, 但 index.html 里没有 %s —— '
+                           '同族其它成员还在, 所以只看前缀发现不了; 那一页/'
+                           '那一栏会永远打不开'
+                           % (pre, [pre + g for g in gone]))
+    handlers = _js_handlers(js)
+    if not handlers:
+        return False, 'app.js 里没有任何 addEventListener 具名处理器 —— 判据失去锚点'
+    undef = sorted(h for h in handlers if h not in _js_fns(js))
+    if undef:
+        return False, ('事件处理器 %s 在 app.js 里没有定义 —— 绑定的是个不存在的'
+                       '函数, 按钮点了没反应（运行期抛 ReferenceError 只在点击时）'
+                       % undef)
+    return True, ('%d 处字面量引用 / %d 个 id / %d 个动态前缀 / %d 个处理器'
+                  % (len(dollar), len(hset), len(_js_dyn_prefixes(js)),
+                     len(handlers)))
+
+
 def _check_real_ui():
     """检查仓库里的 `studio/`。**判据只查"能自洽运行"，不查美观。**"""
     idx = os.path.join(UI_DIR, 'index.html')
@@ -549,6 +815,9 @@ def _check_real_ui():
         if not os.path.isfile(p):
             return False, '缺少 studio/%s' % sub
         assets.append(p)
+    html = open(idx, 'r', encoding='utf-8').read()
+    js = open(os.path.join(UI_DIR, 'static', 'app.js'),
+              'r', encoding='utf-8').read()
     blob = ''
     for p in [idx] + assets:
         blob += open(p, 'r', encoding='utf-8').read()
@@ -594,7 +863,11 @@ def _check_real_ui():
     if 'prompt(' in blob:
         return False, ('前端仍在用 prompt() 取输入 —— ST5.3 的验收就是把它'
                        '换成真的视图（prompt 里连行号都显示不了）')
-    return True, '%d 个资产, 无外部引用' % (len(assets) + 1)
+    # 第三种静默：**面板元素接错了线**（详见 `_check_wiring` 的 docstring）。
+    wok, wdet = _check_wiring(html, js)
+    if not wok:
+        return False, wdet
+    return True, '%d 个资产, 无外部引用; 接线 %s' % (len(assets) + 1, wdet)
 
 
 def main(argv=None):
