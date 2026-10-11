@@ -1414,6 +1414,58 @@ Check '文件编码 (bom_check)' {
     $rc -eq 0
 }
 
+# ## 第 45 项(2026-10-11): 前端在**真实浏览器**里点一遍
+#
+# 前四项 Studio 判据都是静态的(读文本/读协议/读 id 接线)。它们看不见
+# 一类缺陷: **前端读的键, 后端从来没发过**。
+#
+# 实测(§2.68): `studio/static/app.js` 的 `loadCaps()` 原先写
+#   `d.items.forEach(...)`
+# 而后端 `capabilities` 命令发的是 `capabilities{}`(**以能力名为键的对象**),
+# 根本没有 `items` 这个键 => 「关于」页**从 ST5 起一直是空的**。
+#
+# ## 为什么三条既有判据全都看不见
+#   · 静态接线判据  只问「id 有没有接错」, 不问「拿到数据之后填了什么」
+#   · 真实资产 needle 只问「app.js 里**提到**了 vm.continue 没有」
+#   · 服务端 e2e     只验「资产被正确读出、命令全通」
+#   唯一的表现是一个 **unhandled rejection**, 只有真跑一遍 JS 才会出现。
+#
+# ## 根因还牵出一行错的文档
+#   `docs/STUDIO_PROTOCOL.md` 当时写的是 `items[]` —— **前端照着文档写, 文档错了**。
+#   一并修正为 `capabilities{}`。教训: 协议文档与实现不一致时,
+#   不能默认「实现错了」(同 §2.37 引用文档断言前先读主语)。
+#
+# ## 三态
+#   找不到 Edge => `rc=2`(SKIP)。**SKIP 不是通过**: `PASS: N 项` 只数 `[ok]`。
+#   CI runner 上没有 Edge, 所以这一项在 CI 上恒为 SKIP —— 这是**已知的**、
+#   记名的边界(§2.68.10), 不是"CI 也验证了前端"。
+#
+# ## 判据(六条)
+#   ① 外壳启动(`#app` 不再是 hidden) 且启动阶段无 JS 错误
+#   ② 六个活动栏按钮都点得中
+#   ③ 点每个按钮之后**恰好只有它**可见(视图切换坏掉会显示 0 个或 2 个)
+#   ④ 每个视图渲染出的叶子文本元素数不低于下限(空页面在这里变红)
+#   ⑤ 点按钮之后 `#gate-list` / `#vmimg` 必须真的被填上
+#   ⑥ 整轮结束后 `window.__err` 必须为空
+#
+# 判据锚定的是**证据形态**(渲染计数 / 未处理 rejection), 不是「某个词出现过」。
+#
+# ## 为什么要 --selftest
+#   `judge()` 是纯函数(吃一份驱动报告、吐结论), 造坏输入直接喂它。
+#   没有这一层, 「浏览器里断言失败」与「判据自己坏了」在输出上长得一样。
+#   自检 14 项(含 13 项负向注入), **不启浏览器**, 秒级。
+Check 'Studio 真浏览器 (studio_ui)' {
+    & $py -X utf8 tools\studio_ui_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\studio_ui_check.py
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    $rc -eq 0
+}
+
 # Linux **运行时**验证（C 阶段, 2026-09-25）—— **放在最末**
 #
 # ## 与"编译覆盖"的区别

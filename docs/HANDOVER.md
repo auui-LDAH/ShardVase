@@ -2626,7 +2626,6 @@ WinPE 四条验收盒勾上（附证据），**Android 四条如实保留未勾*
 - Android 侧真机仍未测（需 NDK + root）。
 
 *2026-10-06 v1*
-
 ## 2.30 门禁第 38 项：Android 交叉编译（`tools/android_compile_check.py`，2026-10-06）
 
 ### 2.30.1 缘起：Android 侧**从未被编译过**
@@ -9930,7 +9929,131 @@ ST0-ST5 期间 `_check_real_ui()` 只查两件事：资产里**有没有**引用
 
 ---
 
-*2026-10-11 v45*
+## 2.68 真浏览器判据：一条 CDP 路线，以及它抓到的「前端读的键后端从来没发过」（2026-10-11）
+
+### 2.68.1 缘起
+§2.67 给「面板元素接错线」补了**静态**判据（`_check_wiring`），并在 2.67.7 如实写下边界：
+「这条判据是**静态文本**层面的（问"名字对不对得上"），**不验证** `addEventListener` 挂的事件
+类型是否正确、也不验证处理器行为 —— **那需要真浏览器**。」
+
+本轮就是去兑现这条边界。结果是：真浏览器判据落地后，**立刻抓到了一个静态判据看不见的真缺陷**，
+而这个缺陷**从 ST5 起就一直在**。
+
+### 2.68.2 路线：headless Edge + CDP（零依赖）
+- 环境：`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`（`155.0.4283.45`）；
+  node `D:\environment\nodejs\node.exe`（**v24.19.0**，有全局 `WebSocket`）。
+- ⚠️ **`--dump-dom` 在 Edge 里是空操作**：`--headless=new` / `=old` / `=chrome` / 裸 `--headless`
+  **四种全部 `rc=0` 且 stdout = 0 B**（`file://` 与 `data:` 都试过）；`data:text/html` 多目标时报
+  `Multiple targets are not supported in headless mode.`（exit 13）。`--screenshot=<png>` 可用
+  （4890 B PNG）——**截图能出图，DOM 却导不出**，所以截图路线不足以做断言。
+- 可行的是 **CDP**：`--headless=new --remote-debugging-port=<port>` + `GET /json/version`
+  + `GET /json/list` + WebSocket 上的 `Runtime.evaluate`。实测 `browser = Edg/155.0.4283.45`、
+  `evaluate` 返回 `{"result":{"type":"string","value":"..."}}` ⇒ **JS 真的在跑**。
+- 传输只用 node 内置 `http` 与全局 `WebSocket` ⇒ **不引任何 npm 包**（本机 npm 不可用，
+  与 D6 同一约束）。
+- 全库搜 `msedge` / `chrome` / `CDP` / `remote-debugging` / `node.exe` = **0 处** ⇒ 此前没有
+  任何浏览器基础设施，这条是**全新**的。
+
+### 2.68.3 ⭐ 真缺陷：`loadCaps` 读的键后端从来没发过
+- `studio/static/app.js` 的 `loadCaps()` 原写：
+  `d.items.forEach((it) => { ... it.name ... })`、`log('能力 ' + d.items.length + ...)`。
+- 后端真形态（`tools/studio_core.py:373 cmd_capabilities` → `:196 capabilities()` → `:214`）：
+  `{'capabilities': {9 个以能力名为键的成员}, 'protocol_version', 'repo', 'studio_version'}`
+  ⇒ **`items` 键不存在**。
+- 后果：**「关于」页从 ST5 起一直是空的**。唯一的表现是一个 **unhandled rejection**
+  （`TypeError: Cannot read properties of undefined (reading 'forEach')`）。
+- 归属：`git log -S loadCaps` ⇒ 引入于 **`8e11938`**（ST5）；`git log -S "'capabilities':"`
+  ⇒ 后端形态引入于 **`c2c68c4`**（ST0）⇒ **前端从一开始就写错了**。
+
+### 2.68.4 ⭐ 为什么三条既有判据全都看不见（本节的要点）
+| 既有判据 | 它问的问题 | 为什么问不到 |
+|---|---|---|
+| `_check_wiring()`（§2.67） | id **接错线**了吗 | 只查 `$('x')` 与 id 的对应，不查「拿到数据**之后**填了什么」 |
+| `_check_real_ui()` 的 needle | 资产里**提到**这些命令了吗 | 只问「字符串出现过」，`loadCaps` 确实提到了 `capabilities` |
+| 服务端 e2e / selftest | 资产被正确读出、命令全通吗 | 两者都成立 —— 坏的是**消费**端 |
+⇒ 三条判据都在问**运输**，没有一条问**消费**。真浏览器判据是第一条问到消费端的。
+
+### 2.68.5 ⭐ 根因还牵出一行错的文档：协议文档是错的那一侧
+`docs/STUDIO_PROTOCOL.md:92` 原写 `` | `capabilities` | — | `items[]`，每项 `{name, status, ...}` ``。
+而 `tools/studio_core.py` 自己的 **10+ 处自检**都按 **dict** 用
+（`:1535 _capst = {k: c.get('status') for k, c in caps['capabilities'].items()}`、
+`:1537 caps['capabilities'].get('ui', {}).get('status')` …）。
+⇒ **前端照着文档写，文档错了**；实现与文档不一致时，这里的正确答案是**改文档**。
+已改为 `capabilities{}`（**以能力名为键的对象**，不是数组）。
+**教训（同 §2.37）：引用/跟随一份文档前，先确认它描述的是哪一侧。**
+
+### 2.68.6 修法
+- `studio/static/app.js:666-697`：`const caps = d.capabilities || {}; const names = Object.keys(caps);`
+  + `names.forEach((name) => { const it = caps[name] || {}; ... nm.textContent = name; ... })`
+  + `log('能力 ' + names.length + ' 项: ' + names.map((n) => n + '=' + (caps[n] || {}).status).join(', '))`。
+  注释里写明真因与「是 `tools/studio_ui_check.py` 把它抓出来的」。
+- `docs/STUDIO_PROTOCOL.md:92` 改 `capabilities{}`。
+- `& node --check studio\static\app.js` ⇒ rc=0；重跑隔离探针 ⇒ **十二步全 `[]`（零 JS 错误）**。
+
+### 2.68.7 新工具 `tools/studio_ui_check.py`（门禁第 45 项）
+六条判据：① 外壳启动（`#app` 不再是 `hidden`）且启动阶段无 JS 错误；② 六个活动栏按钮
+都点得中；③ 点每个按钮之后**恰好只有它**可见；④ 每个视图渲染出的叶子文本元素数不低于
+下限；⑤ 点按钮之后 `#gate-list` / `#vmimg` 必须真的被填上；⑥ 整轮结束后 `window.__err` 为空。
+- **`judge()` 是纯函数**（吃一份驱动报告、吐结论）⇒ `--selftest` 造坏输入直接喂它，
+  **不启浏览器、秒级**：`PASS: 14 项（含 13 项负向注入）`。
+  理由同 §2.67：没有这一层，「浏览器里断言失败」与「判据自己坏了」在输出上长得一样。
+- 三态：找不到 Edge / node ⇒ `rc=2`（**SKIP**）。`PASS: N 项` 只数 `[ok]`。
+- 实测：`PASS: Edg/155.0.4283.45；六个视图 {'gen': 14, 'test': 10, 'vm': 23, 'host': 6,
+  'mods': 159, 'about': 30}；gate.items=44 项 / vm.images=4 个；无 JS 错误`，**16 s**。
+
+### 2.68.8 判别力实测（`build/_ui_neg2.py`，真实资产注入 + `finally` 逐字节还原）
+| 形态 | rc | 证据 |
+|---|---|---|
+| 真·原缺陷（`d.items.forEach`，**抛异常**） | 1 | **3 条**，含 `视图 about 里有 JS 错误: ['REJ:Cannot convert undefined or null to object']` |
+| 静默为空（`d.items \|\| {}`，**不抛**） | 1 | 1 条，靠**渲染计数**（`about 只渲染出 3 个文本元素（下限 12）`） |
+| 修复后基线 | 0 | 六个视图 14/10/23/6/159/30 |
+还原后**逐字节一致 = True**。
+⭐ **两种形态都必须覆盖**：只锚定「有没有 JS 错误」会**漏掉第二种** —— 一个「有守卫但键名写错」
+的写法不抛异常，只是安静地什么都不渲染。
+
+### 2.68.9 ⭐ 我在这一轮里自己踩的坑
+我第一版注入用的是 `d.items || {}`（**静默形态**），量到 `rej=0 / err=[]`，
+一度以为「JS 错误的判据没生效」。**其实是我的注入形式与原缺陷不同**：原缺陷是
+`d.items.forEach`，它对 `undefined` 调 `forEach` ⇒ 真的抛。补上真形态后立刻报 3 条。
+⇒ 教训（本链条第 15 次同型）：**"判据没红"要先怀疑"我造的是不是那个坏输入"**，
+而不是直接怀疑判据。我差一点就把「我的 fixture 弱」记成「判据弱」。
+
+### 2.68.10 诚实边界
+① 只点六个活动栏与两个按钮（`#btn-gate-items` / `#btn-vmimages`），**不覆盖**表单交互、
+流式输出、`.vasm` 断点槽的真实点击 —— 那需要更长的驱动脚本。
+② 「叶子文本元素数下限」是**启发式**（实测值远高于下限）：它防的是「整块空掉」，
+**不是**「内容对不对」（文案错了它不会红）。
+③ 依赖本机 Edge 与 node ⇒ **CI runner 上恒为 SKIP**。这一项**在 CI 上不生效**，
+本仓库的 CI 证据里**没有**它；它的价值在**本机每轮都跑**。
+④ 驱动脚本内嵌在 `tools/studio_ui_check.py` 的 `DRIVER_JS` 字符串里（写成临时文件再跑），
+因此它**不是**独立的可执行资产 —— 改它必须改 Python 源。
+⑤ `--dump-dom` 为何在 Edge 里是空操作**没有查明**（只量到四种 flag 全为 0 B 输出）；
+本轮绕开它走 CDP，不解释它。
+
+### 2.68.11 验证表
+| 项 | 结果 |
+|---|---|
+| `tools/studio_ui_check.py --selftest` | `PASS: 14 项（含 13 项负向注入）` |
+| 本体（真实 Edge） | `PASS` … `about: 30`；16.1 s |
+| 判别力（两种缺陷形态） | 抛形态 3 条 / 静默形态 1 条 / 基线 0 条 |
+| `node --check studio\static\app.js` | rc=0 |
+| `tools/doccheck.py` | `检查数字 1265 处, 错误 0, 警告 0` |
+| `tools/doccheck.py --selftest` | `PASS: 69 项（39 项负向注入 / 30 项合规豁免）` |
+| `tools/docclaim_check.py` | `PASS (8/8)`，`gate-count` = **45 项** |
+| `build/_hygiene.py` | `26 个文件, 0 处异常` |
+| `-m compileall -q tools tests examples sdk_service prot_sdk` | rc=0 |
+| 全门禁 | `[json] 双面对照: pass=42 fail=0 skip=0 not-run=3` / **`PASS: 42 项检查全通过`** |
+
+### 2.68.12 同型第 14 次
+§2.36.8 → §2.38 → §2.40 → §2.42 → §2.45 → §2.46 → §2.47 → §2.48 → §2.49 → §2.51 → §2.54 →
+§2.63 → §2.66 → **§2.67/§2.68**：**判据问的问题与缺陷发生的位置不在同一层。**
+§2.67 把「名字层」补上了，§2.68 补的是「**数据层**」—— 名字全对、数据全通、命令全绿，
+而页面上什么都没有。这是同一条教训第三次以新面孔出现：
+**"运输正确"不等于"消费正确"。**
+
+---
+
+*2026-10-11 v46*
 
 ---
 

@@ -89,7 +89,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `cmd` | `args` | `data`（要点） |
 |---|---|---|
 | `ping` | — | `protocol_version` / `studio_version` / `repo` / `platform` |
-| `capabilities` | — | `items[]`，每项 `{name, status, backend, evidence, note?, step?}`；`status ∈ ready/partial/planned` |
+| `capabilities` | — | `capabilities{}`（**以能力名为键的对象**，不是数组），每项 `{status, backend, evidence, note?, step?}`；`status ∈ ready/partial/planned` |
 | `plan.list` | — | `profiles[]` `{name, description, threats, strength, performance_budget}` + `count` |
 | `plan.solve` | `profile` | `solve_profile.solve()` 的完整结果（`selected`/`excluded`/`auto_added`/`reasons`/`conflicts`/`order`/…）**外加** `_profile_file` 与 `_text` |
 | `modules.list` | — | `modules[]` `{name, maturity, caps, deps, conflicts_with, cost, header, source, known_limits, evidence, ordering, phases, consumes, produces, modifies_text, verifies_text, needs_writable_dir, page_align, host_hooks, abi_version}` + `primitives` + `maturity_scale`（分级**依据**，不是形容词） |
@@ -460,6 +460,21 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 （断言三个资产存在、**无外部 URL 引用**、且资产里确实出现 `X-Studio-Token` 与 `/api`）。
 ⚠️ 两者必须在**同一条命令**里跑完：若只测合成 UI，资产被删掉时门禁会**全绿** ——
 那是「检查器只在自己造的输入上成立」的经典失效。门禁第 43 项正是这条命令。
+
+**真浏览器判据**（门禁第 **45** 项 `Studio 真浏览器 (studio_ui)`，
+`tools/studio_ui_check.py`）：上面的自检全是**静态**的（读文本 / 读协议 / 读 id 接线）。
+静态判据看不见一类缺陷：**前端读的键，后端从来没发过**。
+
+实测（§2.68）：`studio/static/app.js` 的 `loadCaps()` 原先写 `d.items.forEach(...)`，
+而 `capabilities` 命令发的是 **`capabilities{}`**（§5 表格）—— 于是「关于」页
+**从 ST5 起一直是空的**，唯一的表现是一个 **unhandled rejection**。
+
+这条判据起一个真的 headless Edge，用 **CDP**（零依赖：纯 node 内置 `http`
++ 全局 `WebSocket`）把六个活动栏按钮逐个点一遍，断言外壳启动、视图切换、
+每个视图渲染出了东西、以及 `window.__err` 为空。
+
+⚠️ **三态**：本机没有 Edge ⇒ `rc=2`（**SKIP**，不是通过）。CI runner 上没有 Edge
+⇒ 这一项在 CI 上恒为 SKIP；`PASS: N 项` 只数 `[ok]`。
 
 ## 10. 参考
 

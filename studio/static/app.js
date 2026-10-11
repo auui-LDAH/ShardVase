@@ -668,12 +668,19 @@ async function loadCaps() {
   if (!d) return;
   const box = $('caps');
   box.innerHTML = '';
-  d.items.forEach((it) => {
+  // ⚠️ 载荷的键是 `capabilities`（**以能力名为键的对象**），不是 `items[]`。
+  // 这段代码原先按协议文档写的 `d.items.forEach(...)` —— 于是"关于"页
+  // 永远是空的，而且因为它是个未处理的 rejection，控制台之外看不到任何痕迹。
+  // 是 `tools/studio_ui_check.py`（真浏览器点一遍）把它抓出来的。
+  const caps = d.capabilities || {};
+  const names = Object.keys(caps);
+  names.forEach((name) => {
+    const it = caps[name] || {};
     const row = document.createElement('div');
     row.className = 'item ' + (it.status === 'ready' ? 'pass' : it.status === 'partial' ? 'skip' : '');
     const nm = document.createElement('span');
     nm.className = 'nm';
-    nm.textContent = it.name;
+    nm.textContent = name;
     const why = document.createElement('span');
     why.className = 'why';
     why.textContent = (it.evidence || '') + (it.note ? ' · ' + it.note : '');
@@ -683,8 +690,8 @@ async function loadCaps() {
     row.append(nm, why, pill);
     box.appendChild(row);
   });
-  log('能力 ' + d.items.length + ' 项: ' +
-    d.items.map((i) => i.name + '=' + i.status).join(', '));
+  log('能力 ' + names.length + ' 项: ' +
+    names.map((n) => n + '=' + (caps[n] || {}).status).join(', '));
 }
 
 // ---------------------------------------------------------------- tabs

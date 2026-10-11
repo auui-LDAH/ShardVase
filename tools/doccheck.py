@@ -229,8 +229,8 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   中文注释读成乱码。判据**只判 `.ps1`**: 全库交叉表 .ps1 14/1、.c 7/65、
 #   .json 0/16 —— 后两者分布是散的, 判它们只会把既有无害状态判成失败。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 44
-GATE_DEFAULT = 41
+GATE_TOTAL = 45
+GATE_DEFAULT = 42
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
@@ -2004,7 +2004,7 @@ def selftest():
             s += '# release_check 覆盖 %d 项 (默认 %d)。\n' % (cover or 0, cdef or 0)
         return s
 
-    # 现值 41/38（2026-10-09 第 41 项落地）；`cover` 形态在 `ci.yml:67`。
+    # 现值 42/39（2026-10-11 第 45 项落地）；`cover` 形态在 `ci.yml:67`。
     ci_cases = [
         ('真实仓库 ci.yml 项数口径 -> 不报', None, None, None, 0, None),
         ('ci.yml 静态调用点漂移(41->39) -> 必须报',
