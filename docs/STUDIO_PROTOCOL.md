@@ -94,6 +94,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `plan.solve` | `profile` | `solve_profile.solve()` 的完整结果（`selected`/`excluded`/`auto_added`/`reasons`/`conflicts`/`order`/…）**外加** `_profile_file` 与 `_text` |
 | `modules.list` | — | `modules[]` `{name, maturity, caps, deps, conflicts_with, cost, header, source, known_limits, evidence, ordering, phases, consumes, produces, modifies_text, verifies_text, needs_writable_dir, page_align, host_hooks, abi_version}` + `primitives` + `maturity_scale`（分级**依据**，不是形容词） |
 | `gate.items` | — | `items[]` `{name, line, gated}` + `total`/`gated`/`default`/`source` |
+| `src.show` | `path`, `line?`, `context?` | 读仓库内**文本文件**的一段行：`lines[]` `{n, text, hit}` + `start`/`end`/`total`/`truncated`/`binary`/`backend`；`context` 缺省 12，窗口上限 400。**二进制不报错**（如实 `binary: true` 且无 `lines`）；`line` 越界报 `E_NOT_FOUND` 而**不夹到末尾**；仓库外路径报 `E_BAD_ARGS` |
 | `vm.images` | `blob?` | `images[]` `{name, code_len, key0, key1, crc, offset}` + `count`；`blob` 缺省 `build/vm.blob` |
 | `vm.disasm` | `source`, `name`\|`asm`, `blob?` | `insns[]` `{off, mnem, operand, size, target?, line}` + `code_len`/`count`/`sem0`/`has_lines` |
 | `vm.source` | `asm` | 逐行视图：`rows[]` `{line, text, kind, tokens[][2], off?, asm_mnem?, breakable}` + `mnemonics[]`(47) / `symbols[]` / `executable_lines[]` / `assemble_error` / `breakpoint_key` / `rel`（相对仓库根的路径） |
@@ -106,7 +107,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `vm.breakpoints` | `session`, `lines[]` \| `add[]`/`remove[]` | `lines` = 整体替换（空数组 = 全清）；与 `add`/`remove` **不可同时给**（顺序有歧义） |
 | `vm.close` | `session` | 关闭会话；**对未知 id 也成功**（幂等），返回值里 `existed` 说明它是否真的存在过 |
 | `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
-| `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why}` + `counts_json`/`pass_n` |
+| `test.gate.results` | `query?`, `run?`, `a?`, `b?`, `dir?` | `query` 取 `latest`（缺省）/`list`/`verify`/`diff`/`trend`；`latest` 返回逐项 `{seq, name, status, seconds, why, src, src_line}` + `jump_unresolved[]` + `counts_json`/`pass_n` |
 | `debug.doctor` | `exe?`, `map?` | 体检：`summary{ok, syms, mask_regions, n_errors, n_warns}`；**不开进程**（`opened_process: false`） |
 | `debug.sym` | `symbols[]`, `exe?`, `map?` | `symbols[]`（表）+ `missing[]`（查不到的符号名）；**`symbols` 为空 ⇒ `E_BAD_ARGS`**，不是空结果 |
 | `debug.mask` | `symbols[]` \| `rva,len`, `exe?`, `map?` | `payload_key ∈ 'mask' / 'sym'` —— 如实透出「给了符号名时底层转成符号查询」，不替调用方抹平 |

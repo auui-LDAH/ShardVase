@@ -173,6 +173,8 @@ SAMPLE_ARGS = {
     'debug.exit': {'codes': [0]},
     'vm.source': _asm_args(),
     'vm.disasm': _asm_args('asm'),
+    # 只读：读的是本工具自己的文件（ST5.5 的 src.show，`lines[]` 是它的声明键）
+    'src.show': {'path': 'tools/studio_core.py', 'line': 1},
 }
 
 

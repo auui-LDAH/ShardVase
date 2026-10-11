@@ -236,6 +236,29 @@ function get(path) {
   rep.gates['test'] = await ev(
     '(function(){var e=document.getElementById("gate-list");return e?e.children.length:-1;})()');
 
+  // ST5.5: 点第一行**可跳转**的门禁项, 看详情侧栏是否真的填上了源码行。
+  // 只看"有没有 .jump 类"是静态判据能做的事; 这里要的是"点下去有没有反应"。
+  rep.jump = await ev(
+    'JSON.stringify((function(){'
+    + 'var box=document.getElementById("gate-list");'
+    + 'var rows=box?[].slice.call(box.children):[];'
+    + 'var can=rows.filter(function(r){return r.classList.contains("jump");});'
+    + 'var side=document.getElementById("out-side");'
+    + 'var before=side?(side.textContent||"").length:0;'
+    + 'if(can.length)can[0].click();'
+    + 'return {rows:rows.length,clickable:can.length,before:before};})())');
+  await sleep(1500);
+  const jd = await ev(
+    'JSON.stringify((function(){'
+    + 'var side=document.getElementById("out-side");'
+    + 'var tx=side?(side.textContent||""):"";'
+    + 'return {len:tx.length,head:tx.slice(0,80),'
+    + 'hit:(tx.indexOf("> ")!==-1),'
+    + 'ran:"src.show"};})())');
+  try { rep.jump = Object.assign(JSON.parse(rep.jump), JSON.parse(jd)); }
+  catch (e) { rep.jump = { parseError: String(rep.jump).slice(0, 160) }; }
+  rep.jumpAfter = await ev('window.__err||[]');
+
   await ev('document.querySelector(\'.act[data-view="vm"]\').click()');
   await sleep(400);
   await ev('var b=document.getElementById("btn-vmimages"); if(b)b.click();');
@@ -344,6 +367,42 @@ def judge(rep, required=None, min_text=None):
         else:
             info['%s.%s' % (v, box)] = c
 
+    # ④ ST5.5: 点一行**可跳转**的门禁项, 详情侧栏必须真的填上源码行。
+    #    ⚠️ 这一条**不能**被"行里有没有 .jump 类"替代: 那个是静态判据能做的
+    #    事, 而 §2.68 的 loadCaps 正是"静态全绿、点下去才发现"的形状 ——
+    #    接线对了不等于消费对了。判据要的是"点下去有没有反应"。
+    jp = rep.get('jump')
+    if not isinstance(jp, dict):
+        problems.append('报告里没有 jump 段 —— 判据失去锚点')
+    elif jp.get('parseError'):
+        problems.append('jump 段读不出来: %s' % jp['parseError'])
+    else:
+        if not isinstance(jp.get('clickable'), int):
+            problems.append('jump 的可跳转行数读不到: %r' % jp.get('clickable'))
+        elif jp['clickable'] <= 0:
+            # `gate.items` / `latest` 的每一项都带 src_line, 全都没有落点
+            # 意味着服务端没给 `src`/`src_line`, 或前端没挂 .jump。
+            problems.append('门禁行里一行都没有落点（clickable=0）—— '
+                            '服务端没给 src/src_line, 或前端没挂 .jump')
+        elif jp.get('len') is not None and jp.get('before') is not None \
+                and jp['len'] <= jp['before']:
+            problems.append('点了可跳转的行, 详情侧栏没有变化（%s -> %s 字符）'
+                            ' —— 点击没有跳到源码'
+                            % (jp['before'], jp['len']))
+        elif jp.get('hit') is not True:
+            # 有内容但没有任何一行被标为落点 ⇒ 跳到了一份**没有落点标记**
+            # 的文件视图（高亮由服务端算, 前端不自己比）。
+            problems.append('跳过去之后没有一行被标为落点（hit=false）'
+                            ' —— 落在了文件里, 但不知道落在哪一行')
+        else:
+            # 只取 head 的**第一行** —— 它是给单行 PASS 报文用的，带换行会把
+            # 一行输出劈成两行（实测过：报文里混进 `284|             Add-`）。
+            info['jump'] = '%d 行可选 / %s' % (
+                jp['clickable'], str(jp.get('head') or '').split('\n')[0])
+        ja = rep.get('jumpAfter') or []
+        if ja:
+            problems.append('点击跳转之后有 JS 错误: %s' % ja)
+
     errs = rep.get('errors') or []
     if errs:
         problems.append('整轮结束后仍有 JS 错误: %s' % errs)
@@ -367,6 +426,9 @@ def selftest(quiet=False):
             'views': {v: {'clicked': True, 'shown': [v], 'textEls': 99, 'errors': []}
                       for v in VIEWS},
             'gates': {'test': 44, 'vm': 4},
+            'jump': {'rows': 44, 'clickable': 44, 'before': 0, 'len': 900,
+                     'hit': True, 'head': 'tools/release_check.ps1:296'},
+            'jumpAfter': [],
         }
         for k, val in over.items():
             if k.startswith('views.'):
@@ -422,6 +484,22 @@ def selftest(quiet=False):
     # --- 动作型容器 ---
     case('gate-list 点了还是空 -> 必须报', mk(**{'gates.test': 0}), False, '#gate-list')
     case('vmimg 点了还是空 -> 必须报', mk(**{'gates.vm': 0}), False, '#vmimg')
+
+    # --- ST5.5: 跳转（判据④）---
+    # ★ 第一版真缺陷的正确镜像: `src.show` 的调用点删掉后, 行仍然带 .jump
+    #   （接线静态成立）, 但点下去侧栏不变 ⇒ 只有"点一遍"抓得到。
+    case('★ 点了可跳转的行但侧栏没变 (接线静态成立) -> 必须报',
+         mk(jump={'rows': 44, 'clickable': 44, 'before': 120, 'len': 120,
+                  'hit': False, 'head': ''}), False, '没有变化')
+    case('一行都没有落点 -> 必须报',
+         mk(jump={'rows': 44, 'clickable': 0, 'before': 0, 'len': 0,
+                  'hit': False, 'head': ''}), False, 'clickable=0')
+    case('跳过去但没有任何一行被标为落点 -> 必须报',
+         mk(jump={'rows': 44, 'clickable': 44, 'before': 0, 'len': 900,
+                  'hit': False, 'head': 'x'}), False, 'hit=false')
+    case('jump 段整个缺失 -> 必须报（失锚）', mk(jump=None), False, '失去锚点')
+    case('点击跳转之后有 JS 错误 -> 必须报',
+         mk(jumpAfter=['REJ:boom']), False, 'JS 错误')
 
     # --- 外壳没起来 ---
     case('外壳没启动 -> 必须报', mk(booted=False), False, '没有启动')
@@ -501,9 +579,11 @@ def main(argv=None):
             sys.stdout.write('  [X] %s\n' % p)
         return RC_FAIL
     sys.stdout.write('[studio_ui_check] PASS: %s；六个视图 %s；'
-                     'gate.items=%s 项 / vm.images=%s 个；无 JS 错误\n'
+                     'gate.items=%s 项 / vm.images=%s 个；跳转 %s；'
+                     '无 JS 错误\n'
                      % (info.get('browser'), info.get('views'),
-                        info.get('test.#gate-list'), info.get('vm.#vmimg')))
+                        info.get('test.#gate-list'), info.get('vm.#vmimg'),
+                        info.get('jump')))
     return RC_OK
 
 

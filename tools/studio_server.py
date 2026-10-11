@@ -856,6 +856,10 @@ def _check_real_ui():
     if absent:
         return False, ('前端没有引用 VM 调试命令 %s —— 后端支持而面板无入口'
                        '（与 #cfg 漏掉 Debug 同型: 不报错, 只是够不着）' % absent)
+    # ST5.5: 跳转落点。同一条纪律 —— 只问"面板是否提到了 src.show"。
+    if "'src.show'" not in blob and '"src.show"' not in blob:
+        return False, ('前端没有引用 src.show —— 门禁行即使带落点也点不动'
+                       '（与 #cfg 漏掉 Debug 同型: 不报错, 只是够不着）')
     for need in ('id="vmlisting"', 'id="vmtools"', 'id="vmstack"'):
         if need not in blob:
             return False, ('VM 视图缺少 %s —— 源码列表/调试工具条/调用栈'

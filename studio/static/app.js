@@ -330,6 +330,10 @@ async function gateQuery() {
       pill.className = 'pill ' + (PILL[it.status] || '');
       pill.textContent = it.status + (it.seconds != null ? ' ' + it.seconds + 's' : '');
       row.append(nm, why, pill);
+      // ST5.5: 落点是**声明行**（release_check.ps1 里的 Check），不是失败
+      // 现场的行 —— 证据原文里没有 file:line（实测历史非 [ok] 行 6495 条，
+      // 含 file:line 的 0 条）。服务端 join 不上时会如实给 null。
+      jumpable(row, it.src, it.src_line);
       box.appendChild(row);
     });
     const c = d.counts_json || {};
@@ -358,10 +362,36 @@ async function gateItems() {
     pill.className = 'pill' + (it.gated ? ' gated' : '');
     pill.textContent = it.gated ? '-With* 控制' : '默认跑';
     row.append(nm, pill);
+    jumpable(row, d.source, it.line);
     box.appendChild(row);
   });
   log('门禁声明 ' + d.total + ' 项（默认跑 ' + d.default + '，受开关控制 ' + d.gated + '）');
   showSide({ source: d.source, kind: d.kind, why_no_gated_breakdown: d.why_no_gated_breakdown });
+}
+
+// ST5.5: 跳转落点。服务端**已经算好**哪一行该亮（`hit`）—— 前端再自己比
+// 一次会制造第二套口径，而它漂移时的表现是「高亮错行」，看起来像文件内容错了。
+async function srcShow(path, line) {
+  const d = await call('src.show', { path: path, line: line || 0 });
+  if (!d) return;
+  const head = d.path + (d.line ? ':' + d.line : '') +
+               '  （第 ' + d.start + '-' + d.end + ' 行 / 共 ' + d.total + ' 行' +
+               (d.truncated ? '，已截断' : '') + '）';
+  if (d.binary) {
+    showSide(head + '\n\n（二进制文件，不显示内容）');
+    return;
+  }
+  showSide(head + '\n\n' + d.lines.map((r) =>
+    (r.hit ? '> ' : '  ') + String(r.n).padStart(5, ' ') + '| ' + r.text).join('\n'));
+  if (d.truncated) problem('src.show: 窗口被截到 ' + d.window_max + ' 行');
+}
+
+// 给一行挂「可跳转」——**没有落点的行不挂**：点了跳到错位置比点了没反应更糟。
+function jumpable(row, path, line) {
+  if (line == null) return;
+  row.classList.add('jump');
+  row.title = '跳转到 ' + path + ':' + line;
+  row.addEventListener('click', () => srcShow(path, line));
 }
 
 // ---------------------------------------------------------------- VM

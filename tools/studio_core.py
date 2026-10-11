@@ -158,7 +158,12 @@ def gate_items():
     """
     src = _gate_source()
     items = []
-    for m in re.finditer(r"(?m)^\s*Check\s+'([^']+)'", src):
+    # ⚠️ `^\s*` 里的 `\s` **包含换行** —— 那样前导空行也进入匹配, `m.start()`
+    #    落在空行上, 行号整体偏 1（实测 46 项里有 6 项指向的行根本没有 Check:
+    #    295/304/1231/1285/1329 与另一处）。改成 `[ \t]*` 把换行排除。
+    #    这条 off-by-one 一直没被发现, 是因为行号此前**没有任何消费者**;
+    #    ST5.5 让面板拿它去跳转, 才有判据回源核对（见 selftest 的同名用例）。
+    for m in re.finditer(r"(?m)^[ \t]*Check\s+'([^']+)'", src):
         items.append({'name': m.group(1),
                       'line': src[:m.start()].count('\n') + 1})
 
@@ -257,13 +262,22 @@ def capabilities():
                 step='ST4',
                 note='ST4.1 的 .vasm 行号表是 sidecar, 发布产物不携带。'
                      '主机级断点仍属 ST3（未做）。ST5.4 的会话活在**服务进程内**。'),
+            'ui.jump': cap(
+                'ready', 'tools/studio_core.py:cmd_src_show',
+                '问题/门禁结果逐项带 src+src_line（join 声明行）, '
+                'src.show 只读定位到行并高亮',
+                step='ST5.5',
+                note='落点是 release_check.ps1 的 `Check` 声明行, 不是失败'
+                     '现场的行 —— 证据原文里没有 file:line（实测历史日志 '
+                     '非 [ok] 行 6495 条, 含 file:line 的 0 条）'),
             'ui': cap(
                 'ready', 'tools/studio_server.py + studio/',
                 '本地浏览器外壳（零依赖, 只绑 127.0.0.1, 一次性令牌）: '
                 '生成/测试/VM/主机/模块/关于 六视图',
                 step='ST5',
                 note='VM 视图自 ST5.3/ST5.4 起支持源码高亮 + 行号 + 断点槽 + '
-                     '调试工具条 + 调用栈（会话活在**服务进程内**）'),
+                     '调试工具条 + 调用栈（会话活在**服务进程内**）; '
+                     '自 ST5.5 起问题面板可点击跳转到源码行'),
         },
     }
 
@@ -350,15 +364,146 @@ def cmd_test_gate_results(args):
                           '找不到同时有 .log 与 .ndjson 的轮次',
                           {'dir': log_dir,
                            'hint': 'ST2.1 之前的历史轮次只有 .log; 这是诚实边界, 不是缺陷'})
+    # ST5.5: 逐项附上**可跳转的落点**。键是 `name`, 不是序号 ——
+    # 声明与结果两侧都按名字来（实测历史 868 条 NDJSON 行 100% 能 join 回
+    # 声明）, 序号只在各自文件里连续, 跨文件没有意义。
+    decl = {it['name']: it['line'] for it in gate_items()['items']}
+    items = []
+    for r in (run.get('rows') or []):
+        nm = r.get('name')
+        items.append({'seq': r.get('seq'), 'name': nm,
+                      'status': r.get('status'), 'seconds': r.get('seconds'),
+                      'why': r.get('why'),
+                      # 跳转落点: 声明行（`Check '...'` 在 release_check.ps1 里）。
+                      # join 不上就**如实给 None** —— 猜一个行号比不给更糟:
+                      # 面板会稳定地跳到错误的位置, 而那个位置总是"有内容"。
+                      'src': 'tools/release_check.ps1' if nm in decl else None,
+                      'src_line': decl.get(nm)})
     return {'query': 'latest', 'run': run['name'],
             'pass_n': run.get('pass_n'),
             'counts_text': run.get('counts_text'),
             'counts_json': run.get('counts_json'),
-            'items': [{'seq': r.get('seq'), 'name': r.get('name'),
-                       'status': r.get('status'), 'seconds': r.get('seconds'),
-                       'why': r.get('why')} for r in (run.get('rows') or [])],
+            'jump_unresolved': sorted(n for n in
+                                      (r.get('name') for r in (run.get('rows') or []))
+                                      if n not in decl),
+            'items': items,
             'count': len(run.get('rows') or [])}
 
+
+
+# --- 源码定位（ST5.5: 问题面板点击跳转的落点）-------------------------------
+
+#: `src.show` 一次返回的最大行数（面板要上下文, 不是整文件）
+SRC_WINDOW_MAX = 400
+#: `src.show` 默认上下各取多少行
+SRC_CONTEXT = 12
+
+
+def _safe_repo_path(path):
+    """把 `rel` 解析成 **REPO 内** 的绝对路径；越界一律拒绝（返回 (ap, rel)）。
+
+    与 `tools/studio_server.py:safe_join()` 同一套四步（归一 → normpath →
+    realpath → 前缀比对），但**刻意不共用实现**：那个函数服务静态资产，
+    越界对它的正确读法是"资源不存在"；这里服务源码定位，越界必须报
+    `路径在仓库之外` —— 否则面板会把"你让我读仓库外的任意路径"显示成
+    "文件不存在"，而排查会去查文件名拼写。
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise StudioError('E_BAD_ARGS', '需要 path 参数（仓库内相对路径）',
+                          {'given': path, 'type': type(path).__name__})
+    p = path.replace('\\', '/').strip().lstrip('/')
+    root = os.path.realpath(REPO)
+    ap = os.path.realpath(os.path.join(root, p))
+    if ap != root and not ap.startswith(root + os.sep):
+        raise StudioError('E_BAD_ARGS', '路径在仓库之外', {'given': path})
+    if not os.path.isfile(ap):
+        raise StudioError('E_NOT_FOUND', '文件不存在',
+                          {'path': os.path.relpath(ap, root).replace('\\', '/')})
+    return ap, os.path.relpath(ap, root).replace('\\', '/')
+
+
+def _int_arg(args, key, default=0):
+    """取一个整数参数 —— 类型错时报**参数错**, 不让 `ValueError` 逃出去。
+
+    裸 `int(args.get(...))` 会把 `'x'` 变成 `ValueError`。那个异常不是
+    `StudioError`, envelope 会把它归类成 `E_INTERNAL` —— 面板于是显示
+    "Studio 内部故障", 而正确读法是"我传错了参数"。
+    """
+    v = args.get(key, default)
+    if v is None:
+        return default
+    if isinstance(v, bool) or not isinstance(v, int):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            raise StudioError('E_BAD_ARGS', '%s 必须是整数' % key,
+                              {'given': v, 'type': type(v).__name__})
+    return v
+
+
+def cmd_src_show(args):
+    """读仓库内某个**文本文件**的一段行（ST5.5 的跳转落点）。
+
+    与 `vm.source` 的分工: 那个只认 `.vasm`, 给的是高亮/断点语义; 这个是
+    **通用只读定位** —— 门禁失败项指向的是 `tools/release_check.ps1` 里的
+    `Check` 行, 不是 `.vasm`。
+
+    三处刻意的设计:
+
+    - **必须回报 `total`**。只返回窗口时, "文件只有 25 行"与"我只给了 25 行"
+      在响应里长得一样; 面板会把截断显示成文件结尾。
+    - **`hit` 由服务端算**, 不让前端拿 `line` 自己比 —— 前端比错的后果是
+      "高亮错行", 而那看起来像文件内容错了。
+    - **二进制不当成错误**, 如实标 `binary: True` 并**不返回 lines**:
+      门禁也可能指向 `.ndjson`/`.log` 之类的产物, 报错会让跳转在这些项上
+      直接失效, 而正确行为是"打开了, 但这不是文本"。
+    """
+    ap, rel = _safe_repo_path(args.get('path'))
+    line = _int_arg(args, 'line', 0)
+    ctx = _int_arg(args, 'context', SRC_CONTEXT)
+    if ctx < 0:
+        raise StudioError('E_BAD_ARGS', 'context 不能为负', {'given': ctx})
+
+    data = io.open(ap, 'rb').read()
+    binary = b'\x00' in data[:4096]
+    text = data.decode('utf-8-sig', 'replace')
+    rows = text.split('\n')
+    if rows and rows[-1] == '':
+        rows = rows[:-1]
+    total = len(rows)
+
+    if line < 0:
+        raise StudioError('E_BAD_ARGS', 'line 不能为负', {'given': line})
+    if line > total:
+        # 越界**如实报**, 不夹到末尾 —— 夹住会让"行号过期"看起来像"读到了"。
+        raise StudioError('E_NOT_FOUND',
+                          'line %d 超出 %s 的行数 %d' % (line, rel, total),
+                          {'path': rel, 'line': line, 'total': total})
+    if line == 0:
+        start, hit = 1, 0          # 不带行号 = 从文件头开始, 不高亮任何行
+    else:
+        start, hit = max(1, line - ctx), line
+    end = min(total, (line or 1) + ctx)
+    window = rows[start - 1:end]
+    truncated = len(window) > SRC_WINDOW_MAX
+    if truncated:
+        window = window[:SRC_WINDOW_MAX]
+        end = start + SRC_WINDOW_MAX - 1
+
+    out = {'path': rel,
+           'abs': ap,
+           'line': hit,
+           'start': start,
+           'end': end,
+           'total': total,
+           'truncated': truncated,
+           'window_max': SRC_WINDOW_MAX,
+           'binary': binary,
+           'backend': 'tools/studio_core.py:cmd_src_show'}
+    if not binary:
+        out['lines'] = [{'n': start + i, 'text': s, 'hit': (start + i) == hit}
+                        for i, s in enumerate(window)]
+    return out
 
 
 def cmd_ping(args):
@@ -1398,6 +1543,7 @@ COMMANDS = {
     'plan.solve': cmd_plan_solve,
     'modules.list': cmd_modules_list,
     'gate.items': cmd_gate_items,
+    'src.show': cmd_src_show,
     'vm.images': cmd_vm_images,
     'vm.disasm': cmd_vm_disasm,
     'vm.source': cmd_vm_source,
@@ -1618,6 +1764,59 @@ def selftest(quiet=False):
          'total=%d gated=%s' % (gi['total'], gi['gated']))
 
     if not quiet:
+        lines.append('--- 4a. 源码定位（ST5.5: 问题面板的跳转落点）---')
+    # `src.show` 是 ST5.5 新增的**通用只读定位**原语 —— `vm.source` 只认
+    # `.vasm`, 而门禁项指向的是 `tools/release_check.ps1` 里的 `Check` 行。
+    _me = 'tools/studio_core.py'
+    _sv = dispatch('src.show', {'path': _me, 'line': 1, 'context': 2})
+    case('src.show 读到自身文件第 1 行', _sv.get('line') == 1
+         and len(_sv.get('lines') or []) == 3,
+         'lines=%d' % len(_sv.get('lines') or []))
+    case('src.show 恰一行被标为 hit（高亮由服务端算, 不让前端比）',
+         sum(1 for x in _sv['lines'] if x.get('hit')) == 1
+         and _sv['lines'][0].get('hit') is True)
+    # ⭐ 只给窗口会让"文件只有 25 行"与"我只给了 25 行"长得一样 —— 面板会把
+    #   截断显示成文件结尾。所以 `total` 必须在场, 且**大于**窗口长度。
+    case('src.show 回报 total（否则截断会被显示成文件结尾）',
+         isinstance(_sv.get('total'), int)
+         and _sv['total'] > len(_sv['lines']),
+         'total=%s window=%s' % (_sv.get('total'), len(_sv.get('lines') or [])))
+    _sv0 = dispatch('src.show', {'path': _me})
+    case('src.show 不给 line 时从文件头开始且不高亮任何行',
+         _sv0.get('line') == 0 and _sv0.get('start') == 1
+         and not any(x.get('hit') for x in _sv0.get('lines') or []))
+    # 越界**如实报**, 不夹到末尾 —— 夹住会让"行号过期"看起来像"读到了"。
+    _bad, _bc = raises(lambda: dispatch('src.show',
+                                        {'path': _me, 'line': 10 ** 7}),
+                       'E_NOT_FOUND')
+    case('src.show 行号越界如实报错（不夹到末尾）', _bad is True, _bc)
+    # 仓库外路径必须报**参数错**而不是"文件不存在": 后者会让排查去查拼写。
+    _out, _oc = raises(lambda: dispatch('src.show', {'path': '../../etc/passwd'}),
+                       'E_BAD_ARGS')
+    case('src.show 拒绝仓库外的路径（报参数错, 不报文件不存在）',
+         _out is True, _oc)
+    # 类型错也要落在参数错上 —— 裸 int() 的 ValueError 会逃成 E_INTERNAL,
+    # 面板于是显示"Studio 内部故障", 而正确读法是"我传错了参数"。
+    _ty, _tc = raises(lambda: dispatch('src.show', {'path': _me, 'line': 'x'}),
+                      'E_BAD_ARGS')
+    case('src.show 的 line 类型错报参数错（不逃成 E_INTERNAL）',
+         _ty is True, _tc)
+    # 门禁也可能指向 .ndjson/.log 这类产物 ⇒ 二进制**不当错误**。
+    _bin = os.path.join(REPO, 'build', '_st71bin.bin')
+    try:
+        with io.open(_bin, 'wb') as f:
+            f.write(b'\x00\x01\x02hello')
+        _sb = dispatch('src.show', {'path': 'build/_st71bin.bin', 'line': 1})
+    finally:
+        try:
+            os.remove(_bin)
+        except OSError:
+            pass
+    case('src.show 二进制如实标 binary 且不返回 lines（不当错误）',
+         _sb.get('binary') is True and 'lines' not in _sb,
+         'binary=%s keys=%s' % (_sb.get('binary'), sorted(_sb)[:6]))
+
+    if not quiet:
         lines.append('--- 4b. VM 调试（ST4: 复用 vm_debug, 不重写解释器）---')
     vi = dispatch('vm.images')
     case('vm.images 列出 4 个镜像（build/vm.blob）',
@@ -1801,6 +2000,32 @@ def selftest(quiet=False):
          == (g1.get('counts_json') or {}).get('pass'),
          'text=%s json=%s' % ((g1.get('counts_text') or {}).get('pass'),
                               (g1.get('counts_json') or {}).get('pass')))
+    # ⭐ ST5.5: 逐项带跳转落点。**光有行号不算数** —— 行号必须真的指向
+    #   那一项。判据取"拿行号回源文件读回那一行, 它得写着该项的名字",
+    #   这把"有个数字"升级成"这个数字对"。join 键是 `name`(两侧都按名字),
+    #   实测历史 868 条 NDJSON 行 100% 能 join 回声明。
+    _gl = _gate_source().split('\n')
+    _jumped = [x for x in g1['items'] if x.get('src_line')]
+    _bad_line = []
+    for _x in _jumped:
+        _ln = _gl[_x['src_line'] - 1] if _x['src_line'] - 1 < len(_gl) else ''
+        if _x['name'] not in _ln or 'Check' not in _ln:
+            _bad_line.append('%s@%s' % (_x['name'], _x['src_line']))
+    case('latest 逐项带 src/src_line, 且行号回源后确实写着该项',
+         bool(_jumped) and not _bad_line,
+         '带落点 %d/%d; 对不上: %s' % (len(_jumped), len(g1['items']),
+                                      _bad_line))
+    # **负向**: 上一条必须能对"行号指错"判假 —— 否则它只是装饰。
+    #   复核那一行在错位后会怎样: 取一个项的落点 +1, 必须被上面那条逻辑抓到。
+    if _jumped:
+        _shift = _jumped[0]
+        _ln2 = _gl[_shift['src_line']] if _shift['src_line'] < len(_gl) else ''
+        case('（负向）落点 +1 后上面那条判据会判假 —— 它对此敏感',
+             not (_shift['name'] in _ln2 and 'Check' in _ln2),
+             'line+1 = %r' % _ln2[:60])
+    case('latest 的 jump_unresolved 如实列出 join 不上的名字',
+         isinstance(g1.get('jump_unresolved'), list),
+         'unresolved=%s' % (g1.get('jump_unresolved'),))
     # **负向**: 上一条表达式必须能对"两出口打架"的一轮判假 —— 否则它只是装饰。
     # 用合成的一对 .log/.ndjson（文本 2 个 pass / JSON 1 个 pass）验证判别力。
     import shutil as _sh

@@ -125,6 +125,12 @@ code { font-family: var(--mono); background: var(--bg-3); padding: 0 3px; border
 .pill.fail, .pill.error { color: var(--bad); }
 .pill.gated { color: var(--warn); }
 
+/* ST5.5: 可跳转的行。只给**有落点**的行加 .jump —— 没有落点的行保持不可点，
+   否则「点了没反应」与「点了跳到别处」两种故障会长得一样。 */
+.item.jump { cursor: pointer; }
+.item.jump:hover { background: var(--bg-4); }
+.item.jump .nm::after { content: ' ↗'; color: var(--accent); }
+
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 10px; }
 .card h4 { margin: 0 0 6px; font-size: 13px; font-family: var(--mono); }
