@@ -10918,7 +10918,205 @@ GitHub 帐单问题（同 §2.50.12 / §2.53.9 / §2.55.13 / §2.59.13 / §2.61.
 
 ---
 
-*2026-10-12 v50*
+## 2.76 判据⑥ 上线后的自查：它认的批次少了一半，配对又是文件级的（2026-10-12）
+
+### 2.76.1 缘起：§2.75 刚建好的判据，我回头问它的扫描面
+
+§2.75 给自检的第三级可见性（「跑够了」）建了判据⑥：**有用例批次的工具必须为批次
+声明下限，并把它用在比较里**。落成当天 `tools/selftest_audit.py` 本体报
+`6 条判据全通过`，自检 `22/22 变异被抓`，门禁全绿 —— 一切看起来都对。
+
+然后我去读 `_batch_vars()` 的实现：它只认名字匹配 `(case|cases|checks|ck)$`
+的容器。于是问出下一个问题：**那名字不叫 `case` 的批次呢？**
+
+### 2.76.2 缺口一：三张 `mutations` 表完全在扫描面外
+
+仓库里 37 个登记了自检的工具，`_batch_vars` 只认出 **4 个** 有批次
+（`doccheck.py::cases` / `gate_results.py::cases` / `studio_proto_check.py::checks`
+/ `vm_debug.py::cases`）。逐个排查其余「有名字像批次的变量」的工具，找出三种形态：
+
+1. **`mutations` 形态**（三个工具，全部漏检）：模块级 `mutations = [...]`
+   被入口 `for` 遍历，`total = len(mutations)` 参与失败判定。
+2. `replica_check.py` / `studio_ui_check.py`：`fails = []` 累加器 + `if fails: return 1`
+   —— **这个形态本来就是对的**，`fails` 被排除在批次之外是正确的。
+3. `studio_server.py::_wcases` / `studio_ui_check.py::ncase` / `hostgen.py::n_case`
+   / `modcheck.py::CASES`：名字不含 `case` 后缀或含前缀，被正则漏掉。
+
+⭐ **决定性实测**（`build/_mutproof.py`，锚点 = 收尾统计行
+`(?m)^    total = len\(mutations\)$`，`finally` 逐字节还原）：把 `mutations`
+清成 `[]` 之后，三个工具**全部仍然 rc=0，且报文与基线逐字相同**：
+
+| 工具 | 基线 | 掏空 `mutations = []` 后 |
+|---|---|---|
+| `tools/check_crc_targets.py` | rc=0 `[crc-targets] PASS: 13 条判据全通过` | **rc=0 同一行** |
+| `tools/selfcrypt_meta_check.py` | rc=0 `[selfcrypt-meta] PASS: 5 条判据全通过` | **rc=0 同一行** |
+| `tools/selfcrypt_residency_check.py` | rc=0 `[selfcrypt-residency] PASS: 组 0 4 条 × 40 轮 全部逐字节等于磁盘密文` | **rc=0 同一行** |
+
+比 `cases` 形态**更隐蔽**：连 `PASS: 0 条` 都不会打出来，报文一字不变。
+
+### 2.76.3 缺口二：配对是**文件级**的，被一个无关常量满足
+
+补进扫描面之后，我按「下限名出现在某条 `ast.Compare` 里」实现配对
+（`_floor_compared(tree, decl)`），承重验证 `build/_mutc6.py` 对三个文件各做
+A（删下限声明）/ B（删守卫行）两注入：
+
+| 文件 | A 删下限声明 | B 删守卫行 |
+|---|---|---|
+| `tools/check_crc_targets.py` | rc=1 ✅ | rc=1 ✅ |
+| `tools/selfcrypt_meta_check.py` | rc=1 ✅ | rc=1 ✅ |
+| `tools/selfcrypt_residency_check.py` | **rc=0 ❌** | **rc=0 ❌** |
+
+⭐ 根因：`tools/selfcrypt_residency_check.py:109` 有一个**与批次无关**的常量
+`MIN_SAMPLES = 10`（判据③ 的采样轮数下限），它既被 `_FLOOR_RE` 的 `MIN_`
+前缀命中，又确实出现在 `judge()` 的比较里
+（`:192 len(samples) >= MIN_SAMPLES`）。于是删掉 `_MUT_FLOOR` 声明**或**
+删掉守卫行，`_floor_decls()` 与 `_floor_compared()` 都仍然非空 ⇒ 判据认为
+「有下限且用在比较里」。
+
+一般化：**「文件里有任一下限被比较」不等于「这个批次的下限被比较」。**
+
+### 2.76.4 顺带查出的假合格面：`_mutation_batches` 的第三条放宽过头
+
+为了认 `mutations` 形态，我加的识别规则是「非空 List 字面量 + `for` 遍历 +
+`len()` 参与比较」。第三条初版写成 `nm in comp or (derived & comp)` —— 后半个
+条件**与候选者 `nm` 无关**。实测后果（`build/_f6must.py`）：它把两个**不是用例
+批次**的表也收进了批次集合：
+
+- `tools/doccheck.py:2100 _must = ['README.md', 'CONTRIBUTING.md',
+  '.github/PULL_REQUEST_TEMPLATE.md']` —— **扫描面守卫名单**（它之所以「有下限」，
+  靠的是同函数里 `cases` 的那条真守卫）；
+- `tools/vm_debug.py:1328 VASM = [...9 个 .vasm 路径...]` —— **覆盖面名单**，
+  被 `ncov == len(VASM)` 比较（`ncov == len(VASM)` 确实是长度比较，清空会静默
+  变绿，但它的下限其实是同函数的 `_ST_FLOOR`，语义不匹配）。
+
+### 2.76.5 配对口径的三轮试算：太松与太严之间只剩「同一函数」
+
+| 口径 | 定义 | 实测结论 |
+|---|---|---|
+| R2 | 下限与该批次**同属一个 `FunctionDef`** | **过宽**：15 个 (工具,批次) 对全部 YES，含 `_must`/`VASM` |
+| R4 | 下限与该批次 `len()` 在**同一条 `ast.Compare`** 里 | **太严**：会误杀三张已装下限的 `mutations` 表 —— 它们的守卫是 `if total < _MUT_FLOOR`，而 `total = len(mutations)` 是**另一条语句** |
+| **R5** | 存在函数 `fn`：`fn` 内有 `len(batch)`，且 `fn` 内某条 `Compare` 含某个 `decl` 名 | **采用**：基线 7 工具全 YES；residency A/B 两注入都变 NO ✅ |
+
+关键取舍：**要求 `len(batch)` 是直接出现，不追派生名**。理由是
+`vm_debug.py` 的 `ncov == len(VASM)` 证明了「有 `len()` 在比较里」并不蕴含
+「这是那个批次的下限」—— 追派生名会把语义正确性再次丢掉。
+
+### 2.76.6 修法
+
+`tools/selftest_audit.py`：
+
+1. `_mutation_batches()` 第三条改为**按候选者**配对：先建 `derived`
+   （`test_id -> {由 len(候选者) 派生出的名字}`），然后 `if nm in comp: 命中`，
+   否则只在「`derived[nm]` 里有名字进 `comp`」时命中。
+2. **删除** `_floor_compared()`，新增 `_floor_paired(tree, batch, decl)`：
+   遍历所有 `FunctionDef`/`AsyncFunctionDef`，先要求 `batch in _len_names(fn)`，
+   再在该函数内的每条 `ast.Compare` 左右两侧（含 `ast.Subscript` 下标）收 `decl`。
+3. `floor_check()` 尾部改成按批次判：
+   `unpaired = [b for b in sorted(bvars) if not _floor_paired(tree, b, decl)]`，
+   报文逐字 `声明了 %s 但没有与该批次配对的比较（同一个函数里要有
+   `len(<批次>)` 且有下限参与比较）`。
+4. `_FLOOR_FILES_MIN = 7` **不变**（收窄后 `_must`/`VASM` 不再算批次，但这两个
+   文件本来就已经因为 `cases` 计入 ⇒ 工具数仍是 7）。
+5. `_ST_FLOOR` **25 → 27**（新增 F9/F10 两条用例，紧贴当前值不留余量）。
+6. 三张表的工具装下限（`build/_mutfloor.py`，幂等）：`tools/check_crc_targets.py`
+   `_MUT_FLOOR = 8` / `tools/selfcrypt_meta_check.py` `_MUT_FLOOR = 9` /
+   `tools/selfcrypt_residency_check.py` `_MUT_FLOOR = 4`，守卫插在
+   `total = len(N)` 之后、`return 0 if (caught == total` 之前。
+
+### 2.76.7 承重验证（`build/_mutc6.py`，真实文件注入 + `finally` 逐字节还原）
+
+| 文件 | A 删下限声明 | B 删守卫行 |
+|---|---|---|
+| `tools/check_crc_targets.py` | rc=1 `(check_crc_targets.py(mutations: 没有任何 FLOOR/_MIN 声明))` | rc=1 `(…声明了 _MUT_FLOOR 但没有与该批次配对的比较…)` |
+| `tools/selfcrypt_meta_check.py` | rc=1 `(selfcrypt_meta_check.py(mutations: 没有任何 FLOOR/_MIN 声明))` | rc=1 `(扫描面(batch-files: 只识别到 6 个用例批次，低于下限 7 …))` |
+| `tools/selfcrypt_residency_check.py` | rc=1 `(selfcrypt_residency_check.py(mutations: 声明了 MIN_SAMPLES 但没有与该批次配对的比较…))` | rc=1 `(…声明了 MIN_SAMPLES,_MUT_FLOOR 但没有与该批次配对的比较…)` |
+
+三文件还原 `sha256` 一致 = True；探针总体 **OK**（修前 residency A/B 双 rc=0）。
+HEAD 对照（`git show HEAD:tools/selftest_audit.py` → `build/_c6b_head.py`）
+rc=0 且**没有判据⑥ 这一行** ⇒ 构成干净差分。
+
+⚠️ 注意 A 用例的报文本身就是这次修复的**证据**：residency 的 A 注入报的是
+`声明了 MIN_SAMPLES` —— 判据指名道姓地说出「你拿一个无关常量当了下限」，
+这正是修前它看不出来的那件事。
+
+### 2.76.8 自检新增 F9/F10
+
+`_mk_mut_cases()` 从 3 条扩到 **5 条**：
+
+- **F9** 同函数里另有一个「非空 List + `for` 遍历」的名单表 ⇒ **不得**当成批次
+  （`doccheck.py::_must` 形态）；
+- **F10** 下限在**别的函数**里被比较 ⇒ **必须报**（`MIN_SAMPLES` 形态）。
+
+实测 `[selftest-audit-selftest] 27/27 变异被抓`，本体 `6 条判据全通过`
+（第⑥ 条读作 `7 个用例批次都有声明过的下限, 且用在比较里`）。
+
+### 2.76.9 我这一轮踩的坑
+
+1. **`build/_floorproof2.py` 把 `cases = []` 插到第 0 列** ⇒ 两个工具都
+   `IndentationError`、都 rc=1 —— **看起来像「有判据拦住了」，实际是探针自己
+   把文件弄坏了**。修法 = 取锚点所在**整行**的原有缩进。
+2. **`build/_floorproof3.py` 把注入点放在守卫下游** ⇒ `vm_debug` 报 rc=0，
+   **看起来像「守卫没拦住」**。
+3. **锚点写裸字符串会命中我自己写进注释里的援引**（§2.48 同型）⇒ 改用行首正则
+   `(?m)^    if len\(cases\) < _ST_FLOOR:$`。
+4. **F8 的 fixture 里混进了 `cases`** ⇒ 判据因**那个**名字报「没有下限」，
+   实测 `1 条 / checked 1`，**看起来像「收窄没生效」**；去掉后 `0 / 0` ✅。
+   教训：**fixture 里出现一个无关的批次名，会把要测的那条判据挤掉。**
+5. 判据⑥ 首版把「下限**参与过**比较」当成合格，于是 `tools/studio_proto_check.py`
+   的 `_BATCH_FLOORS` 之所以通过，靠的是
+   `e = run(dict(full, **{'请求侧': _BATCH_FLOORS['请求侧'] - 1}))` 这类**算术
+   表达式**——它参与的是「算期望值」，不是「比较批次长度」。R5 口径下它靠
+   `_floor_selftest` 里真正的 `len(checks)` 配对通过，这才是它应得的通过理由。
+
+### 2.76.10 诚实边界
+
+1. 判据⑥ 判的是「**存在一个与该批次同函数的长度下限**」，**不判那个数字是为
+   它写的**。`vm_debug.py::VASM` 在 `selftest()` 里被 `ncov == len(VASM)` 比较，
+   而它真正的下限是同函数的 `_ST_FLOOR` —— 本判据无法区分这两者。
+2. 批次识别仍靠**名字形态**（`case|cases|checks|ck`）与**字面量形态**
+   （非空 List + `for` + `len`）。改名（例如 `items` / `probes`）会让它静默
+   不适用；`_FLOOR_FILES_MIN = 7` 只兜住「**总数**下降」，兜不住「一个批次
+   被改名、另一个批次被加进来」这种一进一出。
+3. `_FLOOR_FILES_MIN` 与三处 `_MUT_FLOOR`、`_ST_FLOOR`、`_TOTAL_FLOOR` 都是
+   **紧跟当前值、不留余量**的数字 —— 删用例必须显式下调，这是刻意的摩擦
+   （§2.49 的教训：留余量会让守卫对它要防的那件事失明）。
+4. 判据⑥ 只看**源代码**，不执行它。它证明「下限在比较里」，不证明那个比较
+   **真的会被走到**（例如守卫写在 `if False:` 里）。
+5. `tools/check_crc_targets.py` / `tools/selfcrypt_meta_check.py` /
+   `tools/selfcrypt_residency_check.py` 三处的 `_MUT_FLOOR` 是否紧贴当前值
+   （8 / 9 / 4），仍靠人读 —— 判据只保证「声明存在且配对」。
+
+### 2.76.11 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/selftest_audit.py --selftest` | rc=0 `27/27 变异被抓`（F9/F10 在内） |
+| `tools/selftest_audit.py`（本体） | rc=0 `PASS: 6 条判据全通过`，⑥ 读作 `7 个用例批次…` |
+| `build/_mutc6.py`（三文件 × A/B） | 6/6 被抓，`总体 OK`，还原 sha256 一致 |
+| `build/_f6r7.py`（口径试算） | 基线 7 工具全 YES；`_must`/`VASM` 已不在批次集合；residency A/B 双 NO |
+| `tools/bom.py check tools/selftest_audit.py` | `BOM=False  bytes=73852` |
+| `build/_hygiene.py` | `27 个文件, 0 处异常` |
+| 全门禁（`tools/release_check.ps1 -SkipDirtyCheck`） | rc=0 `PASS: 43 项检查全通过`，`[json] 双面对照: pass=43 fail=0 skip=0 not-run=3` |
+
+### 2.76.12 同型第 21 次
+
+§2.36 枚举清单 → §2.38 语法检查步 → §2.40 扫描面自声明 → §2.42 休眠自检 →
+§2.46 项数注释 → §2.47 交叉引用 → §2.48 ci_sim 工具集 → §2.49 自检批次 →
+§2.54 代码块豁免 → §2.63 BOM → §2.64 pass_n → §2.69 响应侧 → §2.70 请求侧 →
+§2.71 行号 → §2.72 花括号子键 → §2.75 三级可见性 → **§2.76 批次扫描面 + 配对层级**。
+
+这一节跟前面几次有个不同：**它不是「某处声明过期了」，而是「我刚建好的判据
+自己的扫描面和配对层级都不够」**。§2.75 建判据⑥ 的时候，它的诚实边界④ 明写
+「不检查自检的质量（用例数、是否覆盖负向）」—— 那条边界**当时是对的**，
+而它在这里变成了一个具体的、可以被机器判定的缺口。
+
+一句话形状：**判据自己也有扫描面。判据的扫描面不写下来、不被度量，
+它就会和一整类缺陷一起安静地绿下去 —— 而写下它的那份文档，
+不会有任何东西因为它过期而变红。**
+
+---
+
+*2026-10-12 v51*
 
 ---
 

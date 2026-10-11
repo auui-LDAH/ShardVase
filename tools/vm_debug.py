@@ -1020,6 +1020,11 @@ def _rd32(mem, addr):
     return v
 
 
+# 自检用例数下限。**紧贴当前值（实测 54 条），不留余量**。
+# 见 `selftest()` 里的说明：留余量会让守卫对"整批被掏空"失明（§2.49 / §2.75）。
+_ST_FLOOR = 54
+
+
 def selftest(quiet=False):
     cases = []
 
@@ -1346,6 +1351,16 @@ def selftest(quiet=False):
     case('9 个 .vasm 全部可反汇编并单步', ncov == len(VASM),
          len(VASM), ncov)
 
+    # 用例数下限守卫（§2.49 / §2.75 形状）。
+    # 为什么必须有：本函数的收尾只看 `failed = [c for c in cases if not c[1]]`
+    # —— 这是**筛选**，空批次得到空 failed ⇒ 打印 `PASS: 0 条 (含 0 条负向)`
+    # 并 **rc=0**。实测确证（§2.75）：整批清空后彻底静默。
+    # 下限紧贴当前值、不留余量（留余量会对"掏空一个批次"失明）。
+    if len(cases) < _ST_FLOOR:
+        print('[vm_debug-selftest] FAIL: 自检用例只有 %d 条，低于下限 %d '
+              '—— 有用例被删或被掏空（下限紧贴当前值：删用例须显式下调此数字）'
+              % (len(cases), _ST_FLOOR))
+        return 1
     failed = [c for c in cases if not c[1]]
     if not quiet:
         for name, ok, want, got in cases:

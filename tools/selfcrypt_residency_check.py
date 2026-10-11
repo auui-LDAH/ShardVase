@@ -243,6 +243,13 @@ def _synth(ln, seed):
     return bytes(rnd.randrange(256) for _ in range(ln))
 
 
+# 变异表下限 —— `total = len(mutations)` 是**长度比较**，清空整表后
+# `caught == total` 变成 `0 == 0`，自检会**静默变绿**且报文与基线逐字相同
+# （2026-10-12 实测，§2.76）。紧贴当前值 4，不留余量：
+# 留余量会让这条守卫对它要防的那件事失明（§2.49 的教训）。
+_MUT_FLOOR = 4
+
+
 def selftest():
     """负向自检: 变异必须被判据抓到；基线必须全绿。"""
     entries = [(0x1000, 64, GROUP_VM), (0x1100, 32, GROUP_VM),
@@ -306,6 +313,11 @@ def selftest():
     print('  --- 以下是合成基线（自检用例数据, 非本体采样）---')
     for name, ok, detail in base:
         print('  [%s] %s  (%s)' % ('ok' if ok else 'XX', name, detail))
+    if total < _MUT_FLOOR:
+        print('[selfcrypt-residency-selftest] FAIL: 变异表只有 %d 条，低于下限 %d —— '
+              '有变异被删或被整表掏空（下限紧贴当前值：删变异须显式下调此数字）'
+              % (total, _MUT_FLOOR))
+        return 1
     return 0 if (caught == total and not bad) else 1
 
 

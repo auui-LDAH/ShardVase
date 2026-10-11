@@ -50,11 +50,29 @@
      `tools/prot_dbg.py::selftest` 与 `selftest_live` 的**整段函数体被掏空后**，
      `--selftest` 仍然 **rc=0**，有的连一行输出都没有 ⇒ 门禁逐项全绿。
      ④ 判住了"调用得对不对"，⑤ 才判"跑起来会不会红"。
-  ⑥ 锚点消失即 FAIL —— **失锚不得读成"没有孤儿"**（§2.45 / §2.46 同纪律）。
+  ⑥ 有用例批次的工具，必须为批次**声明一个下限**（名字含 `FLOOR`/`MIN_`）
+     并把它**用在比较里** —— 「会失败」不等于「跑够了」。
+     2026-10-12 实测：`tools/gate_results.py` 的收尾统计是
+     `npass == len(cases)`、`tools/vm_debug.py` 是 `failed = [c for c in cases]`，
+     **把 `cases` 清空**后二者分别打印 `PASS: 0 条（含 0 条负向）` 与
+     `PASS: 0 条 (含 0 条负向)` 并 **rc=0** —— 门禁全绿。
+     ⑤ 看不见这种掏空（函数体里的 `if` 一个都没少），必须靠下限。
+     出处与实测三例见 §2.75；`tools/studio_proto_check.py` 的 `_BATCH_FLOORS`
+     与 `tools/doccheck.py` 的 `_TOTAL_FLOOR` 是已有的两个正面例子。
+     **配对是「同一函数」级的**（`_floor_paired`）：下限名必须与该批次的
+     `len(...)` 出现在**同一个函数体**里。首版是**文件级**的
+     （「文件里有任一下限被比较」），2026-10-12 被反例打掉 ——
+     `tools/selfcrypt_residency_check.py` 的 `MIN_SAMPLES = 10`（判据③ 的
+     采样轮数下限，在 `judge()` 里被比较）满足了它，于是删掉 `_MUT_FLOOR`
+     声明**或**删掉守卫行，判据都仍然 PASS（`build/_mutc6.py` A/B 双 rc=0）。
+     一般化：**「文件里有任一下限被比较」不等于「这个批次的下限被比较」**。
+     同一条 `Compare` 级的配对则太严：三张 `mutations` 表的守卫是
+     `if total < _MUT_FLOOR`，而 `total = len(mutations)` 是**另一条语句**。
+  ⑦ 锚点消失即 FAIL —— **失锚不得读成"没有孤儿"**（§2.45 / §2.46 同纪律）。
 
 ## 含负向自检
 
-    `--selftest` 对**合成文本**做 12 条变异（不碰仓库文件），每条都必须被抓：
+    `--selftest` 对**合成文本**做 27 条变异（不碰仓库文件），每条都必须被抓：
       M1 登记了自检、全库无人调用           -> 必须报孤儿
       M2 只在**注释**里被提到                -> 必须报孤儿（④）
       M3 入口调用它但**不带**自检参数        -> 必须报孤儿（③）
@@ -63,16 +81,29 @@
       M6 传递但中间那跳**不带**自检参数      -> 必须报孤儿
       M7 子命令形态（`X.py selftest`）       -> 不得报
       M8 只在 **docstring** 里被提到          -> 必须报孤儿
-      M9 自检函数**体被掏空**（只剩 return 0）-> 必须报（⑤）
-      M10 自检体里只有 `pass`                 -> 必须报（⑤）
-      M11 自检体里只有 `if` 却**不产生**失败  -> 不得报（⑤ 只问"能不能失败"）
-      M12 有自检函数、但入口只调用了**别的**函数 -> 必须报（⑤ 判的是函数体）
+      F1-F5 判据④ 的旗标面（未登记旗标 / 已登记 / 同语句别的工具 / 不可解析）
+      B1-B4 判据⑤ 的体面（有 if 不得报 / 掏空必报 / 只有 pass 必报 / 入口调别的函数必报）
+      F1-F5 判据⑥ 的下限面（见下）
+
+    判据⑥ 的十条（`_mk_floor_cases` + `_mk_mut_cases`，名字与判据④ 重号，按批次区分）：
+      F1 有下限声明且用在比较里            -> 不得报
+      F2 有批次但**没有任何**下限声明      -> 必须报（清空批次后 `0 == 0` 仍绿）
+      F3 声明了下限却**没用在比较里**      -> 必须报
+      F4 没有用例批次                      -> 不适用（不得报、也不计入）
+      F5 批次工具数低于**扫描面下限**      -> 必须报
+      F6 变异表形态但无下限声明            -> 必须报
+      F7 变异表形态且有下限参与比较        -> 不得报
+      F8 只在 `except` 里的临时表          -> 不得当成批次（清空即 `0 == 0` 的另一种形状）
+      F9 同函数里另有的**扫描面名单**表    -> 不得当成批次（`doccheck.py::_must` 形态）
+      F10 下限与批次**不在同一函数**       -> 必须报（文件级配对的假合格面，
+                                              `selfcrypt_residency_check.py::MIN_SAMPLES` 形态）
 
 ## 用法
 
     python tools/selftest_audit.py [--quiet] [--selftest] [--list]
 
-退出码: 0 = 无孤儿; 1 = 存在孤儿 / 有自检体不可能失败; 2 = SKIP（工具目录缺失）
+退出码: 0 = 无孤儿; 1 = 存在孤儿 / 有自检体不可能失败 / 批次没有下限;
+        2 = SKIP（工具目录缺失）
 
 ## 诚实边界
 
@@ -95,6 +126,24 @@
      两者互补：守卫防"少几条"，本判据防"整段空"。
   ⑥ 判据⑤ 只对**能解析的 Python 源码**生效。判不了（源码不可解析）
      一律**跳过**，不得读成"有问题"。
+  ⑦ 判据⑥ 只看**源代码**：它判的是「批次有没有声明下限并拿它比较」，
+     不判那个下限**数值合不合理**（`_ST_FLOOR = 1` 也能过本判据）。
+     数值是否紧贴当前用例数，仍靠人读 —— 但 `_FLOOR_FILES_MIN` 这类
+     **扫描面下限**能防住"文件被跳过"这一整类静默降级。
+  ⑧ 判据⑥ 识别批次靠名字形态（`case|cases|checks|ck` 且被 append 等），
+     改名（例如 `items`）会让它静默不适用。`_FLOOR_FILES_MIN` 是对这种
+     静默的兜底：批次工具**总数**下降即报。
+     `_mutation_batches` 认的是「非空 List 字面量 + `for` 遍历 + `len()` 参与
+     比较」，也靠形态 —— 变异表改名（例如 `probes`）同样会静默不适用；
+     收窄后的第三条（比较里必须含**该候选者**或其 `len()` 派生名）能排除
+     `doccheck.py::_must` / `vm_debug.py::VASM`，但**不保证**排除所有
+     「长得像批次但不是批次」的表。
+  ⑨ 判据⑥ 的配对是**同一函数**级的（`_floor_paired`），所以
+     「下限在该函数里被比较」不等价于「那条比较判的就是这个批次的长度」：
+     `tools/vm_debug.py` 的 `VASM` 在 `selftest()` 里被 `ncov == len(VASM)`
+     比较，而它真正的下限其实是同函数的 `_ST_FLOOR`。本判据判的是
+     「**有一个与该批次同函数的长度下限存在**」，不是「那个数字是为它写的」。
+     数值合理性、以及「下限是否真的在守这个批次」仍需人读（见 ⑦）。
 """
 
 import argparse
@@ -356,6 +405,264 @@ def body_check(tools, sources, tool_dir=None):
             ok, _why = _can_fail(defs[nm])
             if not ok:
                 problems.append((f, nm, how))
+    return problems, checked
+
+
+# --------------------------------------------------------------------------
+# 判据⑥：用例批次必须有**声明过的下限**并被用在比较里。
+#
+# 「跑了」「会失败」「跑够了」是三件事：判据③ 答第一问，⑤ 答第二问，
+# ⑥ 答第三问。实测（§2.75）：`tools/gate_results.py` 与 `tools/vm_debug.py`
+# 的收尾统计是 `npass == len(cases)` / `failed = [c for c in cases ...]`
+# —— 都是**长度或筛选**，于是把批次清空得到 `0 == 0` / 空列表，
+# 打印 `PASS: 0 条（含 0 条负向）` 并 **rc=0**，门禁全绿。
+_BATCH_RE = re.compile(r'(case|cases|checks|ck)$', re.I)
+_FLOOR_RE = re.compile(r'FLOOR|_MIN|MIN_')
+# 仓库里**有用例批次**的工具数下限。紧贴当前值（7 个），不留余量：
+#   留余量的守卫对「一个批次文件被改坏/被跳过」失明 —— 2026-10-12 实测，
+#   把 `tools/gate_results.py` 的守卫行删掉会顺带弄出 IndentationError，
+#   该文件于是被 `floor_check` 跳过，`checked` 从 4 静默降到 3 而判据仍然 PASS。
+#   ⚠️ 新增一个有用例批次的工具时，必须同步上调此数字。
+#   4 -> 7（2026-10-12，§2.76）：`_batch_vars` 之外补了 `_mutation_batches`，
+#   于是 `check_crc_targets.py` / `selfcrypt_meta_check.py` /
+#   `selfcrypt_residency_check.py` 三张 `mutations` 表也进入扫描面。
+#   ⚠️ 收窄 `_mutation_batches` 的第三条之后（同一天），`doccheck.py::_must`
+#   与 `vm_debug.py::VASM` 不再被算成批次，但**工具数仍是 7**（这两个文件
+#   本来就已经因为 `cases` 计入）—— 所以这个数字不需要跟着改。
+_FLOOR_FILES_MIN = 7
+
+# 本文件自检的用例总数下限（§2.49 形状：`total` 由长度导出，清空一批不会报错，
+# 只会让数字变小）。紧贴当前值，不留余量 —— 留余量会让它对「掏空一批」失明。
+#   22 -> 25（2026-10-12，§2.76）：判据⑥ 的变异表形态 F6/F7/F8。
+#   25 -> 27（同日）：F9（同函数另有的名单表不得算批次）/ F10（下限与批次
+#   不在同一函数必须报）—— 两条都是这次收窄口径后才成立的判别力。
+_ST_FLOOR = 27
+
+
+def _batch_vars(tree, fns):
+    """自检入口函数体里被 append/extend/add 的、名字像用例批次的 list。"""
+    out = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef) or n.name not in fns:
+            continue
+        for x in ast.walk(n):
+            if isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute) \
+                    and x.func.attr in _FAIL_CALLS:
+                v = x.func.value
+                if isinstance(v, ast.Name) and _BATCH_RE.search(v.id):
+                    out.add(v.id)
+    return out
+
+
+def _mutation_batches(tree, fns):
+    """自检入口里的**变异表**形态：清空它也会让自检静默变绿。
+
+    形态（全部条件都要满足，且**只看入口函数体的直接语句**）：
+      ① `N = [ <非空 List 字面量> ]` 是入口函数体的一条直接语句；
+      ② 入口里有 `for ... in N:`（`ast.For`，**不含**推导式）；
+      ③ `len(N)` 参与比较，或 `d = ... len(N) ...` 而 `d` 参与比较。
+
+    ## 为什么要这条（2026-10-12 实测，§2.76）
+    `_batch_vars` 只认名字以 `case|cases|checks|ck` 结尾的批次，于是
+    `tools/check_crc_targets.py` / `tools/selfcrypt_meta_check.py` /
+    `tools/selfcrypt_residency_check.py` 三张 `mutations` 表**游离在判据⑥
+    之外**。实测把 `mutations` 清成 `[]`，三者仍然 rc=0，且报文与基线
+    **逐字相同**（连 `PASS: 0 条` 都不打，比 `cases` 形态更隐蔽）。
+
+    ## 为什么②要求 `ast.For` 且①要求**直接语句**
+    只看 `ast.walk` 会收进 `except` 分支里的临时表
+    （`except Exception as e: res = [('crash', False, repr(e))]`）——
+    那种表被推导式遍历、名字也出现在比较里，却与「用例批次」无关。
+    收窄后全库命中 3 个工具，**恰好**是实测同病的那三个。
+    """
+    hits = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef) or n.name not in fns:
+            continue
+        direct = set()
+        for st in n.body:
+            if isinstance(st, ast.Assign) and isinstance(st.value, ast.List) \
+                    and st.value.elts:
+                for t in st.targets:
+                    if isinstance(t, ast.Name):
+                        direct.add(t.id)
+        if not direct:
+            continue
+        iterated = set()
+        for x in ast.walk(n):
+            if isinstance(x, ast.For) and isinstance(x.iter, ast.Name):
+                iterated.add(x.iter.id)
+        cand = direct & iterated
+        if not cand:
+            continue
+        derived = {}
+        for x in ast.walk(n):
+            if isinstance(x, ast.Assign) and (_len_names(x.value) & cand):
+                for t in x.targets:
+                    if isinstance(t, ast.Name):
+                        derived.setdefault(t.id, set()).update(
+                            _len_names(x.value) & cand)
+        comp = _compared_names(n)
+        for nm in cand:
+            if nm in comp:
+                hits.add(nm)
+                continue
+            # ③ 派生名必须**能追回这个候选者**才算命中。首版写的是
+            #    `nm in comp or (derived & comp)` —— 后半个条件与 `nm` 无关：
+            #    只要函数里**任何**一个候选者有「len -> 变量 -> 比较」的通路，
+            #    整个函数的所有候选者就都算命中。实测后果（2026-10-12）：
+            #    `tools/doccheck.py:2100` 的**扫描面守卫名单** `_must` 与
+            #    `tools/vm_debug.py:1328` 的**覆盖面名单** `VASM` 被当成用例
+            #    批次 —— 它们靠的都是同一个函数里 `cases` 的那条通路。
+            for d, srcs in derived.items():
+                if nm in srcs and d in comp:
+                    hits.add(nm)
+                    break
+    return hits
+
+
+def _len_names(node):
+    """`node` 里所有 `len(X)` 的 `X`（只认裸名字）。"""
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                and n.func.id == 'len' and len(n.args) == 1 \
+                and isinstance(n.args[0], ast.Name):
+            out.add(n.args[0].id)
+    return out
+
+
+def _compared_names(node):
+    """出现在某个 `ast.Compare` 里的名字（含 `len(名字)` 的参数位）。"""
+    out = set()
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Compare):
+            continue
+        for side in [n.left] + list(n.comparators):
+            for sub in ast.walk(side):
+                if isinstance(sub, ast.Name):
+                    out.add(sub.id)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                        and sub.func.id == 'len' and len(sub.args) == 1 \
+                        and isinstance(sub.args[0], ast.Name):
+                    out.add(sub.args[0].id)
+    return out
+
+
+def _floor_decls(tree):
+    """**任意作用域**里被赋值的、名字含 FLOOR|_MIN 的变量。
+
+    ⚠️ 必须扫全树而不是只看 `tree.body`：`tools/doccheck.py` 的
+    `_TOTAL_FLOOR = 69` 写在 `selftest()` **函数体内**，只看模块级会漏判。
+    """
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Assign, ast.AnnAssign)):
+            tgts = n.targets if isinstance(n, ast.Assign) else [n.target]
+            for t in tgts:
+                if isinstance(t, ast.Name) and _FLOOR_RE.search(t.id):
+                    out.add(t.id)
+    return out
+
+
+def _floor_paired(tree, batch, decl):
+    """与**这个批次**配对的下限名: 哪个函数里有 `len(batch)`，该函数里被比较的 `decl`。
+
+    ## 为什么要按批次配对（2026-10-12 实测，§2.76）
+    首版是文件级的: `decl = _floor_decls(tree)` 非空、且 `_floor_compared(tree, decl)`
+    非空 —— **两半互不相干**。实测反例: `tools/selfcrypt_residency_check.py` 里
+    有一个与批次无关的常量 `MIN_SAMPLES = 10`（`:109`，判据③ 的采样轮数下限），
+    它既被 `_FLOOR_RE` 的 `MIN_` 命中，又确实出现在 `judge()` 的比较里
+    （`:192 len(samples) >= MIN_SAMPLES`）⇒ **删掉 `_MUT_FLOOR` 声明、或删掉
+    守卫行，判据都仍然 PASS**（`build/_mutc6.py` A/B 两注入 rc=0）。
+    一般化: **「文件里有任一下限被比较」不等于「这个批次的下限被比较」**。
+
+    ## 口径是「同一函数」而不是「同一条 `Compare`」（三轮试算的结论）
+    同一条 `Compare` 太严: 三张 `mutations` 表的守卫是
+    `if total < _MUT_FLOOR`，而 `total = len(mutations)` 是**另一条语句**
+    ⇒ 会误杀 `tools/check_crc_targets.py` / `tools/selfcrypt_meta_check.py`
+    / `tools/selfcrypt_residency_check.py` 三个**已经装好下限**的文件。
+    文件级太松: 见上。⇒ 取中间态，并要求 `len(batch)` 是**直接**出现
+    （不追派生名）—— 派生的理由见 `_mutation_batches` 的注释；`tools/vm_debug.py`
+    的 `ncov == len(VASM)` 证明「有 `len()` 在比较里」并不蕴含「这是那个批次的下限」，
+    所以这里必须严格: 下限与批次的**字面**长度判定同处一个函数。
+    """
+    out = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if batch not in _len_names(fn):
+            continue
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.Compare):
+                continue
+            for side in [n.left] + list(n.comparators):
+                for sub in ast.walk(side):
+                    if isinstance(sub, ast.Name) and sub.id in decl:
+                        out.add(sub.id)
+                    elif isinstance(sub, ast.Subscript) and \
+                            isinstance(sub.value, ast.Name) and sub.value.id in decl:
+                        out.add(sub.value.id)
+    return out
+
+
+def floor_check(tools, sources, tool_dir=None, min_files=None):
+    """判据⑥: 返回 `(problems, checked)`。
+
+    `problems` = `[(tool, batch, why), ...]`。
+    `checked`  = 实际检查过的**有用例批次的工具**个数（失锚守卫用）；
+                 没有批次的工具不计入 —— 判据对它们不适用。
+
+    `min_files` 是**扫描面下限**：识别到的批次工具数少于它，本身就是一条
+    problem。理由（2026-10-12 实测）：把一个批次文件的守卫行删掉会顺带弄出
+    `IndentationError`，该文件于是被本函数 `continue` 跳过，`checked` 从 4
+    静默降到 3、判据仍然 PASS —— **判据对自己的扫描面失明**。
+    `min_files=None` 时用模块级 `_FLOOR_FILES_MIN`；合成用例传 1。
+    """
+    floor = _FLOOR_FILES_MIN if min_files is None else min_files
+    problems, checked = [], 0
+    for f in sorted(tools):
+        text = None
+        for rel, tx in sources.items():
+            if os.path.basename(rel) == f:
+                text = tx
+                break
+        if text is None:
+            if not tool_dir:
+                continue
+            p = os.path.join(tool_dir, f)
+            if not os.path.isfile(p):
+                continue
+            text = _read(p)
+        try:
+            tree = ast.parse(text.lstrip('\ufeff'))
+        except (SyntaxError, ValueError):
+            continue                                # 判不了 -> 跳过（边界⑥）
+        names, _how = _entry_fns(tree)
+        if not names:
+            names = _fallback_fns(tree)
+        bvars = _batch_vars(tree, names) | _mutation_batches(tree, names)
+        if not bvars:
+            continue                                # 没有批次 -> 不适用
+        checked += 1
+        decl = _floor_decls(tree)
+        if not decl:
+            problems.append((f, ','.join(sorted(bvars)), '没有任何 FLOOR/_MIN 声明'))
+            continue
+        unpaired = []
+        for b in sorted(bvars):
+            if not _floor_paired(tree, b, decl):
+                unpaired.append(b)
+        if unpaired:
+            problems.append((f, ','.join(unpaired),
+                             '声明了 %s 但没有与该批次配对的比较'
+                             '（同一个函数里要有 `len(<批次>)` 且有下限参与比较）'
+                             % ','.join(sorted(decl))))
+    if checked < floor:
+        problems.append(('扫描面', 'batch-files',
+                         '只识别到 %d 个用例批次，低于下限 %d —— 有文件被改坏/'
+                         '被跳过/批次被删（下限紧贴当前值：删批次须显式下调）'
+                         % (checked, floor)))
     return problems, checked
 
 
@@ -634,6 +941,22 @@ def verify(sources, tool_dir=None):
         detail = '%d 个自检函数体里都有能产生 FAIL 的结构' % bchecked
     checks.append(('⑤ 自检函数体里存在能产生 FAIL 的结构', bchecked > 0 and not bprob,
                    detail))
+    # ⑥ 「会失败」不等于「跑够了」（2026-10-12 实测补齐）
+    #
+    #   出处: `tools/gate_results.py` 与 `tools/vm_debug.py` 的收尾统计
+    #   分别是 `npass == len(cases)` 与 `failed = [c for c in cases ...]`，
+    #   把 `cases` 清空后打印 `PASS: 0 条（含 0 条负向）` 并 **rc=0**。
+    #   ⑤ 看不见这种掏空（函数体里 `if` 还在）。⇒ 补⑥：批次必须有下限。
+    fprob, fchecked = floor_check(tools, sources, td)
+    if fchecked == 0:
+        fdetail = ('一个用例批次都没识别到 -> 判据⑥空转'
+                   '（失锚不得读成"都有下限"）')
+    elif fprob:
+        fdetail = '; '.join('%s(%s: %s)' % p for p in fprob[:4])
+    else:
+        fdetail = '%d 个用例批次都有声明过的下限, 且用在比较里' % fchecked
+    checks.append(('⑥ 用例批次声明了下限并参与比较', fchecked > 0 and not fprob,
+                   fdetail))
     return checks
 
 
@@ -890,6 +1213,245 @@ def _flag_errors_from_sources(sources):
     return flag_errors(tools, covered, sources, None)
 
 
+def _t_floor_ok():
+    """批次 + 下限声明 + 用在比较里 -> 合规。"""
+    return _t_decl() + (
+        "_ST_FLOOR = 3\n"
+        "\n"
+        "def selftest():\n"
+        "    cases = []\n"
+        "    cases.append(('a', True, ''))\n"
+        "    if len(cases) < _ST_FLOOR:\n"
+        "        return 1\n"
+        "    return 0 if all(c[1] for c in cases) else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_floor_none():
+    """批次但**没有任何下限声明** —— 清空批次后 `0 == 0` 仍绿（真实事故形态）。"""
+    return _t_decl() + (
+        "def selftest():\n"
+        "    cases = []\n"
+        "    cases.append(('a', True, ''))\n"
+        "    npass = sum(1 for _n, ok, _d in cases if ok)\n"
+        "    return 0 if npass == len(cases) else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_floor_unused():
+    """声明了下限却**没用在比较里**（只赋值，比较的是别的东西）-> 必须报。"""
+    return _t_decl() + (
+        "_ST_FLOOR = 3\n"
+        "\n"
+        "def selftest():\n"
+        "    cases = []\n"
+        "    cases.append(('a', True, ''))\n"
+        "    failed = [c for c in cases if not c[1]]\n"
+        "    return 0 if len(failed) == 0 else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_floor_nobatch():
+    """没有用例批次 -> 判据⑥ 不适用（不得报问题，也不得计入 checked）。"""
+    return _t_decl() + (
+        "def selftest():\n"
+        "    if 1:\n"
+        "        return 1\n"
+        "    return 0\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _mk_floor_cases():
+    """判据⑥ 的合成用例: `[(name, sources, want_problems, want_checked, min_files)]`。
+
+    `min_files` 一律传 1：合成源里只有 1 个批次工具，用仓库下限 4 会把
+    每条合规用例都判成「扫描面不足」—— **守卫的阈值必须与它守卫的扫描面同源**
+    （§2.63 记过的同型坑）。
+    """
+    out = [
+        ('F1 有下限声明且用在比较里 -> 不得报', _t_floor_ok(), 0, 1, 1),
+        ('F2 有批次但没有任何下限声明 -> 必须报', _t_floor_none(), 1, 1, 1),
+        ('F3 声明了下限却没用在比较里 -> 必须报', _t_floor_unused(), 1, 1, 1),
+        # F4：一个批次都没有 —— 判据对本文件不适用，扫描面下限也传 0。
+        #     （真实仓库里 `checked == 0` 由 `verify()` 自己的失锚分支拦住。）
+        ('F4 没有用例批次 -> 不适用（不得报，也不计入）', _t_floor_nobatch(), 0, 0, 0),
+        # ★ F5：扫描面本身低于下限 -> 必须报（判据⑥ 对自己的扫描面失明的反面）
+        ('F5 批次工具数低于扫描面下限 -> 必须报', _t_floor_ok(), 1, 1, 2),
+    ]
+    return [(n, {'tools/a.py': s,
+                 'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+             wp, wc, mf) for (n, s, wp, wc, mf) in out]
+
+
+def _t_mut_nofloor():
+    """**变异表**形态但没有下限 —— 清空后 `caught == total` 变成 `0 == 0`（真实事故）。"""
+    return _t_decl() + (
+        "def selftest():\n"
+        "    mutations = [\n"
+        "        ('M1', 'a'),\n"
+        "        ('M2', 'b'),\n"
+        "    ]\n"
+        "    caught = 0\n"
+        "    for label, _p in mutations:\n"
+        "        caught += 1\n"
+        "    total = len(mutations)\n"
+        "    return 0 if caught == total else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_mut_floor():
+    """同一个形态 + 下限声明并参与比较 -> 合规。"""
+    return _t_decl() + (
+        "_MUT_FLOOR = 2\n"
+        "\n"
+        "def selftest():\n"
+        "    mutations = [\n"
+        "        ('M1', 'a'),\n"
+        "        ('M2', 'b'),\n"
+        "    ]\n"
+        "    caught = 0\n"
+        "    for label, _p in mutations:\n"
+        "        caught += 1\n"
+        "    total = len(mutations)\n"
+        "    if total < _MUT_FLOOR:\n"
+        "        return 1\n"
+        "    return 0 if caught == total else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_mut_except_only():
+    """★ 表只在 `except` 分支里建、被**推导式**遍历 -> **不得**当成用例批次。
+
+    这是 `_mutation_batches` 为什么要求「`ast.For` 遍历」且「赋值是函数体的
+    直接语句」的原因：真实工具里
+        `except Exception as e: res = [('crash', False, repr(e))]`
+    完全满足「非空 List 字面量 + 被遍历 + 参与比较」，但那是**异常兜底表**，
+    与「用例批次」无关。放宽后本判据会对它要求一个 FLOOR 声明 —— 假阳性。
+
+    ⚠️ 这个 fixture 里**刻意不出现** `cases`/`checks` 这类名字：一旦出现，
+    判据会因为**那个**名字报「没有下限」，于是本用例就测不到 `res` 了
+    （第一版即如此：`cases` 让它报 1 条，看起来像"收窄没生效"）。
+    期望 `checked == 0` —— 一个批次都不认。
+    """
+    return _t_decl() + (
+        "def selftest():\n"
+        "    caught = 0\n"
+        "    total = 1\n"
+        "    if total < 1:\n"
+        "        return 1\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except Exception as e:\n"
+        "        res = [('crash', False, repr(e))]\n"
+        "    caught = len([c for c in res if c[1]])\n"
+        "    return 0 if caught == len(res) else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_batch_scanlist():
+    """★ 函数里**另有一个**「非空 List 字面量 + `for` 遍历」的表（扫描面守卫名单）
+    -> **不得**把它当成用例批次。
+
+    真实形态 `tools/doccheck.py:2100`：
+        `_must = ['README.md', 'CONTRIBUTING.md', '.github/PULL_REQUEST_TEMPLATE.md']`
+        `for _m in _must:` … `fails.append('扫描面守卫: …')`
+    它满足①②，第三条之所以在首版成立，是因为同函数里 `cases` 有
+    「`len(cases)` -> `total` -> 比较」的通路，而首版的 `derived & comp`
+    **与候选者无关** ⇒ 函数里任何一个候选者命中，`_must` 就跟着命中。
+    期望：`cases` 是唯一批次，`_must` 不算 —— 有问题的是首版，这条用例就是它。
+    """
+    return _t_decl() + (
+        "_ST_FLOOR = 2\n"
+        "\n"
+        "def selftest():\n"
+        "    cases = []\n"
+        "    cases.append(('a', True, ''))\n"
+        "    _must = ['README.md', 'CONTRIBUTING.md']\n"
+        "    for _m in _must:\n"
+        "        cases.append(('扫描面 %s' % _m, True, ''))\n"
+        "    total = len(cases)\n"
+        "    if total < _ST_FLOOR:\n"
+        "        return 1\n"
+        "    return 0 if all(c[1] for c in cases) else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_mut_other_floor():
+    """★ 批次没有自己的下限，但文件里**另一个函数**有下限被比较 -> 必须报。
+
+    真实形态 `tools/selfcrypt_residency_check.py`：批次是 `selftest()` 里的
+    `mutations`（守卫 `if total < _MUT_FLOOR`），而 `MIN_SAMPLES = 10` 是
+    `judge()` 里判据③ 的采样轮数下限（`:192 len(samples) >= MIN_SAMPLES`）。
+    首版「文件里任一 decl 出现在任一比较里」被它满足 ⇒ 删 `_MUT_FLOOR`
+    或删守卫行，判据都仍然 PASS（`build/_mutc6.py` A/B 两注入 rc=0）。
+    """
+    return _t_decl() + (
+        "MIN_SAMPLES = 10\n"
+        "\n"
+        "def judge(samples):\n"
+        "    return len(samples) >= MIN_SAMPLES\n"
+        "\n"
+        "def selftest():\n"
+        "    mutations = [\n"
+        "        ('M1', 'a'),\n"
+        "        ('M2', 'b'),\n"
+        "    ]\n"
+        "    caught = 0\n"
+        "    for label, _p in mutations:\n"
+        "        caught += 1\n"
+        "    total = len(mutations)\n"
+        "    return 0 if caught == total else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _mk_mut_cases():
+    """判据⑥ 的**变异表**形态用例: [(name, sources, want_problems, want_checked, min_files)]。"""
+    out = [
+        # ★ 变异表无下限 -> 必须报（2026-10-12 实测同病：三张 mutations 表）
+        ('F6 变异表形态但无下限声明 -> 必须报', _t_mut_nofloor(), 1, 1, 1),
+        # 变异表 + 下限 -> 不得报
+        ('F7 变异表形态且有下限参与比较 -> 不得报', _t_mut_floor(), 0, 1, 1),
+        # ★ 只在 except 分支里的临时表不得被当成批次（收窄的判别力）
+        #   一个批次都不认 -> checked 必须为 0，min_files 也传 0
+        ('F8 只在 except 里的临时表 -> 不得当成批次', _t_mut_except_only(), 0, 0, 0),
+        # ★ F9：同函数里另有「非空 List + for」的表（扫描面名单）不得算批次
+        ('F9 同函数另有的名单表 -> 不得当成批次', _t_batch_scanlist(), 0, 1, 1),
+        # ★ F10：下限在**别的函数**里被比较 -> 必须报（首版的假合格面，
+        #        真实事故 `tools/selfcrypt_residency_check.py` 的 MIN_SAMPLES）
+        ('F10 下限与批次不在同一函数 -> 必须报', _t_mut_other_floor(), 1, 1, 1),
+    ]
+    return [(n, {'tools/a.py': s,
+                 'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+             wp, wc, mf) for (n, s, wp, wc, mf) in out]
+
+
 def selftest():
     """负向自检: 对合成文本做变异，逐条必须被抓。"""
     cases = _mk_cases()
@@ -949,6 +1511,55 @@ def selftest():
                  got if got >= 0 else 'ERR', want))
 
     total += len(bcases)
+    fcases6 = _mk_floor_cases()
+    for name, sources, want_p, want_c, minf in fcases6:
+        try:
+            tools = _tools_from_sources(sources)
+            fprob, fchecked = floor_check(tools, sources, min_files=minf)
+            got, gotc = len(fprob), fchecked
+        except Exception as e:                      # noqa: BLE001
+            got, gotc = -1, -1
+            print('  [XX] %s -> 探针异常: %r' % (name, e))
+            bad.append(name)
+            continue
+        ok = (got == want_p and gotc == want_c)
+        if ok:
+            caught += 1
+        else:
+            bad.append(name)
+        print('  [%s] %s -> 下限问题 %s 条 / checked %s（期望 %d / %d）'
+              % ('ok' if ok else 'XX', name,
+                 got if got >= 0 else 'ERR', gotc if gotc >= 0 else 'ERR',
+                 want_p, want_c))
+
+    total += len(fcases6)
+    mcases = _mk_mut_cases()
+    for name, sources, want_p, want_c, minf in mcases:
+        try:
+            tools = _tools_from_sources(sources)
+            mprob, mchecked = floor_check(tools, sources, min_files=minf)
+            got, gotc = len(mprob), mchecked
+        except Exception as e:                      # noqa: BLE001
+            got, gotc = -1, -1
+            print('  [XX] %s -> 探针异常: %r' % (name, e))
+            bad.append(name)
+            continue
+        ok = (got == want_p and gotc == want_c)
+        if ok:
+            caught += 1
+        else:
+            bad.append(name)
+        print('  [%s] %s -> 下限问题 %s 条 / checked %s（期望 %d / %d）'
+              % ('ok' if ok else 'XX', name,
+                 got if got >= 0 else 'ERR', gotc if gotc >= 0 else 'ERR',
+                 want_p, want_c))
+
+    total += len(mcases)
+    if total < _ST_FLOOR:
+        print('[selftest-audit-selftest] FAIL: 自检用例只有 %d 条，低于下限 %d —— '
+              '有用例被删或被掏空（下限紧贴当前值：删用例须显式下调此数字）'
+              % (total, _ST_FLOOR))
+        return 1
     print('[selftest-audit-selftest] %d/%d 变异被抓' % (caught, total))
     return 0 if caught == total else 1
 

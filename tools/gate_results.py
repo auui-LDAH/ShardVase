@@ -404,6 +404,11 @@ def cmd_trend(log_dir, as_json):
 
 
 # ── 自检 ────────────────────────────────────────────────────────────────────
+# 自检用例数下限。**紧贴当前值（实测 18 条），不留余量** —— 见 `selftest()` 里
+# 的说明：留余量会让守卫对"整批被掏空"失明（§2.49 的教训，§2.75 实测复现）。
+_ST_FLOOR = 18
+
+
 def selftest(quiet=False):
     """负向为主: 每条"必须报错"的用例都真的制造出那个错误。"""
     import shutil
@@ -589,6 +594,16 @@ def selftest(quiet=False):
         shutil.rmtree(tmp, ignore_errors=True)
 
     npass = sum(1 for _n, ok, _d in cases if ok)
+    # 用例数下限守卫（§2.49 / §2.75 形状）。
+    # 为什么必须有：本函数的收尾是 `npass == len(cases)` —— 这是**长度**，
+    # 于是把整批用例清空（`cases = []`）会得到 `0 == 0` ⇒ 打印
+    # `PASS: 0 条（含 0 条负向）` 并 **rc=0**。实测确证（§2.75 记过）。
+    # 下限**紧贴当前值、不留余量**：留余量会让守卫对"掏空一个批次"失明。
+    if len(cases) < _ST_FLOOR:
+        print('[gate_results-selftest] FAIL: 自检用例只有 %d 条，低于下限 %d '
+              '—— 有用例被删或被掏空（下限紧贴当前值：删用例须显式下调此数字）'
+              % (len(cases), _ST_FLOOR))
+        return 1
     if not quiet:
         for name, ok, det in cases:
             print('  %s %s%s' % ('ok  ' if ok else '[XX]', name,
