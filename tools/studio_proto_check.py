@@ -53,6 +53,121 @@ RC_FAIL = 1
 
 DOC_REL = 'docs/STUDIO_PROTOCOL.md'
 
+# ---- 自检批次下限守卫（§2.49 形状）----------------------------------------
+#
+# ## 为什么需要
+#   本工具的 `--selftest` 由四个批次组成（解析器 / 命令集合 / 请求侧 /
+#   响应子键），每个批次各自数用例、各自报 PASS/FAIL。**清空一个批次**
+#   （把函数体换成 `return 0`，签名与调用点都不动）会让 `--selftest`
+#   **rc=0 依旧绿**，只是少打一行 PASS —— 实测过（§2.75）。
+#   四个批次全掏空时，输出里连一条用例记录都没有，而退出码仍是 0。
+#
+# ## 守卫为什么放在 `main()` 而不在各批次内部
+#   这是本守卫唯一要紧的一条：**装在批次自己体内的守卫，会跟着函数体
+#   一起被掏空** —— 那正是它要防的那件事。所以判据必须在**调用方**，
+#   由批次把用例数**返回**上来，而不是自己报一声"我够了"。
+#
+# ## 下限为什么紧贴当前值
+#   §2.49 的教训：当时为了"每次加用例不用改数字"留了 5 条余量，
+#   结果**掏空一个批次后总数仍高于下限**，守卫对它要防的那件事失明。
+#   所以这里一律写当前值，加用例时同步加数字。
+_BATCH_FLOORS = {
+    '解析器': 5,
+    '命令集合': 9,
+    '请求侧': 7,
+    '响应子键': 14,
+    '下限守卫': 8,
+}
+
+
+def _floors_ok(counts):
+    """批次数下限守卫 —— 判据在**调用方**，不在被守卫的批次里。
+
+    `counts` = `[(批次名, 用例数), ...]`，由各批次**返回**。
+    返回错误字符串列表（空 = 通过）。
+    """
+    bad = []
+    seen = [n for n, _ in counts]
+    for name in _BATCH_FLOORS:
+        if name not in seen:
+            bad.append('批次 %r 没有登记用例数 —— 它被从 main() 里删掉了？'
+                       % name)
+    for name, n in counts:
+        floor = _BATCH_FLOORS.get(name)
+        if floor is None:
+            bad.append('批次 %r 没有登记下限 —— 新批次必须同时登记 (当前下限表: %s)'
+                       % (name, ', '.join(sorted(_BATCH_FLOORS))))
+        elif not isinstance(n, int):
+            bad.append('批次 %r 返回的用例数不是整数（%r）—— 批次被改坏了？'
+                       % (name, n))
+        elif n < floor:
+            bad.append('批次 %r 只有 %d 条用例，低于下限 %d —— 用例被删了，'
+                       '还是整批被掏空了？' % (name, n, floor))
+    return bad
+
+
+# 各批次的真实下限值，供守卫自身的用例当基线（**不写死在同一处**，
+# 否则改下限时两处会漂移；这里从 `_BATCH_FLOORS` 现取）。
+def _floor_selftest(quiet=False, counts=None):
+    """下限守卫自己的用例 —— 一条只会通过的守卫比没有更危险（§3.8）。
+
+    用**合成的 counts** 驱动 `_floors_ok()`，不碰真实批次：真实批次一旦被
+    掏空，是它该报的事，不是本用例该红的事。
+    """
+    fails = []
+    checks = []
+
+    full = {k: v for k, v in _BATCH_FLOORS.items()}
+
+    def run(c):
+        return _floors_ok(sorted(c.items()))
+
+    # 合规：全部正好在（或高于）下限 -> 沉默
+    checks.append(('合规：全部批次足量 -> 沉默', run(full) == []))
+    checks.append(('合规：某批高于下限 -> 沉默',
+                   run(dict(full, **{'响应子键': 99})) == []))
+
+    # ★ 掏空一个批次：用例数掉到 0 -> 必须报
+    e = run(dict(full, **{'响应子键': 0}))
+    checks.append(('★ 某批被掏空（0 条）-> 必须报', len(e) == 1 and '响应子键' in e[0]))
+    # ★ 少一条也算 —— 下限紧贴当前值，不留余量（§2.49 的教训）
+    e = run(dict(full, **{'请求侧': _BATCH_FLOORS['请求侧'] - 1}))
+    checks.append(('★ 某批少一条 -> 必须报（下限不留余量）',
+                   len(e) == 1 and '请求侧' in e[0]))
+    # ★ 整批从 counts 里消失（被从 main() 里删掉）-> 必须报
+    gone = dict(full)
+    del gone['解析器']
+    e = run(gone)
+    checks.append(('★ 某批没登记用例数 -> 必须报（被从 main 删掉）',
+                   len(e) == 1 and '解析器' in e[0]))
+    # ★ 新批次没登记下限 -> 必须报
+    e = run(dict(full, **{'新批次': 3}))
+    checks.append(('★ 新批次没登记下限 -> 必须报',
+                   len(e) == 1 and '新批次' in e[0]))
+    # ★ 用例数不是整数 -> 必须报（批次被改坏了）
+    e = run(dict(full, **{'命令集合': None}))
+    checks.append(('★ 用例数不是整数 -> 必须报',
+                   len(e) == 1 and '命令集合' in e[0]))
+    # 空 counts（main 里一个批次都没调）-> 每个批次各报一条
+    checks.append(('空 counts -> 每个批次各报一条',
+                   len(run({})) == len(_BATCH_FLOORS)))
+
+    for name, ok in checks:
+        if not ok:
+            fails.append(name)
+        elif not quiet:
+            print('  ok  %s' % name)
+    if counts is not None:
+        counts['下限守卫'] = len(checks)
+    if fails:
+        print('[studio_proto_check-selftest] FAIL: %d' % len(fails))
+        for f in fails:
+            print('  [X] %s' % f)
+        return RC_FAIL
+    if not quiet:
+        print('[studio_proto_check-selftest] PASS: %d 项' % len(checks))
+    return RC_OK
+
 # 表格里一个数据行形如:  | `cmd` | args | data |
 _ROW = re.compile(r'^\|\s*`([^`]+)`\s*\|(.*)$')
 
@@ -584,8 +699,12 @@ def _fixture(cmds=('ping', 'plan.list'), stream=('build.run',)):
     return {'rows': rows, 'stream': list(stream)}
 
 
-def selftest(quiet=False):
-    """造坏输入喂 judge() —— 证明判据**会**红。"""
+def selftest(quiet=False, counts=None):
+    """造坏输入喂 judge() —— 证明判据**会**红。
+
+    `counts` 非 None 时，把本批用例数写进 `counts['命令集合']` ——
+    下限守卫要的就是这个数（见 `_floors_ok`）。
+    """
     fails = []
     ncase = 0
     nneg = 0
@@ -657,6 +776,8 @@ def selftest(quiet=False):
          False, '失去锚点', check_payload=False)
 
     total = ncase
+    if counts is not None:
+        counts['命令集合'] = total
     if fails:
         print('[studio_proto_check-selftest] FAIL: %d/%d' % (len(fails), total))
         for f in fails:
@@ -679,7 +800,7 @@ def _shape_fixture(cells, cmds=None):
     return {'rows': rows, 'stream': []}
 
 
-def shape_selftest(quiet=False):
+def shape_selftest(quiet=False, counts=None):
     """造坏输入喂 judge_shapes() —— 证明这条判据**会**红。
 
     ⚠️ 每个用例都自带一份**补丁后的 dispatch**（`patch` 参数），而不是靠真实
@@ -781,6 +902,8 @@ def shape_selftest(quiet=False):
          {'rows': {}, 'stream': []}, {'ping'}, False, '失去锚点')
 
     total = ncase
+    if counts is not None:
+        counts['响应子键'] = total
     if fails:
         print('[studio_proto_check-selftest] FAIL: %d/%d' % (len(fails), total))
         for f in fails:
@@ -803,7 +926,7 @@ def _arg_fixture(args_cells, cmds=None):
     return {'rows': rows, 'stream': []}
 
 
-def arg_selftest(quiet=False):
+def arg_selftest(quiet=False, counts=None):
     """造坏输入喂 judge_args() —— 证明两条臂**各自**会红。"""
     fails = []
     ncase = 0
@@ -879,6 +1002,8 @@ def arg_selftest(quiet=False):
          behavior=False, no_lits=True)
 
     total = ncase
+    if counts is not None:
+        counts['请求侧'] = total
     if fails:
         print('[studio_proto_check-selftest] FAIL: %d/%d' % (len(fails), total))
         for f in fails:
@@ -892,8 +1017,12 @@ def arg_selftest(quiet=False):
 
 # ---------------------------------------------------------------- 文档解析自检
 
-def _parse_selftest(quiet=False):
-    """解析器自身的用例：转义竖线不能把列切断。"""
+def _parse_selftest(quiet=False, counts=None):
+    """解析器自身的用例：转义竖线不能把列切断。
+
+    本批走**列表**而非 `case()`，所以 `total` 是 `len(checks)`。报 PASS 时也
+    报数 —— 原来只报 FAIL 数，于是「这一批还在不在」在输出里看不出来。
+    """
     fails = []
     doc = parse_doc(
         '| `cmd` | `args` | `data`（要点） |\n'
@@ -913,11 +1042,15 @@ def _parse_selftest(quiet=False):
             fails.append(name)
         elif not quiet:
             print('  ok  %s' % name)
+    if counts is not None:
+        counts['解析器'] = len(checks)
     if fails:
         print('[studio_proto_check-selftest] FAIL: %d' % len(fails))
         for f in fails:
             print('  [X] %s' % f)
         return RC_FAIL
+    if not quiet:
+        print('[studio_proto_check-selftest] PASS: %d 项' % len(checks))
     return RC_OK
 
 
@@ -934,11 +1067,20 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.selftest:
-        rc1 = _parse_selftest(args.quiet)
-        rc2 = selftest(args.quiet)
-        rc3 = arg_selftest(args.quiet)
-        rc4 = shape_selftest(args.quiet)
-        return RC_FAIL if (rc1 or rc2 or rc3 or rc4) else RC_OK
+        counts = {}
+        rc1 = _parse_selftest(args.quiet, counts)
+        rc2 = selftest(args.quiet, counts)
+        rc3 = arg_selftest(args.quiet, counts)
+        rc4 = shape_selftest(args.quiet, counts)
+        rc5 = _floor_selftest(args.quiet, counts)
+        errs = _floors_ok(sorted(counts.items()))
+        if errs:
+            sys.stdout.write('[studio_proto_check-selftest] FAIL: '
+                             '批次数下限守卫未通过（%d 条）\n' % len(errs))
+            for e in errs:
+                sys.stdout.write('  [X] %s\n' % e)
+            return RC_FAIL
+        return RC_FAIL if (rc1 or rc2 or rc3 or rc4 or rc5) else RC_OK
 
     doc_path = os.path.join(REPO, DOC_REL.replace('/', os.sep))
     if not os.path.isfile(doc_path):

@@ -44,11 +44,17 @@
      见 §2.48 的教训：我自己的注释曾把"声明"读成"覆盖"。
      实测补充: 首版只剥 `#` 注释 ⇒ `tools/doccheck.py:855` 的 docstring
      把 `migration_cost.py` 误判成有执行者，而它**确实是孤儿**。
-  ⑤ 锚点消失即 FAIL —— **失锚不得读成"没有孤儿"**（§2.45 / §2.46 同纪律）。
+  ⑤ 自检函数体里必须**存在能产生 FAIL 的结构**（`if` / `assert` /
+     `fail|err|bad` 上的 `.append|.extend|.add`）—— 「被执行」不等于「会失败」。
+     2026-10-11 实测：`tools/replica_check.py::selftest` /
+     `tools/prot_dbg.py::selftest` 与 `selftest_live` 的**整段函数体被掏空后**，
+     `--selftest` 仍然 **rc=0**，有的连一行输出都没有 ⇒ 门禁逐项全绿。
+     ④ 判住了"调用得对不对"，⑤ 才判"跑起来会不会红"。
+  ⑥ 锚点消失即 FAIL —— **失锚不得读成"没有孤儿"**（§2.45 / §2.46 同纪律）。
 
 ## 含负向自检
 
-    `--selftest` 对**合成文本**做 8 条变异（不碰仓库文件），每条都必须被抓：
+    `--selftest` 对**合成文本**做 12 条变异（不碰仓库文件），每条都必须被抓：
       M1 登记了自检、全库无人调用           -> 必须报孤儿
       M2 只在**注释**里被提到                -> 必须报孤儿（④）
       M3 入口调用它但**不带**自检参数        -> 必须报孤儿（③）
@@ -57,12 +63,16 @@
       M6 传递但中间那跳**不带**自检参数      -> 必须报孤儿
       M7 子命令形态（`X.py selftest`）       -> 不得报
       M8 只在 **docstring** 里被提到          -> 必须报孤儿
+      M9 自检函数**体被掏空**（只剩 return 0）-> 必须报（⑤）
+      M10 自检体里只有 `pass`                 -> 必须报（⑤）
+      M11 自检体里只有 `if` 却**不产生**失败  -> 不得报（⑤ 只问"能不能失败"）
+      M12 有自检函数、但入口只调用了**别的**函数 -> 必须报（⑤ 判的是函数体）
 
 ## 用法
 
     python tools/selftest_audit.py [--quiet] [--selftest] [--list]
 
-退出码: 0 = 无孤儿; 1 = 存在孤儿; 2 = SKIP（工具目录缺失）
+退出码: 0 = 无孤儿; 1 = 存在孤儿 / 有自检体不可能失败; 2 = SKIP（工具目录缺失）
 
 ## 诚实边界
 
@@ -78,6 +88,13 @@
      取向仍是**宁可误报**：误报会逼人显式接线，漏报则回到「写下的纪律」。
   ④ 不检查自检的**质量**（用例数、是否覆盖负向）。§2.53 记录的三次
      「探针口径错伪装成被测对象性质」说明这类判断仍需人读。
+  ⑤ 判据⑤ 是**静态**判定：它只知道"体里存在能失败的结构"，不知道
+     那些结构**真的会被触发**（可能 `if` 的条件恒假）。它也看不见
+     「用例被删掉一半但函数体仍有 if」—— 那需要**下限守卫**
+     （见 `tools/studio_proto_check.py` 的 `_BATCH_FLOORS` / §2.75）。
+     两者互补：守卫防"少几条"，本判据防"整段空"。
+  ⑥ 判据⑤ 只对**能解析的 Python 源码**生效。判不了（源码不可解析）
+     一律**跳过**，不得读成"有问题"。
 """
 
 import argparse
@@ -203,6 +220,143 @@ def _selftest_pat(kind):
     if kind == '--selftest':
         return ('--selftest',)
     return ("'selftest'", '"selftest"', ' selftest', '\tselftest')
+
+
+# --------------------------------------------------------------------------
+# 判据⑤: 自检函数体里必须**存在能产生 FAIL 的结构**（2026-10-11）
+#
+# 取向**宁可误报**：判成"能失败"只会少报一个问题；判成"不能失败"才会让
+# 被掏空的批次静默变绿 —— 而后者正是本判据要防的唯一后果。
+_FAIL_CALLS = ('append', 'extend', 'add')
+_FAIL_WORDS = ('fail', 'err', 'bad', 'problem', 'missing', 'miss', 'warn')
+
+
+def _mentions_selftest(test):
+    """`if` 的条件里是否提到自检（`args.selftest` / `'selftest'` / `selftest`）。"""
+    for n in ast.walk(test):
+        if isinstance(n, ast.Attribute) and n.attr == 'selftest':
+            return True
+        if isinstance(n, ast.Name) and 'selftest' in n.id:
+            return True
+        if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n.value == SUB_SELFTEST):
+            return True
+    return False
+
+
+def _entry_fns(tree):
+    """取自检分支里**被调用的顶层函数名**。返回 `(names, how)`。
+
+    为什么不是"所有名字里带 selftest 的函数"：那会把 `_selftest_pat()`
+    这类**纯辅助函数**也当成用例批，一个没有 `if` 的辅助函数会误报。
+    判据⑤ 要问的是"**入口跑的那批**会不会失败"，所以先找到入口分支。
+
+    `how` 取值：
+      `main-branch`  —— 从 `main()` 里提到自检的 `if` 分支内取到调用（首选）
+      `no-branch`    —— 有 `main()` 但找不到自检分支（子命令形态）⇒ 调用方回退
+      `no-main`      —— 连 `main()` 都没有 ⇒ 调用方回退
+    """
+    main = None
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and n.name in ('main', '_main'):
+            main = n
+            break
+    if main is None:
+        return set(), 'no-main'
+    names, found = set(), False
+    for n in ast.walk(main):
+        if not isinstance(n, ast.If) or not _mentions_selftest(n.test):
+            continue
+        found = True
+        for c in ast.walk(n):
+            if isinstance(c, ast.Call):
+                nm = getattr(c.func, 'id', None)
+                if nm:
+                    names.add(nm)
+    if not found:
+        return set(), 'no-branch'
+    return names, 'main-branch'
+
+
+def _fallback_fns(tree):
+    """回退面：顶层 `*selftest*` 函数名（仅当 `_entry_fns` 拿不到分支时用）。"""
+    return set(n.name for n in tree.body
+               if isinstance(n, ast.FunctionDef) and 'selftest' in n.name)
+
+
+def _can_fail(fn):
+    """函数体（含嵌套）里是否存在**能产生 FAIL** 的结构。返回 `(bool, why)`。
+
+    三种结构：
+      ① `assert`
+      ② `if`         —— 最常见形态是 `if bad: fails.append(...)`
+      ③ 名字含 fail/err/bad/... 的列表上的 `.append/.extend/.add`
+
+    ## 为什么 `if` 就算（实测出处）
+    全库 43 个自检函数**全部**至少有 `if` 或 `assert`；反过来，被掏空成
+    `return 0` 的函数**一个都没有**。⇒ 这条判据在对当前仓库**零误报**，
+    而它能抓住「整段函数体被掏空」这一种真实故障（§2.75 实测三例）。
+    """
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assert):
+            return True, 'assert'
+    for n in ast.walk(fn):
+        if isinstance(n, ast.If):
+            return True, 'if'
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            if n.func.attr in _FAIL_CALLS:
+                try:
+                    tgt = ast.unparse(n.func.value).lower()
+                except Exception:                       # noqa: BLE001
+                    tgt = ''
+                if any(w in tgt for w in _FAIL_WORDS):
+                    return True, '.%s on %s' % (n.func.attr, tgt[:40])
+    return False, ''
+
+
+def body_check(tools, sources, tool_dir=None):
+    """判据⑤: 返回 `(problems, checked)`。
+
+    `tools` = `{basename: kind}`（来自 `audit()` 或合成源）。
+    `problems` = `[(tool, fn, why), ...]` —— 自检批的体里**找不到**能失败的结构。
+    `checked` = 实际检查过的函数个数（**失锚守卫**用）。
+
+    判不了的（源码不可解析 / 拿不到函数体）一律**跳过**，不猜（边界⑥）。
+    """
+    problems, checked = [], 0
+    for f in sorted(tools):
+        text = None
+        for rel, tx in sources.items():
+            if os.path.basename(rel) == f:
+                text = tx
+                break
+        if text is None:
+            if not tool_dir:
+                continue
+            p = os.path.join(tool_dir, f)
+            if not os.path.isfile(p):
+                continue
+            text = _read(p)
+        try:
+            tree = ast.parse(text.lstrip('\ufeff'))
+        except (SyntaxError, ValueError):
+            continue                                # 判不了 -> 跳过（边界⑥）
+        defs = dict((n.name, n) for n in tree.body
+                    if isinstance(n, ast.FunctionDef))
+        names, how = _entry_fns(tree)
+        if how != 'main-branch':
+            names = _fallback_fns(tree)
+            how = how + '+fallback'
+        hit = [nm for nm in sorted(names) if nm in defs]
+        if not hit:
+            continue                                # 拿不到函数体 -> 跳过，不猜
+        for nm in hit:
+            checked += 1
+            ok, _why = _can_fail(defs[nm])
+            if not ok:
+                problems.append((f, nm, how))
+    return problems, checked
 
 
 def _statements(body):
@@ -464,6 +618,22 @@ def verify(sources, tool_dir=None):
     checks.append(('④ 执行者传入的旗标都已登记', not ferr,
                    '; '.join(ferr[:3]) if ferr else
                    '%d 个执行者的调用旗标全部已登记' % len(cov)))
+    # ⑤ 「被执行」不等于「会失败」（2026-10-11 实测补齐）
+    #
+    #   出处: `tools/replica_check.py::selftest` / `tools/prot_dbg.py::selftest`
+    #   与 `selftest_live` 的**整段函数体被掏空**后，`--selftest` 仍然 rc=0，
+    #   有的连一行输出都没有。判据①-④ 全部只问"有没有人调用它"，
+    #   没有一条问"它跑起来会不会红"。⇒ 补⑤。
+    bprob, bchecked = body_check(tools, sources, td)
+    if bchecked == 0:
+        detail = ('一个自检函数体都没解析到 -> 判据⑤空转'
+                  '（失锚不得读成"都能失败"）')
+    elif bprob:
+        detail = '; '.join('%s::%s(%s)' % p for p in bprob[:4])
+    else:
+        detail = '%d 个自检函数体里都有能产生 FAIL 的结构' % bchecked
+    checks.append(('⑤ 自检函数体里存在能产生 FAIL 的结构', bchecked > 0 and not bprob,
+                   detail))
     return checks
 
 
@@ -596,6 +766,109 @@ def _mk_flag_cases():
     return cases
 
 
+def _tools_from_sources(sources):
+    """合成源的工具面: `{basename: kind}`（与 `_audit_from_sources` 同口径）。"""
+    tools = {}
+    for rel, text in sources.items():
+        if not rel.startswith('tools/') or not rel.endswith('.py'):
+            continue
+        base = os.path.basename(rel)
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        flag = sub = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, 'attr', None)
+            for a in node.args:
+                if not isinstance(a, ast.Constant):
+                    continue
+                if name == 'add_argument' and a.value == '--selftest':
+                    flag = True
+                if name == 'add_parser' and a.value == SUB_SELFTEST:
+                    sub = True
+        if flag:
+            tools[base] = '--selftest'
+        elif sub:
+            tools[base] = SUB_SELFTEST
+    return tools
+
+
+# 判据⑤ 的合成素材: `main()` 里提到自检、并调用一个批函数。
+def _t_body_ok(name='selftest'):
+    return _t_decl() + (
+        "def %s():\n"
+        "    bad = []\n"
+        "    if 1:\n"
+        "        bad.append('x')\n"
+        "    return 0 if not bad else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return %s()\n" % (name, name))
+
+
+def _t_body_empty(name='selftest'):
+    return _t_decl() + (
+        "def %s():\n"
+        "    return 0\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return %s()\n" % (name, name))
+
+
+def _t_body_pass(name='selftest'):
+    return _t_decl() + (
+        "def %s():\n"
+        "    pass\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return %s()\n" % (name, name))
+
+
+def _mk_body_cases():
+    """判据⑤ 的合成用例: [(name, sources, want_problems), ...]。"""
+    cases = []
+    # B1 体里有 if + 失败列表 -> 不得报
+    cases.append(('B1 自检体里有 if/失败列表 -> 不得报',
+                  {'tools/a.py': _t_body_ok(),
+                   'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+                  0))
+    # B2 体被掏空成 return 0 -> 必须报（真实事故形态）
+    cases.append(('B2 自检体被掏空成 `return 0` -> 必须报',
+                  {'tools/a.py': _t_body_empty(),
+                   'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+                  1))
+    # B3 体里只有 pass -> 必须报
+    cases.append(('B3 自检体里只有 `pass` -> 必须报',
+                  {'tools/a.py': _t_body_pass(),
+                   'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+                  1))
+    # B4 有自检函数、但入口分支调用的是**别的**函数 -> 必须报
+    #    （判据⑤ 判的是"入口跑的那批"，不是"任何叫 selftest 的函数"）
+    cases.append(('B4 入口调用的不是那个函数 -> 必须报（判的是入口跑的那批）',
+                  {'tools/a.py': _t_decl() + (
+                      "def selftest():\n"
+                      "    bad = []\n"
+                      "    if 1:\n"
+                      "        bad.append('x')\n"
+                      "    return 0 if not bad else 1\n"
+                      "\n"
+                      "def realcase():\n"
+                      "    return 0\n"
+                      "\n"
+                      "def main():\n"
+                      "    if args.selftest:\n"
+                      "        return realcase()\n"),
+                   'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},
+                  1))
+    return cases
+
+
 def _flag_errors_from_sources(sources):
     """合成源的判据④: 工具面 = sources 里的 tools/*.py。"""
     tools = {}
@@ -655,6 +928,27 @@ def selftest():
                  ('' if ok else ' :: ' + '; '.join(errs[:2]))))
 
     total = len(cases) + len(fcases)
+    bcases = _mk_body_cases()
+    for name, sources, want in bcases:
+        try:
+            tools = _tools_from_sources(sources)
+            bprob, _checked = body_check(tools, sources)
+            got = len(bprob)
+        except Exception as e:                      # noqa: BLE001
+            got = -1
+            print('  [XX] %s -> 探针异常: %r' % (name, e))
+            bad.append(name)
+            continue
+        ok = (got == want)
+        if ok:
+            caught += 1
+        else:
+            bad.append(name)
+        print('  [%s] %s -> 体问题 %s 条（期望 %d）'
+              % ('ok' if ok else 'XX', name,
+                 got if got >= 0 else 'ERR', want))
+
+    total += len(bcases)
     print('[selftest-audit-selftest] %d/%d 变异被抓' % (caught, total))
     return 0 if caught == total else 1
 
