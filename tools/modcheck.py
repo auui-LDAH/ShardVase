@@ -51,6 +51,13 @@ COMPOSITIONS = os.path.join(REPO, 'compositions')
 VALID_CAPS = {'detect', 'prevent', 'conceal', 'verify', 'respond'}
 VALID_PHASES = ['init', 'scan', 'decide', 'enforce', 'watch']
 
+# 自检用例数下限（防掏空）。同 §2.49/§2.77 的形状：`selftest_protocol()` 的
+# 收尾只判「有没有失败」（`if fails:`），不判「跑了几条」—— 把 `CASES` 清成
+# `[]` 时 rc 仍是 0，且**报文一字不变**（连 `PASS: 0 条` 都不打）。
+# ⚠️ 紧贴当前值，不留余量：留余量恰恰对「整表被清空」失明。
+# 现行 = `len(CASES)` 条循环用例 + R16 / R17 / 基线各 1 条 = 7 + 3 = 10。
+_ST_FLOOR = 10
+
 # 宿主下限: main.c / indirect_table.c 硬引用、无法从组合中移除的模块。
 #
 # **实测更新 (2026-09-20 批2 后)**: 逐个尝试排除并观察链接器结果。
@@ -921,6 +928,14 @@ def selftest_protocol():
         print('       基线报错: %s' % errs0[:3])
 
     print()
+    # 下限守卫：数的是"这一轮实际发起的判定数" = `len(CASES)` 条循环用例
+    # + R16 / R17 / 基线各 1 条（后三条是逐段硬编码、不在 CASES 里）。
+    ncase = len(CASES) + 3
+    if ncase < _ST_FLOOR:
+        print('[modcheck-selftest] FAIL: 自检用例只有 %d 条，低于下限 %d —— '
+              '有用例被删或被掏空（下限紧贴当前值：删用例须显式下调此数字）'
+              % (ncase, _ST_FLOOR))
+        return 1
     if fails:
         print('[modcheck-selftest] FAIL: %s' % ', '.join(fails))
         return 1

@@ -76,6 +76,14 @@ MIN_TEXT_ELS = {'gen': 8, 'test': 8, 'vm': 15, 'host': 6, 'mods': 20, 'about': 1
 
 VIEWS = ('gen', 'test', 'vm', 'host', 'mods', 'about')
 
+# 自检用例数下限（防掏空）。同 §2.49/§2.77 的形状：`selftest()` 用
+# `fails` 累加器 + `if fails: return RC_FAIL`，只判"有没有失败"，不判
+# "跑了几条"。实测在 `def case(` 体首插 `return` ⇒ 打印
+# `PASS: 0 项（含 0 项负向注入）` 而 **rc 仍是 0**（比列表型更隐蔽：
+# 它连"少了几条"都不显示，只显示 0）。
+# ⚠️ 紧贴当前值，不留余量。
+_ST_FLOOR = 19
+
 EDGE_CANDIDATES = (
     r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
     r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
@@ -516,6 +524,13 @@ def selftest(quiet=False):
         print('[studio_ui_check-selftest] FAIL: %d/%d' % (len(fails), total))
         for f in fails:
             print('  [X] %s' % f)
+        return RC_FAIL
+    # 下限守卫：排在 `fails` 之后 —— 已经有失败时该报的是失败，
+    # 不是"用例还不够多"（那会把排查方向带偏）。
+    if total < _ST_FLOOR:
+        print('[studio_ui_check-selftest] FAIL: 自检用例只有 %d 条，低于下限 %d —— '
+              '有用例被删或被掏空（下限紧贴当前值：删用例须显式下调此数字）'
+              % (total, _ST_FLOOR))
         return RC_FAIL
     if not quiet:
         print('[studio_ui_check-selftest] PASS: %d 项（含 %d 项负向注入）' % (total, nneg))

@@ -69,6 +69,17 @@ RC_OK = 0
 RC_FAIL = 1
 RC_USAGE = 2
 
+# 自检用例数下限（防掏空）。同 §2.49/§2.77 的形状：`selftest()` 的收尾是
+# `bad = [r for r in results if not r[1]]` + `return RC_OK if not bad else RC_FAIL`
+# —— 只判"有没有失败"，不判"跑了几条"。实测把 `_wcases` 清成 `[]` 后
+# rc 仍是 0，只是报文从 `PASS: 28 项` 静默缩水成 `PASS: 22 项`。
+# ⚠️ 两个下限各管一批，`_ST_FLOOR` 管总数、`_W_FLOOR` 管接线批（`_wcases`）。
+#    分开写不是冗余：清空 `_wcases` 时总数只掉 6，`_ST_FLOOR` 仍会命中，
+#    但只有 `_W_FLOOR` 能说明**是哪一批**少了 —— 排查方向全靠它。
+# ⚠️ 都紧贴当前值，不留余量。
+_ST_FLOOR = 28
+_W_FLOOR = 6
+
 MIME = {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
@@ -676,6 +687,9 @@ def selftest(quiet=False):
             ('重复 id 必须报', _H.replace('id="b"', 'id="a"'), _J, False),
             ('扫描面为空必须报（失锚）', '<p>no ids</p>', _J, False),
         ]
+        if len(_wcases) < _W_FLOOR:
+            case('接线批用例数不低于下限 %d' % _W_FLOOR, False,
+                 '只有 %d 条' % len(_wcases))
         for _nm, _h, _j, _want in _wcases:
             _ok, _d = _check_wiring(_h, _j)
             case('**负向** 接线: %s' % _nm, bool(_ok) == _want,
@@ -684,6 +698,14 @@ def selftest(quiet=False):
         shutil.rmtree(tmp, ignore_errors=True)
 
     bad = [r for r in results if not r[1]]
+    # 下限守卫：只在**通过**时判 —— 已经有失败时报告的应是失败，
+    # 而不是"用例还不够多"（那会把排查方向带偏）。
+    if not bad and len(results) < _ST_FLOOR:
+        sys.stdout.write('[studio_server-selftest] FAIL: 自检用例只有 %d 条，'
+                         '低于下限 %d —— 有用例被删或被掏空'
+                         '（下限紧贴当前值：删用例须显式下调此数字）\n'
+                         % (len(results), _ST_FLOOR))
+        return RC_FAIL
     if not quiet:
         sys.stdout.write('=== studio_server 自检 ===\n')
         for name, ok, detail in results:

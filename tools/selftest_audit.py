@@ -429,14 +429,26 @@ _FLOOR_RE = re.compile(r'FLOOR|_MIN|MIN_')
 #   ⚠️ 收窄 `_mutation_batches` 的第三条之后（同一天），`doccheck.py::_must`
 #   与 `vm_debug.py::VASM` 不再被算成批次，但**工具数仍是 7**（这两个文件
 #   本来就已经因为 `cases` 计入）—— 所以这个数字不需要跟着改。
-_FLOOR_FILES_MIN = 7
+#   7 -> 10（2026-10-12，§2.77）：判据⑥ 又认了两种形态 —— **循环驱动表**
+#   （`_loop_batches`：`modcheck.py` / `studio_server.py`）与**计数器型**
+#   （`_counter_batches`：`studio_proto_check.py` / `studio_ui_check.py`）。
+#   ⚠️ 这次**必须**跟着改：本数字的作用是「一个批次文件被改坏/被跳过时判据
+#   自己会红」，而 `build/_mutc6.py` 的 B 注入正是靠那条通路
+#   （删守卫行 → IndentationError → 该文件被 `continue` 跳过 → `checked` 掉 1）。
+#   留在 7 时实测后果：`selfcrypt_meta_check.py` 的 B 注入 `checked` 从 10 掉到
+#   9，仍 ≥ 7，**判据 rc=0 静默放过**（本轮真发生过，见 §2.77.7）。
+_FLOOR_FILES_MIN = 10
 
 # 本文件自检的用例总数下限（§2.49 形状：`total` 由长度导出，清空一批不会报错，
 # 只会让数字变小）。紧贴当前值，不留余量 —— 留余量会让它对「掏空一批」失明。
 #   22 -> 25（2026-10-12，§2.76）：判据⑥ 的变异表形态 F6/F7/F8。
 #   25 -> 27（同日）：F9（同函数另有的名单表不得算批次）/ F10（下限与批次
 #   不在同一函数必须报）—— 两条都是这次收窄口径后才成立的判别力。
-_ST_FLOOR = 27
+#   27 -> 34（2026-10-12，§2.77）：F11-F17 七条 —— 循环驱动表（有/无下限、
+#   名字不匹配的名单表）、计数器型（有/无下限、dict 键下限、同函数里
+#   **不相干**的下限比较必须报）。F13 与 F17 分别钉住本轮新增的两条
+#   收窄规则，F15/F16 钉住两条严格配对口径。
+_ST_FLOOR = 34
 
 
 def _batch_vars(tree, fns):
@@ -519,6 +531,216 @@ def _mutation_batches(tree, fns):
                     hits.add(nm)
                     break
     return hits
+
+
+_VOTE_WORDS = ('fail', 'err', 'bad', 'problem', 'miss', 'warn')
+
+
+def _loop_vote(node):
+    """循环体里有没有**判定器**：`case(...)` 调用，或对失败累加器 append 等。"""
+    for x in ast.walk(node):
+        if not isinstance(x, ast.Call):
+            continue
+        nm = getattr(x.func, 'id', None) or getattr(x.func, 'attr', None)
+        if nm == 'case':
+            return True
+        if isinstance(x.func, ast.Attribute) and x.func.attr in _FAIL_CALLS \
+                and isinstance(x.func.value, ast.Name) \
+                and any(w in x.func.value.id.lower() for w in _VOTE_WORDS):
+            return True
+    return False
+
+
+def _direct_assigns(body):
+    """函数体**直接语句**上的 `N = [ <非空 List 字面量> ]`，穿透一层 try/with。
+
+    穿透是必须的：`tools/studio_server.py` 的 `_wcases` 定义在 `try:` 里
+    （`finally` 里 `shutil.rmtree`）；只看 `fn.body` 会漏掉它。
+    """
+    out, stack = set(), list(body)
+    while stack:
+        st = stack.pop()
+        if isinstance(st, ast.Assign) and isinstance(st.value, ast.List) \
+                and st.value.elts:
+            for t in st.targets:
+                if isinstance(t, ast.Name):
+                    out.add(t.id)
+        if isinstance(st, (ast.Try, ast.With)):
+            stack.extend(st.body)
+            stack.extend(getattr(st, 'finalbody', []) or [])
+            if isinstance(st, ast.Try):
+                for h in st.handlers:
+                    stack.extend(h.body)
+    return out
+
+
+def _loop_batches(tree, fns):
+    """**循环驱动的用例表**：清空它，自检静默少跑几条而 rc 仍是 0。
+
+    形态（四个条件全要）：
+      ① `N = [ <非空 List 字面量> ]` 是入口函数体（穿透一层 try/with）的直接语句；
+      ② 入口里有 `for ... in N:`；
+      ③ **`N` 匹配既有的名字约定** `_BATCH_RE`（`case|cases|checks|ck$`）；
+      ④ 循环体里有判定器（`case(...)` 或对失败累加器 append）。
+
+    ## 为什么要③（2026-10-12 试算，§2.77）
+    只有①②④时，`tools/doccheck.py:2100 _must`（**扫描面守卫名单**）、
+    `tools/vm_debug.py:1328 VASM`（**覆盖面名单**）与 `vm_debug.py pairs`
+    都会被收成「用例批次」—— 它们的循环体里也有失败 append。
+    加③ 之后精确命中实测同病的那两个（`tools/modcheck.py::CASES`、
+    `tools/studio_server.py::_wcases`）—— 两者的循环体**都调用 `case()`**，
+    而 `_must`/`VASM` 不调。名字约定本就是本工具判据⑥ 的既有词汇，
+    复用它而不是新造一条「表里装的是什么」的语义判断。
+    """
+    hits = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef) or n.name not in fns:
+            continue
+        lits = set(x for x in _direct_assigns(n.body) if _BATCH_RE.search(x))
+        if not lits:
+            continue
+        for x in ast.walk(n):
+            if isinstance(x, ast.For) and isinstance(x.iter, ast.Name) \
+                    and x.iter.id in lits and _loop_vote(x):
+                hits.add(x.iter.id)
+    return hits
+
+
+def _counter_batches(tree, fns):
+    """**计数器型用例批次**：`N = 0` + `N += 1`，名字匹配 `_BATCH_RE`。
+
+    清空这种批次的表现与清空列表**不同**：列表型会打出 `PASS: 0 项`（判据⑥
+    注释里的 `cases` 形态），计数器型则是 `PASS: 0 项` 或**连项数都不打**，
+    且 rc 恒 0（`tools/studio_ui_check.py` 实测：在 `def case(` 体首插
+    `return` ⇒ `PASS: 0 项（含 0 项负向注入）` + **rc=0**）。
+
+    `N += 1` 用的是 `ast.AugAssign(Add)`：它同时覆盖 `ncase += 1` 与
+    `caught += 1`，但只有①③把范围收到「名字像用例批次的计数器」上。
+    """
+    hits = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef) or n.name not in fns:
+            continue
+        zeroed, bumped = set(), set()
+        for x in ast.walk(n):
+            if isinstance(x, ast.Assign) and isinstance(x.value, ast.Constant) \
+                    and x.value.value == 0:
+                for t in x.targets:
+                    if isinstance(t, ast.Name):
+                        zeroed.add(t.id)
+            if isinstance(x, ast.AugAssign) and isinstance(x.op, ast.Add) \
+                    and isinstance(x.target, ast.Name):
+                bumped.add(x.target.id)
+        for nm in zeroed & bumped:
+            if _BATCH_RE.search(nm):
+                hits.add(nm)
+    return hits
+
+
+def _count_names(tree, batch):
+    """`batch` 的**计数转世名**：`total = len(batch)` / `total = ncase` 之类。
+
+    计数器没有 `len()`，它的长度判定是 `total = ncase` 然后 `total < FLOOR`
+    —— 所以「这个批次的下限被比较了吗」这条问句，对计数器必须追一层赋值。
+    """
+    seen = set([batch])
+    changed = True
+    while changed:
+        changed = False
+        for x in ast.walk(tree):
+            if not isinstance(x, ast.Assign):
+                continue
+            srcs = _len_names(x.value)
+            for s in ast.walk(x.value):
+                if isinstance(s, ast.Name):
+                    srcs.add(s.id)
+            if not (srcs & seen):
+                continue
+            for t in x.targets:
+                if isinstance(t, ast.Name) and t.id not in seen:
+                    seen.add(t.id)
+                    changed = True
+    return seen
+
+
+def _floor_paired_count(tree, batch, decl):
+    """**严格**配对（计数器形态）：同一个函数里，某条 `Compare` 同时含
+    「批次的计数转世名」与「下限名」—— 例如 `if total < _ST_FLOOR:`。
+
+    与 `_floor_paired` 的区别：后者只要求「同函数里有 `len(<批次>)` **且**
+    同函数里有下限参与某条比较」，两半可以互不相干。实测出处（§2.77）：
+    `tools/vm_debug.py` 的 `VASM` 靠的就是这种不相干 —— `ncov == len(VASM)`
+    与 `len(cases) < _ST_FLOOR` 是两条不同的语句，于是 `VASM` 被算成
+    「有下限的批次」。这条严格口径**只加不改**：现有 7 个批次的判定一律
+    仍走 `_floor_paired`，避免把 §2.76 已记名的语义差异重新判成红。
+    """
+    names = _count_names(tree, batch)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.Compare):
+                continue
+            have = set()
+            for side in [n.left] + list(n.comparators):
+                for sub in ast.walk(side):
+                    if isinstance(sub, ast.Name):
+                        have.add(sub.id)
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                            and sub.func.id == 'len' and len(sub.args) == 1 \
+                            and isinstance(sub.args[0], ast.Name):
+                        have.add(sub.args[0].id)
+            if (have & names) and (have & decl):
+                return True
+    return False
+
+
+def _floor_dict_keys(tree, decl):
+    """下限名指向的 **dict 字面量**的字符串键。
+
+    出典 `tools/studio_proto_check.py:74 _BATCH_FLOORS = {'解析器': 5, ...}`
+    —— 下限按批次名分条存放，值就是每组的下限。
+    """
+    out = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Assign):
+            continue
+        tgt = n.targets[0] if n.targets else None
+        if not (isinstance(tgt, ast.Name) and tgt.id in decl):
+            continue
+        for x in ast.walk(n.value):
+            if isinstance(x, ast.Dict):
+                for k in x.keys:
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        out.add(k.value)
+    return out
+
+
+def _floor_paired_key(tree, batch, decl):
+    """**字面量键**配对：`容器['键'] = <批次的计数转世名>`，而 `'键'` 正是某个
+    下限 dict 里的键（`_BATCH_FLOORS`）。
+
+    这条是实测逼出来的（§2.77）：`tools/studio_proto_check.py` 的下限判定
+    写在**另一个函数** `_floors_ok()` 里（`n < floor`），批次函数本身只把
+    自己报的条数塞进 `counts['命令集合']`。若没有这条，它会被判成
+    「声明了下限但没有配对比较」—— 而它恰恰是全仓库下限纪律最严的工具之一。
+    ⚠️ 这条规则**精确**：实测只有 `ncase` 命中；`tools/studio_ui_check.py`
+    的 `ncase` 装的是一个**渲染下限**表 `MIN_TEXT_ELS = {'gen': 8, ...}`，
+    键名与批次名毫无关系 ⇒ 正确地不命中（它就是真的缺下限，见 §2.77）。
+    """
+    keys = _floor_dict_keys(tree, decl)
+    if not keys:
+        return False
+    for x in ast.walk(tree):
+        if not isinstance(x, ast.Assign):
+            continue
+        if not (isinstance(x.value, ast.Name) and x.value.id in _count_names(tree, batch)):
+            continue
+        for t in x.targets:
+            if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) \
+                    and isinstance(t.slice.value, str) and t.slice.value in keys:
+                return True
+    return False
 
 
 def _len_names(node):
@@ -641,7 +863,8 @@ def floor_check(tools, sources, tool_dir=None, min_files=None):
         names, _how = _entry_fns(tree)
         if not names:
             names = _fallback_fns(tree)
-        bvars = _batch_vars(tree, names) | _mutation_batches(tree, names)
+        bvars = _batch_vars(tree, names) | _mutation_batches(tree, names) \
+            | _loop_batches(tree, names) | _counter_batches(tree, names)
         if not bvars:
             continue                                # 没有批次 -> 不适用
         checked += 1
@@ -651,8 +874,13 @@ def floor_check(tools, sources, tool_dir=None, min_files=None):
             continue
         unpaired = []
         for b in sorted(bvars):
-            if not _floor_paired(tree, b, decl):
-                unpaired.append(b)
+            if _floor_paired(tree, b, decl):
+                continue
+            # 计数器型（`total = ncase` 后比较）与「下限按批次名存进 dict」
+            # 两种形态各有一条严格口径 —— 见两个函数的 docstring（§2.77）。
+            if _floor_paired_count(tree, b, decl) or _floor_paired_key(tree, b, decl):
+                continue
+            unpaired.append(b)
         if unpaired:
             problems.append((f, ','.join(unpaired),
                              '声明了 %s 但没有与该批次配对的比较'
@@ -1213,6 +1441,198 @@ def _flag_errors_from_sources(sources):
     return flag_errors(tools, covered, sources, None)
 
 
+def _t_loop_nofloor():
+    """**循环驱动表**（名字匹配 `_BATCH_RE`、循环体调 `case()`）但无下限 -> 必须报。
+
+    真实形态 `tools/modcheck.py::CASES` 与 `tools/studio_server.py::_wcases`：
+    清空它们后 rc 仍是 0，`modcheck` 连报文都一字不变，
+    `studio_server` 只静默从 `PASS: 28 项` 缩水成 `PASS: 22 项`。
+    """
+    return _t_decl() + (
+        "def selftest():\n"
+        "    CASES = [('R10', 'x'), ('R11', 'y')]\n"
+        "    for rule, needle in CASES:\n"
+        "        case(rule, True)\n"
+        "    return 0\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_loop_floor():
+    """循环驱动表 + 下限参与比较 -> 不得报（F11 的反面，防「一律报」）。"""
+    return _t_decl() + (
+        "_ST_FLOOR = 2\n"
+        "\n"
+        "def selftest():\n"
+        "    CASES = [('R10', 'x'), ('R11', 'y')]\n"
+        "    for rule, needle in CASES:\n"
+        "        case(rule, True)\n"
+        "    total = len(CASES)\n"
+        "    if total < _ST_FLOOR:\n"
+        "        return 1\n"
+        "    return 0\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_loop_namemismatch():
+    """★ **名字不匹配 `_BATCH_RE`** 的名单表 -> **不得**当成用例批次。
+
+    真实形态 `tools/doccheck.py:2100` 的 `_must`（扫描面守卫名单）与
+    `tools/vm_debug.py:1328` 的 `VASM`（覆盖面名单）：它们也「被 `for` 遍历」
+    且循环体里向失败累加器 append，但**不是用例批次**。
+    若没有名字约定这一条，本判据会把它们要求一个 FLOOR —— 假阳性。
+
+    ⚠️ 期望 `checked == 0`：本 fixture 里一个批次都不该被认出来。
+    """
+    return _t_decl() + (
+        "def selftest():\n"
+        "    fails = []\n"
+        "    _must = ['README.md', 'CONTRIBUTING.md']\n"
+        "    for _m in _must:\n"
+        "        if not _m:\n"
+        "            fails.append('扫描面守卫: %s' % _m)\n"
+        "    return 0 if not fails else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_count_nofloor():
+    """**计数器型**批次（`ncase = 0` + `ncase += 1`）无下限 -> 必须报。
+
+    真实形态 `tools/studio_ui_check.py::ncase`：在 `def case(` 体首插
+    `return` ⇒ 打印 `PASS: 0 项（含 0 项负向注入）` 而 **rc 仍是 0**
+    —— 比列表型更隐蔽，它连「少了几条」都不显示。
+    """
+    return _t_decl() + (
+        "def selftest():\n"
+        "    fails = []\n"
+        "    ncase = 0\n"
+        "\n"
+        "    def case(name, ok):\n"
+        "        nonlocal ncase\n"
+        "        ncase += 1\n"
+        "        if not ok:\n"
+        "            fails.append(name)\n"
+        "\n"
+        "    case('a', True)\n"
+        "    case('b', True)\n"
+        "    total = ncase\n"
+        "    return 0 if not fails else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_count_floor():
+    """计数器 + `total = ncase` 后与下限比较 -> 不得报（严格配对的正例）。
+
+    这一条是 `_floor_paired_count()` 的存在理由：计数器没有 `len()`，
+    它的长度判定是「先快照成 `total`，再比较」——
+    宽松口径 `_floor_paired` 对它是**永远不成立**的（找不到 `len(ncase)`）。
+    """
+    return _t_decl() + (
+        "_ST_FLOOR = 2\n"
+        "\n"
+        "def selftest():\n"
+        "    fails = []\n"
+        "    ncase = 0\n"
+        "\n"
+        "    def case(name, ok):\n"
+        "        nonlocal ncase\n"
+        "        ncase += 1\n"
+        "        if not ok:\n"
+        "            fails.append(name)\n"
+        "\n"
+        "    case('a', True)\n"
+        "    total = ncase\n"
+        "    if total < _ST_FLOOR:\n"
+        "        return 1\n"
+        "    return 0 if not fails else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_count_dictkey():
+    """计数器 + 下限**按批次名存进 dict** -> 不得报。
+
+    真实形态 `tools/studio_proto_check.py`：`_BATCH_FLOORS = {'解析器': 5, ...}`
+    是模块级 dict，判据写在**另一个函数** `_floors_ok()` 里（`n < floor`），
+    批次函数只把自己报的条数塞进 `counts['解析器']`。
+    它是全仓库下限纪律最严的工具之一，绝不能判成「缺下限」。
+    """
+    return _t_decl() + (
+        "_BATCH_FLOORS = {'解析器': 5, '命令集合': 9}\n"
+        "\n"
+        "def _floors_ok(counts):\n"
+        "    for name in _BATCH_FLOORS:\n"
+        "        floor = _BATCH_FLOORS.get(name)\n"
+        "        n = counts.get(name, 0)\n"
+        "        if n < floor:\n"
+        "            return False\n"
+        "    return True\n"
+        "\n"
+        "def selftest(counts=None):\n"
+        "    fails = []\n"
+        "    ncase = 0\n"
+        "\n"
+        "    def case(name, ok):\n"
+        "        nonlocal ncase\n"
+        "        ncase += 1\n"
+        "        if not ok:\n"
+        "            fails.append(name)\n"
+        "\n"
+        "    case('a', True)\n"
+        "    if counts is not None:\n"
+        "        counts['解析器'] = ncase\n"
+        "    return 0 if not fails else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
+def _t_count_unrelated():
+    """★ 计数器批次 + 同函数里**别的不相干**下限比较 -> **必须报**。
+
+    真实形态 `tools/vm_debug.py` 的 `VASM`：`ncov == len(VASM)` 是覆盖面判定，
+    与 `len(cases) < _ST_FLOOR` 是**两条不同的语句**。宽松口径
+    （「同函数内有 `len(批次)` 且有下限参与某条比较」）会把 `VASM` 算成
+    「有下限的批次」—— 本条用例就是钉住这个假合格面。
+    """
+    return _t_decl() + (
+        "_ST_FLOOR = 2\n"
+        "\n"
+        "def selftest():\n"
+        "    fails = []\n"
+        "    ncase = 0\n"
+        "    other = [1, 2, 3]\n"
+        "\n"
+        "    def case(name, ok):\n"
+        "        nonlocal ncase\n"
+        "        ncase += 1\n"
+        "        if not ok:\n"
+        "            fails.append(name)\n"
+        "\n"
+        "    case('a', True)\n"
+        "    if len(other) < _ST_FLOOR:\n"
+        "        return 1\n"
+        "    return 0 if not fails else 1\n"
+        "\n"
+        "def main():\n"
+        "    if args.selftest:\n"
+        "        return selftest()\n")
+
+
 def _t_floor_ok():
     """批次 + 下限声明 + 用在比较里 -> 合规。"""
     return _t_decl() + (
@@ -1289,6 +1709,29 @@ def _mk_floor_cases():
         ('F4 没有用例批次 -> 不适用（不得报，也不计入）', _t_floor_nobatch(), 0, 0, 0),
         # ★ F5：扫描面本身低于下限 -> 必须报（判据⑥ 对自己的扫描面失明的反面）
         ('F5 批次工具数低于扫描面下限 -> 必须报', _t_floor_ok(), 1, 1, 2),
+        # ★ F11：**循环驱动表**（名字匹配 _BATCH_RE、循环体调 case()）无下限
+        #    -> 必须报。出典 `tools/modcheck.py::CASES` / `tools/studio_server.py::_wcases`
+        ('F11 循环驱动表无下限 -> 必须报', _t_loop_nofloor(), 1, 1, 1),
+        # ★ F12：同形态 + 下限参与比较 -> 不得报（F11 的反面，防「一律报」）
+        ('F12 循环驱动表有下限 -> 不得报', _t_loop_floor(), 0, 1, 1),
+        # ★ F13：**名字不匹配约定**的名单表 -> 不得当成批次（期望 checked == 0）。
+        #    出典 `tools/doccheck.py::_must`（扫描面守卫名单）/ `tools/vm_debug.py::VASM`
+        #    （覆盖面名单）—— 没有名字约定这一条，判据会对它们要求一个 FLOOR
+        ('F13 名字不匹配的名单表 -> 不得当成批次', _t_loop_namemismatch(), 0, 0, 0),
+        # ★ F14：**计数器型**批次无下限 -> 必须报。出典 `tools/studio_ui_check.py::ncase`
+        #    （比列表型更隐蔽：`PASS: 0 项` 而 rc 仍是 0）
+        ('F14 计数器型无下限 -> 必须报', _t_count_nofloor(), 1, 1, 1),
+        # ★ F15：计数器 + `total = ncase` + 比较 -> 不得报。
+        #    这条钉住 `_floor_paired_count()`：计数器没有 `len()`，
+        #    宽松口径 `_floor_paired` 对**永远**不成立
+        ('F15 计数器有下限（快照后比较）-> 不得报', _t_count_floor(), 0, 1, 1),
+        # ★ F16：计数器 + 下限按**批次名**存进 dict -> 不得报。
+        #    出典 `tools/studio_proto_check.py`（下限判定写在另一个函数 `_floors_ok()`）
+        ('F16 计数器 + 下限 dict 键 -> 不得报', _t_count_dictkey(), 0, 1, 1),
+        # ★ F17：计数器 + 同函数里**别的不相干**下限比较 -> **必须报**。
+        #    钉住 `tools/vm_debug.py::VASM` 那个假合格面：
+        #    `ncov == len(VASM)` 与 `len(cases) < _ST_FLOOR` 是两条不同的语句
+        ('F17 计数器 + 不相干下限比较 -> 必须报', _t_count_unrelated(), 1, 1, 1),
     ]
     return [(n, {'tools/a.py': s,
                  'tools/release_check.ps1': '& $py tools\\a.py --selftest\n'},

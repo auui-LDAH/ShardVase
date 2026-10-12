@@ -11141,7 +11141,228 @@ spending limit needs to be increased`。
 
 ---
 
-*2026-10-12 v52*
+## 2.77 判据⑥ 的第二轮自查：它认的形态还少两种，而「扫描面下限」自己成了假合格面（2026-10-12）
+
+### 2.77.1 缘起：修完 §2.76，我去数还有多少批次在扫描面外
+
+§2.76 把 `mutations` 形态补进了判据⑥，收尾时我自己写下一条诚实边界：
+**批次识别仍靠名字形态**，改名就会静默不适用。于是接着问下两个问题：
+「名字不匹配但**明显是用例表**的容器还有几种？它们的下限在不在判据里？」
+第一问的答案不是靠读代码，是靠**注入实测**得出的 —— 见 2.77.2/2.77.3。
+
+### 2.77.2 缺口三：**循环驱动表**（清空后 rc 还是 0）
+
+`build/_mutleft2.py` 对四个候选各做一次「把表清成 `[]`」，结果三处 rc=0：
+
+| 文件 | 注入 | 基线 | 注入后 |
+|---|---|---|---|
+| `tools/modcheck.py` | `CASES` 字面量 → `[]` | rc=0 `PASS: 全部协议规则可自证能抓错` | **rc=0，报文一字不变** ❌ |
+| `tools/studio_server.py` | `_wcases` 字面量 → `[]` | rc=0 `PASS: 28 项（含 15 项负向）` | **rc=0 `PASS: 22 项（含 9 项负向）`** ❌ |
+| `tools/studio_ui_check.py` | `def case(` 体首插 `return` | rc=0 `PASS: 19 项（含 18 项负向注入）` | **rc=0 `PASS: 0 项（含 0 项负向注入）`** ❌ |
+| `tools/gate_results.py`（对照） | 不注入 | rc=0 `PASS: 18 条（含 10 条负向）` | — |
+
+`tools/modcheck.py:870-875` 的 `CASES` 是**七条协议规则的变异表**
+（`('R10', mut_r10, 'abi_version')` …），`:878 for rule, fn, needle in CASES:`；
+`tools/studio_server.py:667-678` 的 `_wcases` 是**六条接线负向用例**。
+两者都满足「非空 List 字面量 + `for` 遍历」，却**既不匹配 `_BATCH_RE`
+（`case|cases|checks|ck$`），也没有 `len()` 进比较** ⇒ 三条识别规则全落空。
+
+### 2.77.3 缺口四：**计数器型**（最隐蔽的一种）
+
+`tools/studio_ui_check.py` 的批次**不是列表**，是一个计数器：
+`:418 fails = []` / `:419 ncase = 0` / `:420 nneg = 0`，内层
+`def case(...)` 里 `:443 nonlocal ncase, nneg` / `:444 ncase += 1`，
+收尾 `:514 total = ncase` / `:515 if fails: return RC_FAIL`。
+
+它的失败判定是**累加器型**（`if fails:`），守住了「有没有用例失败」，
+**没守住「有多少用例跑过」** —— 在 `def case(` 体首插一个 `return` 之后，
+它打印 `PASS: 0 项（含 0 项负向注入）` 并 **rc=0**。
+比列表型更隐蔽：列表型至少会缩水成 `PASS: 22 项`，它连缩水都不显示。
+
+### 2.77.4 十轮试算：为什么最后只能靠「名字约定」切干净
+
+给「累加器/计数器/循环表」找机器可判形态，逐版用真实仓库验证，**几乎每一版
+都被真实数据否掉**：
+
+| 候选口径 | 命中规模 | 否决理由 |
+|---|---|---|
+| 累加器型（`N = [字面量]` + 入口内 `N.append`） | 44 对 / 34 文件 | 过宽：把 `fails` 这类**失败累加器**、`lines`/`codes`/`ids` 这类**局部临时表**全收进来 |
+| 计数器型（`N = 0` + `N += 1` + 名字匹配 `_BATCH_RE`） | **2 对** | **零假阳性**，精确命中两个 `ncase` ⇒ 采用 |
+| 「入口函数里有 FLOOR/_MIN 参与比较」 | 1 个 | 过窄：漏掉模块级常量 |
+| 窄 for 循环体调用 `case\|check\|probe\|assert` | 3 个新增 | 仍带 `_must` 假阳性 |
+| **报数就须有下限**（文案含 `%d 项`） | 27 个报数工具 / 18 个判红 | 规模太大，「报数」不等于「有批次」 |
+| 非空 List 被 `for` 遍历（穿透一层 try/with） | 15 个 | 与 `_mutation_batches` 高度重合，仍带 `_must` 假阳性 |
+| **循环表 + 名字匹配 `_BATCH_RE`** | **2 个** | ⭐ 与计数器型并列零假阳性 ⇒ 采用 |
+
+⭐ 关键的一步是把 2.77.2 的四个候选与两个**假阳性形态**并排看：
+`tools/doccheck.py:2100 _must = ['README.md', 'CONTRIBUTING.md',
+'.github/PULL_REQUEST_TEMPLATE.md']`（**扫描面守卫名单**）与
+`tools/vm_debug.py:1328 VASM = [...9 个 .vasm 路径...]`（**覆盖面名单**）
+同样被 `for` 遍历。它们与真批次唯一的**结构**差别是：
+**真批次的循环体里调用 `case()` 或向失败累加器 append，而名单表的循环体
+不产生用例结果**。两者都写成条件之后，收窄成：
+**「循环体有判定器」+「表名匹配既有的 `case|cases|checks|ck` 约定」**。
+
+### 2.77.5 修法
+
+`tools/selftest_audit.py` 新增五个识别/配对函数：
+
+1. `_loop_vote(node)` —— 循环体里有没有判定器（`case(...)` 调用，或对名字含
+   `fail|err|bad|problem|miss|warn` 的列表做 `append/extend/add`）。
+2. `_loop_batches(tree, fns)` —— 四条件：①字面量表是**直接语句**（穿透一层
+   `try/with/finally`，因为 `studio_server.py` 的 `_wcases` 定义在 `try:` 里）
+   ②入口内有 `for ... in N:` ③**`N` 匹配 `_BATCH_RE`** ④循环体有判定器。
+3. `_counter_batches(tree, fns)` —— `N = 0` 与 `N += 1` 同名且匹配 `_BATCH_RE`。
+4. `_floor_paired_count(tree, batch, decl)` —— **严格**配对：同一函数内某条
+   `ast.Compare` 的任一侧**同时**含「批次计数转世名」（`total = ncase`）
+   与下限名。它的存在理由：计数器没有 `len()`，宽松口径 `_floor_paired`
+   对它**永远不成立**。
+5. `_floor_paired_key(tree, batch, decl)` —— 下限按**批次名**存进 dict 的形态
+   （`containers['解析器'] = <批次计数转世名>`，且 `'解析器'` 是某个
+   FLOOR/_MIN 名字所指 dict 字面量的键）。出典 `tools/studio_proto_check.py`：
+   它的下限判定写在**另一个函数** `_floors_ok()` 里。
+   实测这条规则**精确**：`ncase` 命中；`tools/studio_ui_check.py` 的 `ncase`
+   装的是渲染下限表 `MIN_TEXT_ELS = {'gen': 8, ...}`（键是**视图名**）
+   ⇒ 正确不命中，仍须自己装用例数下限。
+
+**严格口径只加不改**：现有批次仍走 §2.76 的 `_floor_paired`，
+不把已记名的语义差异重新判成红。
+
+三处装下限（`build/_floor3.py` 注入验证过）：
+
+| 文件 | 常量 | 位置 | 形态 |
+|---|---|---|---|
+| `tools/modcheck.py` | `_ST_FLOOR = 10` | `:59` | `ncase = len(CASES) + 3` 后比较（+3 = R16 / R17 / 基线三段） |
+| `tools/studio_server.py` | `_ST_FLOOR = 28` / `_W_FLOOR = 6` | `:80` / `:81` | 两个下限**各管一批**：总数 + 「是哪一批少了」 |
+| `tools/studio_ui_check.py` | `_ST_FLOOR = 19` | `:85` | `total = ncase` 之后、`if fails:` 之后判（已有失败时该报的是失败） |
+
+### 2.77.6 ⭐ 我自己的守卫成了假合格面（同型的第二个实例）
+
+补完两种形态，跑 §2.76 留下的承重验证 `build/_mutc6.py`，结果**不是全绿**：
+
+| 文件 | A 删下限声明 | B 删守卫行 |
+|---|---|---|
+| `tools/check_crc_targets.py` | rc=1 ✅ | rc=1 ✅ |
+| `tools/selfcrypt_meta_check.py` | rc=1 ✅ | **rc=0 ❌** |
+| `tools/selfcrypt_residency_check.py` | rc=1 ✅ | rc=1 ✅ |
+
+根因：B 注入（删守卫行）之所以能被抓到，靠的是**删掉那一行会顺带弄出
+`IndentationError` ⇒ 该文件被 `floor_check` 的 `except SyntaxError: continue`
+跳过 ⇒ `checked` 少 1 ⇒ 撞上 `_FLOOR_FILES_MIN`**。而这轮把 `checked`
+从 **7 抬到 10**，`_FLOOR_FILES_MIN` 仍是 **7** —— 掉到 9 也无所谓，
+判据静默放过。
+
+这正是 §2.76 自己引用的那条纪律的反面：
+> 留余量的守卫对「一个批次文件被改坏/被跳过」失明。
+
+**扫描面下限同样必须紧贴当前值**，否则它保护的正是它要防的那件事。
+修法 = `_FLOOR_FILES_MIN` `7 → 10`（注释里逐字写明这次**必须**跟着改的理由，
+与上一次「不必改」区分开）。改后 B 注入报
+`扫描面(batch-files: 只识别到 9 个用例批次，低于下限 10 …)` ✅。
+
+### 2.77.7 承重验证（`build/_mutc6.py`，真实文件注入 + `finally` 逐字节还原）
+
+| 文件 | A 删下限声明 | B 删守卫行 |
+|---|---|---|
+| `tools/check_crc_targets.py` | rc=1 `(mutations: 没有任何 FLOOR/_MIN 声明)` | rc=1 `(声明了 _MUT_FLOOR 但没有与该批次配对的比较)` |
+| `tools/selfcrypt_meta_check.py` | rc=1 `(mutations: 没有任何 FLOOR/_MIN 声明)` | rc=1 `(扫描面: 只识别到 9 个用例批次，低于下限 10)` |
+| `tools/selfcrypt_residency_check.py` | rc=1 `(mutations: 声明了 MIN_SAMPLES 但没有与该批次配对的比较)` | rc=1 `(声明了 MIN_SAMPLES,_MUT_FLOOR 但没有与该批次配对的比较)` |
+
+三文件还原 `sha256` 一致 = True，`总体 OK`（修前 `总体 FAILED`）。
+另 `build/_floor3.py` 对三处新装的下限各做一次「掏空」注入：
+
+| 文件 | 注入 | 结果 |
+|---|---|---|
+| `tools/modcheck.py` | 清空 `CASES` | rc=1 `FAIL: 自检用例只有 3 条，低于下限 10` |
+| `tools/studio_server.py` | 清空 `_wcases` | rc=1 `FAIL: 23 项（含 9 项负向）` |
+| `tools/studio_ui_check.py` | `case()` 提前 return | rc=1 `FAIL: 自检用例只有 0 条，低于下限 19` |
+
+### 2.77.8 自检新增 F11-F17（七条）
+
+`_mk_floor_cases()` 从 5 条扩到 **12 条**：
+
+- **F11** 循环驱动表无下限 ⇒ 必须报（`modcheck::CASES` 形态）；
+- **F12** 同形态 + 下限参与比较 ⇒ 不得报（F11 的反面，防「一律报」）；
+- **F13** **名字不匹配约定**的名单表 ⇒ **不得**当成批次，期望 `checked == 0`
+  （`doccheck::_must` / `vm_debug::VASM` 形态）—— 没有名字约定这一条，
+  判据会对它们要求一个 FLOOR；
+- **F14** 计数器型无下限 ⇒ 必须报（`studio_ui_check::ncase` 形态）；
+- **F15** 计数器 + `total = ncase` + 比较 ⇒ 不得报 —— 这条**钉住**
+  `_floor_paired_count()`：宽松口径对计数器永远不成立；
+- **F16** 计数器 + 下限按批次名存进 dict ⇒ 不得报（`studio_proto_check` 形态）；
+- **F17** 计数器 + 同函数里**不相干**的下限比较 ⇒ **必须报** ——
+  钉住 `vm_debug::VASM` 那个假合格面（`ncov == len(VASM)` 与
+  `len(cases) < _ST_FLOOR` 是两条不同的语句）。
+
+`_ST_FLOOR`（本文件自检用例总数下限）`27 → 34`，**紧贴当前值不留余量**。
+
+### 2.77.9 我这一轮踩的坑
+
+1. **`build/_floor3.py` 的注入点把文件弄坏，看起来像「判据拦住了」**：
+   `tools/studio_ui_check.py` 的 `def case(...)` 体首插 `return` ⇒
+   `IndentationError: expected an indented block after function definition`。
+   修法 = 注入在 `nonlocal ncase, nneg` **之后**（`if ncase >= 0:\n return`），
+   既合法又能让 `ncase` 永远为 0。
+2. **`_ST_FLOOR` 我先填 41（凭估计的增量），实测 34** ⇒ 自检自己报
+   `FAIL: 自检用例只有 34 条，低于下限 41`。**下限不是"估"出来的，
+   是跑出来的** —— 这正是它该有的摩擦。
+3. 十轮试算里有两次「口径看起来失效」其实是我的探针错：
+   `_f6rules.py` 的 `rule()` 把空 `decl` 的 fixture 与真用例并排跑，
+   四条口径全 NO；`_f6pair.py` / `_f6r5.py` 的 `related()` 只收
+   `ast.Name` 目标、漏 `ast.Subscript`。
+
+### 2.77.10 诚实边界
+
+1. 判据⑥ 现在认**四种**批次形态（`_batch_vars` 名字后缀 / `_mutation_batches`
+   变异表 / `_loop_batches` 循环驱动表 / `_counter_batches` 计数器），
+   仍**全靠名字与结构约定**。改名（例如 `probes` / `items`）依然静默不适用 ——
+   `_FLOOR_FILES_MIN` 只兜「总数下降」。
+2. `_loop_batches` 的第三条（名字匹配 `_BATCH_RE`）是**为了排掉假阳性
+   才加的**，代价是「名字不匹配的真批次」照样漏 —— F13 是把这条边界做成
+   用例，不是消除它。
+3. 判据只证明「下限在比较里」，**不证明那个比较会被走到**，也不证明
+   **数字是紧贴当前值的**（`_FLOOR_FILES_MIN` 与四处新下限都是人读的）。
+4. 三处新装的 `_ST_FLOOR`（10 / 28 / 19）同样是「紧贴当前值」的数字，
+   删用例必须显式下调。
+
+### 2.77.11 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/selftest_audit.py --selftest` | rc=0 `34/34 变异被抓`（F11-F17 在内） |
+| `tools/selftest_audit.py`（本体） | rc=0 `PASS: 6 条判据全通过`，⑥ 读作 `10 个用例批次都有声明过的下限, 且用在比较里` |
+| `build/_mutc6.py`（三文件 × A/B） | 6/6 被抓，`总体 OK`，还原 sha256 一致 |
+| `build/_floor3.py`（三处新下限） | 3/3 掏空被抓，还原 sha256 一致 |
+| `tools/modcheck.py --selftest --quiet` | rc=0 `PASS: 全部协议规则可自证能抓错` |
+| `tools/studio_server.py --selftest --quiet` | rc=0 `PASS: 28 项（含 15 项负向）` |
+| `tools/studio_ui_check.py --selftest --quiet` | rc=0 |
+| `build/_hygiene.py` | `27 个文件, 0 处异常` |
+| 全门禁（`tools/release_check.ps1 -SkipDirtyCheck`） | rc=0 `PASS: 43 项检查全通过`，`[json] 双面对照: pass=43 fail=0 skip=0 not-run=3` |
+
+### 2.77.12 CI
+
+**没有拿到证据**：GitHub 帐单/支出上限未处理（同 §2.50.12 / §2.53.9 /
+§2.55.13 / §2.59.13 / §2.61.11 / §2.69.13 / §2.75.9 / §2.76.13 形态），
+提交后 `gh run list` 的轮次都在**调度层**失败（`steps=0`）。
+本轮全部证据来自本机。
+
+### 2.77.13 同型第 22 次
+
+§2.76.12 记的是第 21 次：**「文件里有任一下限被比较」不等于「这个批次的
+下限被比较」**。本轮是它的两个续集，形状相同、层面各降一级：
+
+- 2.77.2/2.77.3：**「判据认的批次」不等于「仓库里叫得出名字的批次」** ——
+  两种形态（循环驱动表、计数器型）连扫描面都没进。
+- 2.77.6：**「扫描面下限」不等于「紧贴当前值的扫描面下限」** ——
+  同一个数字在 `checked` 从 7 涨到 10 之后就变成了假合格面，
+  而它保护的正是它要防的那件事。
+
+一般化：**凡是「紧跟当前值、不留余量」的数字，都必须跟着当前值一起改；
+它一旦落后，就不是「松一点」，而是对它要防的那件事失明。**
+
+---
+
+*2026-10-12 v53*
 
 ---
 
