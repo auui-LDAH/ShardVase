@@ -11339,12 +11339,28 @@ spending limit needs to be increased`。
 | `build/_hygiene.py` | `27 个文件, 0 处异常` |
 | 全门禁（`tools/release_check.ps1 -SkipDirtyCheck`） | rc=0 `PASS: 43 项检查全通过`，`[json] 双面对照: pass=43 fail=0 skip=0 not-run=3` |
 
-### 2.77.12 CI
+### 2.77.12 CI 实测：**没有拿到证据**
 
-**没有拿到证据**：GitHub 帐单/支出上限未处理（同 §2.50.12 / §2.53.9 /
+提交 `82bdc98` 后 CI run **`38202367058`**（`completed / failure`，耗时 **5 s**）：
+
+| job | 结论 | steps |
+|---|---|---|
+| `build-and-verify` | failure | **0** |
+| `linux-portability` | failure | **0** |
+| `reproducible` | skipped | 0 |
+| `sdk-package` | skipped | 0 |
+
+**一个步骤都没有执行** ⇒ 这是**调度层**失败（同 §2.50.12 / §2.53.9 /
 §2.55.13 / §2.59.13 / §2.61.11 / §2.69.13 / §2.75.9 / §2.76.13 形态），
-提交后 `gh run list` 的轮次都在**调度层**失败（`steps=0`）。
-本轮全部证据来自本机。
+注解逐字为
+`The job was not started because recent account payments have failed or your
+spending limit needs to be increased. Please check the 'Billing & plans'
+section in your settings`。
+
+**边界**：① 这一批修复**没有 CI 证据** —— 证据全部来自本机（§2.77.11 的
+验证表）；② CI 绿本来也不能证明「同型缺陷不会再出现」，真正的证据是
+`build/_mutc6.py` 与 `build/_floor3.py` 的注入差分，以及 F13/F17 两条
+钉住收窄规则的负向用例；③ 帐单属**外部基础设施状态**，不在本仓库可修范围。
 
 ### 2.77.13 同型第 22 次
 
