@@ -6,7 +6,7 @@
 ## 1. 目标与约束
 
 - Windows x64 原生 C 保护库 + 演示程序。编译器: MSVC cl (VS2022 BuildTools)。
-- 所有 C 源码必须 `/W4 /WX` 零警告通过（cl 编译命令见 §12）。
+- 所有 C 源码必须 `/W4 /WX` 零警告通过（cl 编译命令见 §10「构建管线」）。
 - 所有 Python 工具必须 `python -m py_compile` 通过；文件 I/O 一律显式 `encoding="utf-8"`；
   控制台避免输出非 ASCII（或 `sys.stdout.reconfigure(encoding="utf-8")`）。
 - 命名：库函数一律 `prot_*`；内部静态函数 `static`；常量 `PROT_*`。
@@ -329,10 +329,6 @@ python tools/vmenc.py sign --key <priv.json> --json <vm_build.json> --out <licen
   `PROT_THREAD_HIDE_FROM_DEBUGGER 17`、`PROT_SYS_KERNEL_DEBUGGER_INFO 0x23`。
 - 任何 API 调用失败 → 该项记 0（不误报）。
 - `hide_thread`：`NtSetInformationThread(GetCurrentThread(), 17, NULL, 0)`，返回 PROT_OK。
-
-### 6.2 策略
-- 关键项 = {being_debugged, debug_port, debug_flags, debug_object, hardware_breakpoints, timing_suspicious}。
-- 咨询项 = {nt_global_flag, kernel_debugger}（只报告，不触发策略）。
 - `detected`：任一关键项非 0 → 返回 1。
 - `apply_policy`：detected 时 EXIT → `TerminateProcess(GetCurrentProcess(), PROT_EXIT_DEBUG_DETECTED)`；
   FAKE → 置 `static volatile uint32_t g_fake = 1`；CONTINUE → 无操作。返回 PROT_OK。
@@ -470,6 +466,10 @@ typedef struct demo_mem {
 genserial 自动写入的 `hostid()`，见 §5.6）。演示为"绑定本机"简化：换机器后同一
 serial 无法通过。
 
+### 9.3 退出码
+0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改 / 0xB10B VM blob 缺失或损坏 /
+0xB1E4 授权被吊销（I1 黑名单）。
+
 ### 9.4 授权验签（A1, 2026-08-10; Phase 4 tier, 2026-08-14）
 - 流程（§9.1 第 8 步之后）：`demo --license-file F` 传授权文件；未传时
   `license_ok=1`（与旧行为兼容）。传了则：
@@ -525,10 +525,6 @@ serial 无法通过。
   warn → 告警继续。黑名单缺失/损坏 → 不阻断 + 告警。
 - 生成：`vmenc.py revoke --out build\revoke.blob [--base 旧] --add <serial>
   [--tier N]`（版本自动 +1）。
-
-### 9.3 退出码
-0 成功 / 1 序列号无效 / 0xDB 调试环境 / 0xBAD 被篡改 / 0xB10B VM blob 缺失或损坏 /
-0xB1E4 授权被吊销（I1 黑名单）。
 
 ## 10. 构建管线 (build.ps1)
 
@@ -586,7 +582,7 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
 - 测试 3/4 的期望文本从 `demo\strings.txt` 读取（避免硬编码中文）。
 - T1-T8 传 `--license-file build\license.txt`（A1 起），避免把"无授权文件"误判。
 
-## 8. 提交前自检清单
+## 12. 提交前自检清单
 
 - [ ] 只写了归属自己的文件
 - [ ] C 文件 `cl /c /W4 /WX` 零警告（Lane A/B 必须实际编译验证）

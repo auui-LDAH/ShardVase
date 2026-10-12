@@ -126,36 +126,6 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 "要附着进程吗"的确认框 —— 用户点了确认，然后拿到一个参数错误。
 
 
-### 5.4 VM 调试会话：`session` 是什么，以及它**不是**什么
-
-`vm.disasm` 是**一次性**的：把一段字节译成助记符，看一眼就结束。
-`vm.open` 建的是一个**跨多次调用活着的解释器**（`tools/vm_debug.py:class Session`）——
-「继续 / 单步 / 步过」这些动作要的是同一个解释器的下一次推进，而不是重放一遍。
-
-**会话状态字段**（`vm.open` / `vm.state` / `vm.continue` / … 都返回同一形状）：
-
-| 字段 | 含义 |
-|---|---|
-| `session` | 会话 id，形如 `vm-7`；**单调递增，不复用** —— 复用一个已关闭的 id 会让面板手里那个过期的 id 突然指向一个新会话 |
-| `line_at_ip` | 当前 IP 对应的**源行号**；没有行号表时为 `null`（**不编造 0**） |
-| `ip` / `steps` / `stack_depth` / `stack_top` / `br` / `r` / `con` / `mem_written` | 解释器快照（`stack_depth` 是**数据栈**深度） |
-| `call_depth` / `call_stack` | **调用栈**（影子记录），与 `stack_depth` **不是一回事**（见下） |
-| `stop_reason` / `stop_detail` | 停机原因；`terminated` 为真时面板应把「继续/单步」置灰 |
-| `breakpoints` / `breakpoints_supported` | 断点表与**是否支持按行号下断点** |
-| `hit_breakpoint` | 本次停止命中的断点行号；没命中为 `null` |
-
-⭐ **`call_stack` 为什么要单独记，而不是从 `stk` 里读**：
-`src/vm.c` 把 `call` 的返回地址压进**与数据同一个栈**（`stk`）。
-因此「`stk` 是纯数据栈」和「能从 `stk` 读出调用栈」这两件事**不可能同时成立**。
-Studio 的做法是**旁路记录**调用帧（`_note_call` / `_note_ret`），并且当 `ret` 弹出的值与
-最近一次 `call` 压入的不一致时，**如实把 `call_stack.reliable` 置为 `false`** 并给出
-`dirty_reason` —— 显示一张错的调用栈比不显示更糟，因为它会被当成证据。
-
-**会话的诚实边界**：会话活在 **Studio 服务进程内**。`tools/studio_cli.py --cmd` 每次
-是一个新进程，因此**拿不到上一次的会话**；服务重启或换进程后旧 id 失效，
-此时报 `E_NOT_FOUND` 并在 `detail.why` 里说明原因 —— **不静默重建**
-（静默重建会让面板以为还在调原来那个程序）。
-
 ### 5.1 流式命令（`build.run` / `debug.watch`）—— 一个请求，多行响应
 
 `build.run` 与 `debug.watch` **都不在** `dispatch()` 的命令表里：一个请求产出
@@ -319,6 +289,36 @@ if (len > sizeof(mask)) return PROT_ERR_INTEGRITY;   /* 实为容量不足 */
 代价是断点可能落在被 ICF 合并的等价函数上 —— 而 `PROT_NOISE` / `REPLICAS`
 本就在刻意制造等价函数，这与保护机制的方向一致，不是缺陷。
 
+### 5.4 VM 调试会话：`session` 是什么，以及它**不是**什么
+
+`vm.disasm` 是**一次性**的：把一段字节译成助记符，看一眼就结束。
+`vm.open` 建的是一个**跨多次调用活着的解释器**（`tools/vm_debug.py:class Session`）——
+「继续 / 单步 / 步过」这些动作要的是同一个解释器的下一次推进，而不是重放一遍。
+
+**会话状态字段**（`vm.open` / `vm.state` / `vm.continue` / … 都返回同一形状）：
+
+| 字段 | 含义 |
+|---|---|
+| `session` | 会话 id，形如 `vm-7`；**单调递增，不复用** —— 复用一个已关闭的 id 会让面板手里那个过期的 id 突然指向一个新会话 |
+| `line_at_ip` | 当前 IP 对应的**源行号**；没有行号表时为 `null`（**不编造 0**） |
+| `ip` / `steps` / `stack_depth` / `stack_top` / `br` / `r` / `con` / `mem_written` | 解释器快照（`stack_depth` 是**数据栈**深度） |
+| `call_depth` / `call_stack` | **调用栈**（影子记录），与 `stack_depth` **不是一回事**（见下） |
+| `stop_reason` / `stop_detail` | 停机原因；`terminated` 为真时面板应把「继续/单步」置灰 |
+| `breakpoints` / `breakpoints_supported` | 断点表与**是否支持按行号下断点** |
+| `hit_breakpoint` | 本次停止命中的断点行号；没命中为 `null` |
+
+⭐ **`call_stack` 为什么要单独记，而不是从 `stk` 里读**：
+`src/vm.c` 把 `call` 的返回地址压进**与数据同一个栈**（`stk`）。
+因此「`stk` 是纯数据栈」和「能从 `stk` 读出调用栈」这两件事**不可能同时成立**。
+Studio 的做法是**旁路记录**调用帧（`_note_call` / `_note_ret`），并且当 `ret` 弹出的值与
+最近一次 `call` 压入的不一致时，**如实把 `call_stack.reliable` 置为 `false`** 并给出
+`dirty_reason` —— 显示一张错的调用栈比不显示更糟，因为它会被当成证据。
+
+**会话的诚实边界**：会话活在 **Studio 服务进程内**。`tools/studio_cli.py --cmd` 每次
+是一个新进程，因此**拿不到上一次的会话**；服务重启或换进程后旧 id 失效，
+此时报 `E_NOT_FOUND` 并在 `detail.why` 里说明原因 —— **不静默重建**
+（静默重建会让面板以为还在调原来那个程序）。
+
 ## 6. 错误码
 
 | `code` | 含义 | 谁的问题 |
@@ -428,7 +428,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
    现值声明；进面会要求它跟着门禁项数等数字一起漂移，
    而协议版本自己已经承担了「这份契约是第几版」的表达。
 
-## 11. Studio 外壳（`tools/studio_server.py`）
+## 10. Studio 外壳（`tools/studio_server.py`）
 
 协议本身与传输无关（§2 只定义「一行 = 一条消息」）。ST5 交付的**参考实现**是
 `tools/studio_server.py`：一个把 `studio_core.envelope()` / `stream_events()`
@@ -551,7 +551,7 @@ python tools/studio_cli.py --cmd plan.solve --args '{"profile":"balanced"}'
 任一元素缺该键就报；花括号里写散文说明（`{见下文}`）时判据**沉默**
 （收窄换来的 —— 宽化会产生 §2.70 记过的 9 条假阳性）。
 
-## 10. 参考
+## 11. 参考
 
 - `docs/STUDIO_PLAN.md` — 阶段规划（ST0-ST6）与决策 D1-D8
 - `tools/studio_core.py` — 纯逻辑层（可无头 import，无 I/O 副作用）

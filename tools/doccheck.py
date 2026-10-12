@@ -903,6 +903,166 @@ def check_fence_balance(docs=None):
     return errors
 
 
+# ============================ 节序判据 ============================
+#
+# ## 为什么需要（2026-10-12，真实事故）
+# `docs/HANDOVER.md` 的 §2.64 整块（251 行）被**插在版本行之后**：读者读到
+# `*2026-10-12 v53*` 会以为文件结束了，而 §2.64（日期 2026-10-10，比 §2.77 早）
+# 孤零零躺在文件尾。同一份材料里还有 `### 2.70.11` 排在 `### 2.70.10` 之前。
+#
+# ⚠️ 关键：**这件事没有任何判据在看**。全库搜 `版本行` / `LAST_VER` /
+# `_VER_RE` / `20\d\d-\d\d-\d\d v` 在 `*.py`/`*.ps1`/`*.yml`/`*.json` 内
+# **0 命中** ⇒ 版本行是纯人读的记号，节序也纯人读。于是它只能靠有人在
+# 整理时偶然看见 —— 这是 §2.36.8 / §2.38 / §2.40 / §2.42 / §2.45 / §2.46
+# / §2.48 / §2.54 的**同型缺陷第 N 例**：事实（标题序号）可得，无判据用它。
+#
+# ## 判据
+# 分组 = `(标题层级, 父编号)`（`2.64.3` 的父是 `2.64`；`2.64` 的父是 `2`）。
+# **同组内的子序号必须严格递增**（相等也违规 —— 实测 `docs/CONTRACT.md`
+# 曾有两份 `### 6.2 策略`，且内容已分叉）。
+#
+# ## 三条排除规则（每一类都对应实测到的假阳性）
+# ① 跳过 ``` / ~~~ 围栏内的行（`tools/attacker/android_jniptrace/README.md`
+#    的 `# 3.` / `# 1.` 是 fenced bash 里的命令注释，不是编号标题）；
+# ② 「单级整数 + 空格 + 非标点」判为**数量词**而非编号
+#    （`ShardVase-展示文档.md:109` 的 `### 5 个公开突破`）；
+# ③ `num` 后紧跟字母 ⇒ 排除（`docs/HANDOVER.md:322` 的 `### 4.2b 运维踩坑`）。
+#    两条合起来把「15 处违规」收敛到「12 处真违规」，零假阳性。
+#
+# ## 扫描面是**自带**的，不是 `TARGETS`
+# 实测：12 处里 `TARGETS`（33 份）只看得到 2 处 —— `docs/CONTRACT.md` /
+# `docs/STUDIO_PROTOCOL.md` / `docs/DEFENSE_DEEPEN_PLAN.md` 都在面外
+# （它们刻意不写 `> **最后核实**` 元数据）。若沿用 `TARGETS`，这条判据
+# 会**自称守住了节序而实际只看 2/12** —— 那是 §2.40「扫描面自声明」同一类错误。
+# 故走独立的全库 `.md` 走查（排除 `build`/`archive`/`dist`/`demo` 等）。
+#
+# ⚠️ 两条**失锚守卫**：文件数与兄弟组数都不得低于下限。
+#    走查路径写错、或 `SKIP` 集合把 `docs` 也吃掉时，计数会静默趋零 ——
+#    那时「违规 0 处」是**测不到**，不是**没问题**。
+#
+# ⚠️ 这两个下限**刻意留有余量**，与 §2.49 的「紧贴当前值」相反。
+#    差别在**失效模式**：§2.49 防的是「用例批次被掏空」，缺口是
+#    `几条`，余量会让它对小缺口失明；本判据防的是「走查面/分组键
+#    写坏」，坏的幅度是**数量级** —— 实测把 `docs` 排除后 95 份 → 8 份，
+#    分组键若塌掉则 427 组 → 约 95 组。故余量不会让守卫失明，
+#    而紧贴当前值会给「新增一个编号小节」加税，反而催生
+#    「顺手把数字调大」的坏习惯。
+#    当前实测值：**95 份 / 427 组**（2026-10-12）。
+HEAD_NUM = re.compile(r'^(#{1,6})[ \t]+(\d+(?:\.\d+)*)')
+HEAD_SEPS = '.、)）:：'
+HEAD_SKIP = frozenset(('.git', 'build', 'dist', 'archive', 'node_modules',
+                       '__pycache__', 'demo'))
+_HEAD_FILES_MIN = 60
+_HEAD_GROUPS_MIN = 300
+
+
+def numbered_heading(raw):
+    """这一行是编号标题吗？是则返回 `(层级, 'x.y.z')`，否则 None。
+
+    排除规则见上方 ②③ —— **必须在这里**，不能放到调用方，
+    否则自检用例与生产走查会用两套口径。
+    """
+    m = HEAD_NUM.match(raw)
+    if not m:
+        return None
+    num = m.group(2)
+    sep = raw[m.end(2):m.end(2) + 1]
+    if sep.isalnum() or sep == '_':
+        return None                      # ③ "4.2b" 的后缀字母
+    if not ((sep == '') or sep.isspace() or (sep in HEAD_SEPS)):
+        return None                      # 标点不属于任何一种编号分隔符
+    if '.' not in num and sep not in HEAD_SEPS:
+        return None                      # ② "5 个公开突破" 是数量词
+    return len(m.group(1)), num
+
+
+def heading_order(docs=None):
+    """收集扫描面上的编号标题。`docs=None` 时走**自带**的全库 `.md` 走查。
+
+    返回 `[(rel, [(层级, 'x.y.z', 行号, 该行文本), ...]), ...]`。
+    """
+    if docs is not None:
+        src = sorted(docs.items())
+    else:
+        src = []
+        for root, dirs, files in os.walk(REPO):
+            dirs[:] = [d for d in dirs if d not in HEAD_SKIP]
+            for f in sorted(files):
+                if not f.endswith('.md'):
+                    continue
+                p = os.path.join(root, f)
+                rel = os.path.relpath(p, REPO).replace('\\', '/')
+                try:
+                    t = open(p, encoding='utf-8', errors='replace').read()
+                except OSError:
+                    continue
+                src.append((rel, t))
+    out = []
+    for rel, t in src:
+        hs = []
+        infence = False
+        for i, raw in enumerate(t.split('\n'), 1):
+            s = raw.strip()
+            if s.startswith(FENCE) or s.startswith('~~~'):
+                infence = not infence           # ① 围栏内一律不算
+                continue
+            if infence:
+                continue
+            got = numbered_heading(raw)
+            if got:
+                hs.append((got[0], got[1], i, raw.strip()))
+        if hs:
+            out.append((rel, hs))
+    return out
+
+
+def check_heading_order(docs=None, min_files=None, min_groups=None):
+    """断言扫描面内每份 `.md` 的**同级兄弟序号严格递增**（结构判据）。
+
+    `docs=None` ⇒ 全库走查；自检传 `{rel: text}` 走同一口径。
+    `min_files`/`min_groups` 默认取模块级紧贴值；自检必须传小值
+    （合成材料只有 1-2 份文件 ⇒ 否则"失去锚点"会污染全部用例，
+    §2.63 记过同型的 `tools/bom_check.py::_MIN_PS1` 坑）。
+    """
+    errors = []
+    files = heading_order(docs)
+    floor_f = _HEAD_FILES_MIN if min_files is None else min_files
+    floor_g = _HEAD_GROUPS_MIN if min_groups is None else min_groups
+    if len(files) < floor_f:
+        errors.append(
+            '节序判据失去锚点：只看到 %d 份含编号标题的 `.md`，低于下限 %d。'
+            '走查路径或 `HEAD_SKIP` 可能已写坏 —— 此时"违规 0 处"是'
+            '**测不到**，不是"没问题"' % (len(files), floor_f))
+        return errors
+    ngroups = 0
+    for rel, hs in files:
+        groups = {}
+        for lvl, num, ln, raw in hs:
+            parts = num.split('.')
+            groups.setdefault((lvl, '.'.join(parts[:-1])), []).append(
+                (parts[-1], ln, raw))
+        for (lvl, parent), items in sorted(groups.items()):
+            ngroups += 1
+            tag = '##' * lvl
+            for i in range(1, len(items)):
+                a_prev, ln_prev, raw_prev = items[i - 1]
+                a, ln, raw = items[i]
+                if int(a) <= int(a_prev):
+                    errors.append(
+                        '%s 的第 %d 级兄弟组 `%s` 序号出序：:L%d 的 `%s` 之后'
+                        '又是 :L%d 的 `%s`（%s）—— 同级序号必须严格递增。'
+                        '若是"追加式记录"文档，应把新节接**下一号**并放在文末，'
+                        '不要回头插旧号'
+                        % (rel, lvl, parent or '(顶层)', ln_prev, raw_prev[:60],
+                           ln, raw[:60],
+                           '编号重复' if int(a) == int(a_prev) else '号变小'))
+    if ngroups < floor_g:
+        errors.append(
+            '节序判据失去锚点：只组出 %d 个兄弟组，低于下限 %d —— '
+            '分组键可能已写坏' % (ngroups, floor_g))
+    return errors
+
+
 def gated_check_names():
     """`if ($With*)` body 内的 `Check` 名集合 —— **默认调用下不跑**的那些。
 
@@ -2277,6 +2437,58 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
+    # --- 第九个入口: 节序（同级兄弟序号严格递增, §2.78）---
+    #
+    # 判据本体是 `check_heading_order()`。本批的**价值在反例**：
+    # 出身是 `docs/HANDOVER.md` 的 §2.64 被插在版本行之后、以及
+    # `docs/CONTRACT.md` 的两份 `### 6.2`。三条排除规则（围栏内 / 数量词 /
+    # 后缀字母）各配一条反例，否则改坏排除规则时**没有用例会红**。
+    #
+    # ⚠️ `ho5`/`ho6` 是失锚守卫用例：走查面写坏时必须报"失去锚点"，
+    #    不能报"违规 0 处"。
+    def _mk_ho(body, rel='docs/T.md'):
+        return {rel: body}
+
+    ho_cases = [
+        ('ho1 同级递增 -> 不报',
+         _mk_ho('# T\n\n## 1. A\n\n## 2. B\n\n## 3. C\n'), 0, None),
+        ('ho2 顶层出序(3 之后又是 1) -> 必须报',
+         _mk_ho('# T\n\n## 1. A\n\n## 3. C\n\n## 1. A\n'), 1, '序号出序'),
+        ('ho3 编号重复(两份 6.2) -> 必须报',
+         _mk_ho('# T\n\n## 6. S\n\n### 6.1 a\n\n### 6.2 b\n\n### 6.2 c\n'),
+         1, '编号重复'),
+        ('ho4 子节出序(2.70.11 在 2.70.10 之前) -> 必须报',
+         _mk_ho('# T\n\n## 2. P\n\n### 2.70.11 a\n\n### 2.70.10 b\n'),
+         1, '序号出序'),
+        ('ho5 围栏内的 "# 3." 是命令注释 -> 不报（排除规则①）',
+         _mk_ho('# T\n\n## 1. A\n\n## 2. B\n\n```bash\n# 3. 验证\n# 1. 编译\n```\n'),
+         0, None),
+        ('ho6 "### 5 个公开突破" 是数量词 -> 不报（排除规则②）',
+         _mk_ho('# T\n\n### 5 个公开突破\n\n### 1. 攻击防御同源\n'), 0, None),
+        ('ho7 "### 4.2b 运维踩坑" 后缀字母 -> 不报（排除规则③）',
+         # ⚠️ 必须带一个真编号标题：否则整份材料没有编号标题 ⇒ 判据会报
+         #    "失去锚点"，用例就测不到排除规则本身了（探针的构造错会
+         #    伪装成判据错，§2.37.6 同型）。
+         _mk_ho('# T\n\n## 1. A\n\n### 4.2b 运维踩坑\n\n### 4 个迭代教训\n'),
+         0, None),
+        ('ho8 扫描面为空 -> 必须报（失锚守卫）',
+         _mk_ho('# T\n\n没有编号标题\n'), 1, '失去锚点'),
+        ('ho9 兄弟组太少 -> 必须报（失锚守卫）',
+         _mk_ho('# T\n\n## 1. A\n', rel='docs/U.md'), 1, '失去锚点'),
+    ]
+    for name, _ho_docs, want, kw in ho_cases:
+        if name.startswith('ho9'):
+            # 只有 1 个兄弟组 ⇒ 下限设为 2 必须开火
+            e = check_heading_order(docs=_ho_docs, min_files=1, min_groups=2)
+        else:
+            e = check_heading_order(docs=_ho_docs, min_files=1, min_groups=0)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
@@ -2320,9 +2532,14 @@ def selftest():
     for name, _k, _p, want, _kw in sa_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # 节序用例走第九个入口（`check_heading_order`），同样必须一起打印、
+    # 一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _h, want, _kw in ho_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
              + len(sim_cases) + len(fc_cases) + len(cf_cases)
-             + len(sa_cases))
+             + len(sa_cases) + len(ho_cases))
 
     # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
     #
@@ -2345,14 +2562,14 @@ def selftest():
     _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
                 ('ci_cases', ci_cases), ('sim_cases', sim_cases),
                 ('fc_cases', fc_cases), ('cf_cases', cf_cases),
-                ('sa_cases', sa_cases))
+                ('sa_cases', sa_cases), ('ho_cases', ho_cases))
     for _bn, _bl in _BATCHES:
         if not _bl:
             fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 69
+    _TOTAL_FLOOR = 78
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
@@ -2371,7 +2588,8 @@ def selftest():
            + len([c for c in sim_cases if c[4]])
            + len([c for c in fc_cases if c[2]])
            + len([c for c in cf_cases if c[2]])
-           + len([c for c in sa_cases if c[3]]))
+           + len([c for c in sa_cases if c[3]])
+           + len([c for c in ho_cases if c[2]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -2508,6 +2726,20 @@ def main(argv=None):
         _sa_l = self_authoritative_files()
         print('  [ok] 面外自称权威文档: %d 份（%s）门禁项数与真值一致'
               % (len(_sa_l), '、'.join(_sa_l)))
+
+    # --- 0h. 节序：同级兄弟序号必须严格递增（§2.78）---
+    # 与 0f（围栏配平）并列：都是**结构类**判据，都不走 `check_text` 的
+    # 数字漂移路径。扫描面是**自带的全库 `.md`**，不是 `TARGETS` ——
+    # 实测 12 处违规里 TARGETS 只看得到 2 处（`docs/CONTRACT.md` /
+    # `docs/STUDIO_PROTOCOL.md` / `docs/DEFENSE_DEEPEN_PLAN.md` 都在面外）。
+    ho = check_heading_order()
+    if ho:
+        errors.extend(ho)
+    else:
+        _ho_f = heading_order()
+        _ho_n = sum(len(h) for _r, h in _ho_f)
+        print('  [ok] 节序: %d 份文档 / %d 个编号标题的兄弟序号严格递增'
+              % (len(_ho_f), _ho_n))
 
     exc = {}
     for f in TARGETS:

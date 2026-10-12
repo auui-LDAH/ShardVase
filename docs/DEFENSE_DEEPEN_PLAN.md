@@ -2,12 +2,15 @@
 
 > 版本：2026-08-29 v2 · **2026-10-06 复核 v9** · 状态：**S1 全数落地（5/5 目标）**；
 > **S2-S5 亦全部落地**（S2 `src/vm_rekey.c` / S3 `prot_antidebug_detected` 平坦化 /
-> S4 33 条串明文 0 / S5 `ppid_blacklist`+`clock_drift_sec`）—— 逐条证据见 §9；
-> ⚠️ **S3 试点函数偏离 D3 决策**（实为 antidebug 而非 integrity），见 §9.1；
+> S4 33 条串明文 0 / S5 `ppid_blacklist`+`clock_drift_sec`）—— 逐条证据见 §14；
+> ⚠️ **S3 试点函数偏离 D3 决策**（实为 antidebug 而非 integrity），见 §14.1；
 > **仍未做**：真机面验收（S2 双运行密钥取证 / S5 真机 0 误报 / 回归矩阵 + Defender）；
 > v1 规划五项全收；v2 实施记录：meta 24B 组化+EXT 组 + 装载/验签两函数加密
-> 全链通过（含 30s watchdog）；antidebug/integrity 随后落地（§12.5）；
-> **revoke 的"永久排除"结论已于 2026-10-05 证伪并落地 —— 见 §14**。
+> 全链通过（含 30s watchdog）；antidebug/integrity 随后落地（§7）；
+> **revoke 的"永久排除"结论已于 2026-10-05 证伪并落地 —— 见 §15**。
+> ⚠️ **节号自 2026-10-12 起按文件位置递增，与版本号无关**：原方案「节号 = 版本号 + 6」
+> 在 v7 时已失效（13 被"下一轮待办"占用，只能降级写成 12.5）。新增实施记录**追加在文末**
+> 并接续下一号，不要回头改旧节号。
 
 ---
 
@@ -104,16 +107,16 @@
 
 
 
-## 12.5 实施记录 v7（2026-08-30 · S1 4/5 落地 + S3 扩展）
+## 7. 实施记录 v7（2026-08-30 · S1 4/5 落地 + S3 扩展）
 
 **S1 突破（4/5 落地）**：
 - antidebug/integrity 加密最终落地：辅助函数（antidebug 的 ad_*/vh_int3、
   integrity 的 build_reloc/iat_snapshot 等）全移 `.protxec` 独立页；
 - **根因（当时）**：`prot_revoke_check` 与 `main` 同页（0x5000）——
   VP 切 RW 禁执行 main 自伤。当时判为**不可解**（revoke 排除）。
-  ⚠️ **该结论已于 2026-10-05 证伪**：`.protpad` 填充节（§12.5 下一条的
+  ⚠️ **该结论已于 2026-10-05 证伪**：`.protpad` 填充节（§7 下一条的
   "页冲突安全网"同批引入）把 `.protxec` 推后一页，revoke 现落独立页 ——
-  详见 §14；本条保留为当时记录，勿再作为现状引用；
+  详见 §15；本条保留为当时记录，勿再作为现状引用；
 - **页冲突安全网**：selfcrypt_proto 检测加密段与 main 同页 → 警告跳过
   （防未来把 main 同页函数加回加密集合）；
 - 最终 S1 = blob_load/license_verify/integrity_check_self/antidebug_scan
@@ -122,7 +125,7 @@
 **S3 扩展**：平坦化推广到 `prot_antidebug_apply_policy`（策略分发
 switch-dispatch 状态机），门槛 3/3 PASS。
 
-## 12. 实施记录 v6（2026-08-29 深夜 · S4/S5 完成）
+## 8. 实施记录 v6（2026-08-29 深夜 · S4/S5 完成）
 
 - **S5 落地**：反调试 +2 维（父进程调试器黑名单=关键项 / 墙钟-tick 漂移=咨询项）；
   真机 selftest 0 误报（ppid_blacklist=0, clock_drift_sec=0）。
@@ -134,13 +137,13 @@ switch-dispatch 状态机），门槛 3/3 PASS。
   禁权；integrity 段仍崩待专攻）。
 - **稳定性回归器** `mask_stability_test.ps1`：S2/S4/S5 各改动后均 3/3 PASS。
 
-## 13. 下一轮待办
+## 9. 下一轮待办
 - S1 剩余 3 枚（VP 崩溃技术债专项：解密器/辅助完全独立页 + integrity 段
   重新定位）
 - S3 控制流平坦化试点（最小示范：switch-dispatch 等价变换单函数）
 - 全量回归（attack_sdk_matrix 含 M11/M12 + Defender 复测）后统一提交基线
 
-## 11. 实施记录 v5（2026-08-29 深夜 · S1 定稿与基建）
+## 10. 实施记录 v5（2026-08-29 深夜 · S1 定稿与基建）
 
 **S1 定稿（诚实）**：落地 = blob_load + license_verify **两枚**（稳定基线，
 回归器多次 3/3 PASS）。antidebug/integrity/revoke 三枚在 5 枚组合下仍触发
@@ -158,7 +161,7 @@ integrity 段仍崩（待专攻：可能其段与 libc/堆相关执行同页或�
 **S2 已落地（另见 v4）**；稳定性回归器（mask_stability_test.ps1）成为
 标准门槛。下一步（S3-S5）在 2 枚稳定基线上推进。
 
-## 10. 实施记录 v4（2026-08-29 深夜，决定性）
+## 11. 实施记录 v4（2026-08-29 深夜，决定性）
 
 **"布局漂移/掩码残留"假象结案**：以"删旧 mask + 完整构建(全管线到 DONE) + UTF-8 判定"
 的三连建实验（`mask_stability_test.ps1`）证实：同一源码树**连续 12 轮全 PASS**
@@ -169,8 +172,8 @@ integrity 段仍崩（待专攻：可能其段与 libc/堆相关执行同页或�
 （与 efded61 提交一致——此前"4 枚"为误记；antidebug/integrity/revoke 加密仍
 有待在稳定构建流程下逐枚复验；revoke 0x4ff0 邻段崩同样待复验是否亦为幻影）。
 > ⚠️ **本条为 2026-08-29 当时状态**：上述"逐枚复验"已完成 —— antidebug /
-> integrity 于 §12.5 落地，**revoke 于 2026-10-05 落地且 0x5d0d 崩确为幻影**
-> （见 §14）。当前 S1 = **5/5**。
+> integrity 于 §7 落地，**revoke 于 2026-10-05 落地且 0x5d0d 崩确为幻影**
+> （见 §15）。当前 S1 = **5/5**。
 
 **S2 落地（完成）**：
 - `src/vm_rekey.c`（独立编译单元）+ `vm.h` 声明 + demo main 装载后钩 + 双构建
@@ -183,7 +186,7 @@ integrity 段仍崩（待专攻：可能其段与 libc/堆相关执行同页或�
 "X 代码导致 TAMPERED"类结论必须先验证完整构建（smoke 用 -SkipSmoke 绕过
 WDAC 后手动运行）。
 
-## 9. 实施记录 v3（2026-08-29 晚）
+## 12. 实施记录 v3（2026-08-29 晚）
 
 **S1 补完（干净环境下逐枚二分）**：此前"0x3940 互扰/最后一段必崩/完整性失败"
 全部被证实为**损坏工具链（142B 废 selfcrypt_proto 脚本）+ 构建失败旧 exe**
@@ -193,12 +196,12 @@ WDAC 后手动运行）。
   记为布局边界（低频调用+间接表+黑名单签名兜底，加密收益最低）；
   > ⚠️ **该结论已于 2026-10-05 证伪**：崩溃是"损坏工具链 + 旧 exe"假象的一部分
   > （与本节开头所记同源）。`.protpad` 填充节使 revoke 落独立页后,
-  > 实测构建 rc=0、无 0x5d0d、无 TAMPERED（见 §14）。本条保留为当时记录。
+  > 实测构建 rc=0、无 0x5d0d、无 TAMPERED（见 §15）。本条保留为当时记录。
 - 最终 S1 落地：blob_load / license_verify / antidebug_scan /
   integrity_check_self 四函数加密（组 1）。
 
 **S2（运行时密钥多样性）尝试与阻断**：
-> ⚠️ **该"阻断"已被后来的 S2 落地推翻** —— 见 §8「S2 落地（完成）」
+> ⚠️ **该"阻断"已被后来的 S2 落地推翻** —— 见 §13「S2 落地（完成）」
 > （`src/vm_rekey.c` 独立编译单元 + 双构建脚本编译项，实证两次运行密钥域不同）。
 > 本节保留为 2026-08-29 当时的受阻记录；其"原子性缺陷"担忧最终以
 > **构建期同步布局**的方式绕过（新增编译单元纳入同一构建管线）。
@@ -220,7 +223,7 @@ WDAC 后手动运行）。
    原样还原（PS 重定向会毁字节/混淆 CRLF）；
 3. 加密/掩码类改动，先跑"新增代码对照"（不调用）区分布局 vs 逻辑。
 
-## 8. 实施记录（v2，2026-08-29）
+## 13. 实施记录（v2，2026-08-29）
 
 **S1 落地部分（已完成）**：
 - meta 24B（group 字段）组化：selfcrypt_proto/selfcrypt.c/integrity.c 同步；
@@ -240,13 +243,13 @@ WDAC 后手动运行）。
 **S2-S5 待续**（下一轮）：S2 运行时密钥多样性 / S3 控制流平坦化试点 /
 S4 字符串收敛 / S5 反调试 +2 维 + 本轮回归（矩阵+Defender）。
 
-## 9. 待办清单
+## 14. 待办清单
 - [x] 拍板 D1-D5
 - [x] S1 部分（blob/license 两枚 + 组化基础）
-- [x] S1 剩余（antidebug/integrity 于 §12.5 落地；**revoke 于 2026-10-05 落地**，
-      原"0x3940 互扰 / 与 main 同页"阻断经复验为**已解**——见 §14）
+- [x] S1 剩余（antidebug/integrity 于 §7 落地；**revoke 于 2026-10-05 落地**，
+      原"0x3940 互扰 / 与 main 同页"阻断经复验为**已解**——见 §15）
 - [x] S2-S5 实施 —— **2026-10-06 复核：S2/S3/S4/S5 均已落地**（逐条见下），
-      但 **S3 的试点函数与 D3 决策不符**（详见 **§9.1** 的偏离记录）
+      但 **S3 的试点函数与 D3 决策不符**（详见 **§14.1** 的偏离记录）
 - [ ] 回归：矩阵 + Defender + 真机闭环
 
 > **2026-10-06 复核（S2-S5 逐条证据）**：
@@ -258,16 +261,16 @@ S4 字符串收敛 / S5 反调试 +2 维 + 本轮回归（矩阵+Defender）。
 > | **S4** 字符串收敛 | ✅ | `demo/strings.txt` 33 条语义串全部经 `tools/strgen.py` 加密进 `demo/gen/{win,linux}/strings.c`（243 行）；**本轮实测 `build/demo.exe`（327680 B）对 33 条串的 UTF-8 与 UTF-16LE 两种编码扫描 ⇒ 明文命中 0** |
 > | **S5** 反调试 +2 维 | ✅ | `include/protect/antidebug.h:35 ppid_blacklist`（关键项）/ `:36 clock_drift_sec`（咨询项）；置位处 `src/antidebug.c:302` / `:342`（Linux 侧 `:493`）；已进判定位 `:534 mask[6]`，且 `demo/strings.txt` 有对应 `SELFTEST_PPID` / `SELFTEST_CLOCK` 输出行 |
 >
-> **S2 的原"阻断"已解**：§9 记录的"新增任何编译单元 → `.text` 漂移 → TAMPERED"
-> 最终以**构建期同步布局**绕过（新编译单元纳入同一构建管线，见 §8 的 S2 落地记录）；
-> 本条与 §14 的 revoke 收口属同一类"当时的不可解结论已被后续机制推翻"。
+> **S2 的原"阻断"已解**：§12 记录的"新增任何编译单元 → `.text` 漂移 → TAMPERED"
+> 最终以**构建期同步布局**绕过（新编译单元纳入同一构建管线，见 §13 的 S2 落地记录）；
+> 本条与 §15 的 revoke 收口属同一类"当时的不可解结论已被后续机制推翻"。
 >
 > ⚠️ **仍未做的部分（保留未勾）**：S5 验收标准第 4 条要求"新维度 selftest
 > **干净环境 0 误报（真机）**"，S2 验收要求"同构建两次运行 dump 密钥不同"的
 > **真机取证**，以及下方 `回归：矩阵 + Defender + 真机闭环` —— 这些需真机，
 > 与 `docs/PHASE2.md` 同属硬件面。
 
-### 9.1 S3 试点函数的偏离（2026-10-06 补记，供后来者核对）
+### 14.1 S3 试点函数的偏离（2026-10-06 补记，供后来者核对）
 
 D3 决策（§3）推荐 **`prot_integrity_check_self`**，实施步骤（§4 步骤 3）
 也写"integrity 平坦化试点"。**实际落地在 `prot_antidebug_detected`**
@@ -276,7 +279,7 @@ prot_antidebug_detected - equivalent switch-dispatch state machine (7 key signal
 incl. S5 ppid_blacklist)`，1 file changed / 26 insertions / 7 deletions），
 随后扩展到 `prot_antidebug_apply_policy`。
 
-**该偏离此前未在任何地方记录** —— §12.5 只写"S3 扩展：平坦化推广到
+**该偏离此前未在任何地方记录** —— §7 只写"S3 扩展：平坦化推广到
 `prot_antidebug_apply_policy`"，未指出它与 D3 / §4 步骤 3 不一致。
 本轮如实补记，**不修改 D3 的原始文字**（那是当时的决策记录）。
 
@@ -284,18 +287,18 @@ incl. S5 ppid_blacklist)`，1 file changed / 26 insertions / 7 deletions），
 7 个独立位的纯聚合函数，语义等价性易于证明（改 `switch`-dispatch 后
 仍逐位 `acc |= mask[i]`，见 `src/antidebug.c:535-547`）；
 而 `prot_integrity_check_self` 含 IAT 快照 / 段 CRC / 掩码重建等副作用，
-等价变换的验证成本高得多。**若确为此因，应当在 §12.5 当时写明** ——
+等价变换的验证成本高得多。**若确为此因，应当在 §7 当时写明** ——
 这正是本阶段反复出现的"结论在、依据不在"的又一例。
 
 ---
 
-## 14. 复验与收口（2026-10-05 · v8）— S1 5/5
+## 15. 复验与收口（2026-10-05 · v8）— S1 5/5
 
-### 14.1 缘起
+### 15.1 缘起
 
-§9 待办长期挂着「S1 剩余（antidebug/integrity/revoke）」，而 §12.5 已记
+§14 待办长期挂着「S1 剩余（antidebug/integrity/revoke）」，而 §7 已记
 antidebug/integrity 落地 —— **待办清单与实施记录自相矛盾**。逐项核对后，
-真正未覆盖的目标只有 **revoke 一枚**，其唯一阻力是 §12.5 的
+真正未覆盖的目标只有 **revoke 一枚**，其唯一阻力是 §7 的
 「与 main 同页（0x5000）· 不可解」判断。
 
 该判断写于 2026-08-30，此后仓库经历了**节名随机化**（阶段 1，第二支柱）、
@@ -303,7 +306,7 @@ antidebug/integrity 落地 —— **待办清单与实施记录自相矛盾**。
 **`merge_baseline` 基线提升**等多项布局相关改动。故「revoke 必崩」
 是**可证伪的陈旧结论**，不能直接作为现状引用。
 
-### 14.2 证伪实验（最小改动，利用既有逃生舱）
+### 15.2 证伪实验（最小改动，利用既有逃生舱）
 
 `build.ps1:36` 早已提供 `-ExtraSelfCrypt <逗号分隔函数名>`，`tools/selfcrypt_proto.py:344-346`
 的 `--extra` 会以 `setdefault(en, 1)` 并入 EXT 组 —— **无需改任何代码**即可复验：
@@ -326,7 +329,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Config Release `
 | attacks | `[attacks] 平台=win  总计 12: PASS 12 / FAIL 0 / NA 0`，含 `A11 selfcrypt-dump PASS   (plaintext-fns=none (static ciphertext))` |
 | window_check | `作用域 24 文件 / 308 函数; 加密目标 9 个` ⇒ `PASS: 全部加密目标调用点都在配对 enter/leave 窗口内` |
 
-### 14.3 阻断已解的真因
+### 15.3 阻断已解的真因
 
 `src/selfcrypt.c:39-41` 的注释即修复本身：
 
@@ -336,27 +339,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Config Release `
  * 页粒度 VP 禁执行自伤。 */
 ```
 
-即 §12.5 记录那次"页冲突安全网"的同批改动**顺带解掉了 revoke 的同页问题**，
+即 §7 记录那次"页冲突安全网"的同批改动**顺带解掉了 revoke 的同页问题**，
 只是当时的实施记录没有回头销掉 revoke 的排除结论 ——
 **修了、也记了，但记在了另一条下面，旧结论无人回收**。
 
-### 14.4 落地
+### 15.4 落地
 
 `tools/selfcrypt_proto.py` 的 `EXT_TARGETS` 增加 `'prot_revoke_check': 1`
 （含复验数据注释）。`tools/window_check.py:107-129` 的 `load_targets()`
 **从该文件动态读清单、不硬编码**，故新增目标自动进入调用点窗口校验。
 
 `demo/main.c:829-837` 的调用点**本就已在 `sc_ext_enter()/sc_ext_leave()` 窗口内**
-（§8 已为"未来 EXT 加密预留"），无需改动宿主代码。
+（§13 已为"未来 EXT 加密预留"），无需改动宿主代码。
 
 `examples/tool_demo/main.c:327` 是直接调用且**无**窗口，但该目录**不在
 `tools/window_check.py:86 SCOPE_DIRS` 内** —— 其 `build_example.ps1`
 **不调** `selfcrypt_proto`（`tools/window_check.py:61` 明载），
 故其 `prot_revoke_check` 是明文函数，无窗口需求。
 
-### 14.5 诚实边界
+### 15.5 诚实边界
 
-- revoke 是**低频 + 间接表 + 签名兜底**的模块（§12.5 自评"加密收益最低"）；
+- revoke 是**低频 + 间接表 + 签名兜底**的模块（§7 自评"加密收益最低"）；
   本次纳入是**消除一处"已修未销"的陈旧阻断记录**，安全增益有限。
 - D2b 下窗口 = 调用周期；窗口外 revoke 仍是密文，符合设计意图。
-- 未做：revoke 加密对**真机 Defender 复测**（§9 待办末条）仍挂账。
+- 未做：revoke 加密对**真机 Defender 复测**（§14 待办末条）仍挂账。

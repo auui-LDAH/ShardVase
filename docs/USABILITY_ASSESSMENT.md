@@ -39,65 +39,6 @@
 **结论**：机器部分 **< 17 秒**；瓶颈在人工写业务逻辑，**不在工具链**。
 （这也是为何阶段 4 的优化方向是文档而非构建速度 —— 有实测依据。）
 
-### 1.6 ✅ R2.3 从零接入核查（2026-09-29）—— **抓到 4 个缺陷**
-
-**方法**: 用 wizard 的**无头 API**（`generate_project`/`build_project`）
-复现 `TUTORIAL.md` 的流程（GUI 无法在非交互环境跑 —— 见发现 ①）。
-
-**实测数据**（与文档宣称对照）:
-| 步骤 | 文档宣称 | **实测** | 偏差 |
-|------|---------|---------|------|
-| 生成工程 | 0.03 秒 | **0.009 秒** | ✅ 更快 |
-| 构建（standard）| 16 秒 | **15.9 秒** | ✅ 吻合 |
-| smoke | PASS | ✅ **PASS (license gate passed)**（修复 4 处缺陷后）| ✅ 吻合 |
-
-#### 发现的 4 个缺陷
-
-| # | 缺陷 | 证据 | 状态 |
-|---|------|------|------|
-| **①** | `prot_wizard.py` **是 tkinter GUI**，`--help` **挂住 120 秒** | 实测超时；源码 `tk.Tk()` + `mainloop()`，**无 argparse** | **诚实边界**（文档已说"GUI 向导"；但 TUTORIAL 给的命令无 CLI 替代 —— 建议补 `--headless`）|
-| **②** | **`$busSrcs` 路径未加引号** -> 空格拆词 | `cl: warning D9024: 无法识别的源文件类型"D:\specifically"` | ✅ **已修** |
-| **③** | **`$signStep` 路径未加引号** | `vmenc.py: error: unrecognized arguments: for development and work\…` | ✅ **已修** |
-| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ✅ **已修**（提交 `e2aa5a8`，2026-09-30）|
-
-#### ②③ 的根因是**同一个**（已在本仓库记名过）
-```
-build.ps1 的注释早已写明:
-  "本仓库路径含空格（…\Reverse Engineering\…）——
-   `-join ' '` 生成的裸串在 cmd /c 里会被拆词"
-=> **脚手架（prot_sdk/skeleton）未同步该修复**，两处漏加引号。
-```
-> **教训**: 主构建链修过的坑，**脚手架/示例/工具链要一并检查**
-> （"修一处要问：还有谁复制了这段逻辑"）。
-
-#### ④ 是本轮**最危险的发现**
-```
-smoke 的判据是 `$sText -match 'license: 1'`，而 $sText 来自
-`-RedirectStandardOutput` —— **只重定向 stdout**。
-实测: 程序把 usage/错误全部写入 **stderr** ->
-  smoke_out.log = 0 字节 -> 判据必然失配 -> **FAIL 且原因不可见**。
-=> 与 P3 教训同型（"门禁绕过会掩盖真实缺陷"）：
-   **诊断信息丢失**会把"可修的错误"变成"无从下手的失败"。
-```
-**修复**（已完成，见上表 ④）: `build_skeleton.ps1` 增加 `$sErr = smoke_err.log`
-并在失败时打印 `$sOutLines` / `$sErrLines` 两流（提交 `e2aa5a8`）。
-
-#### ⑤ 附带发现: usage 提示显示**字面宏名** —— ✅ **已修**（Q2，2026-10-02）
-```
-（原记录症状）usage: APP_EXE_NAME [--selftest] ...
-                        ^^^^^^^^^^^^ 应为真实程序名
-```
-**根因（非"显示名注入未覆盖 usage"）**: `app_main.c` 的字符串化只有**一级**
-间接 —— `#define APP_EXE_NAME_STR PROT_APP_STR_(APP_EXE_NAME)`。C 标准规定
-`#` 的操作数**不做宏展开**，故 `#x` 把参数**符号本身**字符串化，得到字面量
-`"APP_EXE_NAME"`。修法是经典**两级间接**（`PROT_APP_STR(x) -> PROT_APP_STR_(x)`）。
-
-**端到端定证**: `cl` 实测（`-D` 带引号/带空格均正确展开）→
-`tools/skeleton_check.py --keep` 重建后扫 `build/SkelCheck.exe`，
-8 条 usage 串全为 `usage: SkelCheck ...`，`literal macro name present? False`。
-
-> 另注: `demo/main.c` 不受影响 —— 它的 usage 全是**硬编码字面量** `demo.exe`，不走宏。
-
 ### 1.2 运行开销 —— ✅ **R2 已实测**（2026-09-29）
 
 **实测数据**（`tools/perf_baseline.py`，每项 7 次取中位数；本机）：
@@ -176,6 +117,65 @@ full:     自检 **+673.32 ms (+4940%)** · 内存 +0.00 MB
 | `SECURITY.md` | 119 | 安全策略 |
 | `QUICKSTART.md` | 91 | 快速开始 |
 | 诚实边界 | 31 | 对外边界清单 |
+
+### 1.6 ✅ R2.3 从零接入核查（2026-09-29）—— **抓到 4 个缺陷**
+
+**方法**: 用 wizard 的**无头 API**（`generate_project`/`build_project`）
+复现 `TUTORIAL.md` 的流程（GUI 无法在非交互环境跑 —— 见发现 ①）。
+
+**实测数据**（与文档宣称对照）:
+| 步骤 | 文档宣称 | **实测** | 偏差 |
+|------|---------|---------|------|
+| 生成工程 | 0.03 秒 | **0.009 秒** | ✅ 更快 |
+| 构建（standard）| 16 秒 | **15.9 秒** | ✅ 吻合 |
+| smoke | PASS | ✅ **PASS (license gate passed)**（修复 4 处缺陷后）| ✅ 吻合 |
+
+#### 发现的 4 个缺陷
+
+| # | 缺陷 | 证据 | 状态 |
+|---|------|------|------|
+| **①** | `prot_wizard.py` **是 tkinter GUI**，`--help` **挂住 120 秒** | 实测超时；源码 `tk.Tk()` + `mainloop()`，**无 argparse** | **诚实边界**（文档已说"GUI 向导"；但 TUTORIAL 给的命令无 CLI 替代 —— 建议补 `--headless`）|
+| **②** | **`$busSrcs` 路径未加引号** -> 空格拆词 | `cl: warning D9024: 无法识别的源文件类型"D:\specifically"` | ✅ **已修** |
+| **③** | **`$signStep` 路径未加引号** | `vmenc.py: error: unrecognized arguments: for development and work\…` | ✅ **已修** |
+| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ✅ **已修**（提交 `e2aa5a8`，2026-09-30）|
+
+#### ②③ 的根因是**同一个**（已在本仓库记名过）
+```
+build.ps1 的注释早已写明:
+  "本仓库路径含空格（…\Reverse Engineering\…）——
+   `-join ' '` 生成的裸串在 cmd /c 里会被拆词"
+=> **脚手架（prot_sdk/skeleton）未同步该修复**，两处漏加引号。
+```
+> **教训**: 主构建链修过的坑，**脚手架/示例/工具链要一并检查**
+> （"修一处要问：还有谁复制了这段逻辑"）。
+
+#### ④ 是本轮**最危险的发现**
+```
+smoke 的判据是 `$sText -match 'license: 1'`，而 $sText 来自
+`-RedirectStandardOutput` —— **只重定向 stdout**。
+实测: 程序把 usage/错误全部写入 **stderr** ->
+  smoke_out.log = 0 字节 -> 判据必然失配 -> **FAIL 且原因不可见**。
+=> 与 P3 教训同型（"门禁绕过会掩盖真实缺陷"）：
+   **诊断信息丢失**会把"可修的错误"变成"无从下手的失败"。
+```
+**修复**（已完成，见上表 ④）: `build_skeleton.ps1` 增加 `$sErr = smoke_err.log`
+并在失败时打印 `$sOutLines` / `$sErrLines` 两流（提交 `e2aa5a8`）。
+
+#### ⑤ 附带发现: usage 提示显示**字面宏名** —— ✅ **已修**（Q2，2026-10-02）
+```
+（原记录症状）usage: APP_EXE_NAME [--selftest] ...
+                        ^^^^^^^^^^^^ 应为真实程序名
+```
+**根因（非"显示名注入未覆盖 usage"）**: `app_main.c` 的字符串化只有**一级**
+间接 —— `#define APP_EXE_NAME_STR PROT_APP_STR_(APP_EXE_NAME)`。C 标准规定
+`#` 的操作数**不做宏展开**，故 `#x` 把参数**符号本身**字符串化，得到字面量
+`"APP_EXE_NAME"`。修法是经典**两级间接**（`PROT_APP_STR(x) -> PROT_APP_STR_(x)`）。
+
+**端到端定证**: `cl` 实测（`-D` 带引号/带空格均正确展开）→
+`tools/skeleton_check.py --keep` 重建后扫 `build/SkelCheck.exe`，
+8 条 usage 串全为 `usage: SkelCheck ...`，`literal macro name present? False`。
+
+> 另注: `demo/main.c` 不受影响 —— 它的 usage 全是**硬编码字面量** `demo.exe`，不走宏。
 
 ---
 
