@@ -11836,6 +11836,37 @@ ho8 扫描面为空必报（失锚）/ ho9 兄弟组太少必报（失锚）。
 —— 而版本行 / 节序恰恰证明了这个假设是错的：它们能错整整一轮，
 且错的时候**每一轮判据都是绿的**。
 
+### 2.78.14 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
+
+提交 `9c0a012` 推送后 `gh run list` 得 run **`38267687378`**（`completed / failure`，
+**耗时 6 s**）。`gh run view 38267687378 --json status,conclusion,jobs` 逐字：
+
+| job | conclusion | steps |
+|---|---|---|
+| `build-and-verify` | failure | **0** |
+| `linux-portability` | failure | **0** |
+| `sdk-package` | skipped | 0 |
+| `reproducible` | skipped | 0 |
+
+⇒ **一个步骤都没执行**，是**调度层**失败，与 §2.50.12 / §2.53.9 / §2.55.13 /
+§2.59.13 / §2.61.11 / §2.69.13 / §2.77.12 同形态（注解固定是
+`The job was not started because recent account payments have failed or
+your spending limit needs to be increased`）。
+
+**这条对 §2.78 的影响 = 没有任何影响**，因为证据链**不依赖 CI**：
+
+1. `tools/doccheck.py` 的 `--selftest` 与本体都是**本机**实跑，判据本身
+   不读 CI 的任何产物；
+2. 承重验证（A/B/C/D 四方向）是**本机真实文件注入 + 逐字节还原**，
+   CI 绿本来也不能替代它（CI 只说明「这次没触发」）；
+3. 帐单属**外部基础设施状态**，不在本仓库可修范围。
+
+⚠️ 三条诚实边界（与 §2.50.12 同一口径）：
+① 本轮**没有** CI 证据；
+② CI 绿**本来也不能证明**判据有效（它只说明这一次跑过了）；
+③ 真正的证据是**机制差分** —— 即 A/B 方向「注入 ⇒ rc=1 且报文指向正确
+   原因」与 C 方向「正确的沉默 ⇒ rc=0」，那三条已在本机取得。
+
 ---
 
 *2026-10-12 v54*
