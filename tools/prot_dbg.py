@@ -105,6 +105,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,12 @@ def _kernel32():
     k32.VirtualProtectEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
                                      wt.DWORD, ctypes.POINTER(wt.DWORD)]
     k32.VirtualQuery.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    # ⚠️ `VirtualQuery` 查的是**本进程**地址空间；查目标进程必须用 `VirtualQueryEx`。
+    #    两者不是别名 —— 2026-10-13 实测：对目标地址调 `VirtualQuery` 恒
+    #    `ret=0 err=998 (ERROR_NOACCESS)`，而 `VirtualQueryEx` 正确返回 48。
+    k32.VirtualQueryEx.restype = ctypes.c_size_t
+    k32.VirtualQueryEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_size_t]
     # 自检 L4 的**受控**对照页需要自己分配/设保护/释放
     k32.VirtualAllocEx.restype = ctypes.c_void_p
     k32.VirtualAllocEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
@@ -366,20 +373,57 @@ class Target(object):
 
     # ---- 页查询（L4 的受控对照要用）---------------------------------------
     def prot_of(self, va):
-        """返回该地址所在页的 `(Protect, RegionSize, State)`；查不到返回 `(None, 0, 0)`。"""
-        from ctypes import wintypes as wt
+        """返回该地址所在页的 `(Protect, RegionSize, State)`；查不到返回 `(None, 0, 0)`。
+
+        ⚠️ 两处 2026-10-13 实测修掉的错（原本**静默失效**，返回值恒 `(None,0,0)`）：
+
+        ① **用错了 API**：原实现调 `VirtualQuery`（查询**本进程**地址空间），
+           却传的是**目标进程**的句柄 —— 目标地址在本进程根本不存在，
+           实测恒 `ret=0 err=998 (ERROR_NOACCESS)`。必须用 **`VirtualQueryEx`**。
+           （`VirtualQuery` 的签名里**没有** pid/handle 语义，它与 `Ex` 版不是
+           可互换的别名；两者在 Windows 上查询的是不同的地址空间。）
+        ② **字段偏移错位**：原注释把布局写成
+           `BaseAddress(8) AllocationBase(8) AllocationProtect(4) PartitionId(2) pad(2)
+            RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，
+           而代码读的是 `Protect@32 / State@40`。实测（栈页，已知必然 committed+RW）
+           得到 `+32 = 0x1000`（= `MEM_COMMIT`）、`+36 = 0x04`（= `PAGE_READWRITE`）、
+           `+40 = 0x20000`（= `MEM_PRIVATE`）⇒ **`State@32` / `Protect@36` / `Type@40`**。
+           即原注释把 `AllocationProtect` 算成了 8 字节、`RegionSize` 算成了 4 字节。
+
+        ⇒ 教训：**一个恒返回 `(None,0,0)` 的查询函数没有任何调用者会发现它坏了**
+        （它此前确实没有活体调用者 —— 直到宿主侧调用栈需要它）。
+        """
         mbi = ctypes.create_string_buffer(MEMORY_BASIC_INFORMATION_SIZE)
-        n = self.k32.VirtualQuery(self.h, ctypes.c_void_p(va), mbi,
-                                  MEMORY_BASIC_INFORMATION_SIZE)
+        n = self.k32.VirtualQueryEx(self.h, ctypes.c_void_p(va), mbi,
+                                    MEMORY_BASIC_INFORMATION_SIZE)
         if not n:
             return None, 0, 0
-        # x64 MEMORY_BASIC_INFORMATION: BaseAddress(8) AllocationBase(8)
-        #   AllocationProtect(4) PartitionId(2) pad(2) RegionSize(8)
-        #   State(4) Protect(4) Type(4) pad(4)
-        prot = ctypes.c_uint32.from_buffer(mbi, 32).value
-        state = ctypes.c_uint32.from_buffer(mbi, 40).value
+        # x64 MEMORY_BASIC_INFORMATION（实测确认）:
+        #   BaseAddress(8) AllocationBase(8) AllocationProtect(4)
+        #   PartitionId(2) pad(2) RegionSize(8) State(4) Protect(4) Type(4) pad(4)
+        state = ctypes.c_uint32.from_buffer(mbi, 32).value
+        prot = ctypes.c_uint32.from_buffer(mbi, 36).value
         size = ctypes.c_uint64.from_buffer(mbi, 24).value
         return prot, size, state
+
+    def region_of(self, va):
+        """该地址所在**已提交内存区**的 `(base, end, protect, state)`；查不到返回 None。
+
+        宿主侧调用栈用它回答一个关键问题：**「读到不可读页」是扫到栈区边界
+        （正常终止），还是撞上了区内一个洞（视图不完整）** —— 两者必须分开，
+        否则"扫到底"会被读成"没看到"（§2.80 首跑实测踩过）。
+        """
+        prot, size, state = self.prot_of(va)
+        if prot is None:
+            return None
+        # prot_of 只给 size 与 state，基址需要再来一次（VirtualQueryEx 的返回
+        # 结构里就有 BaseAddress，这里直接取，避免依赖调用者的换算）。
+        mbi = ctypes.create_string_buffer(MEMORY_BASIC_INFORMATION_SIZE)
+        if not self.k32.VirtualQueryEx(self.h, ctypes.c_void_p(va), mbi,
+                                       MEMORY_BASIC_INFORMATION_SIZE):
+            return None
+        base = ctypes.c_uint64.from_buffer(mbi, 0).value
+        return base, base + size, prot, state
 
     def alloc_ro_page(self, size=0x1000):
         """分配一个**私有只读页**并返回地址（L4 的受控对照）。
@@ -1389,6 +1433,341 @@ def cmd_watch(ctx, operands, quiet, js, a):
 
 
 # ===========================================================================
+# 第 5 步：宿主侧调用栈（ST5.4 只做了一半的那件事）
+#
+# ⚠️ 为什么是"影子"，与 VM 侧同一理由：
+#   这是**栈扫描 + 启发式校验**，不是 Windows 的官方展开（那要 `.pdata` +  unwind
+#   解释器逐指令模拟）。扫描得到的候选**必须**有判别依据，否则一张错的调用栈
+#   会被当成证据 —— 这正是 `tools/vm_debug.py:call_stack()` 在 VM 侧立的规矩
+#   （`reliable` / `dirty_reason`），宿主侧沿用同一条契约。
+#
+# ⭐ 判别依据（本仓库实测得出，不是猜的）：
+#   x64 的 `call rel32` 是 `E8 xx xx xx xx`，**返回地址 = call 指令末尾**。
+#   故候选 `R` 合法的必要条件是 `data[R-5] == 0xE8` 且 `R-5 + 5 + rel32 == R`
+#   （rel32 自洽）。`FF 15`（间接调用）也以返回地址紧随其后，一并接受。
+#   实测：`main+0x499` 前 5 字节是 `e8 37 24 00 00`（rel32 自洽）；
+#   而栈上另外几个"看着像代码"的值（`__scrt_unhandled_exception_filter+0x0`
+#   等）前导是 `cc`/`00`/`e0` ⇒ **必须被拒**，否则调用栈里会混进噪声。
+#
+# ⚠️ 另一个实测约束：**不能一次性大块读栈**。栈顶附近有不可读页，
+#   `ReadProcessMemory(rsp, 0x2000)` 会报 `Win32 299 (PARTIAL_COPY)`。
+#   必须按块读、遇错即停，并保留已读部分（已读部分仍然是可信的）。
+# ===========================================================================
+STACK_BLOCK = 0x100             # 栈读取块大小（实测大于它易撞 PARTIAL_COPY）
+STACK_SCAN = 0x4000             # 单线程最多扫多少字节栈
+TH32CS_SNAPTHREAD = 0x4
+THREAD_GET_CONTEXT = 0x0008
+THREAD_SUSPEND_RESUME = 0x0002
+THREAD_QUERY_INFORMATION = 0x0040
+CONTEXT_AMD64 = 0x00100000
+CONTEXT_BUFSZ = 1232            # x64 CONTEXT 的保守缓冲
+CTX_OFF_RSP = 0x98              # x64 CONTEXT: Rsp
+CTX_OFF_RBP = 0xA0              # x64 CONTEXT: Rbp
+CTX_OFF_RIP = 0xF8              # x64 CONTEXT: Rip
+CTX_OFF_FLAGS = 0x30            # x64 CONTEXT: ContextFlags
+MAX_FRAMES = 32
+
+
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [('dwSize', ctypes.c_ulong), ('cntUsage', ctypes.c_ulong),
+                ('th32ThreadID', ctypes.c_ulong),
+                ('th32OwnerProcessID', ctypes.c_ulong),
+                ('tpBasePri', ctypes.c_long), ('tpDeltaPri', ctypes.c_long),
+                ('dwFlags', ctypes.c_ulong)]
+
+
+def _thread_ids(k32, pid):
+    """枚举某进程的线程 id 列表（Toolhelp32）。**必须成对设原型**（§2.37.8 的教训：
+        只正视 restype 会让 64 位句柄按 int 传，反而从"侥幸能跑"变成"必然崩"）。"""
+    out = []
+    k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    k32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_ulong, ctypes.c_ulong]
+    k32.Thread32First.argtypes = [ctypes.c_void_p,
+                                  ctypes.POINTER(THREADENTRY32)]
+    k32.Thread32First.restype = ctypes.c_int
+    k32.Thread32Next.argtypes = [ctypes.c_void_p,
+                                 ctypes.POINTER(THREADENTRY32)]
+    k32.Thread32Next.restype = ctypes.c_int
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+    if not snap or snap in (ctypes.c_void_p(-1).value, -1):
+        return out
+    try:
+        te = THREADENTRY32()
+        te.dwSize = ctypes.sizeof(THREADENTRY32)
+        if not k32.Thread32First(snap, ctypes.byref(te)):
+            return out
+        while True:
+            if te.th32OwnerProcessID == pid:
+                out.append(int(te.th32ThreadID))
+            if not k32.Thread32Next(snap, ctypes.byref(te)):
+                break
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def _thread_ctx(k32, tid):
+    """取线程的 `(rip, rsp, rbp)`；拿不到返回 `(None, why)`。
+
+    先 `SuspendThread` 再读 —— 否则线程在跑，读到的三元组**不是同一时刻的**
+    （Rip 与 Rsp 可能来自不同指令，后续栈扫描就失去意义）。
+    """
+    k32.OpenThread.restype = ctypes.c_void_p
+    k32.OpenThread.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    k32.SuspendThread.argtypes = [ctypes.c_void_p]
+    k32.ResumeThread.argtypes = [ctypes.c_void_p]
+    k32.GetThreadContext.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    h = k32.OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME
+                       | THREAD_QUERY_INFORMATION, False, tid)
+    if not h:
+        return None, 'OpenThread 失败 err=%d' % ctypes.get_last_error()
+    try:
+        k32.SuspendThread(h)
+        try:
+            buf = ctypes.create_string_buffer(CONTEXT_BUFSZ)
+            struct.pack_into('<I', buf, CTX_OFF_FLAGS, CONTEXT_AMD64 | 3)
+            if not k32.GetThreadContext(h, ctypes.byref(buf)):
+                return None, ('GetThreadContext 失败 err=%d'
+                              % ctypes.get_last_error())
+            rip = struct.unpack_from('<Q', buf, CTX_OFF_RIP)[0]
+            rsp = struct.unpack_from('<Q', buf, CTX_OFF_RSP)[0]
+            rbp = struct.unpack_from('<Q', buf, CTX_OFF_RBP)[0]
+            return (rip, rsp, rbp), None
+        finally:
+            k32.ResumeThread(h)
+    finally:
+        k32.CloseHandle(h)
+
+
+def _read_stack(t, rsp, limit):
+    """**分块**读栈，遇不可读页即停。返回 `(bytes, stop_off_or_None)`。
+
+    一次性 `read(rsp, limit)` 会撞 `Win32 299 (PARTIAL_COPY)`（实测），
+    而"读到一半失败"不等于"这一半不可信" —— 已读部分是真实的。
+    """
+    out = b''
+    off = 0
+    while off < limit:
+        try:
+            out += t.read(rsp + off, min(STACK_BLOCK, limit - off))
+        except DbError:
+            return out, off
+        off += STACK_BLOCK
+    return out, None
+
+
+def _is_return_addr(data, rva, text_lo, text_hi, text_raw):
+    """`rva` 像不像一个**返回地址**（即前一指令是 call）。
+
+    x64 `call rel32` = `E8 <rel32>`（5 字节），**返回地址 = 指令末尾** ⇒
+    指令起点 `S = R - 5`，判据就是 **`data[R-5] == 0xE8`**。
+
+    ⚠️ 2026-10-13 实测修掉的两处错（第一版**一个候选都没放行**，frames 恒 0）：
+      ① 查了 `data[R-1]` 当成操作码 —— 那是 **rel32 的最后一字节**，
+         不是操作码；正确位置是 `R-5`（操作码在 5 字节指令的**开头**）。
+         实测：`main+0x499` 的 `data[R-6:R]` = `05 e8 37 24 00 00`，
+         `data[R-1] = 0x00`（错位）而 `data[R-5] = 0xE8`（正确）。
+      ② 写了个 `(R-5)+5+rel == R` 的"rel32 自洽"式 —— 它等价于要求
+         `rel == 0`，**恒假**。rel32 编码的是**调用目标**，与返回地址无关，
+         自洽性无法用它验证（真要验就得校验目标落在映像内）。
+    `FF /2`（`FF 15 xx xx xx xx` = `call [rip+..]`，6 字节）也接受：
+    操作码在 `R-6`，第二字节 `0x15`（或 `0x10`）。
+    文件里取不到该 RVA 时返回 None（**不猜**）。
+    """
+    if not (text_lo <= rva < text_hi):
+        return False
+    off = text_raw + (rva - text_lo)
+    if off < 6 or off > len(data):
+        return None
+    if data[off - 5] == 0xE8:
+        return True                     # call rel32（5 字节）
+    if data[off - 6] == 0xFF and data[off - 5] in (0x15, 0x10):
+        return True                     # call [rip+disp32]（6 字节）
+    return False
+
+
+def _sym_at(ctx, rva):
+    """`rva` 落在哪个 map 符号里（返回 `(名字, 符号RVA, 偏移)`）。
+
+    用**已排序**的符号表做二分，避免每帧 O(n)（3000 个符号 × 32 帧会明显变慢）。
+    """
+    items = getattr(ctx, '_sorted_syms', None)
+    if items is None:
+        items = sorted(ctx.syms.items(), key=lambda kv: kv[1])
+        ctx._sorted_syms = items
+    import bisect
+    keys = getattr(ctx, '_sorted_keys', None)
+    if keys is None:
+        keys = [r for _n, r in items]
+        ctx._sorted_keys = keys
+    i = bisect.bisect_right(keys, rva) - 1
+    if i < 0:
+        return None
+    n, r = items[i]
+    return n, r, rva - r
+
+
+def walk_thread(t, ctx, tid, rip, rsp, scan=None):
+    """扫一个线程的栈，返回 `{tid, frames, scanned, reliable, dirty_reason}`。
+
+    `frames` **自栈顶向下**（下标 0 = 最内层）。每帧带 `where`：
+      · `'ctx'`  —— 来自 `GetThreadContext` 的当前 Rip（最可信，一定在跑）
+      · `'call'` —— 栈上且前一指令是 call（判别通过）
+    **只保留判别通过的候选** —— 拒绝不了的一律不进 frames（宁可少，不可错）。
+    """
+    scan = scan or STACK_SCAN
+    text = [s for s in ctx.secs if s['name'] == '.text'][0]
+    tlo = t.base + text['virtual_addr']
+    thi = tlo + text['virtual_size']
+    traw = text['ptr_raw']
+    data = ctx.data or b''
+
+    frames, rejected = [], 0
+    if tlo <= rip < thi:
+        s = _sym_at(ctx, rip - t.base)
+        frames.append({'index': 0, 'addr': rip, 'rva': rip - t.base,
+                       'sym': s[0] if s else None,
+                       'sym_off': (s[2] if s else None),
+                       'sym_rva': (s[1] if s else None),
+                       'where': 'ctx', 'is_top': True})
+    raw, stop = _read_stack(t, rsp, scan)
+    for i in range(0, len(raw) - 8 + 1, 8):
+        v = struct.unpack_from('<Q', raw, i)[0]
+        if not (tlo <= v < thi):
+            continue
+        if v in [f['addr'] for f in frames]:
+            continue                     # 同一地址重复出现（栈上常有副本）
+        ok = _is_return_addr(data, v - t.base, text['virtual_addr'],
+                             text['virtual_addr'] + text['virtual_size'],
+                             traw)
+        if ok is not True:
+            rejected += 1
+            continue
+        s = _sym_at(ctx, v - t.base)
+        frames.append({'index': len(frames), 'addr': v, 'rva': v - t.base,
+                       'sym': s[0] if s else None,
+                       'sym_off': (s[2] if s else None),
+                       'sym_rva': (s[1] if s else None),
+                       'where': 'call', 'is_top': False})
+        if len(frames) >= MAX_FRAMES:
+            break
+    out = {'tid': tid, 'frames': frames, 'scanned': len(raw),
+           'rejected': rejected}
+    # ---- reliable 的判据（与 VM 侧同一契约）----
+    #
+    # ⚠️ 2026-10-13 首跑踩过的错（**必须记住**）：第一版把"读到不可读页"一律
+    #    当成"深处的帧未被观察" ⇒ 5 个线程全报 `[不可靠]` 且理由指向"不完整"。
+    #    但栈**顶**边界（再往上是未提交页）是**正常终止** —— 那恰恰是"扫到底了"。
+    #    ⇒ 必须用 `region_of()` 区分两种"读不动"：
+    #       · 停在**本区末尾**（rsp + len 已经够到 base+size）⇒ 扫到底，正常
+    #       · 停在**区中间**（还有 committed 页可读）⇒ 真洞，视图不完整
+    if not data:
+        out['reliable'] = False
+        out['dirty_reason'] = '产物字节不可用 -> 无法校验返回地址（**不猜**）'
+        return out
+    if not raw:
+        out['reliable'] = False
+        out['dirty_reason'] = ('栈一个字节都没读到（栈顶即不可读页）'
+                               '-> 这条链不是"没有帧"，是"没看到"')
+        return out
+    reg = t.region_of(rsp) if hasattr(t, 'region_of') else None
+    if stop is None:
+        out['reliable'] = True
+        out['dirty_reason'] = None
+        out['stopped_at'] = 'scan-limit'
+    elif reg and rsp + len(raw) >= reg[1] - STACK_BLOCK:
+        # 已够到本区末尾 ⇒ 这是栈顶边界，属**正常终止**
+        out['reliable'] = True
+        out['dirty_reason'] = None
+        out['stopped_at'] = 'region-end'
+        out['region_end'] = reg[1]
+    else:
+        # 区中间撞上不可读页 ⇒ 真洞（VAD 里也可能有 guard 页）
+        out['reliable'] = False
+        out['dirty_reason'] = ('栈在 0x%X 处撞上不可读页，而该内存区一直到 '
+                               '0x%X 都还是已提交的 -> 中间有洞，'
+                               '深处的帧**未被观察**，这张调用栈是**不完整的**'
+                               % (rsp + stop, reg[1] if reg else 0))
+        out['stopped_at'] = 'hole'
+    return out
+
+
+def cmd_stack(ctx, operands, quiet, js, a):
+    """`stack` —— 宿主侧调用栈（第 5 步）。
+
+    ⚠️ 语义边界（必须如实报告，不装成"官方展开"）：
+      这是**栈扫描 + call 判别**，不是 Windows 的 unwind。
+      它给的是"**栈上看起来像返回地址、且前一指令确实是 call** 的地址"。
+      假阴性（有帧但被判别拒掉）比假阳性可接受 —— 后者会被当成证据。
+    """
+    _adwarn(quiet, a.no_adwarn, 'stack', js)
+    t = None
+    try:
+        t = _live_setup(ctx, a)
+        if not a.no_keep_alive:
+            _keep_alive(t, ctx, quiet, js)
+        k32 = t.k32
+        tids = _thread_ids(k32, t.pid)
+        js['stack'] = {'pid': t.pid, 'n_threads': len(tids),
+                       'max_frames': MAX_FRAMES, 'scan_bytes': STACK_SCAN,
+                       'method': 'stack-scan + call-discriminator',
+                       'is_windows_unwind': False}
+        if not quiet:
+            print('stack: pid %d, 线程 %d 个' % (t.pid, len(tids)))
+            print('  方法: 栈扫描 + `call` 判别（**不是** Windows unwind）')
+            print()
+        results = []
+        for tid in tids:
+            trip, why = _thread_ctx(k32, tid)
+            if trip is None:
+                results.append({'tid': tid, 'frames': [], 'reliable': False,
+                                'dirty_reason': why})
+                if not quiet:
+                    print('  线程 %d: 取上下文失败 (%s)' % (tid, why))
+                continue
+            rip, rsp, rbp = trip
+            w = walk_thread(t, ctx, tid, rip, rsp,
+                            scan=a.len or STACK_SCAN)
+            w['rip'] = rip
+            w['rsp'] = rsp
+            w['rbp'] = rbp
+            results.append(w)
+            if not quiet:
+                print('  线程 %d: Rip=0x%X Rsp=0x%X -> %d 帧'
+                      '%s（扫了 %d 字节，判别拒掉 %d 个候选）'
+                      % (tid, rip, rsp, len(w['frames']),
+                         '' if w['reliable'] else ' [不可靠]',
+                         w['scanned'], w['rejected']))
+                for f in w['frames']:
+                    nm = f['sym'] or '?'
+                    off = '' if f['sym_off'] is None else '+0x%X' % f['sym_off']
+                    print('      #%-2d %-44s 0x%X  (%s)'
+                          % (f['index'], nm + off, f['addr'],
+                             '当前指令' if f['where'] == 'ctx' else '返回地址'))
+                if not w['reliable']:
+                    print('      ⚠ 不可靠: %s' % w['dirty_reason'])
+        js['stack']['threads'] = results
+        n_with = sum(1 for r in results if len(r['frames']) > 1)
+        js['stack']['threads_with_frames'] = n_with
+        js['stack']['threads_total'] = len(results)
+        if not quiet:
+            print()
+            print('  结果: %d 个线程里, %d 个走出 >1 帧'
+                  % (len(results), n_with))
+        if not results:
+            return _fail(js, 'stack', 'process',
+                         '一个线程都没枚举到（进程可能已退出）',
+                         '用 --pid 确认目标还在。', quiet)
+        return 0
+    except DbError as e:
+        return _fail(js, 'stack', e.kind, e.msg, e.hint, quiet)
+    finally:
+        if t:
+            t.close()
+            t.kill()
+
+
+# ===========================================================================
 # 自检
 # ===========================================================================
 def selftest(quiet):
@@ -1482,6 +1861,64 @@ def selftest(quiet):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    # ---- T10: 宿主侧调用栈的 `call` 判别器（第 5 步；**纯字节判定，零进程**）----
+    #
+    # ⚠️ 这一批专门守 `_is_return_addr()` 的两处实测错（首版 frames 恒 0）：
+    #    ① 操作码位置：`E8` 在 `R-5`（5 字节指令的开头），不是 `R-1`；
+    #    ② 不能用 `rel32` 自洽性验证（那要求 `rel == 0`，恒假）。
+    #    没有这批用例，把位置改回 `R-1` 时**没有任何判据会红**，
+    #    而症状是"静默 0 帧"（看起来像"这个进程真的没有调用栈"）。
+    if ctx.data and ctx.text and ctx.syms:
+        tlo = ctx.text['virtual_addr']
+        traw = ctx.text['ptr_raw']
+
+        def _ret_rva(off, n):
+            """把 `off` 处起 n 字节的指令编码好之后，**返回地址**的 RVA。
+
+            ⚠️ 是 `off + n` 而不是 `off` —— 返回地址 = 指令**末尾**。
+            第一版这个辅助函数把 `off` 本身当返回地址，于是正向用例全部
+            判 False（用例的构造错伪装成判据错，§2.37.6 同型）。
+            """
+            return tlo + (off + n - traw)
+
+        def _pat(off, prefix):
+            d = bytearray(ctx.data)
+            d[off:off + len(prefix)] = prefix
+            return bytes(d)
+
+        o = traw + 0x1000
+        case('T10a **正向**: `E8 rel32` 之后 -> 判为返回地址（操作码在 R-5）',
+             _is_return_addr(_pat(o, b'\xE8\x11\x22\x33\x44'), _ret_rva(o, 5),
+                             tlo, tlo + 0x100000, traw) is True)
+        case('T10b **正向**: `FF 15`（call [rip+..]）之后 -> 判为返回地址',
+             _is_return_addr(_pat(o, b'\xFF\x15\xAA\xBB\xCC\xDD'),
+                             _ret_rva(o, 6), tlo, tlo + 0x100000, traw) is True)
+        # 负向①: 只有 `R-1` 位置是 `E8`（首版错的写法）—— 操作码位置不对，必须拒
+        d3 = bytearray(ctx.data)
+        d3[o:o + 5] = b'\x00\x00\x00\x00\x00'
+        d3[o + 4] = 0xE8
+        case('T10c **负向**: 只有 `R-1` 是 `E8`（操作码位置错）-> 必须拒',
+             _is_return_addr(bytes(d3), _ret_rva(o, 5), tlo, tlo + 0x100000,
+                             traw) is False)
+        # 负向②: 函数入口形态（前一指令是 `cc` 对齐填充）—— 必须拒
+        d4 = bytearray(ctx.data)
+        d4[o - 5:o] = b'\xCC' * 5
+        d4[o] = 0x48
+        case('T10d **负向**: 前一指令是 `cc` 填充（函数入口/对齐）-> 必须拒',
+             _is_return_addr(bytes(d4), _ret_rva(o, 0), tlo, tlo + 0x100000,
+                             traw) is False)
+        # 负向③: 映像区间外 -> 必须拒（且不读文件外）
+        case('T10e **负向**: RVA 落在 .text 之外 -> 必须拒',
+             _is_return_addr(ctx.data, traw + 0x800000, tlo, tlo + 0x100000,
+                             traw) is False)
+        # 失锚守卫: 产物字节不可用 -> 返回 None（**不猜**，不是 False）
+        case('T10f **失锚**: 产物字节不可用 -> None（不猜成 False）',
+             _is_return_addr(b'', _ret_rva(o, 5), tlo, tlo + 0x100000,
+                             traw) is None)
+    else:
+        case('T10 宿主侧判别器: 产物字节不可用 -> **不假装通过**', False,
+             'ctx.data/ctx.text 缺失（先看 doctor）')
+
     print()
     print('=' * 66)
     if fails:
@@ -1493,7 +1930,7 @@ def selftest(quiet):
         else:
             print(msg)
         return 1
-    print('[prot_dbg-selftest] PASS: 1 前置 + 4 正向 + 4 负向均可自证')
+    print('[prot_dbg-selftest] PASS: 1 前置 + 4 正向 + 4 负向 + 6 判别器均可自证')
     return 0
 
 
@@ -1705,7 +2142,7 @@ def _dispatch(p, a):
         return 2
     cmd, operands = a.args[0], a.args[1:]
     READONLY = ('doctor', 'sym', 'mask', 'exit')
-    LIVE = ('read', 'patch', 'watch')
+    LIVE = ('read', 'patch', 'watch', 'stack')
     if cmd not in READONLY + LIVE:
         print('未知子命令: %s（只读: %s；活体: %s）'
               % (cmd, ' | '.join(READONLY), ' | '.join(LIVE)))
@@ -1731,6 +2168,8 @@ def _dispatch(p, a):
             rc = cmd_read(ctx, operands, a.quiet, js, a)
         elif cmd == 'patch':
             rc = cmd_patch(ctx, operands, a.quiet, js, a)
+        elif cmd == 'stack':
+            rc = cmd_stack(ctx, operands, a.quiet, js, a)
         else:
             rc = cmd_watch(ctx, operands, a.quiet, js, a)
 

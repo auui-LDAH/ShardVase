@@ -250,11 +250,25 @@ def capabilities():
             'debug.host': cap(
                 'partial', 'tools/prot_dbg.py',
                 '只读: doctor/sym/mask/exit（ST3.1, 零进程）；'
-                '活体: read/patch/watch（ST3.3, 需 confirm）—— '
-                '无断点/单步/反汇编',
+                '活体: read/patch/watch/stack（ST3.3 + ST5.4b, 需 confirm）—— '
+                '宿主侧仍**无断点/单步/反汇编**',
                 step='ST3',
                 note='工具自身 OpenProcess 可能触发目标反调试（实测 219）; '
-                     '每条活体响应都带 antidebug_interference 机读字段（ST3.4）'),
+                     '每条活体响应都带 antidebug_interference 机读字段（ST3.4）。'
+                     '`debug.stack` 自 ST5.4b 起可用 —— 判据是**栈扫描 + '
+                     '`call` 判别**，不是 Windows unwind；每股带 '
+                     'reliable/dirty_reason，不完整时如实标注。'),
+            'debug.stack': cap(
+                'partial', 'tools/prot_dbg.py:cmd_stack',
+                '宿主侧调用栈：按线程枚举（Toolhelp32）+ 取上下文'
+                '（SuspendThread/GetThreadContext）+ 分块扫栈 + `call` 判别；'
+                'map 符号化，每股带 reliable/dirty_reason',
+                step='ST5.4b',
+                note='**不是** Windows 官方展开（is_windows_unwind=false）：'
+                     '没有 unwind 解释器，只认「前一指令是 call」的返回地址 —— '
+                     '**宁可少报，不可错报**（一张错的调用栈会被当成证据，'
+                     '与 VM 侧 call_stack 同一契约）。已知假阴性：'
+                     '栈上被内联/尾部调用消除的帧、以及非 call 返回的帧。'),
             'debug.vm': cap(
                 'ready', 'tools/vm_debug.py',
                 '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器'
@@ -1163,6 +1177,45 @@ def cmd_debug_patch(args):
     return rec
 
 
+def cmd_debug_stack(args):
+    """（ST5.4b）宿主侧调用栈。**需 `confirm: true`**（会拉起/附着进程）。
+
+    与 `debug.read` / `debug.patch` 同一安全等级：都会打开目标进程
+    （本工具用 OpenProcess/ReadProcessMemory，**本身就是调试行为**，
+    可能被 demo 自己的反调试检测到）。故走同一个 `_need_confirm` 闸门。
+
+    ⚠️ 三条必须如实转达的边界（**不得被 core 抹平**）：
+      1. `method` 是 `stack-scan + call-discriminator`，**不是** Windows 的
+         unwind（`is_windows_unwind=False` 由 prot_dbg 自报，core 只转发）。
+      2. 每条线程带 `reliable` / `dirty_reason`；`reliable=False` 时
+         那股调用栈是**不完整的**（栈中间有洞），不是"没有帧"。
+      3. 某个线程 `frames` 为空是**合法结果**（例如该线程睡在 ntdll 里，
+         栈上没有任何落在本映像内的返回地址）—— 不是"取不到"。
+    """
+    cli = ['stack'] + _dbg_common(args)
+    n = args.get('scan_bytes')
+    if n:
+        cli += ['--len', str(int(n))]
+    _need_confirm(args, 'stack（打开目标进程读线程栈）', cli)
+    if args.get('pid'):
+        cli += ['--pid', str(int(args['pid']))]
+    rec = _prot_dbg_run(cli, timeout=180.0)
+    p = rec['payload'] or {}
+    st = p.get('stack') or {}
+    rec['stack'] = st
+    rec['opened_process'] = True
+    # 把"哪几股是不完整的"提出来 —— 面板要据此显示告警，而不是
+    # 让用户从 32 帧里自己发现某股少了几层。**不提级、不改写原文**：
+    # dirty_reason 原样来自 prot_dbg。
+    threads = st.get('threads') or []
+    rec['unreliable_threads'] = [
+        {'tid': t.get('tid'), 'dirty_reason': t.get('dirty_reason')}
+        for t in threads if not t.get('reliable')]
+    rec['empty_threads'] = [t.get('tid') for t in threads
+                            if not (t.get('frames') or [])]
+    return rec
+
+
 def debug_watch_events(args):
     """（ST3.3）`watch` 的**流式**形态 —— 生成器, 逐条 yield 事件。
 
@@ -1563,6 +1616,7 @@ COMMANDS = {
     'debug.exit': cmd_debug_exit,
     'debug.read': cmd_debug_read,
     'debug.patch': cmd_debug_patch,
+    'debug.stack': cmd_debug_stack,
 }
 
 
@@ -1701,6 +1755,21 @@ def selftest(quiet=False):
          caps['capabilities'].get('debug.vm', {}).get('status') == 'ready')
     case('debug.host 仍如实标为 partial（主机级断点未做）',
          caps['capabilities'].get('debug.host', {}).get('status') == 'partial')
+    # ST5.4b 落地后新增 debug.stack 能力项。同其它阶段的处理: 先断言存在
+    # 再断言取值。**刻意不把它标成 ready**: 它没有 unwind 解释器,
+    # 只有栈扫描 + call 判别 ⇒ 假阴性是**已知的**, 标 ready 会让面板
+    # 暗示"这是完整的调用栈"。
+    case('debug.stack 自 ST5.4b 起存在且如实标 partial（非 unwinder）',
+         caps['capabilities'].get('debug.stack', {}).get('status') == 'partial')
+    case('debug.stack 的 backend 点名 cmd_stack（可核查的落点）',
+         'cmd_stack' in (caps['capabilities'].get('debug.stack', {})
+                         .get('backend') or ''))
+    case('debug.stack 的 note 声明"不是 Windows 官方展开"',
+         '不是' in (caps['capabilities'].get('debug.stack', {})
+                    .get('note') or ''))
+    case('debug.host 的 evidence 已列出 stack（ST5.4b 的接线不回退）',
+         'stack' in (caps['capabilities'].get('debug.host', {})
+                     .get('evidence') or ''))
     case('每项能力都有 evidence（不是形容词）',
          all(c.get('evidence') for c in caps['capabilities'].values()))
     case('每项能力都有 step（知道属于哪个阶段）',

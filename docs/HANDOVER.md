@@ -12081,4 +12081,201 @@ or your spending limit needs to be increased`。
 本条刻意把「第 8 次」这个计数写出来 —— 若哪天有人处理了帐单，
 这个计数会立刻显得刺眼。
 
-*2026-10-12 v55*
+---
+
+## 2.80 宿主侧调用栈：ST5.4 只做了一半 —— 以及两处静默失效的活体查询（2026-10-13）
+
+### 2.80.1 缘起
+
+`docs/STUDIO_PLAN.md:302` 的 ST5.4 规格逐字写：
+
+    | ST5.4 | 调试工具条：继续 / 单步 / 步过 / 重启 / 停止；
+      **调用栈区**（VM 的 `call/ret` 栈 + 宿主侧栈） | 与 ST4 事件流一一对应 |
+
+留档时只落地了 **VM 侧**（`tools/vm_debug.py:class Session` + `call_stack()`），
+宿主侧一直空着，并在同一文件里如实记为「**诚实边界（仍未做）**：宿主侧调用栈
+（`debug.watch` 的宿主帧）仍未做」。§2.80 = 把那一半补齐。
+
+> 这一段是 §2.51 起同一链条的延续：**文档里写下的"诚实边界"如果没人认领，
+> 它会一直停在"诚实"上** —— 相当于一条永远不返回的 TODO。
+
+### 2.80.2 先问"能不能做"，再动手
+
+在写任何代码前先实测三个问题（`build/_host_probe.py` / `_host_probe2.py`）：
+
+| 问 | 实测答案 |
+|---|---|
+| 能否枚举线程并取到上下文？ | **能**。Toolhelp32 `Thread32First/Next` 枚举到 5 个线程；`SuspendThread` + `GetThreadContext` 取到 `Rip`/`Rsp`/`Rbp` |
+| 从 `Rsp` 起扫栈能否找到落在映像内的返回地址？ | **能**，但**必须分块读**：一次性 `read(rsp, 0x2000)` 报 `Win32 299 (PARTIAL_COPY)` |
+| 候选能否符号化、链形态是否合理？ | **能**，且**可信**：`main+0x499 → ?pre_cpp_initialization → __scrt_release_startup_lock → ?__scrt_common_main_seh → mainCRTStartup` 是一条完整的 CRT 启动链 |
+
+⚠️ 实测同时给出**一个反例集**：同一份扫描里还包括
+`__isa_available_init+0x100` / `__scrt_unhandled_exception_filter+0x0` 这类值 ——
+它们**看着像代码地址但不是返回地址**（函数入口对齐/数据）。
+如果不过滤，调用栈里会混进噪声，而**一张错的调用栈会被当成证据**。
+
+### 2.80.3 判别依据：用 `call` 而不是"落在映像内"
+
+x64 `call rel32` = `E8 <rel32>`（5 字节），**返回地址 = 指令末尾** ⇒
+判据就一条：**`data[R-5] == 0xE8`**（`FF 15` 的 `call [rip+disp32]` 在 `R-6`，一并接受）。
+
+用实测字节验证（`build/_host_probe.py` 附带的检查）：
+
+| 候选 | 前 5 字节 | 判定 |
+|---|---|---|
+| `main+0x499` | `05 e8 37 24 00` → `R-5 = E8` | **CALL** ✓ |
+| `?pre_cpp_initialization+0xE` | `00 e8 42 ce ff` | **CALL** ✓ |
+| `?__scrt_common_main_seh+0x10C` | `08 e8 a8 7f ff` | **CALL** ✓ |
+| `watchdog_thread+0xBF` | `c8 e8 c1 f8 ff` | **CALL** ✓ |
+| `__scrt_unhandled_exception_filter+0x0` | `72 b6 01 00 cc` | not-call ✗ |
+| `watchdog_thread+0x0`（入口） | `cc cc cc cc cc` | not-call ✗ |
+
+⇒ 判别**只放行前一指令真是 call 的值**，恰好拒掉上表后两行的噪声。
+
+### 2.80.4 ⭐ 修掉两处**静默失效**的 `Target.prot_of()`（`tools/prot_dbg.py:369`）
+
+`reliable` 的判据需要知道"读不动的那一页在区里还是在区外"，于是第一次真正调用
+`prot_of()` —— 它此前**没有任何活体调用者**。一调就发现它**恒返回 `(None, 0, 0)`**。
+
+`build/_mbi_probe.py` / `_mbi_probe2.py` 实测出两个**独立**缺陷：
+
+**① 用错了 API。** 原实现调 `k32.VirtualQuery`（查询**本进程**地址空间），
+却传**目标进程**的句柄 —— 目标地址在本进程根本不存在。实测：
+
+    不设 argtypes  → VirtualQuery  ret=0 err=998 (ERROR_NOACCESS)
+    设 argtypes 后 → VirtualQuery  ret=0 err=998
+    改用 VirtualQueryEx → ret=48 ✓
+
+**② 字段偏移错位。** 原注释写
+`BaseAddress(8) AllocationBase(8) AllocationProtect(4) PartitionId(2) pad(2)
+RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / State@40`。
+实测一个**已知必然 committed + RW** 的栈页，原始字节给出
+`+32 = 0x1000`（`MEM_COMMIT`）/ `+36 = 0x04`（`PAGE_READWRITE`）/ `+40 = 0x20000`（`MEM_PRIVATE`）
+⇒ 真布局是 **`State@32 / Protect@36 / Type@40`**。即原注释把
+`AllocationProtect` 当成 8 字节、`RegionSize` 当成 4 字节。
+
+⇒ **一般化：一个恒返回 `(None, 0, 0)` 的查询函数，没有任何调用者会发现它坏了。**
+它的"失败"与"这块内存确实不在任何区里"返回值完全一样。
+**这是"读不到 != 不存在"（纪律 ②）在工具自己身上的又一次性。**
+修法 = 换 `VirtualQueryEx` + 校正偏移，并新增 `region_of()` 返回 `[base, end)`。
+
+### 2.80.5 ⭐ `reliable` 判据的第一版把"扫到底"读成了"没看到"
+
+首跑 5 个线程**全部** `[不可靠]`，理由一律指向
+「栈只读到 N 字节就撞上不可读页 -> 深处的帧**未被观察**」。
+
+但栈**顶**之外是未提交页 —— 那是**正常的栈边界**，扫到那里恰恰说明**扫到底了**。
+两种"读不动"必须分开：
+
+| 情形 | 判定 | 依据 |
+|---|---|---|
+| 停在**本内存区末尾** | `reliable = True`，`stopped_at = 'region-end'` | `rsp + len >= region_end - STACK_BLOCK` |
+| 停在**区中间** | `reliable = False`，`stopped_at = 'hole'` | 区内还有 committed 页却读不动 ⇒ 真洞 |
+| 够到扫描上限 | `reliable = True`，`stopped_at = 'scan-limit'` | 没撞任何东西 |
+
+修后同一目标实测：`unreliable_threads = []`，5 线程里 2 条走出完整链。
+
+### 2.80.6 ⭐「操作码在 `R-1`」——判别器第一版一个候选都没放行
+
+第一版把"前一指令是 call"实现成查 `data[R-1] == 0xE8`，另加一个
+`(R-5)+5+rel == R` 的"rel32 自洽"校验。结果 **frames 恒 0**（5 线程全空），
+而它看起来完全像"这个目标真的没有调用栈"。
+
+两个错叠加：
+
+1. **查错位置**：`R-1` 是 rel32 的**最后一字节**，不是操作码。5 字节指令的
+   操作码在 `R-5`。实测 `main+0x499` 的 `data[R-6:R] = 05 e8 37 24 00 00` ——
+   `data[R-1] = 0x00`，`data[R-5] = 0xE8`。
+2. **不可能成立的校验**：`(R-5)+5+rel == R` 等价于 **`rel == 0`** ⇒ **恒假**。
+   rel32 编码的是**调用目标**，与返回地址无关。
+   （真要验自洽，得校验目标落在映像内 —— 那是另一条判据，不是这条。）
+
+修后同一目标：`main` 线程 5 帧、`watchdog_thread` 2 帧。
+
+⇒ **教训：这段代码的失效模式是"静默 0 帧"，不是异常。** 所以自检必须
+**在合成字节上**断言判别器本身（`T10a`–`T10f`），而不能靠"跑一次看有没有帧" ——
+后者在目标恰好没有栈帧时也全绿。
+
+### 2.80.7 接线：`prot_dbg stack` → `studio_core.debug.stack`
+
+- **工具侧**：新子命令 `stack`（并入 `LIVE` 元组），`cmd_stack()` 逐线程输出，
+  `--len` 复用为扫描字节数。`--json` 载荷 `stack{method, is_windows_unwind,
+  n_threads, max_frames, scan_bytes, threads[], threads_with_frames, threads_total}`，
+  每股 `{tid, rip, rsp, rbp, frames[], scanned, rejected, reliable, dirty_reason,
+  stopped_at}`，每帧 `{index, addr, rva, sym, sym_off, sym_rva, where, is_top}`。
+  `where ∈ 'ctx' / 'call'` —— 当前指令与返回地址**在载荷里就分得开**。
+- **Studio 侧**：`cmd_debug_stack(args)` 走**同一个 `_need_confirm()` 闸门**
+  （与 `debug.read`/`debug.patch` 同级：都会 `OpenProcess`，**本身就是调试行为**）。
+  额外汇总 `unreliable_threads[]` 与 `empty_threads[]` 供面板直接显示告警。
+  **不提级、不改写 `dirty_reason`** —— 原文来自工具。
+- **能力表**：新增 `debug.stack`（如实标 **`partial`**，**刻意不标 `ready`**：
+  没有 unwind 解释器 ⇒ 假阴性是已知的，标 ready 会暗示"这是完整调用栈"）。
+
+### 2.80.8 端到端实测（`build/_stack_e2e.py`）
+
+| 项 | 结果 |
+|---|---|
+| 不带 `confirm` | `E_CONFIRM_REQUIRED`，**不碰进程** |
+| 带 `confirm: true` | `cli_ok=True cli_rc=0 step=2`，`method=stack-scan + call-discriminator`，`is_windows_unwind=False` |
+| 线程 | `threads_total=5` / `threads_with_frames=2` / `unreliable_threads=[]` / `empty_threads=[3 条]` |
+| 帧 | `main → ?pre_cpp_initialization → __scrt_release_startup_lock → ?__scrt_common_main_seh → mainCRTStartup`；`watchdog_thread → _free_base` |
+| 序列化 | `json.dumps` OK（5838 B） |
+| 只读自检 | `PASS: 1 前置 + 4 正向 + 4 负向 + 6 判别器均可自证` |
+
+### 2.80.9 判据（`T10a`–`T10f`，零进程）
+
+在合成字节上断言判别器本身（`ctx.data` 的副本，不改文件）：
+
+| 用例 | 断言 |
+|---|---|
+| T10a | `E8 rel32` 之后 ⇒ `True`（**操作码在 R-5**） |
+| T10b | `FF 15` 之后 ⇒ `True` |
+| T10c | **只有 `R-1` 是 `E8`** ⇒ 必须 `False`（钉住第一版那个位置错） |
+| T10d | 前一指令是 `cc` 填充 ⇒ 必须 `False` |
+| T10e | RVA 落在 `.text` 之外 ⇒ `False` |
+| T10f | 产物字节不可用 ⇒ **`None`**（**不猜**成 False） |
+
+⚠️ 写这批用例时我自己踩了一次**用例构造错**：辅助函数 `_mk()` 把指令**起点**
+当成返回地址传进去（应为 `off + n`）⇒ T10a/T10b 全 FAIL，**看起来像判据错**。
+这正是 §2.37.6 记过的同型（探针的构造错伪装成判据的错）。
+
+### 2.80.10 ⭐ 命名冲突：我把它记成了 `ST5.6`，而 `ST5.6` 早被占用
+
+`docs/STUDIO_PLAN.md:310` 逐字 `| ST5.6 | 只绑 127.0.0.1、随机端口、一次性令牌 |`。
+宿主侧栈是 **ST5.4 规格的第二半**（`:302` 的「… 调用栈区（VM 的 `call/ret` 栈
++ **宿主侧栈**）」），故正号是 **`ST5.4b`**。
+
+与 §2.44.8（`M3a`/`M3b` 撞 VM 指令集变异的命名空间）**完全同型**：
+**自检全绿、功能正确、打印漂亮，没有任何检查器会因为号撞车而变红。**
+仓库至今没有「新引入的编号/指标名是否已被占用」这条判据 —— 这是**已知缺口**，
+不是本次修掉的东西。
+
+### 2.80.11 诚实边界
+
+1. **不是 Windows unwind**（`is_windows_unwind=false`）。没有 `.pdata` 解释器。
+   已知假阴性：被内联的帧、尾部调用消除的帧、不经 `call` 进入的帧。
+2. **不做逐帧链式校验**（不验"这帧的 caller 是不是下一帧"）。用的是"扫 + 判别"，
+   因此**排序是栈地址顺序，不是严格调用顺序** —— 尾部调用会让顺序失真。
+3. `MAX_FRAMES = 32`，超出即停。
+4. **前端尚未接线**：后端与协议已就绪，面板还没有渲染调用栈区。
+5. **只在 Windows 上**有实现（Linux 走 `readelf`/`gdb`）。
+6. 目标若已退出，`_thread_ids` 返回空 ⇒ 报 `process` 类错误（**不静默返回空栈**）。
+
+### 2.80.12 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/prot_dbg.py --selftest` | `PASS: 1 前置 + 4 正向 + 4 负向 + 6 判别器` |
+| `tools/prot_dbg.py stack`（活体） | 5 线程 / 2 条有帧 / `unreliable=[]` |
+| `tools/studio_core.py --selftest` | `PASS`（含 4 条新增能力断言） |
+| `tools/studio_proto_check.py` | `PASS: 命令 29 条（文档 29 条）双向一致` |
+| `tools/doccheck.py` | `PASS`，`检查数字 1409 处, 错误 0, 警告 0` |
+| 全门禁 | `[release_check] PASS: 43 项检查全通过` |
+
+### 2.80.13 CI 实测：**没有拿到证据**
+
+GitHub 帐单/支出上限问题未处理，调度层失败（同 §2.50.12 / §2.53.9 / §2.55.13 /
+§2.59.13 / §2.61.11 / §2.69.13 / §2.77.12 / §2.78.14 / §2.79.13）。
+证据链由本机实测构成（§2.80.8 / §2.80.12）。
+
+*2026-10-13 v56*

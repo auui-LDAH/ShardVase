@@ -114,6 +114,7 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `debug.exit` | `codes[]` | 退出码 → 语义；`unknown[]` 是**查不到的码**（不猜、不映射成最近的一个） |
 | `debug.read` | `symbols[]`, `length?`, `pid?`, **`confirm`** | 读目标进程内存；`length` 缺省 16；`opened_process: true` |
 | `debug.patch` | `symbols[]`, `bytes` \| `nop` \| `restore`, `pid?`, **`confirm`** | 改写目标进程内存；`opened_process: true` |
+| `debug.stack` | `scan_bytes?`, `exe?`, `map?`, `pid?`, **`confirm`** | 宿主侧调用栈；`stack{method, is_windows_unwind, threads[]}`，每股带 `reliable`/`dirty_reason`；额外汇总 `unreliable_threads[]` / `empty_threads[]`；`opened_process: true` |
 
 `debug.read` / `debug.patch` 的参数键是 **`symbols`（数组或字符串）**，与
 `debug.sym` / `debug.mask` 一致 —— 面板上「选中的符号」是一个**集合**，
@@ -318,6 +319,45 @@ Studio 的做法是**旁路记录**调用帧（`_note_call` / `_note_ret`），�
 是一个新进程，因此**拿不到上一次的会话**；服务重启或换进程后旧 id 失效，
 此时报 `E_NOT_FOUND` 并在 `detail.why` 里说明原因 —— **不静默重建**
 （静默重建会让面板以为还在调原来那个程序）。
+
+### 5.5 宿主侧调用栈：`debug.stack` 是**影子**，不是 Windows 展开
+
+上面 §5.4 的 `call_stack` 是 **VM 侧**（Studio 自己的解释器，帧由 `_note_call`/
+`_note_ret` 旁路记录）。`debug.stack`（ST5.4b）补的是**宿主侧** —— 目标进程**真实的
+x64 调用栈**，数据来自活体进程：按线程枚举（Toolhelp32）→ `SuspendThread` +
+`GetThreadContext` 取 `Rip`/`Rsp`/`Rbp` → **分块**扫栈 → 用 `map` 符号化。
+
+返回形状：
+
+| 字段 | 含义 |
+|---|---|
+| `method` | 恒为 `'stack-scan + call-discriminator'` |
+| `is_windows_unwind` | 恒为 **`false`** —— 这是**如实声明**，不是占位符 |
+| `threads[]` | 每股 `{tid, rip, rsp, rbp, frames[], scanned, rejected, reliable, dirty_reason, stopped_at}` |
+| `frames[]` | 每股自栈顶向下；每帧 `{index, addr, rva, sym, sym_off, where, is_top}`，`where ∈ 'ctx' / 'call'` |
+| `unreliable_threads[]` / `empty_threads[]` | 由 core 汇总，供面板直接显示告警 |
+
+⭐ **为什么它不是 Windows 的 unwind**：官方展开要 `.pdata` + 一个逐指令模拟的
+unwind 解释器。Studio **没做那个**，做的是「栈扫描 + 判别」：一个栈上的值算
+返回地址，当且仅当**它前一条指令是 `call`**（x64 `call rel32` = `E8 <rel32>`，
+返回地址 = 指令**末尾** ⇒ 操作码 `E8` 落在 `R-5`）。这条判别有真实分辨力 ——
+实测它恰好拒掉「函数入口（`cc` 填充）」「对齐数据」这几类，而放行 `E8`/`FF 15` 之后的值。
+
+**已知假阴性**（宁可少报，不可错报）：被内联掉的帧、尾部调用消除的帧、
+以及任何不经 `call` 进入的帧。
+
+**两条实测得出的硬约束**（写在这里是为了让后来者不要重新踩）：
+
+1. **不能一次性大块读栈。** 栈顶边界是不可读页，`ReadProcessMemory(rsp, 0x2000)`
+   会报 `Win32 299 (PARTIAL_COPY)`。必须按块读、遇错即停，**并保留已读部分** ——
+   「读到一半失败」不等于「这一半不可信」。
+2. **`reliable` 必须区分两种「读不动」**：停在**本内存区末尾**是**正常终止**
+   （扫到底了），停在**区中间**才是真洞（视图不完整）。第一版把两者一律当
+   「不完整」⇒ 5 个线程全报 `[不可靠]`，**把"扫到底"读成了"没看到"**。
+   判据用 `VirtualQueryEx` 取该地址所在区的 `[base, end)`。
+
+⚠️ **`frames` 为空是合法结果**，不是失败：一个线程睡在 ntdll 里（例如目标在
+`--wait-after`），它的栈上可能**没有任何**落在本映像内的返回地址。
 
 ## 6. 错误码
 
