@@ -2033,27 +2033,66 @@ def selftest(quiet=False):
 
     if not quiet:
         lines.append('--- 4c. 门禁结果历史（ST2: 复用 gate_results, 不重写解析）---')
-    gl = dispatch('test.gate.results', {'query': 'list'})
-    case('test.gate.results(list) 列出轮次', gl.get('count', 0) >= 1)
-    case('轮次行有 log/ndjson 两个布尔（历史轮次如实标 False）',
-         all(isinstance(x.get('log'), bool) and isinstance(x.get('ndjson'), bool)
-             for x in gl['runs']))
-    gt = dispatch('test.gate.results', {'query': 'trend'})
-    case('test.gate.results(trend) 每轮一条且计数非负',
-         all(isinstance(x.get(k), int) and x[k] >= 0
-             for x in gt['trend'] for k in ('pass', 'fail', 'skip', 'not-run')))
-    # ⭐ trend 的零值必须是 0 而不是 None —— 一次全 not-run 的运行 pass 是 0,
-    #   不是"不知道"。面板会把 None 渲染成空白（这条曾在 gate_results 里真错过）。
-    case('trend 不含 None（缺失键补 0）',
-         all(all(x.get(k) is not None for k in ('pass', 'fail', 'skip', 'not-run'))
-             for x in gt['trend']))
-    gv = dispatch('test.gate.results', {'query': 'verify'})
-    case('test.gate.results(verify) 报 ok 且无 problems',
-         gv.get('ok') is True and gv.get('problems') == [])
-    g1 = dispatch('test.gate.results', {'query': 'latest'})
-    case('test.gate.results(latest) 逐项带 name/status',
-         g1.get('count', 0) >= 1
-         and all(x.get('name') and x.get('status') for x in g1['items']))
+    # ⭐⭐ 本段的自检**必须自造轮次**，不能读仓库的 `build/logs/`
+    #    （2026-10-13 CI 实测暴露 —— 见下）。
+    #
+    # 缺陷形状（真实的"只在我机器上通过"）：
+    #   `build/logs/` 是 **gitignored** 的（`git ls-files build/logs` = **0** 条）。
+    #   本机有 128 轮历史，自检读得到 `pick_latest()`；而 CI 全新 clone 里
+    #   **一轮都没有**（当前轮的 `.ndjson` 由 `release_check.ps1` 在**最末**才写，
+    #   而 Studio 契约是第 40 项 ⇒ 跑它的时候本轮 NDJSON 还不存在）
+    #   ⇒ `pick_latest()` 返回 None ⇒ `cmd_test_gate_results` 抛
+    #   `E_NOT_FOUND: 找不到同时有 .log 与 .ndjson 的轮次 —— 无法对账`
+    #   ⇒ 自检整个崩掉（CI 逐字：`File "tools/studio_core.py", line 2050,
+    #   in selftest` / `line 367, in cmd_test_gate_results`）。
+    #
+    #   为什么之前 9 次没暴露：那 9 次 CI 都是**调度层失败**（steps=0，帐单问题）
+    #   ⇒ 从没真跑过。**"CI 无证据"掩盖了一个只在 CI 上才成立的缺陷。**
+    #
+    # 修法 = 用 `tempfile` **造一对 .log/.ndjson**（与下面负向用例同一手法），
+    # 让这一段自给自足：既不再依赖环境，又仍然测真实代码路径。
+    import shutil as _sh
+    import tempfile as _tf
+    _gd = _tf.mkdtemp(prefix='studio_gate_synth_')
+    try:
+        _gs = os.path.join(_gd, 'release_check_29991231_235958')
+        io.open(_gs + '.log', 'w', encoding='utf-8', newline='\n').write(
+            'Windows PowerShell transcript start\n'
+            '[ok]  A\n[ok]  B\n[ok]  C\n'
+            '[release_check] PASS: 3 项检查全通过\n')
+        io.open(_gs + '.ndjson', 'w', encoding='utf-8', newline='\n').write(
+            ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in (
+                {'seq': 1, 'name': 'A', 'status': 'pass'},
+                {'seq': 2, 'name': 'B', 'status': 'pass'},
+                {'seq': 3, 'name': 'C', 'status': 'pass'})))
+        gl = dispatch('test.gate.results', {'query': 'list', 'dir': _gd})
+        case('test.gate.results(list) 列出轮次', gl.get('count', 0) >= 1)
+        case('轮次行有 log/ndjson 两个布尔（历史轮次如实标 False）',
+             all(isinstance(x.get('log'), bool)
+                 and isinstance(x.get('ndjson'), bool) for x in gl['runs']))
+        gt = dispatch('test.gate.results', {'query': 'trend', 'dir': _gd})
+        case('test.gate.results(trend) 每轮一条且计数非负',
+             all(isinstance(x.get(k), int) and x[k] >= 0
+                 for x in gt['trend']
+                 for k in ('pass', 'fail', 'skip', 'not-run')))
+        # ⭐ trend 的零值必须是 0 而不是 None —— 一次全 not-run 的运行 pass 是 0,
+        #   不是"不知道"。面板会把 None 渲染成空白（这条曾在 gate_results 里真错过）。
+        case('trend 不含 None（缺失键补 0）',
+             all(all(x.get(k) is not None
+                     for k in ('pass', 'fail', 'skip', 'not-run'))
+                 for x in gt['trend']))
+        gv = dispatch('test.gate.results', {'query': 'verify', 'dir': _gd})
+        case('test.gate.results(verify) 报 ok 且无 problems',
+             gv.get('ok') is True and gv.get('problems') == [])
+        g1 = dispatch('test.gate.results', {'query': 'latest', 'dir': _gd})
+        case('test.gate.results(latest) 逐项带 name/status',
+             g1.get('count', 0) >= 1
+             and all(x.get('name') and x.get('status') for x in g1['items']))
+    finally:
+        _sh.rmtree(_gd, ignore_errors=True)
+    # ⭐ 上面这段**只覆盖合成轮次**，因此下面这几条不再引用 `g1`/`gl`/`gt`
+    #   （它们已随 `_gd` 一起删掉）。原先它们直接读 `build/logs/` —— 那正是
+    #   `E_NOT_FOUND` 的来源。
     # ⭐ 这里**不能**拿 `pass_n` 做断言。`pass_n` 来自 `[release_check] PASS: N 项
     #   检查全通过` 那一句（`tools/gate_results.py:56 RE_PASSN`），而门禁失败时
     #   写的是 `[release_check] FAIL: N/M 未通过` ⇒ **失败轮的 `pass_n` 恒为 None**
@@ -2064,37 +2103,60 @@ def selftest(quiet=False):
     #   改用两个出口**都在场**的量: 文本出口与 NDJSON 出口各自的 pass 计数。
     #   （历史轮次里 FAIL 行的分母 `pass+fail` 本身口径就不稳定 —— 实测
     #   `20260930_221104` 写 `1/31` 而 pass+fail=30 ⇒ 也不能反推 `pass_n`。）
-    case('latest 的两个出口 pass 计数一致（同一真值, 两处表述）',
-         (g1.get('counts_text') or {}).get('pass')
-         == (g1.get('counts_json') or {}).get('pass'),
-         'text=%s json=%s' % ((g1.get('counts_text') or {}).get('pass'),
-                              (g1.get('counts_json') or {}).get('pass')))
-    # ⭐ ST5.5: 逐项带跳转落点。**光有行号不算数** —— 行号必须真的指向
-    #   那一项。判据取"拿行号回源文件读回那一行, 它得写着该项的名字",
-    #   这把"有个数字"升级成"这个数字对"。join 键是 `name`(两侧都按名字),
-    #   实测历史 868 条 NDJSON 行 100% 能 join 回声明。
+    _tw = _tf.mkdtemp(prefix='studio_twxo_ok_')
+    try:
+        _ts = os.path.join(_tw, 'release_check_29991231_235957')
+        io.open(_ts + '.log', 'w', encoding='utf-8', newline='\n').write(
+            'Windows PowerShell transcript start\n'
+            '[ok]  A\n[ok]  B\n[ok]  C\n'
+            '[release_check] PASS: 3 项检查全通过\n')
+        io.open(_ts + '.ndjson', 'w', encoding='utf-8', newline='\n').write(
+            ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in (
+                {'seq': 1, 'name': 'A', 'status': 'pass'},
+                {'seq': 2, 'name': 'B', 'status': 'pass'},
+                {'seq': 3, 'name': 'C', 'status': 'pass'})))
+        g2 = dispatch('test.gate.results', {'query': 'latest', 'dir': _tw})
+        case('latest 的两个出口 pass 计数一致（同一真值, 两处表述）',
+             (g2.get('counts_text') or {}).get('pass')
+             == (g2.get('counts_json') or {}).get('pass'),
+             'text=%s json=%s' % ((g2.get('counts_text') or {}).get('pass'),
+                                  (g2.get('counts_json') or {}).get('pass')))
+        # ⭐ ST5.5: 逐项带跳转落点。**光有行号不算数** —— 行号必须真的指向
+        #   那一项。判据取"拿行号回源文件读回那一行, 它得写着该项的名字",
+        #   这把"有个数字"升级成"这个数字对"。join 键是 `name`(两侧都按名字),
+        #   实测历史 868 条 NDJSON 行 100% 能 join 回声明。
+        #   ⚠️ 落点是**声明行**（`Check '...'` 在 release_check.ps1 里）——
+        #      合成轮次的项名（A/B/C）在声明表里 join 不上 ⇒ 这里如实断言
+        #      `jump_unresolved` 把它们列出来，而不是断言"都有 src_line"。
+        case('latest 的 jump_unresolved 如实列出 join 不上的名字',
+             isinstance(g2.get('jump_unresolved'), list)
+             and set(g2.get('jump_unresolved') or []) == {'A', 'B', 'C'},
+             'unresolved=%s' % (g2.get('jump_unresolved'),))
+        case('join 不上的项 src/src_line 如实为 None（不猜行号）',
+             all(x.get('src') is None and x.get('src_line') is None
+                 for x in g2['items']))
+    finally:
+        _sh.rmtree(_tw, ignore_errors=True)
+    # ⭐ 用**真实仓库**的声明表验证跳转判据本身（不依赖 build/logs/）：
+    #   拿真实 `gate_items()` 的每一项行号回 `release_check.ps1` 读回那一行,
+    #   必须写着该项名字。这测的是**声明侧**，与有没有历史日志无关。
     _gl = _gate_source().split('\n')
-    _jumped = [x for x in g1['items'] if x.get('src_line')]
+    _decl = gate_items()['items']
     _bad_line = []
-    for _x in _jumped:
-        _ln = _gl[_x['src_line'] - 1] if _x['src_line'] - 1 < len(_gl) else ''
-        if _x['name'] not in _ln or 'Check' not in _ln:
-            _bad_line.append('%s@%s' % (_x['name'], _x['src_line']))
-    case('latest 逐项带 src/src_line, 且行号回源后确实写着该项',
-         bool(_jumped) and not _bad_line,
-         '带落点 %d/%d; 对不上: %s' % (len(_jumped), len(g1['items']),
-                                      _bad_line))
+    for _it in _decl:
+        _ln = _gl[_it['line'] - 1] if _it['line'] - 1 < len(_gl) else ''
+        if _it['name'] not in _ln or 'Check' not in _ln:
+            _bad_line.append('%s@%s' % (_it['name'], _it['line']))
+    case('gate_items 逐项行号回源后确实写着该项（声明侧, 与历史日志无关）',
+         bool(_decl) and not _bad_line,
+         '错位 %d/%d: %s' % (len(_bad_line), len(_decl), _bad_line[:3]))
     # **负向**: 上一条必须能对"行号指错"判假 —— 否则它只是装饰。
-    #   复核那一行在错位后会怎样: 取一个项的落点 +1, 必须被上面那条逻辑抓到。
-    if _jumped:
-        _shift = _jumped[0]
-        _ln2 = _gl[_shift['src_line']] if _shift['src_line'] < len(_gl) else ''
+    if _decl:
+        _sh1 = _decl[0]
+        _ln2 = _gl[_sh1['line']] if _sh1['line'] < len(_gl) else ''
         case('（负向）落点 +1 后上面那条判据会判假 —— 它对此敏感',
-             not (_shift['name'] in _ln2 and 'Check' in _ln2),
+             not (_sh1['name'] in _ln2 and 'Check' in _ln2),
              'line+1 = %r' % _ln2[:60])
-    case('latest 的 jump_unresolved 如实列出 join 不上的名字',
-         isinstance(g1.get('jump_unresolved'), list),
-         'unresolved=%s' % (g1.get('jump_unresolved'),))
     # **负向**: 上一条表达式必须能对"两出口打架"的一轮判假 —— 否则它只是装饰。
     # 用合成的一对 .log/.ndjson（文本 2 个 pass / JSON 1 个 pass）验证判别力。
     import shutil as _sh

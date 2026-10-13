@@ -12272,10 +12272,73 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 | `tools/doccheck.py` | `PASS`，`检查数字 1409 处, 错误 0, 警告 0` |
 | 全门禁 | `[release_check] PASS: 43 项检查全通过` |
 
-### 2.80.13 CI 实测：**没有拿到证据**
+### 2.80.13 ⭐⭐ CI 首次真跑 —— 它抓到一个「只在我机器上通过」的缺陷
+（本节写入时先记的是「CI 实测：**没有拿到证据**」—— 那一版已被本轮
+真实运行取代，故合并为一条：先前的 9 次失败确实是同 §2.50.12 /
+§2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 / §2.69.13 / §2.77.12 /
+§2.78.14 / §2.79.13 的调度层失败；**第 10 次才真跑。**）
 
-GitHub 帐单/支出上限问题未处理，调度层失败（同 §2.50.12 / §2.53.9 / §2.55.13 /
-§2.59.13 / §2.61.11 / §2.69.13 / §2.77.12 / §2.78.14 / §2.79.13）。
-证据链由本机实测构成（§2.80.8 / §2.80.12）。
+本节提交后 CI **第一次真的跑起来了**（run `38415066713`，head `345cc32`，
+`in_progress` 持续 1m55s+ —— 此前连续 **9 次**都是 4–6 s 的调度层失败）。
+结论：`✓ Skeleton regression` / `✓ Checker mutation test` / `✓ Migration cost gate` /
+**`X Full release gate`**，`[json] 双面对照: pass=38 fail=1 skip=4 not-run=3`。
 
-*2026-10-13 v56*
+失败逐字：
+
+    File ".../tools/studio_core.py", line 2411, in <module>
+    File ".../tools/studio_core.py", line 2390, in main
+    File ".../tools/studio_core.py", line 2050, in selftest
+    File ".../tools/studio_core.py", line 1666, in dispatch
+    File ".../tools/studio_core.py", line 367, in cmd_test_gate_results
+        raise StudioError('E_NOT_FOUND',
+    StudioError: 找不到同时有 .log 与 .ndjson 的轮次 —— 无法对账
+    [X]  Studio 契约 (studio)
+
+**根因（`build/_ci_gap.py` 决定性实测）**：
+
+| 事实 | 值 |
+|---|---|
+| `git ls-files build/logs` | **0 条** —— `build/logs/` 是 **gitignored** 的 |
+| 本机 | `discover = 128` 轮，35 轮有 `.ndjson` 配对，`pick_latest` 正常 |
+| CI 全新 clone | **一轮都没有** |
+
+而当前轮的 `.ndjson` 由 `release_check.ps1` 在**最末**才写 —— Studio 契约是**第 40 项**，
+跑它的时候本轮 NDJSON 还不存在。用空目录复现 CI 状态，逐字：
+
+    list   -> ok count=0
+    trend  -> ok count=0
+    verify -> E_NOT_FOUND: 找不到同时有 .log 与 .ndjson 的轮次 —— 无法对账
+    latest -> E_NOT_FOUND
+
+⇒ `tools/studio_core.py:2050` 的 `dispatch('test.gate.results', {'query':'verify'})`
+**直接读 `build/logs/` 且未传 `dir`** ⇒ 在 CI 上必崩。
+
+**修法**：把整段「4c. 门禁结果历史」改为**自造合成轮次**
+（`tempfile.mkdtemp` + 手写 `.log`/`.ndjson`），不再读仓库的 `build/logs/`。
+顺带把「跳转落点」判据从**结果侧**改为**声明侧**
+（`gate_items()` 的 `line` 回 `tools/release_check.ps1` 读回那一行）——
+声明表不依赖任何历史日志，因此这条判据在任何机器上都成立。
+
+验证（`build/_ci_sim_gap.py`，把 `gate_results.LOG_DIR` 指向空目录再跑自检）：
+
+    discover = 0
+    [studio_core-selftest] PASS: 契约/能力/门禁清单/负向均可自证
+    rc=0
+    结果: OK —— 自检不再依赖 build/logs 历史
+
+⭐ **这一条最值得记的不是缺陷本身，而是它为什么藏了这么久**：
+
+> 「CI 无证据」不是中性的记账 —— 它会**掩盖只在 CI 上才成立的缺陷**。
+> 连续 9 次把失败如实记成「调度层失败，代码无影响」是对的（那 9 次确实没跑代码），
+> 但**代价**是：一个只在全新 clone 上才出现的缺陷，被 9 次「如实记录」
+> 一路放行到第 10 次。诚实边界只保护了「我没有声称验证过」，
+> **没有保护「我的验证在别的环境里不成立」**。
+
+⚠️ 另一条：这类缺陷**无法在本机复现**（本机有 128 轮历史）。所以它的判据
+不能是「跑一次看结果」，必须**改变环境本身**（把 `LOG_DIR` 指向空目录）——
+与 §2.80.5 的 `reliable` 同一思路：区分"没看到"与"没问题"。
+
+**本节的证据链现在是两边的**：本机（§2.80.8 / §2.80.12 的实测与门禁）
++ CI（run `38415066713` 的失败现场与修后重跑）。这比此前任何一节都完整。
+
+*2026-10-13 v57*
