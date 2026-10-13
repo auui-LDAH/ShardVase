@@ -1063,6 +1063,208 @@ def check_heading_order(docs=None, min_files=None, min_groups=None):
     return errors
 
 
+# ---------------------------------------------------------------------------
+# 跨文档 `§N.M` 引用：被引文档里到底有没有这个节号（§2.79）
+# ---------------------------------------------------------------------------
+#
+# 缺口：`docs/阶段总结-2026-09-30.md:5` 写着
+#   `> **前序**：`docs/阶段总结-2026-09-29.md`（§35 D1–D4 与审计）`
+# 而该文档的节号只到 6（D1–D4 是 §1.4/§1.2/§1.3/§1.5，审计是 §1.6）。
+# §35 实际在 `docs/PLATFORM_ISOLATION_PLAN.md`。**挂错了文档**，
+# 而它挂了 12 天没有被任何判据看见（`RE_XREF` 命中即整行判"转述他文"豁免）。
+#
+# ⚠️ 口径的关键难点不在"找引用"，而在"**相邻 ≠ 归属**"。实测 115 处
+# 邻接命中里只有 1 处是真悬空，其余靠三条豁免解释 —— 每条都有真实样本：
+#
+#   豁免① 被引文档里确实有这个节号（112 处，绝大多数）
+#   豁免② 引用者**本文档**里有这个节号。样本：
+#         `docs/HANDOVER.md:3089`「复核 `docs/N1_PLAN.md`（§2.32 的「整理」步）」
+#         —— §2.32 是 HANDOVER 自己的节，`docs/N1_PLAN.md` 只是宾语定语。
+#   豁免③ 是"父节正文里的第 N 条编号列表项"。样本：
+#         `docs/HANDOVER.md:8158` 引 `docs/STUDIO_PROTOCOL.md` §9.4，
+#         而该文档 §9「未决与已知边界」正文正是 1..5 条编号列表，第 4 条即所指。
+#
+# 为什么不加豁免②就会误报：那会要求**篡改一个正确的句子**（§2.40 同类错误）。
+
+DOCREF = r'[\w\-./\\\u4e00-\u9fff]+\.md'
+# 邻接窗口：只允许"引号类"字符。**绝不能**放进逗号/顿号/破折号 ——
+# 它们是并列分隔符，跨过去就会把 A 文档的名字与 B 文档的节号配成一对
+# （实测宽口径 152 处 -> 邻接口径 115 处，差的 37 处全是这种误配）。
+_ADJ = r'[`\s（）()【】\[\]]*'
+_NUMG = r'(\d+(?:\.\d+)*)'
+_XREF_FWD = re.compile(r'(' + DOCREF + r')' + _ADJ + r'§\s*' + _NUMG)
+_XREF_REV = re.compile(r'§\s*' + _NUMG + _ADJ + r'(' + DOCREF + r')')
+_XREF_LINK = re.compile(r'\]\((' + DOCREF + r')\)' + _ADJ + r'§\s*' + _NUMG)
+_CN_DIGITS = '一二三四五六七八九十'
+_XREF_CN = re.compile(r'^#{1,6}[ \t]+([' + _CN_DIGITS + r']+)[、.．]')
+_XREF_ITEM = re.compile(r'^[ \t]*(\d+)[.、)]\s')
+# 下限**留有余量**（当前实测 128 份 / 115 处）。理由同 §2.78 的节序判据：
+# 本判据防的是"走查面/引用正则写坏"，坏的幅度是数量级，余量不会失明；
+# 而紧贴当前值会给"新增一处引用"加税。
+_XREF_FILES_MIN = 60
+_XREF_REFS_MIN = 80
+
+
+def _cn_to_int(s):
+    """中文数字 -> int（只覆盖 1..99，够标题用）。"""
+    if s == '十':
+        return 10
+    if s.startswith('十'):
+        return 10 + _CN_DIGITS.index(s[1]) + 1
+    if s.endswith('十'):
+        return (_CN_DIGITS.index(s[0]) + 1) * 10
+    if '十' in s:
+        a, b = s.split('十')
+        return (_CN_DIGITS.index(a) + 1) * 10 + _CN_DIGITS.index(b) + 1
+    return _CN_DIGITS.index(s) + 1
+
+
+def _md_texts():
+    """全库 `.md` 走查：`{rel: text}`。与 `heading_order()` 同一 `HEAD_SKIP`。"""
+    out = {}
+    for root, dirs, files in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in HEAD_SKIP]
+        for f in sorted(files):
+            if not f.endswith('.md'):
+                continue
+            p = os.path.join(root, f)
+            rel = os.path.relpath(p, REPO).replace('\\', '/')
+            try:
+                out[rel] = open(p, encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+    return out
+
+
+def _doc_sections(text):
+    """返回 `(阿拉伯节号集合, 中文节号集合, {父节号: 顶层列表项条数})`。"""
+    a, c, items = set(), set(), {}
+    infence = False
+    cur = None
+    for raw in text.split('\n'):
+        s = raw.lstrip()
+        if s.startswith(FENCE) or s.startswith('~~~'):
+            infence = not infence
+            continue
+        if infence:
+            continue
+        m = HEAD_NUM.match(raw)
+        if m:
+            a.add(m.group(2))
+            # 只把 `## ` 级当"父节"，其正文里的编号列表才可能被引成 `P.N`
+            cur = m.group(2) if raw.startswith('## ') else None
+            continue
+        m2 = _XREF_CN.match(raw)
+        if m2:
+            c.add(str(_cn_to_int(m2.group(1))))
+        if cur is not None and _XREF_ITEM.match(raw):
+            items[cur] = items.get(cur, 0) + 1
+    return a, c, items
+
+
+def _sec_for(a, c, items, num):
+    """被引文档里这个节号存在吗（三种形态之一）？"""
+    if num in a:
+        return True
+    if '.' not in num and num in c:
+        return True               # `## 五、` 与 `§5` 等价
+    if '.' in num:
+        parent, last = num.rsplit('.', 1)
+        if parent in a and last.isdigit():
+            return items.get(parent, 0) >= int(last) >= 1   # 豁免③
+    return False
+
+
+def _xref_target(raw, src_rel, known):
+    """把引用的文档名规范化成仓库相对路径；定位不到返回 None。"""
+    cand = raw.replace('\\', '/').lstrip('./')
+    if cand in known:
+        return cand
+    c2 = os.path.normpath(os.path.join(os.path.dirname(src_rel), cand))
+    c2 = c2.replace('\\', '/')
+    if c2 in known:
+        return c2
+    base = os.path.basename(cand)
+    hits = [r for r in known if os.path.basename(r) == base]
+    return hits[0] if len(hits) == 1 else None
+
+
+def cross_doc_refs(docs=None):
+    """收集跨文档 `§N.M` 引用。返回 `[(引用者, 行号, 被引文档, 节号, 原文)]`。
+
+    `docs=None` ⇒ 自带全库 `.md` 走查；自检传 `{rel: text}` 走同一口径。
+    """
+    src = _md_texts() if docs is None else dict(docs)
+    known = set(src)
+    pairs, seen = [], set()
+    for rel in sorted(src):
+        t = src[rel]
+        infence = False
+        for i, l in enumerate(t.split('\n'), 1):
+            s = l.lstrip()
+            if s.startswith(FENCE) or s.startswith('~~~'):
+                infence = not infence
+                continue
+            if infence:
+                continue
+            got = [(m.group(1), m.group(2)) for m in _XREF_FWD.finditer(l)]
+            got += [(m.group(2), m.group(1)) for m in _XREF_REV.finditer(l)]
+            got += [(m.group(1), m.group(2)) for m in _XREF_LINK.finditer(l)]
+            for raw, num in got:
+                tgt = _xref_target(raw, rel, known)
+                if tgt is None or tgt == rel:
+                    continue
+                k = (rel, i, tgt, num)
+                if k in seen:
+                    continue
+                seen.add(k)
+                pairs.append((rel, i, tgt, num, l.strip()))
+    return pairs
+
+
+def check_cross_doc_refs(docs=None, min_files=None, min_refs=None):
+    """断言跨文档 `§N.M` 引用的**目标文档里真的有那个节号**。
+
+    三条豁免见本区块头部注释 —— 每一条都对应实测过的形态，
+    少一条就会要求篡改一个正确的句子。
+    """
+    errors = []
+    src = _md_texts() if docs is None else dict(docs)
+    floor_f = _XREF_FILES_MIN if min_files is None else min_files
+    floor_r = _XREF_REFS_MIN if min_refs is None else min_refs
+    if len(src) < floor_f:
+        errors.append(
+            '跨文档节号引用判据失去锚点：只看到 %d 份 `.md`，低于下限 %d'
+            % (len(src), floor_f))
+        return errors
+    pairs = cross_doc_refs(src)
+    if len(pairs) < floor_r:
+        errors.append(
+            '跨文档节号引用判据失去锚点：只找到 %d 处引用，低于下限 %d —— '
+            '此时"0 处悬空"是**测不到**，不是"没问题"' % (len(pairs), floor_r))
+        return errors
+    cache = {}
+
+    def secs(r):
+        if r not in cache:
+            cache[r] = _doc_sections(src[r])
+        return cache[r]
+
+    for rel, ln, tgt, num, raw in pairs:
+        if _sec_for(*secs(tgt), num):
+            continue                      # 豁免①
+        if _sec_for(*secs(rel), num):
+            continue                      # 豁免②
+        tp = sorted({x.split('.')[0] for x in secs(tgt)[0]}, key=int)
+        errors.append(
+            '%s:%d 引用 `%s` §%s，但该文档没有这个节号'
+            '（它的顶层节号是 %s）—— 引用挂错了文档，或目标已改号。'
+            ' 原文：%s'
+            % (rel, ln, tgt, num, ','.join(tp) if tp else '(无编号标题)',
+               raw[:100]))
+    return errors
+
+
 def gated_check_names():
     """`if ($With*)` body 内的 `Check` 名集合 —— **默认调用下不跑**的那些。
 
@@ -2489,6 +2691,48 @@ def selftest():
             fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
                          ' (%s)' % (name, kw, e[:2]))
 
+    # --- 跨文档 §N.M 引用用例（第十个入口 `check_cross_doc_refs`，§2.79）---
+    #
+    # 三条豁免**各配一条反例和一条正例**，否则哪天豁免写宽了没有用例会红：
+    #   xd3 = 豁免②（引用者本文档有该节号 —— 相邻 ≠ 归属）
+    #   xd4 = 豁免③（父节正文里的第 N 条列表项）
+    #   xd5 = 豁免③ 的**边界反例**（列表只有 3 条却引 §9.4 ⇒ 仍必须报）
+    # xd6/xd7 是失锚守卫：走查面或引用数写坏时必须报"失去锚点"，
+    # 不能报"0 处悬空"。
+    _XD_TGT = '# A\n\n## 1. X\n\n## 2. Y\n'
+    xd_cases = [
+        ('xd1 目标文档有该节号 -> 不报（豁免①）',
+         {'docs/A.md': _XD_TGT, 'docs/B.md': '见 `docs/A.md` §2。\n'},
+         0, None, 1, 0),
+        ('xd2 目标文档没有该节号 -> 必须报',
+         {'docs/A.md': _XD_TGT, 'docs/B.md': '见 `docs/A.md` §3。\n'},
+         1, '没有这个节号', 1, 0),
+        ('xd3 引用者本文档有该节号 -> 不报（豁免②：相邻 ≠ 归属）',
+         {'docs/A.md': '# A\n\n## 1. X\n',
+          'docs/B.md': '## 2. Z\n\n复核 `docs/A.md`（§2 的整理）\n'},
+         0, None, 1, 0),
+        ('xd4 父节下第 4 条列表项 -> 不报（豁免③）',
+         {'docs/A.md': '# A\n\n## 9. S\n\n1. 一\n\n2. 二\n\n3. 三\n\n4. 四\n',
+          'docs/B.md': '见 `docs/A.md` §9.4。\n'},
+         0, None, 1, 0),
+        ('xd5 父节下只有 3 条却引 §9.4 -> 必须报（豁免③ 的边界）',
+         {'docs/A.md': '# A\n\n## 9. S\n\n1. 一\n\n2. 二\n\n3. 三\n',
+          'docs/B.md': '见 `docs/A.md` §9.4。\n'},
+         1, '没有这个节号', 1, 0),
+        ('xd6 走查面为空 -> 必须报（失锚守卫）',
+         {'docs/A.md': '# A\n'}, 1, '失去锚点', 5, 0),
+        ('xd7 引用数太少 -> 必须报（失锚守卫）',
+         {'docs/A.md': _XD_TGT}, 1, '失去锚点', 1, 50),
+    ]
+    for name, _xd_docs, want, kw, _mf, _mr in xd_cases:
+        e = check_cross_doc_refs(docs=_xd_docs, min_files=_mf, min_refs=_mr)
+        if len(e) != want:
+            fails.append('%s: 期望 %d 条错误, 实际 %d 条 (%s)'
+                         % (name, want, len(e), e[:2]))
+        elif kw and not any(kw in x for x in e):
+            fails.append('%s: 报错文案里没有关键词 %r，无法判定报的是对的原因'
+                         ' (%s)' % (name, kw, e[:2]))
+
     print('=== doccheck 自检 ===')
     bad = set(f.split(':')[0] for f in fails)
     for name, text, want in cases:
@@ -2537,9 +2781,14 @@ def selftest():
     for name, _h, want, _kw in ho_cases:
         print('  [%s] %s (期望 %d 条)'
               % ('X' if name in bad else 'ok', name, want))
+    # 跨文档 §N.M 引用用例走第十个入口（`check_cross_doc_refs`），同样必须
+    # 一起打印、一起计数 —— 否则它们只是暗处运行、看起来不存在。
+    for name, _xd_docs, want, _kw, _mf, _mr in xd_cases:
+        print('  [%s] %s (期望 %d 条)'
+              % ('X' if name in bad else 'ok', name, want))
     total = (len(cases) + len(gl_cases) + len(th_cases) + len(ci_cases)
              + len(sim_cases) + len(fc_cases) + len(cf_cases)
-             + len(sa_cases) + len(ho_cases))
+             + len(sa_cases) + len(ho_cases) + len(xd_cases))
 
     # --- ⚠️ 自检自身的守卫: 批次不得被静默掏空（2026-10-06）---
     #
@@ -2562,14 +2811,15 @@ def selftest():
     _BATCHES = (('cases', cases), ('gl_cases', gl_cases), ('th_cases', th_cases),
                 ('ci_cases', ci_cases), ('sim_cases', sim_cases),
                 ('fc_cases', fc_cases), ('cf_cases', cf_cases),
-                ('sa_cases', sa_cases), ('ho_cases', ho_cases))
+                ('sa_cases', sa_cases), ('ho_cases', ho_cases),
+                ('xd_cases', xd_cases))
     for _bn, _bl in _BATCHES:
         if not _bl:
             fails.append('自检批次 `%s` 被清空 —— `total` 由长度导出, '
                          '空批次不会报错只会让数字变小（且该批判据完全失去'
                          '负向验证）。要么恢复用例, 要么删掉整批并同步 total/neg'
                          % _bn)
-    _TOTAL_FLOOR = 78
+    _TOTAL_FLOOR = 85
     if total < _TOTAL_FLOOR:
         fails.append('自检用例总数 %d 低于下限 %d —— 有用例被删或被掏空。'
                      '（下限**紧贴当前值**：删用例须显式下调此数字并说明理由）'
@@ -2589,7 +2839,8 @@ def selftest():
            + len([c for c in fc_cases if c[2]])
            + len([c for c in cf_cases if c[2]])
            + len([c for c in sa_cases if c[3]])
-           + len([c for c in ho_cases if c[2]]))
+           + len([c for c in ho_cases if c[2]])
+           + len([c for c in xd_cases if c[2]]))
     print('[doccheck-selftest] PASS: %d 项（%d 项负向注入 / %d 项合规豁免）'
           % (total, neg, total - neg))
     return 0
@@ -2740,6 +2991,21 @@ def main(argv=None):
         _ho_n = sum(len(h) for _r, h in _ho_f)
         print('  [ok] 节序: %d 份文档 / %d 个编号标题的兄弟序号严格递增'
               % (len(_ho_f), _ho_n))
+
+    # --- 0i. 跨文档 `§N.M` 引用的目标文档里真有那个节号吗（§2.79）---
+    # 缺口的形状：「`docs/阶段总结-2026-09-29.md`（§35 D1–D4 与审计）」——
+    # §35 其实在 `docs/PLATFORM_ISOLATION_PLAN.md`，原句把两个文档压成
+    # 一句，节号挂错了对象，挂了 12 天没有任何判据看见。
+    # ⚠️ 三条豁免（被引文档有 / 引用者本文档有 / 父节下第 N 条列表项）
+    #    不是"为了少报"——各对应实测样本，少一条就会要求篡改
+    #    **一个正确的句子**（§2.40 同类错误）。
+    xd = check_cross_doc_refs()
+    if xd:
+        errors.extend(xd)
+    else:
+        _xd_p = cross_doc_refs()
+        print('  [ok] 跨文档节号引用: %d 处引用的目标节号都真实存在'
+              % len(_xd_p))
 
     exc = {}
     for f in TARGETS:
