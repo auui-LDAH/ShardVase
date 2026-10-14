@@ -1,8 +1,15 @@
 # Studio 协议 v1 — NDJSON over stdio
 
-> 版本：2026-10-10 v1 · 状态：**ST0 / ST4 / ST2 / ST1 已实施**
-> （`tools/studio_core.py` + `tools/studio_cli.py`）
+> 版本：2026-10-14 v1 · 状态：**ST0-ST6 全部实施**（31 条命令）
+> （`tools/studio_core.py` + `tools/studio_cli.py` + `tools/studio_server.py`）
 > 逐阶段追加（每行自成一句）：
+> · ST6 追加 `vm.stepBack` / `vm.seek`（时间旅行 —— 反向单步与回到第 N 步；
+>   **只支持回退**，三个状态边界 reason 归 `E_VM`，见 §5.6）。
+> · ST5.4b 追加 `debug.stack`（宿主侧调用栈：栈扫描 + `call` 判别，
+>   **不是** Windows unwind，见 §5.5）。
+> · ST5 追加 `src.show`（ST5.5 跳转落点）与 Studio 外壳（§11）。
+> · ST3 追加 `debug.doctor` / `debug.sym` / `debug.mask` / `debug.exit`
+>   与活体 `debug.read` / `debug.patch` / `debug.watch`。
 > · ST4 追加 `vm.images` / `vm.disasm`（VM 级调试入口；单步与断点尚在
 >   `tools/vm_debug.py` 的库/CLI 层，未提升为协议命令 —— 见 §9.4）。
 > · ST2 追加 `test.gate.results`（门禁结果的**历史查询**；文本出口不变，新增 NDJSON 出口）。
