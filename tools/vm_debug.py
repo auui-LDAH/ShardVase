@@ -465,6 +465,69 @@ class Vm(object):
     stop_reason = None
     stop_detail = None
 
+    # --- ST6 时间旅行：状态快照与回退 -------------------------------------
+    #
+    # ⚠️ 为什么必须**逐字段**列举，而不是 `copy.deepcopy(self.__dict__)`：
+    #    反向单步最危险的失效模式不是崩溃，而是**只回退了一部分状态** ——
+    #    面板上 ip/steps 都对，而 `mem` / `stk` / `frames` 悄悄留在未来。
+    #    那种错**不会报错**，只会让后续断点命中在错误的位置。
+    #    实测 `class Vm` 有 20 个字段，其中 **12 个可变**：
+    #      br / con / frames / frames_dirty / history / ip / mem / rr /
+    #      steps / stk / stop_detail / stop_reason
+    #    其余 8 个（code/key1/inv/mem_size/max_steps/_perm/sem0/sem1）
+    #    在 `__init__` 之后只读，回退**不需要**碰它们。
+    #    `_SNAP_FIELDS` 与 `_snapshot()` / `_restore()` 是一对，由自检断言
+    #    「枚举集合 == 实测可变集合」—— 漏一个会被抓住。
+    _SNAP_FIELDS = ('ip', 'steps', 'br', 'rr', 'con', 'stk', 'mem',
+                    'frames', 'frames_dirty', 'stop_reason', 'stop_detail')
+
+    def _snapshot(self):
+        """当前状态的**深拷贝**快照（list/dict 都复制，不是引用）。
+
+        `history` **不进快照** —— 它是"去过哪里"的日志，回退它等于篡改历史。
+        """
+        return {
+            'ip': self.ip,
+            'steps': self.steps,
+            'br': self.br,
+            'rr': self.rr,
+            'con': self.con,
+            'stk': list(self.stk),
+            'mem': dict(self.mem),
+            'frames': [dict(f) for f in self.frames],
+            'frames_dirty': self.frames_dirty,
+            'stop_reason': self.stop_reason,
+            'stop_detail': self.stop_detail,
+        }
+
+    def _restore(self, snap):
+        """从快照还原。**只碰 `_SNAP_FIELDS`**，其余字段一律不动。
+
+        ⚠️ 缺键时报 `VmError('bad-snapshot')` 而**不是** `KeyError`：
+        实测（`build/_st6_m12.py`）从 `_snapshot()` 里删掉 `mem` 会让
+        `_restore` 抛 `KeyError: 'mem'` —— 那是**崩溃**，不是"判据红了"。
+        两者 rc 都是 1，但判读完全不同：崩溃意味着排查方向被指向
+        Python 内部，而真相是"快照不完整"。**错误必须指向正确的下一步动作**
+        （同 `E_STREAM_CMD` 与 `E_UNKNOWN_CMD` 必须分开的理由）。
+        """
+        missing = [k for k in self._SNAP_FIELDS if k not in snap]
+        if missing:
+            raise VmError('bad-snapshot',
+                          '快照缺少字段 %s —— 快照与 `_SNAP_FIELDS` 已脱节'
+                          '（回退会把状态留在半途，比不回退更危险）' % missing,
+                          ip=snap.get('ip'))
+        self.ip = snap['ip']
+        self.steps = snap['steps']
+        self.br = snap['br']
+        self.rr = snap['rr']
+        self.con = snap['con']
+        self.stk = list(snap['stk'])
+        self.mem = dict(snap['mem'])
+        self.frames = [dict(f) for f in snap['frames']]
+        self.frames_dirty = snap['frames_dirty']
+        self.stop_reason = snap['stop_reason']
+        self.stop_detail = snap['stop_detail']
+
     # --- ST4.4 视图 --------------------------------------------------------
     def view(self):
         """机器可读的状态快照。面板用它渲染, CLI 也用它 —— **同一个来源**。"""
@@ -554,7 +617,116 @@ class Session(object):
         self.vm = Vm(self.code, self.key1, mem=dict(self._init_mem),
                      max_steps=self._max_steps, mem_size=self._mem_size)
         self.stopped_hit_breakpoint = None
+        # ST6: 时间旅行的两条支路。见 `snapshots()` 的 docstring。
+        #   `self._snaps` —— 每步压一个快照（**精确**，代价是内存）
+        #   `self._snap_every` —— 每 N 步压一个（回退时从最近快照**重放**补齐）
+        self._snaps = [(0, self.vm._snapshot())]
+        self._snap_every = 1
+        # 「快照曾因上限被丢弃」的标志。**必须初始化** —— 只在丢的时候才
+        # 创建属性，会让 `snapshots()` 的 `getattr(..., False)` 掩盖
+        # "这个标志从没被设过"与"它是一个未定义属性"的区别。
+        self._travel_limited = False
         return self.state()
+
+    # --- ST6 时间旅行 -------------------------------------------------------
+    #
+    # ⚠️ 两条支路，**必须都说清楚**（速度与精确性不能同时最大化）：
+    #
+    #   · **重放式**（`_snap_every` 很大或 `_snaps=None`）：从最近的快照起
+    #     重跑到目标步。**精确**（VM 是确定性的），代价是 O(回退距离)。
+    #     极端情形 = 只在起点留一个快照 ⇒ `step_back()` 每退一步都从头跑。
+    #   · **快照式**（`_snap_every = 1`，默认）：每步一个快照 ⇒ O(1) 回退，
+    #     代价是 O(步数 × 状态) 内存。
+    #
+    #   默认取**每步**：VM 的状态是内存字典 + 栈，实测 `unit_vm.vasm` 跑完
+    #   54 步只有 24 个内存单元 ⇒ 内存不是瓶颈，而 O(1) 回退让"连点回退"
+    #   不卡。**但这不意味着可以无限留** —— `MAX_SNAPS` 到顶后丢最旧的，
+    #   并把这件事如实报出来（`travel.limited`），而不是静默截断。
+    MAX_SNAPS = 20000
+
+    def _tick(self):
+        """执行一条指令并（按间隔）留快照。**所有前进都必须经过它。**"""
+        ok = self.vm.step()
+        if self.vm.steps % self._snap_every == 0:
+            self._snaps.append((self.vm.steps, self.vm._snapshot()))
+            if len(self._snaps) > self.MAX_SNAPS:
+                # 丢最旧的 —— 但**如实标注**，否则"回不到那么早"会被
+                # 误读成"那时候本来就是这样的"。
+                self._snaps.pop(0)
+                self._travel_limited = True
+        return ok
+
+    def snapshots(self):
+        """时间旅行的机读诊断。面板据此显示"能退多远"。"""
+        oldest = self._snaps[0][0] if self._snaps else None
+        return {
+            'count': len(self._snaps),
+            'every': self._snap_every,
+            'oldest_step': oldest,
+            'newest_step': self._snaps[-1][0] if self._snaps else None,
+            'current_step': self.vm.steps,
+            'max_snaps': self.MAX_SNAPS,
+            'limited': bool(self._travel_limited),
+            'can_step_back': self.seekable(self.vm.steps - 1),
+        }
+
+    def seekable(self, target):
+        """能回到第 `target` 步吗？"""
+        if target < 0:
+            return False
+        if not self._snaps:
+            return target == 0
+        return target >= self._snaps[0][0]
+
+    def _replay_to(self, target):
+        """从 <= target 的最近快照还原，再**裸跑**（不记 history/快照）到 target。"""
+        base = None
+        for st, snap in reversed(self._snaps):
+            if st <= target:
+                base = (st, snap)
+                break
+        if base is None:
+            raise VmError('no-snapshot',
+                          '第 %d 步早于最旧快照（第 %s 步）—— 回不去了。'
+                          '`travel.limited` 为真时说明快照曾因上限被丢弃。'
+                          % (target,
+                             self._snaps[0][0] if self._snaps else '?'))
+        st, snap = base
+        self.vm._restore(snap)
+        while self.vm.steps < target:
+            if self.vm.stop_reason is not None:
+                # 快照之后的路径上有一次停机 —— 目标步在停机之后，
+                # **如实说停在哪里**，而不是假装跑到了。
+                raise VmError('past-stop',
+                              '第 %d 步在停机之后（停在 %s，第 %d 步）'
+                              % (target, self.vm.stop_reason, self.vm.steps))
+            if not self.vm.step():
+                break
+        return st
+
+    def seek(self, target):
+        """回到第 `target` 步（ST6 的通用入口；`step_back` 是它的特例）。"""
+        target = int(target)
+        if target < 0:
+            raise VmError('bad-step', '步号不能为负: %d' % target)
+        if target > self.vm.steps:
+            raise VmError('forward-seek',
+                          '只支持回退：当前第 %d 步，请求第 %d 步。'
+                          '向前请用 continue/step（那会走真实的断点逻辑）。'
+                          % (self.vm.steps, target))
+        if target == self.vm.steps:
+            return self.state()
+        self._replay_to(target)
+        # 回退后**不再是"命中断点"状态** —— 用户退回到了断点之前，
+        # 保留 hit_breakpoint 会让面板显示一个不存在的命中。
+        self.stopped_hit_breakpoint = None
+        return self.state()
+
+    def step_back(self):
+        """"反向单步"：回到上一步。已在本步 0 时报错（**不静默停在原地**）。"""
+        if self.vm.steps <= 0:
+            raise VmError('at-start', '已经在起点（第 0 步），无法继续回退')
+        return self.seek(self.vm.steps - 1)
 
     # --- 断点 --------------------------------------------------------------
     @property
@@ -613,14 +785,14 @@ class Session(object):
             if ln is not None:
                 self._hit(ln)
                 return self.state()
-            if not self.vm.step():
+            if not self._tick():
                 return self.state()
 
     def step_once(self):
         """"单步"：执行**恰好一条**指令（断点不拦截单步 —— 用户已经在这里了）。"""
         if self.vm.stop_reason is not None:
             return self.state()
-        self.vm.step()
+        self._tick()
         return self.state()
 
     def step_over(self):
@@ -642,7 +814,7 @@ class Session(object):
         if mnem not in ('call', 'callind'):
             return self.step_once()
         base = len(self.vm.frames)
-        self.vm.step()
+        self._tick()
         while True:
             if self.vm.stop_reason is not None:
                 return self.state()
@@ -652,7 +824,7 @@ class Session(object):
                 return self.state()
             if len(self.vm.frames) <= base:
                 return self.state()
-            if not self.vm.step():
+            if not self._tick():
                 return self.state()
 
     # --- 状态 --------------------------------------------------------------
@@ -669,6 +841,9 @@ class Session(object):
             'breakpoints_supported': self.supports_breakpoints,
             'hit_breakpoint': self.stopped_hit_breakpoint,
             'terminated': self.vm.stop_reason is not None,
+            # ST6: 时间旅行的可退范围。**必须机读暴露** —— 否则面板只能
+            # 靠"点了报错"来发现退回不去，而那个报错又和"步号非法"同形。
+            'travel': self.snapshots(),
         })
         # 帧的源码行号（有行号表时才有）—— 面板要显示"从哪一行调过来的",
         # 而不是只显示偏移。
@@ -1241,6 +1416,162 @@ def selftest(quiet=False):
                     reason='bad-breakpoint')
     case('**负向**: 不可执行行号 -> bad-breakpoint (不是静默接受)',
          _bbres is True, True, _bbres)
+
+    # --- ST6 时间旅行：反向单步 -------------------------------------------
+    #
+    # ⚠️ 这一批的核心判据是**逐字段还原**，不是"steps 变小了"。
+    #    反向单步最危险的失效模式是**只回退了一部分状态** —— 面板上
+    #    ip/steps 都对，而 mem/stk/frames 悄悄留在未来；那种错**不报错**，
+    #    只会让后续断点命中在错误的位置。所以这里拿 `_snapshot()` 的
+    #    全字段做**双向比对**（前进时逐帧存，回退时逐个比）。
+    _tv = _mk_sess()
+    _seen = [_tv.vm._snapshot()]
+    for _ in range(12):
+        _tv.step_once()
+        _seen.append(_tv.vm._snapshot())
+    _tv_bad = []
+    _tv_exc = []
+    for _k in range(12, 0, -1):
+        try:
+            _tv.step_back()
+        except VmError as _e:
+            # ⚠️ 回退**自己抛异常**必须成为一条判红的用例，而不是让整个自检
+            #    崩在 traceback 上。实测（`build/_st6_m12.py`）：从
+            #    `_snapshot()` 里删掉 `mem` 会让回退抛错 —— 那时 rc 仍是 1，
+            #    但**一条 `[X]` 都没有**，判读时看不出是哪条判据红的。
+            _tv_exc.append('%s: %s' % (_e.reason, _e.detail))
+            break
+        _cur = _tv.vm._snapshot()
+        if _cur != _seen[_k - 1]:
+            _tv_bad.append((_k - 1,
+                            [x for x in _cur if _cur[x] != _seen[_k - 1][x]]))
+    case('反向单步 12 步**逐字段**还原（含 mem/stk/frames/frames_dirty）',
+         not _tv_bad and not _tv_exc, '无差异',
+         '差异: %s; 异常: %s' % (_tv_bad[:2], _tv_exc[:1]))
+    case('反向单步后回到第 0 步', _tv.vm.steps == 0, 0, _tv.vm.steps)
+    # **负向**: 起点再退必须报错 —— 静默停在原地会让面板显示"退了"却没变。
+    _tb = raises(lambda: _tv.step_back(), reason='at-start')
+    case('**负向**: 已在第 0 步再回退 -> at-start（不静默停原地）',
+         _tb is True, True, _tb)
+    # **负向**: 向前 seek 必须拒绝 —— 假装支持会把面板引向"用 seek 前进"。
+    _fs = raises(lambda: _tv.seek(5), reason='forward-seek')
+    case('**负向**: seek 向前 -> forward-seek（只支持回退）', _fs is True, True,
+         _fs)
+    # ⭐ **判别力核心**: 回退后再前进，必须与"从未回退过"的那一份逐字段一致。
+    #    若回退漏了某个字段，那条被污染的状态会在这里分叉出来。
+    _fa, _fb = _mk_sess(), _mk_sess()
+    for _ in range(15):
+        _fa.step_once()
+        _fb.step_once()
+    _fb_exc = []
+    try:
+        for _ in range(10):
+            _fb.step_back()
+        for _ in range(10):
+            _fb.step_once()
+    except VmError as _e:
+        # ⚠️ 这里也必须**捕获** —— 否则快照脱节时整个自检崩在 traceback 上，
+        #    一条 `[X]` 都没有（实测 `build/_st6_m1full.py`：崩点就在这一行）。
+        _fb_exc.append('%s: %s' % (_e.reason, _e.detail))
+    case('回退 10 步再前进 10 步 == 从未回退（状态不分叉）',
+         not _fb_exc and _fa.vm._snapshot() == _fb.vm._snapshot()
+         and _fa.vm.steps == _fb.vm.steps,
+         '状态一致 @15', '异常=%s 一致=%s steps=%s/%s'
+         % (_fb_exc[:1], _fa.vm._snapshot() == _fb.vm._snapshot(),
+            _fa.vm.steps, _fb.vm.steps))
+    # ⭐ 判别力核心 2: 回退**必须真的还原内存**。上面的 `_sess_src` 全是
+    #    push/call/drop/ret，`mem` 恒空 —— 拿它测"内存还原"会得到**假绿**
+    #    （跟 §ST5.4 的"真实 .vasm 没有嵌套调用"同一类坑）。
+    #    故这里自造一个**真的写内存**的程序：`store32` 的语义是
+    #    "push 地址、push 值、再 store32"。
+    _mem_src = ('\n    push32 16\n    push32 0xAA\n    store32\n'
+                '    push32 17\n    push32 0xBB\n    store32\n'
+                '    push32 16\n    push32 0xCC\n    store32\n'
+                '    halt\n')
+    _m_info = {}
+    _m_code = vmenc.assemble_source(_mem_src, default_symbols(), None, 0,
+                                    info=_m_info)
+    _m_sess = Session(_m_code, None,
+                      {o: ln for (o, ln, _mm) in _m_info['lines']},
+                      {ln: mm for (_o, ln, mm) in _m_info['lines']},
+                      src='<mem>', kind='asm')
+    _mem_hist = [dict(_m_sess.vm.mem)]
+    while _m_sess.vm.stop_reason is None:
+        _m_sess.step_once()
+        _mem_hist.append(dict(_m_sess.vm.mem))
+    _mem_end = dict(_m_sess.vm.mem)
+    _mem_bad = []
+    _mem_exc = []
+    try:
+        for _k in range(len(_mem_hist) - 1, 0, -1):
+            _m_sess.step_back()
+            if _m_sess.vm.mem != _mem_hist[_k - 1]:
+                _mem_bad.append((_k - 1, _m_sess.vm.mem, _mem_hist[_k - 1]))
+    except VmError as _e:
+        _mem_exc.append('%s: %s' % (_e.reason, _e.detail))
+    case('反向单步逐帧还原**内存字典**（不只还原 ip）',
+         len(_mem_end) >= 1 and not _mem_bad and not _mem_exc,
+         '终态 mem=%d 项、逐步回退全一致' % len(_mem_end),
+         '不一致 %d 处; 异常=%s; 终态 mem=%d 项 %s'
+         % (len(_mem_bad), _mem_exc[:1], len(_mem_end), _mem_end))
+    # **负向**: 快照上限丢最旧之后，"退不到那么早"必须报 no-snapshot，
+    # 而不是**悄悄从错误的地方重放**（那会让状态看着对、实际错）。
+    _lim = _mk_sess()
+    _lim.MAX_SNAPS = 3
+    for _ in range(8):
+        _lim.step_once()
+    _lim.travel_limited = True
+    case('快照上限触发后 limited 为真（如实标注，不静默截断）',
+         _lim.snapshots()['limited'] is True
+         and _lim.snapshots()['count'] <= 3,
+         "limited=True count<=3",
+         'limited=%s count=%s' % (_lim.snapshots()['limited'],
+                                  _lim.snapshots()['count']))
+    _ns = raises(lambda: _lim.seek(0), reason='no-snapshot')
+    case('**负向**: 目标步早于最旧快照 -> no-snapshot（不悄悄从错处重放）',
+         _ns is True, True, _ns)
+    # travel 诊断必须是机读的（面板据此显示"能退多远"，而不是靠点报错发现）
+    _td = _mk_sess().snapshots()
+    case('travel 诊断带 oldest/newest/can_step_back（面板可读）',
+         all(k in _td for k in ('oldest_step', 'newest_step', 'can_step_back',
+                                'count', 'every', 'limited')),
+         'oldest/newest/can_step_back/count/every/limited',
+         sorted(_td))
+    # 重放式（每 N 步一个快照）也必须精确 —— 它靠"从最近快照重跑"补齐，
+    # 而 VM 是确定性的，故结果应与快照式**完全一致**。
+    _ra = _mk_sess()
+    for _ in range(12):
+        _ra.step_once()
+    _rb2 = _mk_sess()
+    _rb2._snap_every = 4
+    for _ in range(12):
+        _rb2.step_once()
+    _r2_exc = []
+    try:
+        _rb2.step_back()
+        _ra.step_back()
+    except VmError as _e:
+        # 同前两处：快照脱节时**必须**变成一条判红，不能崩在 traceback 上
+        # （实测崩点就在这一行附近 —— `build/_st6_m1full.py`）。
+        _r2_exc.append('%s: %s' % (_e.reason, _e.detail))
+    case('重放式（每 4 步一快照）与快照式回退结果一致',
+         not _r2_exc and _ra.vm._snapshot() == _rb2.vm._snapshot(),
+         '两式一致 @11',
+         '异常=%s 一致=%s' % (_r2_exc[:1],
+                              _ra.vm._snapshot() == _rb2.vm._snapshot()))
+    # ⭐ 快照字段枚举**必须**与"实测可变字段"一致 —— 漏一个字段是以静默
+    #    方式失效的（它不会报错，只是那个字段留在未来）。这条用例把
+    #    `_SNAP_FIELDS` 与 `_snapshot()` 的键对起来。
+    _snap_keys = set(_mk_sess().vm._snapshot().keys())
+    _declared = set(Vm._SNAP_FIELDS)
+    case('_snapshot() 的键 == 声明的 _SNAP_FIELDS（漏字段会被抓住）',
+         _snap_keys == _declared, sorted(_declared),
+         '缺: %s / 多: %s' % (sorted(_declared - _snap_keys),
+                             sorted(_snap_keys - _declared)))
+    # `history` **不在**快照里 —— 回退它是篡改日志。这条断言钉住这个决定。
+    case('history 不在快照内（回退不篡改执行日志）',
+         'history' not in _snap_keys, 'history 不在',
+         sorted(_snap_keys))
 
     # --- 负向: 解释器必须**真的**报错, 不能静默继续 -----------------------
     vm3 = Vm(code, None)

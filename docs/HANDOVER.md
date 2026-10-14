@@ -12500,4 +12500,180 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 本节的证据强度**不如 §2.80**（那一节至少拿到了修前的失败现场）。
 
 
-*2026-10-14 v58*
+---
+
+## 2.82 ST6 时间旅行：把「反向单步」做成精确的 —— 以及一个 12 字段的枚举（2026-10-14）
+
+### 2.82.1 缘起
+
+`docs/STUDIO_PLAN.md:448` 逐字：
+
+    ### ST6 — 时间旅行 / 重放（可选，远期）
+    现有 `tools/replay.py` 已有「种子重放调试脚本」能力。ST6 把它升级为
+    **执行事件日志 + 反向单步**（对**解释器**天然可行，对真机不可行）。
+    **成本**：M。**风险**：中。**仅为可选**，不进主线承诺。
+
+⚠️ 先纠一处**名称误会**：`tools/replay.py`（103 行）做的是**种子重放** ——
+用 `seeds.json` 重新汇编/加密出与目标构建**逐字节一致**的 blob，用途是
+"某轮 e2e 失败时在隔离目录复现"。它**不是**执行历史，与本节的"时间旅行"
+只共享"确定性"这个前提。**升级它**这句读作"同一类能力"，不是"改这个文件"。
+
+### 2.82.2 为什么解释器能做、真机不能
+
+VM 是**确定性**的：同样的字节码 + 同样初态 ⇒ 同样的状态序列。于是
+「回到上一步」有两种都成立的实现，且都能做到**精确**：
+
+| 支路 | 机制 | 代价 | 何时用 |
+|---|---|---|---|
+| **快照式**（默认 `_snap_every = 1`）| 每步压一份状态快照 ⇒ 回退 **O(1)** | O(步数 × 状态) 内存 | 默认 |
+| **重放式**（`_snap_every = N`）| 从最近快照**重跑到**目标步 | 内存小；O(回退距离) | 步数很大时 |
+
+实测 `tests/unit_vm.vasm` 跑完 54 步只有 **24 个内存单元** ⇒ 内存不是瓶颈，
+故默认取每步，让「连点回退」不卡。
+
+真机不行：寄存器/内存/线程状态无法无损快照，且外部副作用（IO、时钟）不可撤销。
+
+### 2.82.3 ⭐ 核心难点不是"怎么退"，而是"退**全**了没有"
+
+反向单步最危险的失效模式**不是崩溃**，而是**只回退了一部分状态** ——
+面板上 `ip`/`steps` 都对，而 `mem`/`stk`/`frames` 悄悄留在未来。
+那种错**不会报错**，只会让后续断点命中在错误的位置。
+
+所以第一步是把 `class Vm` 的**全部可变字段**数清楚（AST 探针
+`build/_st6_recon4.py`，收 `self.X =` / `self.X[...] =` / `augassign` /
+`self.X.append|pop|update` 四种写入形态）：
+
+**20 个字段，其中 12 个可变**：
+
+    br / con / frames / frames_dirty / history / ip / mem / rr /
+    steps / stk / stop_detail / stop_reason
+
+其余 8 个（`code` / `key1` / `inv` / `mem_size` / `max_steps` / `_perm` /
+`sem0` / `sem1`）在 `__init__` 之后**只读** ⇒ 回退不需要碰它们。
+
+⇒ `Vm._SNAP_FIELDS`（11 项，`history` 除外）+ `_snapshot()` + `_restore()`
+三者是一组，由自检断言**`_snapshot()` 的键 == `_SNAP_FIELDS`**。
+⚡ 为什么 `history` 不进快照：它是"去过哪里"的执行日志，**回退它等于篡改历史**。
+回退后再前进会真的追加新记录（实测：从未回退的一份 `history=15`，
+回退 10 步再前进 10 步的那份 `history=25`）—— 这是**正确**行为，已写成用例。
+
+### 2.82.4 ⭐ `_restore` 缺键时抛 `KeyError` 而不是有意义的错误
+
+修完枚举后做变异测试（`build/_st6_load.py`），M1「从 `_snapshot()` 里删掉 `mem`」
+的失败形态逐字是：
+
+    Traceback (most recent call last):
+    KeyError: 'mem'
+
+rc 同样是 1，但**判读完全不同**：崩溃把排查方向指向 Python 内部，
+而真相是"快照不完整"。修法 = `_restore()` 先查 `_SNAP_FIELDS` 缺键，
+缺则抛 `VmError('bad-snapshot', '快照缺少字段 %s —— 快照与 `_SNAP_FIELDS`
+已脱节（回退会把状态留在半途，比不回退更危险）')`。
+
+**错误必须指向正确的下一步动作** —— 与 `E_STREAM_CMD` 与 `E_UNKNOWN_CMD`
+必须分开、`E_CONFIRM_REQUIRED` 与 `E_BAD_ARGS` 必须分开是同一条纪律。
+
+### 2.82.5 ⭐⭐ 一个更隐蔽的坑：异常让自检**一条 `[X]` 都不打**
+
+`bad-snapshot` 修好之后，M1/M2 的报文变得有意义了，但**仍然没有一条 `[X]` 行** ——
+`build/_st6_m1full.py` 打出完整栈，崩点在：
+
+    File "tools/vm_debug.py", line 1548, in selftest   ← 另一条用例里
+    _fb.step_back()
+    VmError: 快照缺少字段 ['mem']
+
+⇒ 崩点在我**没包住**的那条用例里。于是修法不是"改一条用例"，而是：
+**凡是在自检里调用回退的地方，都要把 `VmError` 捕获成一条判红**。
+三处（逐字段还原 / 内存字典还原 / 两式一致）全部包上，并在注释里写明
+「否则快照脱节时整个自检崩在 traceback 上，一条 `[X]` 都没有」。
+
+修后 M1/M2 各抓到 **8 条** `[X]`（而不是 0 条）。
+
+**一般化：自检里的"被测动作"抛异常，本身就必须是一条判红。**
+否则 rc 是 1、日志有 traceback，而**人看不出是哪条判据红了** ——
+排查会从"哪条判据"变成"Python 哪里崩了"，方向完全错。
+
+### 2.82.6 实现
+
+`tools/vm_debug.py`（1380 → 1702 行）：
+
+- `Vm._SNAP_FIELDS` / `_snapshot()` / `_restore()`（缺键 ⇒ `bad-snapshot`）
+- `Session.MAX_SNAPS = 20000`；`_snaps = [(step, snap), …]`；`_snap_every`
+- `_tick()` —— **所有前进都必须经过它**（否则快照根本不记）。
+  实测替换点：`run_until_stop` / `step_once` / `step_over` 各一。
+  `_replay_to()` 内部的裸 `vm.step()` **刻意不记**快照（那是重放，不是新历史）。
+- `snapshots()` → `travel` 诊断（`count`/`every`/`oldest_step`/`newest_step`/
+  `current_step`/`max_snaps`/`limited`/`can_step_back`）
+- `seekable(target)` / `seek(target)` / `_replay_to(target)` / `step_back()`
+- 快照上限触发后丢**最旧**的并把 `_travel_limited` 置真 —— **如实标注**，
+  否则"回不到那么早"会被误读成"那时候本来就是这样的"。
+- `state()` 新增 `travel` 键。
+
+`tools/studio_core.py`：`cmd_vm_step_back` / `cmd_vm_seek` +
+`COMMANDS` 注册（29 → 31 条）。
+
+`docs/STUDIO_PROTOCOL.md`：命令表 2 行 + 新增 **§5.6 时间旅行**。
+
+### 2.82.7 ⭐ 我自己踩的三处
+
+**① 四参 vs 三参 `case()`。** 我把 `tools/vm_debug.py:selftest` 的
+`case(name, ok, want=None, got=None)`（**四参**）抄进了
+`tools/studio_core.py:selftest` 的 `case(name, ok, detail='')`（**三参**）⇒
+`TypeError: selftest.<locals>.case() takes from 2 to 3 positional arguments
+but 4 were given`。**同一形状的坑本仓库记过两次**（§2.65 记过 `vm_debug` 四参
+vs `studio_core` 三参）—— 我又踩了第三次。
+
+**② docstring 声称的错误码与实测不符。** 我在 `cmd_vm_step_back` 的 docstring 里
+写「`at-start` ⇒ `E_BAD_ARGS`」，实测（`build/_st6_e2e.py`）是 **`E_VM`**。
+想清楚哪个对之后**按实现改文档**：`E_BAD_ARGS` 留给「调用方传错了输入」，
+而"已经在第 0 步"请求本身完全合法、只是状态不允许 ⇒ 面板该**置灰按钮**，
+不是弹"你传错了参数"。⇒ `at-start`/`no-snapshot`/`past-stop` 三者**都归 `E_VM`**。
+
+**③ 自检 fixture 缺了它要测的东西。** 「反向单步逐帧还原**内存字典**」这条
+第一版直接拿现成的 `_sess_src`（全是 `push32`/`call`/`drop`/`ret`）跑 ——
+那个程序**一次 `storr32` 都没有**，`mem` 恒空 ⇒ 用例**必然假绿**。
+修法 = 自造一个真写内存的程序（`store32` 的语义是「push 地址、push 值、再
+`store32`」）。与「真实 `.vasm` 里没有嵌套调用，拿它测"步过"会得到
+'步过==单步' 的假绿」**完全同型**。
+
+### 2.82.8 承重验证（`build/_st6_load.py`，5 个真实变异 + 逐字节还原）
+
+| 变异 | 结果 |
+|---|---|
+| M1 从 `_snapshot()` 删 `mem` | rc=1，**抓到 8 条** `[X]` |
+| M2 从 `_snapshot()` 删 `stk` | rc=1，**抓到 8 条** |
+| M3 `step_back` 只把 `steps` 减 1（不还原状态）| rc=1，抓到 3 条 |
+| M4 `_SNAP_FIELDS` 删 `con` | rc=1，抓到 1 条（键/声明对账）|
+| M5 起点静默 `return`（不报错）| rc=1，抓到 1 条（`at-start` 用例）|
+| 还原 | rc=0 且 **逐字节一致=True** |
+
+⇒ 五个变异各自被抓，且**没有一个**是靠崩溃"顺带"红的（M1/M2 修好后是干净判红）。
+
+### 2.82.9 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/vm_debug.py --selftest` | `PASS: 66 条 (含 11 条负向)`（54 → 66）|
+| `tools/studio_core.py --selftest` | `PASS`（含 11 条 ST6 新用例）|
+| `tools/studio_proto_check.py` | `PASS: 命令 31 条（文档 31 条）双向一致` |
+| `tools/doccheck.py` | `PASS`，`检查数字 1424 处, 错误 0, 警告 0` |
+| `build/_hygiene.py` | 27 文件 0 异常 |
+| 全门禁 | `[release_check] PASS: 43 项检查全通过` |
+
+### 2.82.10 诚实边界
+
+1. **只支持回退**。向前走必须用 `vm.continue`/`vm.step` —— 向前要过真实断点
+   逻辑，绕过它会让"到了"与语义不符。
+2. **快照是进程内的**：会话活在 Studio 服务进程内（同 §5.4 的边界），
+   服务重起即丢。
+3. `MAX_SNAPS = 20000`，到顶后丢最旧；`travel.limited` 如实标注该事实。
+4. **不做"按步号随机跳"的性能优化**：`seek` 从最近快照重放，最坏 O(回退距离)。
+5. **不还原"外部副作用"** —— 这里没有，但真机接进来时这条会立刻变成硬约束。
+6. **前端尚未接线**：`vm.stepBack` / `vm.seek` 只有后端与协议，面板上没有
+   回退按钮（与 §2.81 之前的 `debug.stack` 处境相同 —— 这是**已知**的下一步）。
+
+### 2.82.11 CI 实测
+
+见下方补记。
+
+*2026-10-14 v59*

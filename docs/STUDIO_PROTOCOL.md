@@ -104,6 +104,8 @@ Studio 后端对外只有**一套**契约，不允许「面板调一套、门禁
 | `vm.step` | `session` | 执行**恰好一条**指令（断点**不**拦截单步） |
 | `vm.stepOver` | `session` | 跨过一条 `call`/`callind`；**被调函数内部的断点仍会命中** |
 | `vm.restart` | `session` | 回到初态；**保留断点**（重启不该悄悄清掉用户下的断点） |
+| `vm.stepBack` | `session` | （ST6）**反向单步**：回到上一步；三个状态边界 reason（`at-start`/`no-snapshot`/`past-stop`）都归 `E_VM`，见 §5.6 |
+| `vm.seek` | `session`, `step` | （ST6）回到第 `step` 步；**只支持回退**（向前请用 `vm.continue`/`vm.step` —— 那才走真实断点逻辑）；缺 `step` 或非整数 ⇒ `E_BAD_ARGS` |
 | `vm.breakpoints` | `session`, `lines[]` \| `add[]`/`remove[]` | `lines` = 整体替换（空数组 = 全清）；与 `add`/`remove` **不可同时给**（顺序有歧义） |
 | `vm.close` | `session` | 关闭会话；**对未知 id 也成功**（幂等），返回值里 `existed` 说明它是否真的存在过 |
 | `plan.graph` | `profile`\|`modules` | `nodes[]` / `edges[]`（每条带 `relation`）/ **`order_edges[]`** / `topo` / `cycle` / `conflicts[]` / `relations` / `topo_dep_violations[]`；**`modules` 优先于 `profile`** |
@@ -358,6 +360,55 @@ unwind 解释器。Studio **没做那个**，做的是「栈扫描 + 判别」�
 
 ⚠️ **`frames` 为空是合法结果**，不是失败：一个线程睡在 ntdll 里（例如目标在
 `--wait-after`），它的栈上可能**没有任何**落在本映像内的返回地址。
+
+### 5.6 时间旅行：`vm.stepBack` / `vm.seek`（ST6）
+
+VM 解释器是**确定性的**，所以「回到上一步」可以做到**精确** —— 这正是
+`docs/STUDIO_PLAN.md` 说 ST6「对**解释器**天然可行，对真机不可行」的原因。
+
+**两条支路，速度与精确性不能同时最大化**（都必须说清楚）：
+
+| 支路 | 机制 | 代价 |
+|---|---|---|
+| **快照式**（默认，`_snap_every = 1`） | 每步压一份状态快照 ⇒ 回退 O(1) | O(步数 × 状态) 内存 |
+| **重放式**（`_snap_every = N`） | 从最近的快照**重跑到**目标步 ⇒ O(回退距离) | 内存小；VM 确定性保证结果一致 |
+
+实测 `tests/unit_vm.vasm` 跑完 54 步只有 24 个内存单元 ⇒ 内存不是瓶颈，
+故默认取**每步**，让"连点回退"不卡。
+
+**`state()` 里多了一个 `travel` 字段**（机读，面板据此**事先**置灰按钮，
+而不是靠点一次报错才发现）：
+
+| 键 | 含义 |
+|---|---|
+| `count` | 现存快照数 |
+| `every` | 每几步一个快照 |
+| `oldest_step` / `newest_step` | 可退区间的两端 |
+| `current_step` | 当前步号 |
+| `max_snaps` | 上限（到顶后丢最旧的） |
+| `limited` | **快照曾因上限被丢弃** —— 为真时"退不到那么早"是**已知边界**，不是缺陷 |
+| `can_step_back` | 现在能不能再退一步 |
+
+⭐ **快照必须覆盖全部可变字段。** `class Vm` 共 20 个字段，其中 **12 个可变**
+（`br`/`con`/`frames`/`frames_dirty`/`history`/`ip`/`mem`/`rr`/`steps`/`stk`/
+`stop_detail`/`stop_reason`），其余 8 个在 `__init__` 后只读。反向单步最危险的
+失效模式**不是崩溃**，而是**只回退了一部分状态** —— 面板上 `ip`/`steps` 都对，
+而 `mem`/`stk`/`frames` 悄悄留在未来。那种错**不报错**，只会让后续断点命中在
+错误的位置。故 `Vm._SNAP_FIELDS` 与 `_snapshot()` 的键由自检**对账**。
+
+⚠️ **`history` 刻意不进快照** —— 它是"去过哪里"的执行日志，回退它等于篡改历史。
+回退后**再前进**会真的追加新记录（所以回退过的那份 `history` 更长）。
+
+⚠️ **三个 reason 都是状态边界，全部归 `E_VM`**（保留机读 `reason`）：
+
+| reason | 含义 | 面板该做什么 |
+|---|---|---|
+| `at-start` | 已经在第 0 步 | 置灰「反向单步」 |
+| `no-snapshot` | 目标步早于最旧快照（`limited` 为真时会发生）| 说明"退不到那么早" |
+| `past-stop` | 目标步在停机之后 | 说明停机位置 |
+
+**它们不是 `E_BAD_ARGS`**：请求本身完全合法，只是当前状态不允许。
+`E_BAD_ARGS` 留给「调用方传错了输入」（`vm.seek` 缺 `step`、`step` 非整数）。
 
 ## 6. 错误码
 

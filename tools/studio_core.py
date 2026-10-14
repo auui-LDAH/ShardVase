@@ -1540,6 +1540,57 @@ def cmd_vm_restart(args):
     return st
 
 
+def cmd_vm_step_back(args):
+    """（ST6）“反向单步”：回到上一步。
+
+    ⚠️ 错误分类：三个 reason 都是**状态边界**，全部归 `E_VM`（保留机读
+    `reason`），**不是** `E_BAD_ARGS`：
+      · `at-start`    —— 已经在第 0 步
+      · `no-snapshot` —— 目标步早于最旧快照（快照曾因上限被丢弃）
+      · `past-stop`   —— 目标步在停机之后
+
+    ⭐ 为什么它们**不**是 `E_BAD_ARGS`（我最初写的 docstring 曾如此声称，
+    实测 `build/_st6_e2e.py` 证明是 `E_VM` —— **文档与实现漂移，已按实现改正**）：
+    `_vm_error()` 把 `E_BAD_ARGS` 留给「**调用方传错了输入**」
+    （`no-line-table` = 这个会话不能按行号下断点 / `bad-breakpoint` = 这个行号
+    不可执行 / `bad-session` = 这个 id 不对）。而"已经在第 0 步"不是输入错 ——
+    请求本身完全合法，只是**当前状态不允许**。面板的正确动作是把「反向单步」
+    按钮**置灰**，而不是弹"你传错了参数"。
+    """
+    sid = _session_id(args)
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    try:
+        s.step_back()
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
+def cmd_vm_seek(args):
+    """（ST6）“时间旅行”：回到第 `step` 步。
+
+    **只支持回退** —— 向前走请用 `vm.continue` / `vm.step`，因为向前必须
+    走真实的断点逻辑（否则会绕过用户下的断点，那是"看起来到了"而语义错）。
+    """
+    sid = _session_id(args)
+    target = _int_arg(args, 'step', None)
+    if target is None:
+        raise StudioError('E_BAD_ARGS', 'vm.seek 需要 step（目标步号）',
+                          {'given': args})
+    with _SESSION_LOCK:
+        s = _SESSIONS[sid]
+    try:
+        s.seek(target)
+    except _vm_vmerror() as e:
+        raise _vm_error(e)
+    st = s.state()
+    st['session'] = sid
+    return st
+
+
 def cmd_vm_breakpoints(args):
     """设置 / 增减 / 清空断点（按**源行号**；无行号表则如实拒绝）。
 
@@ -1608,6 +1659,9 @@ COMMANDS = {
     'vm.step': cmd_vm_step,
     'vm.stepOver': cmd_vm_step_over,
     'vm.restart': cmd_vm_restart,
+    # ST6 时间旅行
+    'vm.stepBack': cmd_vm_step_back,
+    'vm.seek': cmd_vm_seek,
     'vm.breakpoints': cmd_vm_breakpoints,
     'vm.close': cmd_vm_close,
     'test.gate.results': cmd_test_gate_results,
@@ -2027,6 +2081,89 @@ def selftest(quiet=False):
                                        'add': [2]}),
                      'E_BAD_ARGS')
     case('**负向**: lines 与 add 同时给 -> E_BAD_ARGS（顺序有歧义）', ok, got)
+    # --- ST6 时间旅行（vm.stepBack / vm.seek）-----------------------------
+    #
+    # ⚠️ 这批用例的核心不是"能不能退"，而是**两个出口都必须在场**：
+    #    ① `travel` 诊断（面板据此**事先**置灰按钮）
+    #    ② 回退本身的状态（`steps`/`ip` 真的变了）
+    #    只判①会漏掉"诊断说有快照、实际退不动"；只判②会让面板靠点报错
+    #    才发现退不了。两条一起才成立。
+    _t6 = dispatch('vm.open', {'asm': 'tests/unit_vm.vasm'})['session']
+    _t0 = dispatch('vm.state', {'session': _t6})
+    case('会话初态带 travel 诊断（count/every/can_step_back 机读可见）',
+         isinstance(_t0.get('travel'), dict)
+         and _t0['travel']['count'] >= 1
+         and _t0['travel']['can_step_back'] is False,
+         'travel=%s' % (_t0.get('travel'),))
+    for _ in range(5):
+        dispatch('vm.step', {'session': _t6})
+    _t5 = dispatch('vm.state', {'session': _t6})
+    case('前进 5 步后 can_step_back 转真（诊断跟着状态走）',
+         _t5['travel']['can_step_back'] is True
+         and _t5['travel']['current_step'] == 5
+         and _t5['travel']['oldest_step'] == 0,
+         'travel=%s' % (_t5.get('travel'),))
+    _tb = dispatch('vm.stepBack', {'session': _t6})
+    case('vm.stepBack 真的退回一步（steps/ip 都变）',
+         _tb['steps'] == 4 and _tb['ip'] == 8
+         and _tb['travel']['current_step'] == 4,
+         'steps=%s ip=%s' % (_tb['steps'], _tb['ip']))
+    _sk = dispatch('vm.seek', {'session': _t6, 'step': 1})
+    case('vm.seek 回到第 1 步',
+         _sk['steps'] == 1 and _sk['travel']['current_step'] == 1,
+         'steps=%s' % (_sk['steps'],))
+    # 回退**必须**清掉"命中断点"标记 —— 退到断点之前还显示命中会让面板骗人。
+    dispatch('vm.seek', {'session': _t6, 'step': 0})
+    case('回到第 0 步后 hit_breakpoint 为 None（不回退一个已不存在的命中）',
+         dispatch('vm.state', {'session': _t6})['hit_breakpoint'] is None,
+         'hit=%s' % (dispatch('vm.state',
+                              {'session': _t6})['hit_breakpoint'],))
+    # **负向**: 三个 reason 必须**各是一条用例** —— 它们对应三件不同的事，
+    # 混成一条会让"其中之一坏掉"时看不出是哪个。
+    ok, got = raises(lambda: dispatch('vm.stepBack', {'session': _t6}),
+                     'E_VM')
+    case('**负向**: 已第 0 步再退 -> E_VM/at-start（不是 E_BAD_ARGS）',
+         ok, 'got=%s' % (got,))
+    ok, got = raises(lambda: dispatch('vm.seek', {'session': _t6, 'step': 9}),
+                     'E_VM')
+    case('**负向**: 向前 seek -> E_VM/forward-seek（只支持回退）',
+         ok, 'got=%s' % (got,))
+    ok, got = raises(lambda: dispatch('vm.seek', {'session': _t6}),
+                     'E_BAD_ARGS')
+    case('**负向**: vm.seek 缺 step -> E_BAD_ARGS（缺的是参数）', ok, got)
+    ok, got = raises(lambda: dispatch('vm.seek',
+                                      {'session': _t6, 'step': 'x'}),
+                     'E_BAD_ARGS')
+    case('**负向**: vm.seek 的 step 非整数 -> E_BAD_ARGS（不是 E_INTERNAL）',
+         ok, got)
+    ok, got = raises(lambda: dispatch('vm.stepBack', {'session': 'vm-nope'}),
+                     'E_NOT_FOUND')
+    case('**负向**: 未知会话 -> E_NOT_FOUND（与状态边界区分开）', ok, got)
+    # ⭐ 判别力核心: 退回去**再前进**，必须与"从未回退"的那一份逐字段一致。
+    #    这是唯一能抓住"只退了一部分状态"的判据 —— 只比 steps 会漏掉它。
+    _ta = dispatch('vm.open', {'asm': 'tests/unit_vm.vasm'})['session']
+    for _ in range(15):
+        dispatch('vm.step', {'session': _ta})
+    _tbf = dispatch('vm.open', {'asm': 'tests/unit_vm.vasm'})['session']
+    for _ in range(15):
+        dispatch('vm.step', {'session': _tbf})
+    for _ in range(10):
+        dispatch('vm.stepBack', {'session': _tbf})
+    for _ in range(10):
+        dispatch('vm.step', {'session': _tbf})
+    _sa = dispatch('vm.state', {'session': _ta})
+    _sb = dispatch('vm.state', {'session': _tbf})
+    _keys = ('ip', 'steps', 'stack_depth', 'stack_top', 'br', 'r', 'con',
+             'mem_written', 'call_depth', 'call_stack', 'stop_reason',
+             'stop_detail')
+    _diff = [k for k in _keys if _sa.get(k) != _sb.get(k)]
+    case('退回 10 步再前进 10 步 == 从未回退（视图**逐字段**不分叉）',
+         not _diff and _sa['steps'] == 15,
+         '差异字段 %s (steps=%s/%s)'
+         % (_diff, _sa['steps'], _sb['steps']))
+    dispatch('vm.close', {'session': _ta})
+    dispatch('vm.close', {'session': _tbf})
+    dispatch('vm.close', {'session': _t6})
     dispatch('vm.close', {'session': _s2})
     dispatch('vm.close', {'session': _s3})
     # 关一个不存在的会话**也算成功**（面板关标签页时不该因此报错）。
