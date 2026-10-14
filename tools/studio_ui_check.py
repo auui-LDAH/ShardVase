@@ -274,6 +274,57 @@ function get(path) {
   rep.gates['vm'] = await ev(
     '(function(){var e=document.getElementById("vmimg");return e?e.options.length:-1;})()');
 
+  // ST6: 时间旅行 —— **点回退按钮看步号有没有真的变小**。
+  // ⚠️ 与 jump / hoststack 同一条纪律："静态里有 id=btn-vmstepback" 不能替代
+  //    这一条。判据是**状态变化**（steps 变小 + ip 变了），不是"按钮存在"。
+  //    必须先开一个会话并前进几步 —— 第 0 步时按钮本就该是置灰的。
+  await ev('var sel=document.getElementById("vmsrc"); if(sel)sel.value="asm";');
+  await ev('var a=document.getElementById("vmasm");'
+           + 'if(a)a.value="tests/unit_vm.vasm";');
+  await ev('var o=document.getElementById("btn-vmopen"); if(o)o.click();');
+  await sleep(2500);
+  // 前进 4 步（单步按钮）
+  for (let i = 0; i < 4; i++) {
+    await ev('var b=document.getElementById("btn-vmstep");'
+             + 'if(b&&!b.disabled)b.click();');
+    await sleep(500);
+  }
+  rep.travelBefore = await ev(
+    'JSON.stringify((function(){'
+    + 'var meta=document.getElementById("vmtravelmeta");'
+    + 'var bb=document.getElementById("btn-vmstepback");'
+    + 'var pill=document.getElementById("vmstate");'
+    + 'var t=document.getElementById("vmtravel");'
+    + 'return {meta:meta?(meta.textContent||"").slice(0,160):null,'
+    + 'disabled:bb?!!bb.disabled:null,'
+    + 'pill:pill?(pill.textContent||"").slice(0,120):null,'
+    + 'hidden:!!t.hidden};})())');
+  await ev('var b=document.getElementById("btn-vmstepback");'
+           + 'if(b&&!b.disabled)b.click();');
+  await sleep(1800);
+  rep.travelAfter = await ev(
+    'JSON.stringify((function(){'
+    + 'var meta=document.getElementById("vmtravelmeta");'
+    + 'var pill=document.getElementById("vmstate");'
+    + 'var sk=document.getElementById("vmseek");'
+    + 'return {meta:meta?(meta.textContent||"").slice(0,160):null,'
+    + 'pill:pill?(pill.textContent||"").slice(0,120):null,'
+    + 'seek:sk?sk.value:null};})())');
+  rep.travelErrors = await ev('window.__err||[]');
+  // ⚠️ 同 `rep.host`：`ev()` 返回**字符串**，必须 parse；且
+  //    `JSON.stringify` 会丢掉 `undefined` 值的键 ⇒ 显式落成对象。
+  for (const k of ['travelBefore', 'travelAfter']) {
+    try { rep[k] = JSON.parse(rep[k]); }
+    catch (e) { rep[k] = { parseError: String(rep[k]).slice(0, 160) }; }
+    if (rep[k] === undefined || rep[k] === null) {
+      rep[k] = { missing: true, why: 'driver-undefined: ev() 未返回字符串' };
+    }
+  }
+  if (rep.travelErrors === undefined) rep.travelErrors = ['driver-undefined'];
+  // 收尾：关掉会话，免得后面的用例看到一个占着目标进程的会话
+  await ev('var b=document.getElementById("btn-vmclose"); if(b)b.click();');
+  await sleep(600);
+
   // ST5.4b: 宿主侧调用栈 —— **点按钮看有没有真的渲染出东西**。
   // ⚠️ 与 jump 同一条纪律: "静态里有 id=hoststack" 不能替代这一条。
   //    它会拉起/附着目标进程（core 侧要求 confirm:true，前端已显式给），
@@ -480,6 +531,49 @@ def judge(rep, required=None, min_text=None):
         if ja:
             problems.append('点击跳转之后有 JS 错误: %s' % ja)
 
+    # ④c ST6: 点 #btn-vmstepback 之后**步号必须真的变小**。
+    #     ⚠️ 判据是**状态变化**，不是"按钮存在"也不是"点了没报错"：
+    #     按钮存在由 `studio_server._check_real_ui` 的静态判据看；
+    #     而"点了有反应"只有这里能证明（§2.68 loadCaps 的形状）。
+    tb, ta = rep.get('travelBefore'), rep.get('travelAfter')
+    if not isinstance(tb, dict) or not isinstance(ta, dict):
+        problems.append('报告里没有 travelBefore/travelAfter 段 —— 判据失去锚点')
+    elif tb.get('parseError') or ta.get('parseError'):
+        problems.append('travel 段读不出来: %s / %s'
+                        % (tb.get('parseError'), ta.get('parseError')))
+    else:
+        if tb.get('hidden') is True:
+            problems.append('打开会话后 #vmtravel 工具条仍然是隐藏的 —— '
+                            '回退入口不可见（后端通了但面板够不着）')
+        # 会话初态（第 0 步）时「反向单步」**本就该置灰**；前进几步后必须变可用。
+        if tb.get('disabled') is True:
+            problems.append('前进 4 步后「反向单步」仍是置灰的 —— '
+                            'travel.can_step_back 没有被正确消费')
+        # 核心：比较两次的 `vmstate` 里的 steps。它由 vmRender 渲染，
+        # 是**同一条真值**的另一出口（不是我们另算一份）。
+        def _steps(s):
+            if not s:
+                return None
+            import re as _re2
+            m = _re2.search(r'steps=(\d+)', s)
+            return int(m.group(1)) if m else None
+        n0, n1 = _steps(tb.get('pill')), _steps(ta.get('pill'))
+        if n0 is None or n1 is None:
+            problems.append('从 vmstate 里读不到 steps（before=%r after=%r）'
+                            ' —— 判据失去锚点' % (tb.get('pill'), ta.get('pill')))
+        elif n1 >= n0:
+            problems.append('点了「反向单步」之后 steps 没有变小（%s -> %s）'
+                            ' —— 按钮点了没反应' % (n0, n1))
+        else:
+            info['travel'] = 'steps %s -> %s' % (n0, n1)
+        # `travel` 诊断文字必须如实写出可退区间（否则用户不知道能退多远）。
+        if '可退' not in (ta.get('meta') or ''):
+            problems.append('time-travel 提示里没有"可退区间"（meta=%r）'
+                            ' —— 面板没把 travel 诊断写出来' % ta.get('meta'))
+        te = rep.get('travelErrors') or []
+        if te:
+            problems.append('点「反向单步」后有 JS 错误: %s' % te)
+
     errs = rep.get('errors') or []
     if errs:
         problems.append('整轮结束后仍有 JS 错误: %s' % errs)
@@ -497,6 +591,11 @@ def selftest(quiet=False):
     nneg = 0
 
     def mk(**over):
+        # ST6 的两份基线 fixture（用例要按单个字段做变异，故抽成常量，
+        # 免得每处都重抄一遍 —— 抄写处越多，改一处忘一处的风险越大）。
+        _TRAVEL_META = ('时间旅行：可退 [0, %d] · 快照 5/20000（每步一个）'
+                        ' · 只支持回退（向前请用「继续/单步」，'
+                        '那才走真实断点逻辑）')
         base = {
             'ok': True, 'browser': 'Edg/test', 'booted': True, 'bootErrors': '[]',
             'errors': [],
@@ -512,6 +611,14 @@ def selftest(quiet=False):
                              '（is_windows_unwind=false）· 5 线程 / 2 有帧',
                      'noImageFrame': False, 'hasThread': True},
             'hostAfter': [],
+            # ST6: 点 #btn-vmstepback 前后的两段（含 vmstate 里的 steps）
+            'travelBefore': {'hidden': False, 'disabled': False,
+                             'meta': _TRAVEL_META % 4,
+                             'pill': '运行中 · ip=13 · steps=4 · 调用深度=0'},
+            'travelAfter': {'meta': _TRAVEL_META % 3,
+                            'pill': '运行中 · ip=8 · steps=3 · 调用深度=0',
+                            'seek': '3'},
+            'travelErrors': [],
         }
         for k, val in over.items():
             if k.startswith('views.'):
@@ -609,6 +716,41 @@ def selftest(quiet=False):
                   'noImageFrame': True}), True)
     case('点 hoststack 后有 JS 错误 -> 必须报',
          mk(hostAfter=['REJ:boom']), False, 'JS 错误')
+
+    # --- ④c ST6: 时间旅行（反向单步 / seek）---
+    # ⚠️ 这批用例的核心是**状态变化**，不是"按钮存在"（那是静态判据的活）。
+    #    取基线值时**不要**重抄常量 —— `mk()` 的默认值就是合规基线，
+    #    改坏的那一份用 override 表达（`_b()` 把默认值取回来给 dict 打底）。
+    def _b(key):
+        """取 `mk()` 的**默认**基线值，供"只改一个字段"的用例打底。"""
+        return dict(mk()[key])
+
+    case('**合规**: 回退后 steps 变小 -> 不报',
+         mk(travelAfter=_b('travelAfter')), True)
+    case('回退后 steps **没有**变小 -> 必须报（点了没反应）',
+         mk(travelAfter=dict(_b('travelAfter'),
+                             pill='运行中 · ip=13 · steps=4 · 调用深度=0')),
+         False, '没有变小')
+    case('回退后 steps 反而变大 -> 必须报',
+         mk(travelAfter=dict(_b('travelAfter'),
+                             pill='运行中 · ip=20 · steps=9 · 调用深度=0')),
+         False, '没有变小')
+    case('#vmtravel 工具条仍是隐藏的 -> 必须报（入口不可见）',
+         mk(travelBefore={'hidden': True, 'disabled': False,
+                          'meta': '', 'pill': '运行中 · ip=13 · steps=4'}),
+         False, '仍然是隐藏的')
+    case('前进几步后「反向单步」仍置灰 -> 必须报（没消费 can_step_back）',
+         mk(travelBefore=dict(_b('travelBefore'), disabled=True)), False, '置灰')
+    case('提示里没有"可退区间" -> 必须报（诊断没写出来）',
+         mk(travelAfter=dict(_b('travelAfter'),
+                             meta='时间旅行：只支持回退')), False, '可退')
+    case('读不到 steps -> 必须报（失锚）',
+         mk(travelBefore={'hidden': False, 'disabled': False, 'meta': '',
+                          'pill': '（未打开）'}), False, '失去锚点')
+    case('点反向单步后有 JS 错误 -> 必须报',
+         mk(travelErrors=['REJ:boom']), False, 'JS 错误')
+    case('travel 段缺失 -> 必须报（失锚）',
+         mk(travelBefore=None), False, '失去锚点')
 
     # --- 驱动自己失败 ---
     case('驱动失败 -> 必须报', {'ok': False, 'why': 'no-cdp'}, False, 'no-cdp')

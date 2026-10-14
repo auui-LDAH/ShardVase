@@ -18,6 +18,11 @@ const state = {
   version: null,
   seq: 0,
   buildPlan: null,
+  // ⚠️ `call()` 失败时返回 null 而不抛异常 ⇒ 需要按错误码分支的调用方
+  //    （ST6 的 travelErr）只能从这里拿错误对象。见 `call()` 的注释。
+  lastError: null,
+  session: null,     // VM 调试会话 id（解释器活在**服务进程内**）
+  bp: [],            // 本地镜像服务端的断点表（服务端是唯一真值）
 };
 
 // ---------------------------------------------------------------- 基础
@@ -83,6 +88,11 @@ function renderError(err) {
 async function call(cmd, args, opts) {
   opts = opts || {};
   const id = ++state.seq;
+  // ⚠️ `call()` **不抛异常** —— 失败时它 `renderError` 后返回 `null`。
+  //    所以 `try { await call(...) } catch {}` 是**死代码**（实测踩过：
+  //    我为 ST6 写的 `travelErr()` 按 reason 分支，那段永远不执行）。
+  //    需要按错误码分支的调用方读 `state.lastError`。
+  state.lastError = null;
   const body = JSON.stringify({ id: id, cmd: cmd, args: args || {} });
   const res = await fetch('/api', {
     method: 'POST',
@@ -93,11 +103,17 @@ async function call(cmd, args, opts) {
   try {
     js = await res.json();
   } catch (e) {
-    renderError({ code: 'E_TRANSPORT', message: 'HTTP ' + res.status + ' 响应不是 JSON', detail: {} });
+    state.lastError = { code: 'E_TRANSPORT',
+                        message: 'HTTP ' + res.status + ' 响应不是 JSON',
+                        detail: {} };
+    renderError(state.lastError);
     return null;
   }
   raw(js);
   if (!js.ok) {
+    // ⚠️ 必须**存下来**：`call()` 返回 null，调用方拿不到 `js.error`。
+    //    需要按 `reason` 分支的调用方（ST6 的 travelErr）读 `state.lastError`。
+    state.lastError = js.error;
     renderError(js.error);
     return null;
   }
@@ -398,8 +414,8 @@ function jumpable(row, path, line) {
 
 // ST5.3 / ST5.4: 一个**调试会话**（不是一次反汇编）。
 // 会话 id 存在 state.session 里，面板每次操作只传 id —— 解释器活在服务进程内。
-state.session = null;
-state.bp = [];          // 本地镜像服务端的断点表（服务端是唯一真值）
+// （`state.session` / `state.bp` 的初值现在统一在顶部 `const state = {…}`，
+//  这里不再重复赋值 —— 两处各写一份会让"谁是初值"变得要读两遍。）
 
 async function vmImages() {
   const d = await call('vm.images');
@@ -523,6 +539,21 @@ async function vmRender(d) {
   ['btn-vmcontinue', 'btn-vmstep', 'btn-vmstepover'].forEach((id) => {
     $(id).disabled = !!d.terminated;
   });
+  // ST6 时间旅行：**按钮的可用性由 `travel` 诊断决定**，而不是靠点一次报错
+  // 才发现。`can_step_back` 为假 ⇒ 置灰「反向单步」（它就是"已经在第 0 步"
+  // 或"快照丢了"的机读表达）。把范围写进 meta，用户能事先看见"能退多远"。
+  const tv = d.travel || {};
+  $('vmtravel').hidden = false;
+  $('btn-vmstepback').disabled = !tv.can_step_back;
+  if (tv.count) {
+    // "退不到那么早"与"那时候就是这样"必须分开 —— limited 为真时明说。
+    $('vmtravelmeta').textContent =
+      '时间旅行：可退 [' + tv.oldest_step + ', ' + tv.current_step + ']' +
+      ' · 快照 ' + tv.count + '/' + tv.max_snaps +
+      (tv.every > 1 ? '（每 ' + tv.every + ' 步一个）' : '（每步一个）') +
+      (tv.limited ? ' ⚠ 曾有快照因上限被丢弃 —— **退不到那么早**' : '') +
+      ' · 只支持回退（向前请用「继续/单步」，那才走真实断点逻辑）';
+  }
   // 调用栈：**与数据栈分开显示** —— stk 里混着返回地址，两者不相等是正常的。
   const st = $('vmstack');
   st.innerHTML = '';
@@ -587,6 +618,58 @@ async function vmRestart() {
   log('重启会话 ' + state.session + '（断点保留: ' + state.bp.join(',') + '）');
 }
 
+// ST6 时间旅行：反向单步 / 回到第 N 步。
+//
+// ⚠️ 错误分类决定面板行为，故这里**按 reason 分支**，不是笼统报"失败"：
+//   · at-start    —— 已经在第 0 步（按钮本该已置灰）⇒ 提示"已到起点"
+//   · no-snapshot —— 退不到那么早（快照曾因上限被丢弃）⇒ 明说这是**快照边界**
+//   · past-stop   —— 目标步在停机之后 ⇒ 说明停机位置
+//   三者都归 E_VM（不是 E_BAD_ARGS）—— 请求合法、只是状态不允许。
+//   把它们混成一句"操作失败"，用户会去查参数，而正确动作是改目标步号。
+function travelErr(cmd, e) {
+  const r = (e && e.detail && e.detail.reason) || '';
+  if (r === 'at-start') return '已经在起点（第 0 步），无法继续回退';
+  if (r === 'no-snapshot') {
+    return '退不到那么早 —— 快照曾因上限被丢弃（面板上会标 ⚠ "退不到那么早"）';
+  }
+  if (r === 'past-stop') return '目标步在停机之后（那次执行已经结束）';
+  if (r === 'forward-seek') return '只支持回退；向前请用「继续 / 单步」';
+  return (e && e.message) || (cmd + ' 失败');
+}
+
+async function vmStepBack() {
+  if (!state.session) return;
+  const d = await call('vm.stepBack', { session: state.session },
+                       { quiet: true });
+  if (!d) {
+    // ⚠️ `call()` 失败时**返回 null 而不抛异常**（见它的注释）⇒ 这里**不能**用
+    //    try/catch（那是死代码，实测过）。错误对象在 `state.lastError`。
+    //    `renderError` 已经把它记进日志/问题面板，这里补一句**按 reason 分派**
+    //    的说明 —— 否则用户只看到 `[E_VM] …` 而不知道该改什么。
+    problem('反向单步: ' + travelErr('vm.stepBack', state.lastError));
+    return;
+  }
+  await vmRender(d);
+  $('vmseek').value = d.steps;
+}
+
+async function vmSeek() {
+  if (!state.session) return;
+  const n = Number($('vmseek').value);
+  if (!Number.isFinite(n) || n < 0) {
+    problem('回到第 N 步：步号必须是非负整数（当前输入 ' + $('vmseek').value + '）');
+    return;
+  }
+  const d = await call('vm.seek', { session: state.session, step: n },
+                       { quiet: true });
+  if (!d) {
+    problem('回到第 ' + n + ' 步: ' + travelErr('vm.seek', state.lastError));
+    return;
+  }
+  await vmRender(d);
+  log('时间旅行：回到第 ' + d.steps + ' 步');
+}
+
 async function vmClose() {
   if (!state.session) return;
   const sid = state.session;
@@ -594,6 +677,7 @@ async function vmClose() {
   state.bp = [];
   await call('vm.close', { session: sid }, { quiet: true });
   $('vmtools').hidden = true;
+  $('vmtravel').hidden = true;
   $('vmlisting').innerHTML = '';
   $('vmstack').innerHTML = '';
   $('out-vm').textContent = '（会话已关闭）';
@@ -859,6 +943,9 @@ $('btn-vmstep') && $('btn-vmstep').addEventListener('click', () => vmStep('vm.st
 $('btn-vmstepover') && $('btn-vmstepover').addEventListener('click', () => vmStep('vm.stepOver'));
 $('btn-vmrestart') && $('btn-vmrestart').addEventListener('click', vmRestart);
 $('btn-vmclose') && $('btn-vmclose').addEventListener('click', vmClose);
+// ST6 时间旅行：命令名同样**逐字写**（理由见上面那条注释）。
+$('btn-vmstepback') && $('btn-vmstepback').addEventListener('click', vmStepBack);
+$('btn-vmseek') && $('btn-vmseek').addEventListener('click', vmSeek);
 $('btn-doc') && $('btn-doc').addEventListener('click', () => hostCall('debug.doctor', {}));
 $('btn-sym') && $('btn-sym').addEventListener('click', () => hostCall('debug.sym', { symbols: syms() }));
 $('btn-mask') && $('btn-mask').addEventListener('click', () => hostCall('debug.mask', { symbols: syms() }));

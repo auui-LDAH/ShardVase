@@ -410,6 +410,12 @@ VM 解释器是**确定性的**，所以「回到上一步」可以做到**精�
 **它们不是 `E_BAD_ARGS`**：请求本身完全合法，只是当前状态不允许。
 `E_BAD_ARGS` 留给「调用方传错了输入」（`vm.seek` 缺 `step`、`step` 非整数）。
 
+**前端落点（2026-10-14 接线）**：`#vmtravel` 工具条（`#btn-vmstepback` +
+`#vmseek` + `#btn-vmseek` + `#vmtravelmeta`）在 `#vmtools` 之下。
+面板行为由 `travel` 诊断**事先**决定（`#btn-vmstepback` 随
+`travel.can_step_back` 置灰），而不是靠点一次报错才发现；`limited` 为真时
+提示里明写「曾有快照因上限被丢弃 —— **退不到那么早**」。
+
 ## 6. 错误码
 
 | `code` | 含义 | 谁的问题 |

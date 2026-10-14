@@ -12687,4 +12687,172 @@ run `38557516058`（head `4aa1ca2`）是**调度层失败**（4 s，4 job 全部
 所以这条边界不能写成"例行公事" —— 它是**一个仍未闭合的风险**。
 
 
-*2026-10-14 v59*
+---
+
+## 2.83 ST6 的前端接线：后端通了，面板没有回退按钮 —— 以及一处我自己写的死代码（2026-10-14）
+
+### 2.83.1 缘起
+
+§2.82 落地 ST6 后端时，诚实边界逐字写「**前端尚未接线**：`vm.stepBack` /
+`vm.seek` 只有后端与协议，面板上没有回退按钮（与 §2.81 之前的 `debug.stack`
+处境相同）」。用户 **m37403 逐字「继续把 ST6 接到前端」** ⇒ 本节兑现。
+
+### 2.83.2 四层改动
+
+| 层 | 改动 |
+|---|---|
+| `studio/index.html` | `#vmtools` 之下新增 `<div class="row toolbar" id="vmtravel" hidden>`：`#btn-vmstepback`（「◀ 反向单步」）+ `#vmseek`（`type=number`）+ `#btn-vmseek`（「步」）+ `#vmtravelmeta` |
+| `studio/static/app.js` | `vmRender()` 里新增 travel 段（置灰逻辑 + 提示文案）；`travelErr()`；`vmStepBack()`；`vmSeek()`；`vmClose()` 补隐藏；两个事件绑定 |
+| `tools/studio_server.py` | `_check_real_ui()` 新增 ST6 静态判据（两条命令 + 四个 id） |
+| `docs/STUDIO_PROTOCOL.md` | §5.6 补「前端落点」段；`docs/STUDIO_PLAN.md` 的 ST6 那节标 ✅ 落地 |
+
+⭐ **面板行为由 `travel` 诊断事先决定**，不是靠点一次报错才发现：
+
+    $('btn-vmstepback').disabled = !tv.can_step_back;
+
+提示里写清可退区间与 `limited`：
+
+    时间旅行：可退 [0, 4] · 快照 5/20000（每步一个）· 只支持回退（向前请用「继续/单步」，那才走真实断点逻辑）
+
+`limited` 为真时追加「⚠ 曾有快照因上限被丢弃 —— **退不到那么早**」 ——
+**「退不到那么早」与「那时候就是这样」必须分开**（同 §2.82 的 `_travel_limited`）。
+
+### 2.83.3 ⭐ 我自己写的一处死代码（本节最有价值的一条）
+
+`studio/static/app.js:call()` 的实现是**失败时 `renderError(...)` 后 `return null`，
+不抛异常**。而我为 ST6 写的是：
+
+    try { const d = await call('vm.stepBack', …); … } catch (e) { problem(travelErr(…, e)) }
+
+⇒ **`catch` 永远不执行**，`travelErr()` 那套「按 `reason` 分支」的逻辑是**死代码**。
+面板上会看到 `renderError` 打出的 `[E_VM] …`，但**没有那句按 reason 分派的解释** ——
+而按 reason 分派正是这段代码存在的唯一理由（`at-start` / `no-snapshot` /
+`past-stop` 对应三种不同的下一步动作）。
+
+**修法**：`call()` 内加 `state.lastError = null;`（每请求重置）与失败分支
+`state.lastError = js.error;`（`E_TRANSPORT` 分支同）；`state` 对象加
+`lastError: null`；两条命令改成 `if (!d) { problem('…' + travelErr('…', state.lastError)); return; }`。
+
+⭐ **一般化：`call()` 这种"返回 null 而不抛"的契约，会让 `try/catch` 静默失效。**
+它比抛异常更难发现 —— 抛异常至少会崩，而不抛只是"那段代码从不进入"。
+**凡按错误码/原因分支的逻辑，都必须确认它所在的控制流真的会被走到。**
+
+⚠️ 顺带修一处重复：`state.session = null;` / `state.bp = [];` 原在 VM 段开头
+（`:417-418`）单独赋值，我在改 `state` 对象时又加了一遍 ⇒ **两处各写一份会让
+"谁是初值"要读两遍**。修法 = 统一到顶部 `const state = {…}` 并给字段加注释。
+
+### 2.83.4 静态判据（`_check_real_ui()`）
+
+    两条命令**各查各的**：for cmd in ("'vm.stepBack'", "'vm.seek'")
+    四个 id 全查：id="vmtravel" / "btn-vmstepback" / "vmseek" / "btn-vmseek"
+
+**各查各的**是刻意的：只查其中一条时，另一条被删掉不会有判据红
+（§2.36.8 枚举清单漏项 / §2.48 同型）。
+
+承重验证（`build/_st6ui_load.py`，六方向真实注入 + `finally` 逐字节还原）：
+
+| 方向 | 注入 | 结果 |
+|---|---|---|
+| 基线 | — | `ok=True`，接线 **56** 处字面量引用 / **65** id / 2 动态前缀 / **14** 处理器（此前 51/60/2/12）|
+| A | 删 `id="vmtravel"` | `False`：`VM 视图缺少 id="vmtravel" —— 时间旅行没有落点…` |
+| B | 删 `id="btn-vmstepback"` | `False`：同上 |
+| C | 删 `id="vmseek"` | `False`：同上 |
+| D | 删 `id="btn-vmseek"` | `False`：同上 |
+| E | `'vm.stepBack'` 改名 | `False`：`前端没有引用 vm.stepBack …` |
+| F | `'vm.seek'` 改名 | `False`：`前端没有引用 vm.seek …` |
+| 还原 | — | `ok=True` 且 **逐字节一致=True** |
+
+### 2.83.5 ⭐ 活体判据：证明「点下去有反应」
+
+静态判据只能证明「资产里有这两个命令与四个 id」，**证明不了点下去有反应**。
+`tools/studio_ui_check.py` 的 CDP 驱动新增：开会话（`#btn-vmopen`）→
+**点 `#btn-vmstep` 四次** → 读 `travelBefore` → **点 `#btn-vmstepback`** →
+读 `travelAfter` → 点 `#btn-vmclose` 收尾。
+
+`judge()` 新增 ④c 段，核心是**状态变化**：
+
+- `#vmtravel` 仍隐藏 ⇒ 报「回退入口不可见」
+- 前进 4 步后 `disabled` 仍真 ⇒ 报「没消费 `can_step_back`」
+- 用 `re.search(r'steps=(\d+)', pill)` 从两次 `#vmstate` 文本取步号
+  （**同一条真值的另一出口**，不是另算一份）：读不到 ⇒ 失锚；
+  `n1 >= n0` ⇒ 报「点了「反向单步」之后 steps 没有变小 —— 按钮点了没反应」
+- `'可退' not in meta` ⇒ 报「面板没把 travel 诊断写出来」
+
+**决定性实测**（`build/_st6ui_rep.py`）：
+
+    travelBefore = {"meta": "时间旅行：可退 [0, 4] · 快照 5/20000（每步一个）…",
+                    "disabled": false, "pill": "运行中 · ip=8 · steps=4 · 调用深度=0",
+                    "hidden": false}
+    travelAfter  = {"meta": "时间旅行：可退 [0, 3] …",
+                    "pill": "运行中 · ip=7 · steps=3 · 调用深度=0", "seek": "3"}
+    judge ok=True;  info.travel = 'steps 4 -> 3'
+
+⇒ 面板**真的**退回一步（steps 4→3、ip 8→7），可退区间也跟着收缩。
+`info.hoststack = '7 帧 / 0 不可靠（含"无本映像帧"提示）'`（§2.81 的判据同时在场）。
+
+`tools/studio_ui_check.py` 自检 **26 → 35 项（含 31 项负向注入）**。
+
+### 2.83.6 ⚠️ 我自己的探针两处错（都伪装成"判据坏了"）
+
+**① `run_browser(edge, node, url, port, timeout)` 的 `port` 是 CDP 端口，
+不是 Studio 服务端口。** 我第一版把服务端口当 CDP 端口传 ⇒ 驱动报
+`no-cdp`，而 `studio_ui_check.py` 自己跑却 PASS。**看起来像"判据时好时坏"**
+（我一度记为"探针 flake"）。真相是 `main()` 里那两行：
+
+    port = free_port()
+    cdp = free_port()
+    while cdp == port: cdp = free_port()
+    httpd, tok, url = S.make_server(port=port)
+    rep, why = run_browser(edge, node, url, cdp, args.timeout)   ← 传的是 cdp
+
+修法 = 探针也取一个独立 `free_port()` 当 CDP 端口。
+
+**② `make_server` 返回三元组 `(httpd, token, url)`，不是 `httpd`。**
+`studio_ui_check.py:808` 的注释已逐字记过这条（「`make_server` 返回
+`(httpd, token, url)` —— 三元组，不是 httpd」）—— **那条注释就是为我这种情况写的，
+而我还是先去查了别处**。
+
+⇒ **教训：工具里已经写下的"这个 API 怎么用"，比自己读实现再猜要快。**
+两处错都属于「探针的错伪装成被测对象的性质」（§2.37.6 / §2.80 同型）。
+
+### 2.83.7 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/studio_ui_check.py --selftest` | `PASS: 35 项（含 31 项负向注入）` |
+| `tools/studio_ui_check.py`（活体，真 Edge + CDP） | `rc=0`；`vm` 视图文本元素 23 → **27**；`info.travel='steps 4 -> 3'` |
+| `build/_st6ui_load.py` | 六方向全过 + 还原逐字节一致 |
+| `tools/studio_server.py --selftest` | `PASS: 28 项（含 15 项负向）` |
+| `tools/studio_core.py --selftest` | `PASS`（含 11 条 ST6 用例）|
+| `tools/studio_proto_check.py` | `PASS: 命令 31 条（文档 31 条）双向一致` |
+| `tools/doccheck.py` | `PASS`，`检查数字 1433 处, 错误 0, 警告 0` |
+| `build/_hygiene.py` | 27 文件 0 异常 |
+| 全门禁 | `[release_check] PASS: 43 项检查全通过`（四项 Studio 判据全绿）|
+
+### 2.83.8 诚实边界
+
+1. **只覆盖回退**：向前必须用「继续/单步」（那才走真实断点逻辑），
+   面板不提供「向前 seek」。
+2. 活体判据**先开一个会话再关掉** —— 它会占用目标进程一次；若 `vm.open`
+   在 CI 上失败，这条会**失败而非 SKIP**。
+3. 判据只断言**步号变小**，不校验退回后的 `mem`/`stk` 是否逐字段正确
+   （那由 §2.82 的 `vm_debug` 自检 66 条覆盖，两条判据分工不同）。
+4. 驱动里那四次「单步」是**固定 4 次**：若哪天 `unit_vm.vasm` 短于 4 条
+   可执行指令，`travelBefore.disabled` 会是真而判据报「没消费 can_step_back」——
+   **那时该改的是驱动，不是判据**。
+5. **`MIN_TEXT_ELS['vm']` 仍是 15**，实测 27 —— 未随之上调（同 §2.81.8 的
+   `host` 那条）。
+### 2.83.9 CI 实测：**没有拿到证据**
+
+提交前的最后两次 run（`38557516058` head `4aa1ca2` / `38559846198` head
+`0d93a98`）都是**调度层失败**（4–5 s，4 job 全部 `steps=0`）
+⇒ 本节证据链完全由本机构成（§2.83.4 六方向承重 + §2.83.5 活体
+`info.travel='steps 4 -> 3'` + §2.83.7 的九项验证）。
+
+⚠️ 累计：自 §2.80 那次真跑（`38415066713`）之后**已连续 7 次提交退回调度层
+失败**，`gh run rerun --failed` 的重试全部无效。**「CI 无证据」仍是跨多节的
+常态，且是一个未闭合的风险** —— 它会掩盖只在全新 clone 上才成立的缺陷
+（§2.80 那条恰好被第 10 次真跑抓到）。
+
+
+*2026-10-14 v60*

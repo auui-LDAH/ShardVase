@@ -896,6 +896,22 @@ def _check_real_ui():
         if need not in blob:
             return False, ('主机视图缺少 %s —— 宿主侧调用栈没有落点'
                            '（列表容器与按钮缺一不可）' % need)
+    # ST6: 时间旅行。同一条纪律 —— 只问「面板是否提到了这两条命令」
+    # 与「两个入口的 id 是否都在」。后端 + 协议早已就绪（§2.82），
+    # 缺的只是面板入口；没有入口就等于不存在，**而且不会报错**。
+    # ⚠️ 两条命令**各查各的**：只查一条时另一条被删掉不会有判据红
+    #    （§2.36.8 / §2.48 的同型教训 —— 枚举清单漏项）。
+    for cmd in ("'vm.stepBack'", "'vm.seek'"):
+        if cmd not in blob:
+            return False, ('前端没有引用 %s —— 时间旅行后端已就绪，'
+                           '但面板无入口（与 #cfg 漏掉 Debug 同型: '
+                           '不报错, 只是够不着）' % cmd.strip("'"))
+    for need in ('id="vmtravel"', 'id="btn-vmstepback"', 'id="vmseek"',
+                 'id="btn-vmseek"'):
+        if need not in blob:
+            return False, ('VM 视图缺少 %s —— 时间旅行没有落点'
+                           '（工具条 / 反向单步按钮 / 步号输入框 / 「步」按钮'
+                           '四者缺一都会让某条路径够不着）' % need)
     if 'prompt(' in blob:
         return False, ('前端仍在用 prompt() 取输入 —— ST5.3 的验收就是把它'
                        '换成真的视图（prompt 里连行号都显示不了）')

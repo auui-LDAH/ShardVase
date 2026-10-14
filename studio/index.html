@@ -96,6 +96,13 @@
             <button id="btn-vmclose" title="关闭会话">停止</button>
             <span class="pill" id="vmstate">（未打开）</span>
           </div>
+          <div class="row toolbar" id="vmtravel" hidden>
+            <button id="btn-vmstepback" title="回到上一步（VM 是确定性的，回退是精确的）">◀ 反向单步</button>
+            <label for="vmseek">回到第</label>
+            <input id="vmseek" type="number" min="0" value="0">
+            <button id="btn-vmseek">步</button>
+            <span class="hint" id="vmtravelmeta">时间旅行（ST6）：只支持<b>回退</b> —— 向前请用「继续/单步」，那才走真实断点逻辑。</span>
+          </div>
           <div class="vmwrap">
             <div class="vmsrc" id="vmlisting"></div>
             <div class="vmside">

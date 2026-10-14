@@ -482,6 +482,31 @@ about 30，下限设在远低于它的位置），它防的是"整块空掉"，�
 **执行事件日志 + 反向单步**（对**解释器**天然可行，对真机不可行）。
 **成本**：M。**风险**：中。**仅为可选**，不进主线承诺。
 
+**✅ 已落地（2026-10-14）** —— 后端 + 协议 + 面板三处齐。
+
+| 件 | 落点 |
+|---|---|
+| 快照与回退 | `tools/vm_debug.py`：`Vm._SNAP_FIELDS` / `_snapshot()` / `_restore()`；`Session.MAX_SNAPS=20000` / `_snap_every` / `_tick()` / `snapshots()` / `seekable()` / `seek()` / `_replay_to()` / `step_back()` |
+| Studio 命令 | `tools/studio_core.py`：`vm.stepBack` / `vm.seek`（共 31 条） |
+| 契约 | `docs/STUDIO_PROTOCOL.md` **§5.6** |
+| 面板 | `studio/index.html` 的 `#vmtravel` 工具条 + `studio/static/app.js` 的 `vmStepBack` / `vmSeek` / `travelErr` |
+
+⚠️ **`tools/replay.py` 从未被修改**：它做的是**种子重放**（重建逐字节一致的
+blob 供隔离复现），**不是执行历史**。原文那句「把它升级为…」读作「同一类能力」，
+不是「改这个文件」—— 二者只共享"确定性"这个前提。
+
+⭐ **两条支路都要说清楚**：快照式（默认每步一份，回退 O(1)，代价 O(步数×状态)
+内存）与重放式（每 N 步一份，从最近快照重跑补齐，O(回退距离)）。实测
+`tests/unit_vm.vasm` 跑完 54 步只有 **24 个内存单元** ⇒ 内存不是瓶颈，默认每步。
+
+⭐ **核心难点是「退**全**了没有」**：`class Vm` 20 个字段、**12 个可变**
+（`br`/`con`/`frames`/`frames_dirty`/`history`/`ip`/`mem`/`rr`/`steps`/`stk`/
+`stop_detail`/`stop_reason`）。只回退一部分状态**不会报错**，只会让后续断点
+命中在错误的位置 —— 故 `_SNAP_FIELDS` 与 `_snapshot()` 的键由自检对账。
+
+**仍未做**：真机（非解释器）的时间旅行 —— 寄存器/内存/线程状态无法无损快照，
+且外部副作用不可撤销。**这条是设计边界，不是待办。**
+
 ---
 
 ## 4. 关键设计决策（含理由与替代方案）
