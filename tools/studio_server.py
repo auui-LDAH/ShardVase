@@ -886,6 +886,16 @@ def _check_real_ui():
         if need not in blob:
             return False, ('VM 视图缺少 %s —— 源码列表/调试工具条/调用栈'
                            '三者缺一, ST5.3/ST5.4 就没有落点' % need)
+    # ST5.4b: 宿主侧调用栈。同一条纪律 —— 只问「面板是否提到了 debug.stack」。
+    # 后端与协议早就通了，缺的一直是面板入口；没有入口就等于不存在，
+    # **而且不会报错**（与 #cfg 漏掉 Debug / VM 命令够不着完全同型）。
+    if "'debug.stack'" not in blob and '"debug.stack"' not in blob:
+        return False, ('前端没有引用 debug.stack —— 宿主侧调用栈后端已就绪，'
+                       '但面板无入口（与 #cfg 漏掉 Debug 同型: 不报错, 只是够不着）')
+    for need in ('id="hoststack"', 'id="btn-hoststack"'):
+        if need not in blob:
+            return False, ('主机视图缺少 %s —— 宿主侧调用栈没有落点'
+                           '（列表容器与按钮缺一不可）' % need)
     if 'prompt(' in blob:
         return False, ('前端仍在用 prompt() 取输入 —— ST5.3 的验收就是把它'
                        '换成真的视图（prompt 里连行号都显示不了）')

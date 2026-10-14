@@ -268,7 +268,9 @@ def capabilities():
                      '没有 unwind 解释器，只认「前一指令是 call」的返回地址 —— '
                      '**宁可少报，不可错报**（一张错的调用栈会被当成证据，'
                      '与 VM 侧 call_stack 同一契约）。已知假阴性：'
-                     '栈上被内联/尾部调用消除的帧、以及非 call 返回的帧。'),
+                     '栈上被内联/尾部调用消除的帧、以及非 call 返回的帧。'
+                     '面板入口 `#btn-hoststack` / `#hoststack` 已接线；'
+                     '不可靠时先把 `dirty_reason` 显示出来。'),
             'debug.vm': cap(
                 'ready', 'tools/vm_debug.py',
                 '反汇编(含真实镜像 key1 逆置换) / 单步 / 源码行号断点 / 栈+寄存器'

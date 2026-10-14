@@ -12354,4 +12354,138 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 真实通过记录。**只有 `build-and-verify` 红**，且红的原因就是本节修掉的
 那条（`build/logs/` 在全新 clone 里为空）。
 
-*2026-10-13 v57*
+---
+
+## 2.81 ST5.4b 的前端接线：后端通了三个月，面板一直没有入口（2026-10-14）
+
+### 2.81.1 缘起
+
+§2.80 落地宿主侧调用栈时，诚实边界逐字写「**前端尚未接线**（后端与协议已就绪）」。
+那一句和它前面所有的「仍未做」是同一类东西 —— **它不会自己到期**。§2.81 把它兑现。
+
+### 2.81.2 缺口是第几种静默
+
+`tools/studio_server.py:_check_real_ui()` 的注释里已经把这类缺陷命名过三次：
+
+| 静默 | 形态 | 已有判据 |
+|---|---|---|
+| 第一种 | 前端**根本没用**协议（资产里没有 `X-Studio-Token` / `/api`）| needle 检查 |
+| 第二种 | 协议里的能力**前端够不着**（`#cfg` 漏掉 `Debug`）| `BUILD_CONFIGS` 对账 |
+| 第三种 | **元素接错线**（`$('x')` 指向不存在的 id）| `_check_wiring()` |
+
+本轮的缺口是**第二种的一个新实例**：`debug.stack` 后端全通、协议文档写了、
+`studio_core` 有能力项 —— 但**面板上一个入口都没有**。
+它不报错，只是**够不着**（与 `#cfg` 漏掉 `Debug` 完全同型）。
+
+### 2.81.3 落地的四件事
+
+| 层 | 改动 |
+|---|---|
+| `studio/index.html` | 主机视图新增 `<button id="btn-hoststack">` + `<div id="hoststack" class="list small">` + `#hoststack-meta`；`#adwarn` 的活体清单补上 `stack` |
+| `studio/static/app.js` | 新增 `async function hostStack()` + `$('btn-hoststack')` 的 `addEventListener`（`debug.stack` 调用点 ×2）|
+| `tools/studio_server.py` | `_check_real_ui()` 新增 ST5.4b 判据：`'debug.stack'` 必须被引用 + `id="hoststack"` / `id="btn-hoststack"` 必须存在 |
+| `tools/studio_core.py` | `debug.stack` 的 note 补记面板入口已接线 |
+
+**`hostStack()` 沿用 VM 侧 `vmRender()` 的同一契约**（这是刻意的，不是巧合）：
+
+- **不可靠时先把 `dirty_reason` 显示出来** —— 一张错的调用栈会被当成证据。
+- **`is_windows_unwind === true` 时主动报 problem** —— 协议文档声明它**不是**
+  Windows unwind；若工具哪天自报 `true`，说明两边已经脱节。
+- **`unreliable_threads` 逐条进问题面板**，不只躺在 JSON 里。
+- **`frames` 为空时显示「无本映像帧 —— 该线程睡在系统库里，不是"读不到"」** ——
+  协议 §5.5 明确写了这是**合法结果**，面板不能把它渲染成空白。
+
+### 2.81.4 ⭐ 静态判据不够：加一条**活体**判据
+
+`_check_real_ui()` 只能证明「资产里提到了 `debug.stack` 与两个 id」，
+**证明不了点下去有反应**。§2.68 的 `loadCaps` 正是「静态全绿、点下去才发现」的形状。
+故在 `tools/studio_ui_check.py` 的 CDP 驱动里加一段：
+
+    点 .act[data-view="host"] -> 点 #btn-hoststack -> 等 9s（prot_dbg 要拉起
+    demo 并扫完 5 个线程的栈）-> 读 #hoststack 的 children/frames/unreliable
+
+判据（`judge()` 的 ④b 段）：
+
+| 情形 | 判定 |
+|---|---|
+| `host` 段缺失 | **报失锚** |
+| `#hoststack` 容器不存在 | 报「无处渲染」 |
+| 点了之后 `children == 0` | 报「仍然是空的 —— 命令通了（或没通）但界面上什么都没发生」 |
+| 有内容但既无帧也无「无本映像帧」 | 报「面板显示了无法解读的东西」 |
+| **有帧** 或 **如实提示无本映像帧** | 通过（「无本映像帧」是合法结果，**判据不要求必须有帧**）|
+| 点之后有 JS 错误 | 报 |
+
+自检从 19 项扩到 **26 项（含 23 项负向注入）**。
+
+### 2.81.5 ⭐ 本轮踩的两个静默（都属于"驱动报告"我自己那一侧）
+
+**① `rep.host` 是字符串，不是对象。** 第一版把 `rep.host = await ev(...)` 直接
+存下来 —— 而 `ev()` 返回的是**字符串**（表达式里 `JSON.stringify` 的结果）。
+`jump` 段有 `JSON.parse`，我抄结构时漏了它。症状：判据报
+`报告里没有 host 段 —— 判据失去锚点`，而**真相是"段在，但类型不对"** ——
+**一条报文把两种完全不同的情况混成了一句**。
+修法 = `try { rep.host = JSON.parse(rep.host) } catch { parseError }`。
+
+**② `JSON.stringify` 会丢掉值为 `undefined` 的键。** 于是「驱动没跑到这一步」
+与「判据没写这个字段」在报告里**长得一模一样**（都是缺键）。
+修法 = 显示落成对象（`{missing:true, why:'driver-undefined: …'}`），
+让判据能区分。这条与 `tools/gate_results.py` 的「三种空必须分别判定」同源。
+
+⚠️ 另一个观察：`studio_ui_check` 的 `[exit code: 1]` 有**两次**是假的 ——
+它来自 PowerShell 管道里服务端 `ConnectionResetError` 的 traceback 噪声，
+而该工具的 stdout 已经打了 `PASS` 且 `rc=0`（用 `build/_ui_rc.py` 单独取 rc 确认）。
+**"退出码来源不明"与"检查失败"必须分开** —— 用子进程单独取 rc 即可分辨。
+
+### 2.81.6 承重验证（`build/_hoststack_load.py`，真实文件注入 + 逐字节还原）
+
+| 方向 | 注入 | 结果 |
+|---|---|---|
+| 基线 | — | `ok=True` 接线 51 处字面量引用 / 60 个 id / 2 个动态前缀 / 12 个处理器 |
+| A | 删 `index.html` 的 `id="hoststack"` | `False`：`主机视图缺少 id="hoststack" —— 宿主侧调用栈没有落点` |
+| B | 删 `id="btn-hoststack"` | `False`：同上（按钮缺） |
+| C | `app.js` 里 `'debug.stack'` 改名 | `False`：`前端没有引用 debug.stack —— …面板无入口` |
+| D | 还原 | `ok=True` 且 **逐字节一致=True** |
+
+⇒ 三个变异各自被抓，且 D 证明判据**不是"一律报"**。
+
+### 2.81.7 活体实测（真 Edge + CDP）
+
+`tools/studio_ui_check.py` ⇒ **`rc=0`**：
+
+    [studio_ui_check] PASS: Edg/155.0.4283.45；六个视图
+    {'gen': 14, 'test': 10, 'vm': 23, 'host': 9, 'mods': 159, 'about': 36}；
+    gate.items=46 项 / vm.images=4 个；跳转 46 行可选 /
+    tools/release_check.ps1:296；**宿主栈 7 帧 / 0 不可靠（含"无本映像帧"提示）**；
+    无 JS 错误
+
+⇒ 面板**真的**渲染出了 7 帧宿主栈 —— 不是"静态里有 id"。
+
+### 2.81.8 诚实边界
+
+1. **`host` 视图的文本元素下限仍是 6**（`MIN_TEXT_ELS`）。新增内容后实测 9，
+   下限**没有跟着上调** —— 若有人把宿主栈整块删掉，`textEls` 可能仍 ≥ 6
+   而**这条下限不会红**（新增的 ④b 判据会红，但那是另一条）。
+2. 活体判据**要求目标进程能被拉起**（`debug.stack` 需 `confirm:true`）。
+   CI 上若无法拉起 demo，这条会失败而不是 SKIP。
+3. 只断言「渲染出了帧或如实说明没有」，**不校验帧的符号名对不对** ——
+   那需要与 map 独立对账，不在本条射程内。
+4. 9 秒等待是**经验值**（本机实测约 3–5 s）。更慢的机器上可能不够，
+   而超时的表现是「仍然是空的」，**与"命令没通"同形**。
+
+### 2.81.9 验证表
+
+| 项 | 结果 |
+|---|---|
+| `tools/studio_ui_check.py --selftest` | `PASS: 26 项（含 23 项负向注入）` |
+| `tools/studio_ui_check.py`（活体） | `rc=0`，宿主栈 7 帧 |
+| `tools/studio_server.py --selftest` | `PASS: 28 项（含 15 项负向）` |
+| `tools/studio_core.py --selftest` | `PASS` |
+| `tools/studio_proto_check.py` | `PASS: 命令 29 条（文档 29 条）双向一致` |
+| `build/_hoststack_load.py` | 四方向全过、逐字节一致 |
+| 全门禁 | `[release_check] PASS: 43 项检查全通过` |
+
+### 2.81.10 CI 实测
+
+见下方补记。
+
+*2026-10-14 v58*

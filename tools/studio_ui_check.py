@@ -274,6 +274,43 @@ function get(path) {
   rep.gates['vm'] = await ev(
     '(function(){var e=document.getElementById("vmimg");return e?e.options.length:-1;})()');
 
+  // ST5.4b: 宿主侧调用栈 —— **点按钮看有没有真的渲染出东西**。
+  // ⚠️ 与 jump 同一条纪律: "静态里有 id=hoststack" 不能替代这一条。
+  //    它会拉起/附着目标进程（core 侧要求 confirm:true，前端已显式给），
+  //    故给足等待时间（prot_dbg 要拉起 demo 并跑完 5 个线程的栈扫描）。
+  await ev('document.querySelector(\'.act[data-view="host"]\').click()');
+  await sleep(400);
+  rep.hostBefore = await ev(
+    '(function(){var e=document.getElementById("hoststack");'
+    + 'return e?e.children.length:-1;})()');
+  await ev('var b=document.getElementById("btn-hoststack"); if(b)b.click();');
+  await sleep(9000);
+  rep.host = await ev(
+    'JSON.stringify((function(){'
+    + 'var box=document.getElementById("hoststack");'
+    + 'if(!box)return {missing:true};'
+    + 'var kids=[].slice.call(box.children);'
+    + 'var frames=kids.filter(function(e){return e.classList.contains("frame");});'
+    + 'var unr=kids.filter(function(e){return e.classList.contains("unreliable");});'
+    + 'var meta=document.getElementById("hoststack-meta");'
+    + 'var tx=box.textContent||"";'
+    + 'return {children:kids.length,frames:frames.length,unreliable:unr.length,'
+    + 'meta:meta?(meta.textContent||"").slice(0,120):null,'
+    + 'noImageFrame:(tx.indexOf("无本映像帧")!==-1),'
+    + 'hasThread:(tx.indexOf("线程")!==-1)};})())');
+  rep.hostAfter = await ev('window.__err||[]');
+  // ⚠️ `ev()` 返回的是**字符串**（上面 JSON.stringify 的结果）—— 必须 parse。
+  //    不 parse 会让判据拿到 str 而不是 dict，报"没有 host 段"，
+  //    而真相是"段在，但类型不对"（实测踩过：报文把两者混成了一句）。
+  try { rep.host = JSON.parse(rep.host); }
+  catch (e) { rep.host = { parseError: String(rep.host).slice(0, 160) }; }
+  // ⚠️ 且 `JSON.stringify` 会**丢掉值为 undefined 的键** ⇒ "驱动没跑到这一步"
+  //    与"判据没写"在报告里长得一样（都是缺键）。显式落成对象以区分。
+  if (rep.host === undefined || rep.host === null) {
+    rep.host = { missing: true, why: 'driver-undefined: ev() 未返回字符串' };
+  }
+  if (rep.hostAfter === undefined) rep.hostAfter = ['driver-undefined'];
+
   rep.errors = await ev('window.__err||[]');
   console.log('##REPORT##' + JSON.stringify(rep));
   try { sock.close(); } catch (e) {}
@@ -282,8 +319,7 @@ function get(path) {
 })().catch((e) => {
   console.log('##REPORT##' + JSON.stringify({ ok: false, why: 'driver-exception:' + e.message }));
   process.exit(0);
-});
-'''
+});'''
 
 REPORT_RE = re.compile(r'^##REPORT##(.*)$', re.M)
 
@@ -407,6 +443,39 @@ def judge(rep, required=None, min_text=None):
             # 一行输出劈成两行（实测过：报文里混进 `284|             Add-`）。
             info['jump'] = '%d 行可选 / %s' % (
                 jp['clickable'], str(jp.get('head') or '').split('\n')[0])
+
+    # ④b ST5.4b: 点 #btn-hoststack 之后，宿主侧调用栈必须**真的渲染出来**。
+    #     ⚠️ 这条与 ④ 同型、同样不能被静态判据替代：`studio_server._check_real_ui`
+    #     只能证明"资产里提到了 debug.stack 与两个 id"，证明不了**点下去有反应**。
+    #     §2.68 的 loadCaps 就是"静态全绿、点下去才发现"的形状。
+    hp = rep.get('host')
+    if not isinstance(hp, dict):
+        problems.append('报告里没有 host 段 —— 判据失去锚点')
+    elif hp.get('parseError'):
+        problems.append('host 段读不出来: %s' % hp['parseError'])
+    elif hp.get('missing'):
+        problems.append('主机视图里没有 #hoststack 容器 —— 宿主侧调用栈无处渲染')
+    else:
+        # 「无本映像帧」是**合法结果**（线程睡在系统库里），故判据是
+        # "渲染出了帧 **或** 如实说明了没有"，**不是**"必须有帧"。
+        if not isinstance(hp.get('children'), int):
+            problems.append('hoststack 的子元素数读不到: %r' % hp.get('children'))
+        elif hp['children'] <= 0:
+            problems.append('点了 #btn-hoststack 之后 #hoststack 仍然是空的 —— '
+                            '命令通了（或没通）但界面上什么都没发生')
+        elif not (hp.get('frames', 0) > 0 or hp.get('noImageFrame')):
+            problems.append('hoststack 渲染了 %d 个子元素，但既没有帧也没有'
+                            '"无本映像帧"提示 —— 面板显示了无法解读的东西'
+                            % hp['children'])
+        elif hp.get('unreliable', 0) > 0 and not hp.get('children', 0):
+            problems.append('有不可靠线程但没有渲染任何内容')
+        else:
+            info['hoststack'] = '%d 帧 / %d 不可靠%s' % (
+                hp.get('frames', 0), hp.get('unreliable', 0),
+                '（含"无本映像帧"提示）' if hp.get('noImageFrame') else '')
+        ha = rep.get('hostAfter') or []
+        if ha:
+            problems.append('点 #btn-hoststack 后有 JS 错误: %s' % ha)
         ja = rep.get('jumpAfter') or []
         if ja:
             problems.append('点击跳转之后有 JS 错误: %s' % ja)
@@ -437,6 +506,12 @@ def selftest(quiet=False):
             'jump': {'rows': 44, 'clickable': 44, 'before': 0, 'len': 900,
                      'hit': True, 'head': 'tools/release_check.ps1:296'},
             'jumpAfter': [],
+            # ST5.4b: 点 #btn-hoststack 之后的报告段
+            'host': {'children': 7, 'frames': 5, 'unreliable': 0,
+                     'meta': '方法 stack-scan + call-discriminator '
+                             '（is_windows_unwind=false）· 5 线程 / 2 有帧',
+                     'noImageFrame': False, 'hasThread': True},
+            'hostAfter': [],
         }
         for k, val in over.items():
             if k.startswith('views.'):
@@ -515,6 +590,25 @@ def selftest(quiet=False):
     # --- 失锚 ---
     case('views 全缺 -> 必须报', mk(views={}), False, '失去锚点')
     case('报告不是对象 -> 必须报', 'not-a-dict', False, '不是对象')
+    case('host 段缺失 -> 必须报（失锚）', mk(host=None), False, '失去锚点')
+
+    # --- ④b ST5.4b: 宿主侧调用栈渲染 ---
+    # ⚠️ 这一批守的是「点下去有没有反应」——静态判据（studio_server 的
+    #    `_check_real_ui` needle 与 id 检查）看不见这些形态。
+    case('hoststack 容器缺 -> 必须报', mk(host={'missing': True}), False, '无处渲染')
+    case('点了按钮但 hoststack 仍为空 -> 必须报',
+         mk(host={'children': 0, 'frames': 0, 'unreliable': 0}), False, '仍然是空的')
+    case('渲染了内容但既无帧也无"无本映像帧"提示 -> 必须报',
+         mk(host={'children': 3, 'frames': 0, 'unreliable': 0,
+                  'noImageFrame': False}), False, '无法解读')
+    case('**合规**: 有帧 -> 不报',
+         mk(host={'children': 7, 'frames': 5, 'unreliable': 0,
+                  'noImageFrame': False}), True)
+    case('**合规**: 无本映像帧但如实提示 -> 不报',
+         mk(host={'children': 6, 'frames': 0, 'unreliable': 0,
+                  'noImageFrame': True}), True)
+    case('点 hoststack 后有 JS 错误 -> 必须报',
+         mk(hostAfter=['REJ:boom']), False, 'JS 错误')
 
     # --- 驱动自己失败 ---
     case('驱动失败 -> 必须报', {'ok': False, 'why': 'no-cdp'}, False, 'no-cdp')
@@ -595,10 +689,10 @@ def main(argv=None):
         return RC_FAIL
     sys.stdout.write('[studio_ui_check] PASS: %s；六个视图 %s；'
                      'gate.items=%s 项 / vm.images=%s 个；跳转 %s；'
-                     '无 JS 错误\n'
+                     '宿主栈 %s；无 JS 错误\n'
                      % (info.get('browser'), info.get('views'),
                         info.get('test.#gate-list'), info.get('vm.#vmimg'),
-                        info.get('jump')))
+                        info.get('jump'), info.get('hoststack')))
     return RC_OK
 
 

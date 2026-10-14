@@ -127,8 +127,14 @@
             <input id="exits" placeholder="退出码（逗号分隔）" value="219,0">
             <button id="btn-exit">exit</button>
           </div>
-          <p class="hint warn" id="adwarn">活体命令（read/patch/watch）会附着目标进程，
+          <p class="hint warn" id="adwarn">活体命令（read/patch/watch/stack）会附着目标进程，
             可能触发目标自己的反调试（退出码 219）。那<b>不是</b>防御失效，是观测留下的痕迹。</p>
+          <h3>宿主侧调用栈</h3>
+          <div class="row">
+            <button id="btn-hoststack">stack</button>
+            <span class="hint" id="hoststack-meta">按线程读真实栈（需确认；<b>不是</b> Windows unwind）</span>
+          </div>
+          <div id="hoststack" class="list small"></div>
           <pre class="out" id="out-host"></pre>
         </div>
 

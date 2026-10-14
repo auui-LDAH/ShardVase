@@ -652,6 +652,76 @@ async function hostCall(cmd, args) {
   }
 }
 
+async function hostStack() {
+  // ⭐ 与 VM 侧 vmRender() 同一契约：**不可靠时先把理由显示出来**。
+  //   一张错的调用栈会被当成证据，所以「有帧」与「帧可信」必须分开显示。
+  // ⚠️ 这条会拉起/附着目标进程 ⇒ core 侧要求 confirm:true，这里显式给。
+  const d = await call('debug.stack', { confirm: true });
+  if (!d) return;
+  const st = d.stack || {};
+  const box = $('hoststack');
+  box.innerHTML = '';
+  const meta = $('hoststack-meta');
+  meta.textContent = '方法 ' + (st.method || '?') +
+    '（is_windows_unwind=' + (st.is_windows_unwind === true) + '）· ' +
+    (st.threads_total || 0) + ' 线程 / ' + (st.threads_with_frames || 0) + ' 有帧';
+  if (st.is_windows_unwind === true) {
+    // 与协议文档的声明相反 —— 必须显眼，别让后来者以为这里是官方展开。
+    problem('debug.stack 自称 is_windows_unwind=true，但协议文档声明它**不是** ' +
+      'Windows unwind —— 两边已经脱节，请核对 tools/prot_dbg.py');
+  }
+  (d.unreliable_threads || []).forEach((t) => {
+    problem('线程 ' + t.tid + ' 的调用栈**不完整**: ' + (t.dirty_reason || '（无理由）'));
+  });
+  (st.threads || []).forEach((t) => {
+    const head = document.createElement('div');
+    head.className = 'item';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const frames = t.frames || [];
+    nm.textContent = '线程 ' + t.tid + '  (' + frames.length + ' 帧' +
+      (t.rejected ? ', 判别拒掉 ' + t.rejected : '') + ')';
+    const why = document.createElement('span');
+    why.className = 'why';
+    why.textContent = t.reliable ? '' : '⚠ 不完整';
+    head.appendChild(nm);
+    head.appendChild(why);
+    box.appendChild(head);
+    if (!frames.length) {
+      // 「这条线程没有本映像帧」是**合法结果**，不是取不到（协议 §5.5 写明）。
+      const e = document.createElement('div');
+      e.className = 'item';
+      const n2 = document.createElement('span');
+      n2.className = 'nm';
+      n2.textContent = '  （无本映像帧 —— 该线程睡在系统库里，不是"读不到"）';
+      e.appendChild(n2);
+      box.appendChild(e);
+    }
+    frames.forEach((f) => {
+      const e = document.createElement('div');
+      e.className = 'item frame' + (f.is_top ? ' top' : '');
+      const n3 = document.createElement('span');
+      n3.className = 'nm';
+      n3.textContent = '#' + f.index + '  ' + (f.sym || '?') +
+        (f.sym_off != null ? '+0x' + f.sym_off.toString(16) : '') +
+        '   0x' + (f.addr >>> 0).toString(16);
+      const w3 = document.createElement('span');
+      w3.className = 'why';
+      w3.textContent = f.where === 'ctx' ? '当前指令' : '返回地址';
+      e.appendChild(n3);
+      e.appendChild(w3);
+      box.appendChild(e);
+    });
+    if (!t.reliable && t.dirty_reason) {
+      const w = document.createElement('div');
+      w.className = 'unreliable';
+      w.textContent = '  ⚠ ' + t.dirty_reason;
+      box.appendChild(w);
+    }
+  });
+  $('out-host').textContent = JSON.stringify(d, null, 2);
+}
+
 // ---------------------------------------------------------------- 模块 / 能力
 
 const MATURITY = { core: '核心', verified: '已验证', community: '社区', experimental: '实验' };
@@ -783,6 +853,7 @@ $('vmsrc') && $('vmsrc').addEventListener('change', vmShowSource);
 // ⚠️ 命令名**逐字写在这里**（不做字符串拼接推导）：面板调什么命令是一个
 // 事实，用条件表达式拼出来会让"到底调了哪条"无法被 grep、也无法被
 // build/_st5_e2e.py 的"前端调用的命令全部在协议表里"这条判据看见。
+$('btn-hoststack') && $('btn-hoststack').addEventListener('click', hostStack);
 $('btn-vmcontinue') && $('btn-vmcontinue').addEventListener('click', () => vmStep('vm.continue'));
 $('btn-vmstep') && $('btn-vmstep').addEventListener('click', () => vmStep('vm.step'));
 $('btn-vmstepover') && $('btn-vmstepover').addEventListener('click', () => vmStep('vm.stepOver'));
