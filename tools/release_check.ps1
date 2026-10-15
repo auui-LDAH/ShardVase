@@ -1414,6 +1414,30 @@ Check '文件编码 (bom_check)' {
     $rc -eq 0
 }
 
+# SPDX 许可证标识（2026-10-15, NEXT_STAGE_REVIEW ②）: AGPL-3.0 第 5 条
+# 要求分发时保留许可证声明。`tools/add_license_headers.py` 早已能补头,
+# 但 46 项 Checks 里 SPDX 出现 **0** 次 —— 事实可获得、判据不使用它。
+#
+# 后果实测: 旧 glob 是两级定层（`src/*.c` + `include/protect/*.h`）,
+# 36 个 .c/.h 缺 SPDX 全部躺在 glob 之外（tools/attacker/、
+# tests/c2vasm_cases/、prot_sdk/skeleton/ …）**无人知晓**。
+#
+# 判据: ① 范围内文件前 600 字节必须有 SPDX 标识
+#       ② glob 缺口守卫 —— 范围内目录里存在的源文件不在 glob 集合 -> 红
+#       ③ 失锚守卫（扫描面 < 150 -> 红, 防 glob 写错后"零违反=全绿"）
+#       ④ 与 add_license_headers.py 的 glob 逐一相等（防两套 glob 漂移）
+Check 'SPDX 许可证标识 (spdx_check)' {
+    & $py -X utf8 tools\spdx_check.py --selftest --quiet
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    & $py -X utf8 tools\spdx_check.py
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) { return 'SKIP' }
+    if ($rc -ne 0) { return $false }
+    $rc -eq 0
+}
+
 # ## 第 45 项(2026-10-11): 前端在**真实浏览器**里点一遍
 #
 # 前四项 Studio 判据都是静态的(读文本/读协议/读 id 接线)。它们看不见

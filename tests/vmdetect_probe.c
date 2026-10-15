@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /* tests/vmdetect_probe.c — M1 最小验证: 只跑 vmdetect_scan 打印结果 */
 #include <stdio.h>
 #include "protect/vmdetect.h"

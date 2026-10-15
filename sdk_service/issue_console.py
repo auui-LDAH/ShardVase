@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # issue_console.py — 本机图形化签发台 (sdk_service GUI, 中文界面)
 # 流程: Taildrop 收 .req → 打开本工具 → 核对(双通道) → 签发 → license 发回
 # 依赖: python + tkinter(标准库) + tools/vmenc.py; 私钥用本机备份副本。

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # verify_license.py — 签发自查: 用 DER 公钥验证 license.txt 签名
 # 用法: python3 verify_license.py --pub-der-c pub-der.c --license license.txt
 # 输出: VALID / 具体失败原因。供签发后立即复查 (本机/服务器通用)。

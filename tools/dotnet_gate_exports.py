@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """校验 .NET 接入门 DLL 的导出表（不依赖 dumpbin，纯标准库解析 PE）。
 
 ## 为什么需要这个检查（实测教训 2026-09-21）

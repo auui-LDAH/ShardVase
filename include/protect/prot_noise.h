@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /* prot_noise.h — 每构建序言噪声（W1.6）
  *
  * ## 为什么需要（W5.6 实测依据 2026-09-23）

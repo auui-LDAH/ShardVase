@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """dump_mojibake.py — Q1 判读辅助：把每个受污染文件的坏行逐条 dump 出来。
 
 **判据只有一处**: `tools/mojibake.py`（v4 字节重建，P=1.000 R=1.000）。

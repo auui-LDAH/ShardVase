@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """fix_mojibake.py — 逐行修复源码里的 mojibake（UTF-8 字节被按 CP936 解码的产物）。
 
 ## 为什么不是"整文件 GBK 往返"

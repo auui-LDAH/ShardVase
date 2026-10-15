@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """validate_mojibake.py — 在**独立于判据**的标注集上量化候选判据。
 
 ## 为什么必须重建标注集（**这是本脚本存在的全部理由**）

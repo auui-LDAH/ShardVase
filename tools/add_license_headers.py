@@ -50,11 +50,42 @@ PY_HEADER = (
     '# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。\n'
 ) % (SPDX, COPYRIGHT)
 
-# 纳入范围: 会随开源公开的源码
-C_FILES = sorted(glob.glob('src/*.c')) + sorted(glob.glob('include/protect/*.h'))
-PY_FILES = sorted(glob.glob('tools/*.py')) + sorted(glob.glob('tests/*.py')) \
-    + sorted(glob.glob('examples/**/*.py', recursive=True)) \
-    + sorted(glob.glob('prot_sdk/**/*.py', recursive=True))
+# 纳入范围: 会随开源公开的源码。
+#
+# ## 2026-10-15 扩展为递归 glob（原为两级定层 glob）
+#
+# 原 glob（`src/*.c` + `include/protect/*.h`，py 侧单层 tools/ tests/）
+# **盖不住子目录**: 实测 36 个 .c/.h 缺 SPDX，全部在 glob 之外
+# （tools/attacker/winpe_sympatcher 6 个、tests/c2vasm_cases 6 个、
+#   prot_sdk/skeleton 4 个、examples/cross_platform/android 3 个 …）
+# —— 与 OSS_TAIL_PLAN ④ 记的「glob 缺口」是同一件事。
+#
+# 排除项（与 spdx_check.py 门禁共用同一套 glob，见其文件头）:
+#   · demo/gen/  —— 生成物（生成头注明「请勿手工编辑」），由生成器自管
+#   · archive/ dist/ build/ —— 不随开源分发
+_EXCLUDE_PARTS = ('demo/gen', 'archive', 'dist', 'build', 'build_artifacts')
+
+
+def _in_scope(path):
+    p = path.replace('\\', '/')
+    return not any(p.startswith('%s/' % x) or ('/%s/' % x) in p
+                   for x in _EXCLUDE_PARTS)
+
+
+def _glob(*patterns):
+    out = []
+    for pat in patterns:
+        out += glob.glob(pat, recursive=True)
+    return sorted({f for f in out if _in_scope(f)})
+
+
+C_FILES = _glob('src/**/*.c', 'include/**/*.h', 'tests/**/*.c',
+                'tools/**/*.c', 'tools/**/*.h',
+                'examples/**/*.c', 'examples/**/*.h',
+                'prot_sdk/**/*.c', 'prot_sdk/**/*.h',
+                'sdk_service/**/*.c', 'demo/*.c', 'demo/*.h')
+PY_FILES = _glob('tools/**/*.py', 'tests/**/*.py', 'examples/**/*.py',
+                 'prot_sdk/**/*.py', 'sdk_service/**/*.py')
 
 
 def has_spdx(text):

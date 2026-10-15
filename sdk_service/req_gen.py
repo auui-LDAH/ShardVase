@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # req_gen.py — 客户侧申请文件生成器 (sdk_service A-1)
 # 目标机器(Windows)上运行: python req_gen.py --name "公司名"
 # 产物 .req 需人工发给签发方; 同时把屏幕打印的 MACHINE_ID 用另一渠道

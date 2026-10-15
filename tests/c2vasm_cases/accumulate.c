@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 ShardVase contributors
+ *
+ * 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；
+ * 商业授权见 LICENSE.md。
+ */
 /* accumulate.c — golden 样例 2: 0..n-1 求和 (循环累积) */
 #include <stdio.h>
 #include <stdlib.h>

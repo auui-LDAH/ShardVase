@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """M1-A0: `tools/linux_compile_check.py` —— Linux 编译覆盖率检查（正式工具）
 
 ## 为什么固化（从 L6b 的临时脚本升级）

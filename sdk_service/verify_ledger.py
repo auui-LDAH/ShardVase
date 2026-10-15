@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # verify_ledger.py — 台账哈希链校验 (D-D2 落地)
 # 用法: python3 verify_ledger.py [--log issue-log.csv]
 # 输出: 每行状态, 错误列表; 存在错误返回非 0。

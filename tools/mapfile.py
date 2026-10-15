@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """`tools/mapfile.py` — **链接 map 解析的单一实现**（B 阶段，2026-09-25）。
 
 ## 为什么抽这一个模块（**实测依据**）

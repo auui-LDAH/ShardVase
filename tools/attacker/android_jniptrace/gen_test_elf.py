@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """gen_test_elf.py — 生成最小 ELF64 测试样本 (含 .symtab/.dynsym)
 用于宿主编译验证 elfparse 解析器 (无 NDK/gcc-elf 环境的替代)。
 

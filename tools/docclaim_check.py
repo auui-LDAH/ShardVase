@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 r"""docclaim_check.py — **文档断言 ↔ 实测** 一致性检查器（R1, 2026-09-29）
 
 ## 为什么存在（**换来的教训**）

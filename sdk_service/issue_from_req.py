@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 # issue_from_req.py — 签发侧: .req 申请 -> license.txt (sdk_service A-1)
 # 用法: python issue_from_req.py --key keys/prot-priv.json \
 #        --req reqs/xxx.req --serial SN-2026-0001 \

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 ShardVase contributors
+# 本文件是 ShardVase 的一部分，以 AGPL-3.0 发布；商业授权见 LICENSE.md。
 """`tools/genpaths.py` — **生成物路径的单一来源**（A-a，2026-09-25）。
 
 ## 为什么需要（A 阶段的动机，**实测**）
