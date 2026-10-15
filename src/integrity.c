@@ -79,7 +79,7 @@ typedef struct prot_baked_crc {
 #include "protect/prot_sections.h"
 PROT_SECTION_BEGIN(PROT_SEC_CRC, read)
 PROT_ALLOCATE(PROT_SEC_CRC)
-const prot_baked_crc g_prot_baked_crc[4] = {
+const prot_baked_crc g_prot_baked_crc[PROT_CRC_COUNT] = {
     /* 阶段3(第二支柱): magic 每构建随机，消除 'PROTCRCP' 这类自解释标记。
      * 值来自 include/protect/prot_sections.h（默认）+ 生成头（随机覆盖）；
      * 写入侧 tools/hashpatch.py 从同一 JSON 读同样的值，两侧保持一致。
@@ -89,6 +89,12 @@ const prot_baked_crc g_prot_baked_crc[4] = {
     { PROT_MAGIC_RDATA_BYTES, 0, 0 }, /* 1: .rdata   */
     { PROT_MAGIC_PDATA_BYTES, 0, 0 }, /* 2: .pdata   */
     { PROT_MAGIC_XEC_BYTES,   0, 0 }, /* 3: .protxec */
+    /* 阶段4(第二支柱, 2026-10-15): 基座 4 之外的每构建随机额外目标，
+     * 表项由生成头 PROT_CRC_EXTRA_ENTRIES 提供（下标 4 起, EXTRA_POOL 序）；
+     * 无生成头时该宏为空 -> 仅基座 4 项（独立构建兼容）。
+     * 目标名经 prot_plat_crc_target_name() 逐下标取回, 缺名则该下标跳过
+     * （Linux 显式不对称: names[] 恒 3 项 -> 下标 3+ 全跳过）。 */
+    PROT_CRC_EXTRA_ENTRIES
 };
 /*
  * 读取烧录 CRC。必须用 volatile 指针: 否则 /O2 会把 const 全局的
@@ -482,12 +488,12 @@ prot_status prot_integrity_check_self(void) {
                  (unsigned)secs[_k].rva, (unsigned)secs[_k].size);
     }
 
-    for (j = 0u; j < 4u; j++)
+    for (j = 0u; j < PROT_CRC_COUNT; j++)
         IDBG("[IDBG]   target[%u] = %s\n", (unsigned)j,
              prot_plat_crc_target_name(j) ? prot_plat_crc_target_name(j)
                                           : "(null)");
     for (i = 0u; i < nsec && i < sizeof(secs) / sizeof(secs[0]); i++) {
-        for (j = 0u; j < 4u; j++) {
+        for (j = 0u; j < PROT_CRC_COUNT; j++) {
             uint32_t crc;
             const char* tname = prot_plat_crc_target_name(j);
             uint32_t len;

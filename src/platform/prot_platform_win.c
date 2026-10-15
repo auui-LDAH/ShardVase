@@ -689,11 +689,16 @@ const char* prot_plat_crc_target_name(unsigned idx)
      *   下标顺序 = CRC 烧录表下标，必须与以下两处**严格一致**:
      *     · `tools/hashpatch.py` 的 MAGICS / TARGET_NAMES
      *     · `src/integrity.c` 的 `g_prot_baked_crc[]` 初始化顺序
-     *   `tools/check_crc_targets.py` 交叉核对以上四处（防再次漂移）。 */
-    static const char* const names[4] = {
-        ".text", ".rdata", ".pdata", PROT_SEC_XEC
+     *   `tools/check_crc_targets.py` 交叉核对以上四处（防再次漂移）。
+     *
+     * 阶段4（2026-10-15）: 表长与越界判断改用 PROT_CRC_COUNT —— 基座 4 之外
+     *   追加每构建随机额外目标（生成头 PROT_CRC_EXTRA_TARGET_NAMES 提供名字,
+     *   同序 EXTRA_POOL；无生成头时宏为空 -> 仅基座 4 项）。 */
+    static const char* const names[PROT_CRC_COUNT] = {
+        ".text", ".rdata", ".pdata", PROT_SEC_XEC,
+        PROT_CRC_EXTRA_TARGET_NAMES
     };
-    return (idx < 4u) ? names[idx] : NULL;
+    return (idx < PROT_CRC_COUNT) ? names[idx] : NULL;
 }
 
 /* ------------------------------------------------------------------ *

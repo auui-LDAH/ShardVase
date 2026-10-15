@@ -60,6 +60,35 @@ SECTION_SPECS = {
 # 节名首字符必须是 '.'，长度 <= 8（PE 限制）
 NAME_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 
+# ## 阶段 4（第二支柱 · 完整性覆盖扩展, 2026-10-15）
+#
+# 目标（PILLAR2_OBSERVABILITY_PLAN §7）: 覆盖从"固定 4 段"扩为
+# "**基础 4 段 + 每构建随机 K 段额外目标**"，攻击者无法预知本次构建
+# 烧录了哪些段的 CRC（A4 验收: 两次构建的覆盖集合不同）。
+#
+# ## 候选池（**只收运行期字节稳定的段**）
+#
+#   · rsrc   —— .rsrc 资源段, 只读, loader 不改写
+#   · reloc  —— .reloc 重定位表段, 只读; 段内会被"引用"的字段由
+#               两侧一致的 reloc 掩码规则归零（hashpatch.reloc_mask_bytes
+#               ↔ integrity.c build_reloc_mask），故稳定
+#   · protpad —— 本项目自己的只读填充段（随机节名, 经 sections 映射）
+#
+# ## 为什么**不收** .data / .protcry / .fptable（诚实边界, 计划 §7.4 风险项）
+#   · .data    —— 运行期被全局变量持续改写 -> CRC 必然误报
+#   · .protcry —— selfcrypt 密文区, 自身改写触发误报（计划明示风险）
+#   · .fptable —— CRT 的段（S3 已考证非本项目代码, 见 SECTION_SPECS 注释）
+#
+# ## 约定
+#   · K 每构建从 1..3 随机（由 --seed 决定 -> 可复现, I3）
+#   · 额外目标的 magic 追加在 4 个基础 magic **之后**（下标 4 起），
+#     C 侧烧录表 g_prot_baked_crc[] 用生成头的条目数宏对齐
+#   · Linux/ELF 侧不参与随机扩展（hashpatch ELF 路径只认 3 个基础名），
+#     build.sh 不传 --extra-crc -> 恒为 0（显式不对称, 与判据 ⑥ 同思路）
+EXTRA_POOL = ('rsrc', 'reloc', 'protpad')
+# 逻辑名 -> 节名来源: None = 标准名('.rsrc'), 'protpad' = sections 映射名
+EXTRA_LOGICAL = {'protpad': 'protpad'}
+
 
 def gen_section_name(rng):
     """生成 8 字符以内的合法 PE 节名（以 '.' 开头）。
@@ -87,6 +116,9 @@ def main():
     ap.add_argument('--out-dir', default='demo/gen')
     ap.add_argument('--json-out', default=None,
                     help='工具侧 JSON 路径（默认 <out-dir>/prot_sections.json）')
+    ap.add_argument('--extra-crc', default=None, type=int, metavar='K',
+                    help='阶段4: 额外 CRC 目标数 K（0=关闭, 默认每构建随机 '
+                         '1..3, 由 seed 决定）。Linux/build.sh 传 0。')
     args = ap.parse_args()
 
     # 种子: 优先参数，否则系统随机（发布必须随机，见方针 P-5）
@@ -127,6 +159,22 @@ def main():
     #     · 平台层 prot_plat_crc_target_name()
     #   校验脚本 tools/check_crc_targets.py 会交叉核对这四处（防再次漂移）。
     magics = {k: gen_magic(rng).hex() for k in ('text', 'rdata', 'pdata', 'xec')}
+
+    # ## 阶段 4: 每构建随机额外 CRC 目标（见 EXTRA_POOL 注释）
+    #   K 由 --extra-crc 显式给（Linux 传 0），否则每构建随机 1..3。
+    #   选择用**同一个 rng** -> 同 seed 可复现（I3）。
+    #   额外目标按 EXTRA_POOL 顺序排列（不按抽样顺序），
+    #   保证 JSON / 生成头 / C 烧录表三处顺序可核对。
+    if args.extra_crc is not None:
+        k_extra = max(0, min(args.extra_crc, len(EXTRA_POOL)))
+    else:
+        k_extra = rng.randint(1, len(EXTRA_POOL))
+    picked = set(rng.sample(list(EXTRA_POOL), k_extra)) if k_extra else set()
+    extra_keys = [p for p in EXTRA_POOL if p in picked]
+    extra_names = {k2: ('.' + k2 if k2 not in EXTRA_LOGICAL
+                        else names[EXTRA_LOGICAL[k2]])
+                   for k2 in extra_keys}
+    extra_magics = {k2: gen_magic(rng).hex() for k2 in extra_keys}
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -182,6 +230,38 @@ def main():
             body = ', '.join('0x%02X' % b for b in raw)
             f.write('#undef %s\n' % macro)
             f.write('#define %s \\\n    { %s }\n' % (macro, body))
+        # ## 阶段 4 额外目标输出
+        #   PROT_CRC_COUNT: C 侧 g_prot_baked_crc[] 数组长度与
+        #     prot_plat_crc_target_name() 越界判断、integrity.c 两处
+        #     `j < PROT_CRC_COUNT` 循环共用（基座 4 + K）。
+        #   PROT_CRC_EXTRA_ENTRIES: 聚合初始化的**表项列表**（逗号分隔,
+        #     直接拼进 g_prot_baked_crc[] 初始化器尾部）。
+        #   PROT_CRC_EXTRA_TARGET_NAMES: 平台层 names[] 的**名字列表**。
+        #     三者顺序均 = EXTRA_POOL 序（见主流程注释），可交叉核对。
+        #   Linux 不参与（build.sh 传 --extra-crc 0 → K=0, 两宏空,
+        #     显式不对称, 与 check_crc_targets 判据⑥同一理由）。
+        f.write('\n/* 阶段 4: 额外 CRC 目标（基座 4 之外, 每构建随机 K 个）*/\n')
+        f.write('#undef PROT_CRC_COUNT\n')
+        f.write('#define PROT_CRC_COUNT %du\n' % (4 + len(extra_keys)))
+        if extra_keys:
+            f.write('#undef PROT_CRC_EXTRA_ENTRIES\n')
+            entries = []
+            for key in extra_keys:
+                raw = bytes.fromhex(extra_magics[key])
+                body = ', '.join('0x%02X' % b for b in raw)
+                entries.append('{ { %s }, 0, 0 }' % body)
+            f.write('#define PROT_CRC_EXTRA_ENTRIES \\\n    %s\n'
+                    % ', \\\n    '.join(entries))
+            f.write('#undef PROT_CRC_EXTRA_TARGET_NAMES\n')
+            f.write('#define PROT_CRC_EXTRA_TARGET_NAMES \\\n    %s\n'
+                    % ', \\\n    '.join('"%s"' % extra_names[key]
+                                        for key in extra_keys))
+        else:
+            # K=0: 空表项/空名字列表 —— C 侧初始化器允许尾随逗号, 宏为空即回退基座。
+            f.write('#undef PROT_CRC_EXTRA_ENTRIES\n')
+            f.write('#define PROT_CRC_EXTRA_ENTRIES\n')
+            f.write('#undef PROT_CRC_EXTRA_TARGET_NAMES\n')
+            f.write('#define PROT_CRC_EXTRA_TARGET_NAMES\n')
         f.write('\n#endif /* PROT_SECTIONS_GENERATED_H */\n')
 
     # ---- 工具侧 JSON ----
@@ -191,6 +271,11 @@ def main():
             'seed': '0x%016x' % seed,
             'sections': names,
             'magics': magics,
+            # 阶段 4: 额外目标清单（顺序 = EXTRA_POOL 序）。hashpatch.py
+            # 消费此键追加烧录目标; 缺失/空 = 无额外目标（老 JSON 兼容）。
+            'crc_extra': [{'key': key, 'name': extra_names[key],
+                           'magic': extra_magics[key]}
+                          for key in extra_keys],
         }, f, indent=2)
 
     print('gen_sections: seed=0x%016x' % seed)

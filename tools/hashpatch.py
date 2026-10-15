@@ -109,6 +109,32 @@ def load_magics(path):
         return None
 
 
+def load_crc_extra(path):
+    """阶段4（第二支柱·完整性覆盖扩展, 2026-10-15）: 读取每构建随机的
+    额外 CRC 目标清单。
+
+    JSON 键 'crc_extra': [{'key','name','magic'}, ...]，顺序 = gen_sections
+    的 EXTRA_POOL 序（与生成头的表项/名字列表同序）。
+    返回 [(magic8bytes, name), ...]；缺失/读取失败返回 []（老 JSON 兼容）。
+    """
+    if not path:
+        return []
+    try:
+        with open(path, encoding='ascii') as f:
+            data = json.load(f)
+        out = []
+        for item in data.get('crc_extra', []):
+            magic_hex = item.get('magic')
+            name = item.get('name')
+            if (not isinstance(magic_hex, str) or len(magic_hex) != 16 or
+                    not isinstance(name, str) or not name):
+                continue
+            out.append((bytes.fromhex(magic_hex), name))
+        return out
+    except (OSError, ValueError):
+        return []
+
+
 TARGET_NAMES = ('.text', '.rdata', '.pdata', '.protxec')
 ENTRY_SIZE = 16
 
@@ -436,6 +462,17 @@ def main(argv=None):
         # 故 magic 随机化对 C 侧零影响。
         magics_override = load_magics(sections_json)
         active_magics = magics_override if magics_override else MAGICS
+        # 阶段4: 额外目标追加在 4 个基础目标之后（PE 随机扩展路径）。
+        # ELF 路径不参与（Linux 构建 --extra-crc 0 -> JSON 无 crc_extra）。
+        crc_extra = load_crc_extra(sections_json)
+        if crc_extra and not is_elf_file:
+            active_magics = tuple(active_magics) + tuple(
+                m for m, _ in crc_extra)
+            target_names = tuple(target_names) + tuple(
+                n for _, n in crc_extra)
+        elif crc_extra:
+            print('hashpatch: crc_extra present but ELF target — ignored '
+                  '(Linux 不参与阶段4随机扩展)', file=sys.stderr)
         crc_sec = section_names.get('protcrc')
         cand = [crc_sec] if crc_sec else ['.protcrc']
         prot = next((s for s in secs if s['name'] in cand), None)
@@ -456,6 +493,17 @@ def main(argv=None):
                 raise HashpatchError(
                     'marker %d magic mismatch at offset %d (want %r)'
                     % (i, off, magic))
+
+            # 阶段4 附带修复（潜伏缺陷, 2026-10-15 实测确认）:
+            #   ELF 路径 target_names 只有 3 项, 而 4-magic JSON 让
+            #   active_magics 有 4 项 -> 原代码 target_names[i] 在 i=3 抛
+            #   IndexError（不在 main 的 except 白名单里 -> 裸崩）。
+            #   运行侧 linux names[] 也是 3 项 -> 下标 3 的烧录 CRC 本就
+            #   不被校验。故 i 超界即"该平台不校验此表项"，跳过即可。
+            if i >= len(target_names):
+                print('hashpatch: entry %d has no target name on this '
+                      'platform — skip (CRC left 0)' % i)
+                continue
 
             target = next((s for s in secs if s['name'] == target_names[i]), None)
             if target is None:

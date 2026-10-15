@@ -102,6 +102,32 @@
     { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'X' }
 #endif
 
+/* ## 阶段 4（第二支柱 · 完整性覆盖扩展, 2026-10-15）
+ *
+ *   基座 4 个 CRC 目标之外，每构建可**随机追加 K 个额外目标**
+ *   （候选池只收运行期字节稳定段，见 tools/gen_sections.py 的 EXTRA_POOL）。
+ *   三个宏的默认值 = "无额外"（K=0），独立构建/skeleton 无需任何生成步骤；
+ *   build.ps1 走生成头覆盖，值随 seed 变化（可复现，I3）。
+ *
+ *   · PROT_CRC_COUNT            —— g_prot_baked_crc[] 数组长度、
+ *                                  prot_plat_crc_target_name() 越界判断、
+ *                                  integrity.c 两处循环上界，三处共用。
+ *   · PROT_CRC_EXTRA_ENTRIES    —— 烧录表的聚合初始化表项（逗号分隔列表），
+ *                                  拼在 4 个基础表项之后（下标 4 起）。
+ *   · PROT_CRC_EXTRA_TARGET_NAMES —— 平台层 names[] 的名字列表（同序）。
+ *
+ *   顺序不变量: 额外目标顺序 = gen_sections 的 EXTRA_POOL 序，JSON
+ *   ('crc_extra') / 生成头 / C 烧录表三处一致 —— tools/check_crc_targets.py 交叉核对。 */
+#ifndef PROT_CRC_COUNT
+#define PROT_CRC_COUNT 4u
+#endif
+#ifndef PROT_CRC_EXTRA_ENTRIES
+#define PROT_CRC_EXTRA_ENTRIES
+#endif
+#ifndef PROT_CRC_EXTRA_TARGET_NAMES
+#define PROT_CRC_EXTRA_TARGET_NAMES
+#endif
+
 /* 可选覆盖: 由 build.ps1 定义 PROT_USE_GENERATED_SECTIONS 并 -I 生成目录。
  * 生成头里的 #define 会覆盖上面的默认值（因为默认值带 #ifndef 保护）。 */
 #ifdef PROT_USE_GENERATED_SECTIONS

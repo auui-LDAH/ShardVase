@@ -181,33 +181,59 @@ def parse_hashpatch(t):
 
 
 def parse_integrity(t):
-    """② 烧录表: 声明长度 + 逐项 magic 宏名 + 两处 `j < Nu` 循环的上界。"""
-    size = None
+    """② 烧录表: 声明长度 + 逐项 magic 宏名 + 两处循环的上界。
+
+    阶段4（2026-10-15）: 声明与循环上界改用宏 `PROT_CRC_COUNT`
+    （基座 4 + 每构建随机额外目标），宏默认值在 prot_sections.h。
+    此处返回 decl 原文（宏名或数字字符串），由 verify 解析默认值。
+    """
+    decl = None
     entries = []
-    m = re.search(r'g_prot_baked_crc\s*\[\s*(\d+)\s*\]\s*=\s*\{(.*?)\n\};',
+    has_extra = False
+    m = re.search(r'g_prot_baked_crc\s*\[\s*([A-Za-z0-9_]+)\s*\]\s*=\s*\{(.*?)\n\};',
                   t, re.S)
     if m:
-        size = int(m.group(1))
+        decl = m.group(1)
         for e in re.finditer(r'\{\s*(PROT_MAGIC_[A-Z0-9_]+)\s*,', m.group(2)):
             entries.append(e.group(1))
-    loops = [int(x) for x in re.findall(
-        r'for \(j = 0u; j < (\d+)u; j\+\+\)', t)]
-    return {'size': size, 'entries': entries, 'loops': loops}
+        # 必须是**真正的初始化器条目行**（行首即宏名）—— 仅在注释里
+        # 提及该宏不算数（实测: 表上方注释含同名字样, 字符串包含判据被蒙混）。
+        has_extra = bool(re.search(
+            r'(?m)^\s*PROT_CRC_EXTRA_ENTRIES\s*$', m.group(2)))
+    loops = re.findall(r'for \(j = 0u; j < ([A-Za-z0-9_]+); j\+\+\)', t)
+    # 只保留 prot_integrity_check_self 函数体内的循环上界 ——
+    # 其他函数（如 guard 快照）也有 j<... 循环, 与 CRC 表长无关。
+    mfn = re.search(
+        r'prot_integrity_check_self\s*\(void\)\s*\{(.*?)\n\}', t, re.S)
+    loops_in_fn = (re.findall(
+        r'for \(j = 0u; j < ([A-Za-z0-9_]+); j\+\+\)', mfn.group(1))
+        if mfn else [])
+    return {'decl': decl, 'entries': entries, 'loops': loops_in_fn,
+            'has_extra': has_extra}
+
+
+def parse_count_macro(t):
+    """prot_sections.h 的 PROT_CRC_COUNT 默认值（数字）。"""
+    m = re.search(r'(?m)^#\s*define\s+PROT_CRC_COUNT\s+(\d+)u?\b', t)
+    return int(m.group(1)) if m else None
 
 
 def parse_plat_targets(t):
-    """③ 平台层 names[]: 返回 (个数, [元素文本])。"""
+    """③ 平台层 names[]: 返回 (decl 原文, [元素文本])。
+
+    decl 可能是数字（linux: 3）或宏名（win: PROT_CRC_COUNT）。
+    """
     m = re.search(r'prot_plat_crc_target_name\s*\(unsigned idx\)\s*\{(.*?)\n\}',
                   t, re.S)
     if not m:
         return None, []
-    m2 = re.search(r'names\s*\[\s*(\d+)\s*\]\s*=\s*\{(.*?)\};', m.group(1), re.S)
+    m2 = re.search(r'names\s*\[\s*([A-Za-z0-9_]+)\s*\]\s*=\s*\{(.*?)\};', m.group(1), re.S)
     if not m2:
         return None, []
     items = [x.strip() for x in m2.group(2).replace('\n', ' ').split(',')]
     # 去掉 C 字符串字面量的引号，只留标识符/字面内容，便于与 TARGET_NAMES 比
     items = [x.strip('"') for x in items if x]
-    return int(m2.group(1)), items
+    return m2.group(1), items
 
 
 # ---------------------------------------------------------------------------
@@ -230,19 +256,28 @@ def verify(srcs):
     def chk(name, ok, detail):
         checks.append((name, bool(ok), detail))
 
-    # ① 条数一致
+    # ① 条数一致（**基座**维度; 额外目标由宏通道追加, 不进静态基座）
     n_pe = len(hp['magics'])
+    count_macro_default = parse_count_macro(srcs[P_SECTIONS])
+    # integrity decl 是宏名（PROT_CRC_COUNT）或数字, 统一解析为数字基座
+    ig_decl_n = (count_macro_default if ig['decl'] == 'PROT_CRC_COUNT'
+                 else int(ig['decl']) if ig['decl'] and ig['decl'].isdigit()
+                 else None)
+    win_n_resolved = (count_macro_default if win_n == 'PROT_CRC_COUNT'
+                      else int(win_n) if win_n and str(win_n).isdigit()
+                      else None)
     counts = {
         'hashpatch.MAGICS': n_pe,
         'hashpatch.TARGET_NAMES': len(hp['target_names']),
         'hashpatch.TARGET_LOGICAL': len(hp['logical']),
-        'integrity.g_prot_baked_crc[]': ig['size'],
+        'integrity.g_prot_baked_crc[]': ig_decl_n,
         'integrity.表项数': len(ig['entries']),
-        'win.names[]': win_n,
+        'win.names[]': win_n_resolved,
         'gen_sections.magics': len(gen_keys),
+        'PROT_CRC_COUNT默认': count_macro_default,
     }
     same = len(set(counts.values())) == 1 and n_pe > 0
-    chk('① 四个维度的 CRC 目标条数一致', same, str(counts))
+    chk('① 七个维度的 CRC 目标基座条数一致', same, str(counts))
     n = n_pe
 
     # ② 逐位: integrity 表项 -> magic 宏名 -> hashpatch MAGICS
@@ -258,10 +293,15 @@ def verify(srcs):
         hp_magic_str == [v for _, v in sh],
         'hashpatch=%s header=%s' % (hp_magic_str, [v for _, v in sh]))
 
-    # ② 循环上界跟随表长
-    chk('② integrity 两处 `j < N` 循环上界 = 表长',
-        ig['loops'] and all(x == n for x in ig['loops']),
-        'loops=%s size=%s' % (ig['loops'], n))
+    # ② 循环上界跟随表长（阶段4: 循环上界必须引用 PROT_CRC_COUNT 宏,
+    #   不得再写字面数字 —— 否则每构建随机 K 时循环越界/漏检）
+    chk('② integrity 两处 `j < N` 循环上界 = PROT_CRC_COUNT 宏',
+        ig['loops'] and all(x == 'PROT_CRC_COUNT' for x in ig['loops']),
+        'loops=%s decl=%s' % (ig['loops'], ig['decl']))
+
+    # ② 表内必须含额外目标通道（PROT_CRC_EXTRA_ENTRIES 拼接位）
+    chk('② integrity 表尾含 PROT_CRC_EXTRA_ENTRIES 通道',
+        ig['has_extra'], 'decl=%s entries=%s' % (ig['decl'], ig['entries']))
 
     # ③ magic 的字符串形式与字节数组形式逐字节一致
     bad = [nm for nm, s in sh
@@ -310,12 +350,17 @@ def verify(srcs):
     #   注意判据用的是 `len(win_items)/len(lin_items)`（**实际元素个数**），
     #   不是 `names[N]` 的**声明长度** —— 两者可以不一致（自检 M8 正是如此:
     #   声明 `names[3]` 却塞 4 个元素）。用声明长度会让"多塞一个节名"逃过判据。
-    win_ok = (len(win_items) == n and win_n == n and
-              win_items == hp['target_names'][:3] + ['PROT_SEC_XEC'])
-    chk('⑥ win names[] = 默认三项 + PROT_SEC_XEC（与 TARGET_NAMES 对齐）',
-        win_ok, 'decl=%s items=%s want=%s' % (win_n, win_items,
-                                              hp['target_names'][:3] + ['PROT_SEC_XEC']))
-    lin_ok = (lin_n == len(lin_items) and
+    #   阶段4: win 表尾允许挂 PROT_CRC_EXTRA_TARGET_NAMES 通道
+    #   （名字由生成头提供, 每构建随机 K 个）。
+    win_base = hp['target_names'][:3] + ['PROT_SEC_XEC']
+    win_ok = (win_n_resolved == n and
+              (win_items == win_base or
+               (win_items[:-1] == win_base and
+                win_items[-1] == 'PROT_CRC_EXTRA_TARGET_NAMES')))
+    chk('⑥ win names[] = 默认三项 + PROT_SEC_XEC [+ 额外通道]（与 TARGET_NAMES 对齐）',
+        win_ok, 'decl=%s items=%s want=%s' % (win_n, win_items, win_base))
+    lin_n_resolved = (int(lin_n) if lin_n and str(lin_n).isdigit() else None)
+    lin_ok = (lin_n_resolved == len(lin_items) and
               ((len(lin_items) == 3 and 'PROT_SEC_XEC' not in lin_items) or
                (len(lin_items) == 4 and lin_items[-1] == 'PROT_SEC_XEC')))
     chk('⑥ linux names[] 显式不对称（3 项不含 PROT_SEC_XEC，或 4 项末位为它）',
@@ -333,14 +378,34 @@ def verify(srcs):
         len(hp['elf_names']) == len(lin_items),
         'elf=%s linux_items=%s' % (hp['elf_names'], lin_items))
 
+    # ## 阶段 4（2026-10-15）: 额外目标通道判据
+    #   候选池 + 三宏通道 + hashpatch 消费, 三处必须同时在场 —— 少任何
+    #   一处都会退化为"静默不覆盖"（正是本判据要防的失效模式）。
+    gts = srcs[P_GENSEC]
+    hpt = srcs[P_HASHPATCH]
+    chk('⑦ gen_sections 定义 EXTRA_POOL 候选池',
+        bool(re.search(r'(?m)^EXTRA_POOL\s*=\s*\(', gts)), 'EXTRA_POOL 缺失')
+    chk('⑦ gen_sections 写出 crc_extra 清单（JSON 键）',
+        "'crc_extra'" in gts, "JSON 键 'crc_extra' 缺失")
+    chk('⑦ 生成头写入三宏通道（COUNT/EXTRA_ENTRIES/EXTRA_TARGET_NAMES）',
+        all(m in gts for m in ('PROT_CRC_EXTRA_ENTRIES',
+                               'PROT_CRC_EXTRA_TARGET_NAMES',
+                               'PROT_CRC_COUNT')),
+        'gen_sections 缺宏写入代码')
+    chk('⑦ hashpatch 消费 crc_extra（load_crc_extra 在场且被调用）',
+        bool(re.search(r'^def load_crc_extra\s*\(', hpt, re.M)) and
+        'load_crc_extra(sections_json)' in hpt,
+        'load_crc_extra 缺失或未调用 -> 额外目标静默不烧')
+
     return checks
 
 
 # 变异表下限 —— `total = len(mutations)` 是**长度比较**，清空整表后
 # `caught == total` 变成 `0 == 0`，自检会**静默变绿**且报文与基线逐字相同
-# （2026-10-12 实测，§2.76）。紧贴当前值 8，不留余量：
+# （2026-10-12 实测，§2.76）。紧贴当前值 11，不留余量：
 # 留余量会让这条守卫对它要防的那件事失明（§2.49 的教训）。
-_MUT_FLOOR = 8
+# 阶段4（2026-10-15）: 8 -> 11（M4/M5/M7 锚点换宏形式 + 新增 M9-M11 额外通道）。
+_MUT_FLOOR = 11
 
 
 def selftest():
@@ -363,19 +428,26 @@ def selftest():
          P_HASHPATCH,
          'target_names = resolve_target_names(target_names, section_names)',
          'pass'),
-        ('M4 烧录表声明长度改 3（条数漂移）',
-         P_INTEGRITY, 'g_prot_baked_crc[4]', 'g_prot_baked_crc[3]'),
-        ('M5 循环上界不同步（改回 3u）',
-         P_INTEGRITY, 'j < 4u; j++', 'j < 3u; j++'),
+        ('M4 PROT_CRC_COUNT 默认值改 3（基座条数漂移）',
+         P_SECTIONS, '#define PROT_CRC_COUNT 4u', '#define PROT_CRC_COUNT 3u'),
+        ('M5 循环上界退回字面数字（宏不同步）',
+         P_INTEGRITY, 'j < PROT_CRC_COUNT; j++', 'j < 4u; j++'),
         ('M6 字节数组与字符串形式不一致',
          P_SECTIONS,
          "#define PROT_MAGIC_XEC_BYTES \\\n    { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'X' }",
          "#define PROT_MAGIC_XEC_BYTES \\\n    { 'P', 'R', 'O', 'T', 'C', 'R', 'C', 'Y' }"),
-        ('M7 win names[] 退回 3 项',
-         P_WIN, 'names[4] = {', 'names[3] = {'),
+        ('M7 win names[] 声明退回 3 项',
+         P_WIN, 'names[PROT_CRC_COUNT] = {', 'names[3] = {'),
         ('M8 linux names[] 声称 4 项却不是 PROT_SEC_XEC',
          P_LINUX, '".text", ".rodata", ".eh_frame"',
          '".text", ".rodata", ".eh_frame", ".protxec"'),
+        ('M9 删 integrity 表尾额外通道（额外目标静默丢失）',
+         P_INTEGRITY, 'PROT_CRC_EXTRA_ENTRIES\n};', '    /* deleted */\n};'),
+        ('M10 gen_sections JSON 键改名（hashpatch 读不到清单）',
+         P_GENSEC, "'crc_extra': [{", "'crc_extra_x': [{"),
+        ('M11 hashpatch 消费点改成空表（额外目标不烧）',
+         P_HASHPATCH, 'crc_extra = load_crc_extra(sections_json)',
+         'crc_extra = []'),
     ]
 
     caught = 0

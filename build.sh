@@ -161,6 +161,7 @@ say "步骤 1.5: 构建期生成链"
 # ① 随机节名（**B3 的落点**：头文件宏 -> C 侧 PROT_ALLOCATE 应用）
 SECT_SEED="0x$(od -An -N8 -tx8 /dev/urandom 2>/dev/null | tr -d ' \n')"
 "$PY" tools/gen_sections.py --out-dir "$GEN" \
+      --extra-crc 0 \
       --json-out "$GEN/prot_sections.json" --seed "$SECT_SEED" \
   || die "gen_sections.py 失败"
 say "  ① 随机节名 seed=$SECT_SEED"
