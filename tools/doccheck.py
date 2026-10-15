@@ -229,8 +229,14 @@ EXEMPT_NN = re.compile(r'golden|流程测试|样例')
 #   中文注释读成乱码。判据**只判 `.ps1`**: 全库交叉表 .ps1 14/1、.c 7/65、
 #   .json 0/16 —— 后两者分布是散的, 判它们只会把既有无害状态判成失败。
 #   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
-GATE_TOTAL = 46
-GATE_DEFAULT = 43
+# 2026-10-16: 46/43 -> 47/44 (新增 `SPDX 许可证标识 (spdx_check)`; 补的是**已存在的
+#   纪律** —— `tools/add_license_headers.py` 早已提供工具, 但**没有任何判据在看
+#   SPDX 标识** (NEXT_STAGE_REVIEW §2.36.8 同型链条)。新判据三件套: 前 600 字节
+#   含标识 / glob 缺口守卫 (`.c/.h/.py` 不在 glob 内即报) / 与 add_license_headers
+#   的 glob 集合双向漂移比对; 95 个历史缺头文件同批补齐 (commit d4f7a49)。
+#   默认跑、不 gated => GATE_DEFAULT 同步 +1)。
+GATE_TOTAL = 47
+GATE_DEFAULT = 44
 GATE_OK = (GATE_TOTAL, GATE_DEFAULT)
 
 RE_GATE_NN = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)\s*/\s*(\d+)')
