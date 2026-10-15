@@ -1417,7 +1417,7 @@ cust-0002  sha=25adbaaca55a6c0f...
 | W2 协议形式化 | ✅ 12 -> 17 字段 + 开放规范 |
 | W3 编排器升级 | ✅ 拓扑排序 + 策略求解 + 结构化计划 |
 | **W4 每用户唯一** | ✅ **本轮**（跨用户差异 93.04%）|
-| W6 协议治理 | ⬜ 最后一项 |
+| W6 协议治理 | ✅ **已完成**（见本文件 `§18`，2026-09-23；此处原写「⬜ 最后一项」是**未回填的历史快照** —— **2026-10-15 现读复核**）|
 
 ---
 
@@ -2740,11 +2740,17 @@ platform = 2                    (PROT_PLATFORM_LINUX)
 · **指纹必然不同** —— 跨平台不共享授权（预期）
 · **CI job 未实跑**（已定义，尚未推送触发）
 
+> ⚠️ **2026-10-15 现读复核（上面五条已部分过期，见 `docs/NEXT_STAGE_REVIEW.md`）**：
+> · 「**未实现可运行的 Linux 产物**」**已被推翻** —— `build.sh` 存在（598 行 / B4 2026-09-25，头部逐字「保留 Python 工具步骤 + 把 MSVC 部分换成 gcc」）；
+>   `build/linux/` 有真实产物（`vm.blob` 805 B / `license.txt` 619 B / `revoke_*.blob` 468 B / `demo_tampered.exe` 108512 B）。
+> · 「**CI job 未实跑**」**部分过期** —— Linux job 已在 `.github/workflows/ci.yml:340 linux-portability`；`tools/verify_linux_runtime.py` 有 **14 个套件**（含 `端到端 e2e T1-T30`）。
+> · 「**14 个 API 待封装**」**需复核** —— `include/protect/prot_platform.h` 实测声明 `prot_plat_*` **40 个**（本条只记名，未判定「已实现 vs 仅声明」）。
+
 ### 30.8 下一步 L6 候选
-  L6a 封装剩余 14 个 API（含 3 个🔴需重新设计）
-  L6b Linux 构建链（build.sh/CMake）
-  L6c 推送让 CI 实跑
-  L6d `__readgsqword`（PEB 反调试）的 Linux **重新设计**（非移植）
+  L6a 封装剩余 14 个 API（含 3 个🔴需重新设计）—— **需复核**（实测 40 个 `prot_plat_*`）
+  L6b Linux 构建链（build.sh/CMake）—— ✅ **已落地**（`build.sh` 598 行，2026-10-15 现读）
+  L6c 推送让 CI 实跑 —— ✅ **已落地**（`ci.yml:340 linux-portability`）
+  L6d `__readgsqword`（PEB 反调试）的 Linux **重新设计**（非移植）—— 未见实现痕迹
 
 ---
 

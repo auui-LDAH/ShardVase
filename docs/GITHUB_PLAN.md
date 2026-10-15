@@ -1,6 +1,6 @@
 # GitHub 战略计划 — 开源面/演示面/内容面 (GITHUB_PLAN)
 
-> 版本：2026-08-28 v1 · 状态：**规划完成，未开工** · 战略决策：全面转向
+> 版本：2026-10-15 v2 · 状态：**产物已就绪，剩人工决策**（2026-10-15 现读复核：步骤 2/3/4/5 产物均在，见 §7 注）· 战略决策：全面转向
 > GitHub（放弃直接扫单），以内容+演示+口碑冷启动；成交留在服务/邮件。
 > 本计划定义：公开什么、藏什么、放哪、怎么接单。
 
@@ -77,7 +77,12 @@ ShardVase-website/        # 可选：landing.html → GitHub Pages
 - **回退**：全部文件为新增目录 docs/marketing + 公开仓库内容，删除即回退。
 
 ## 7. 待办清单
-1. [ ] 拍板 D1-D4（公开范围/单仓库/Issues+邮件/中文）
+1. [ ] 拍板 D1-D4（公开范围/单仓库/Issues+邮件/中文）—— **仍是人工决策**
 2. [ ] 步骤 1-5 实施
-3. [ ] 发布检查（红线：无内核/工具代码混入）
+   > ⚠️ **2026-10-15 现读复核**（`docs/NEXT_STAGE_REVIEW.md` §1.3-C）：步骤 **2/3/4/5 的产物已在** ——
+   > `docs/marketing/` **12 个文件**（`landing.html` 7415 B + 3 篇文章 + `boundaries.md` + `attack-record.md` + `compat-av.md` + `LAUNCH_HANDBOOK.md` + `ISSUE_TEMPLATE_{consult,eval,security}.yml`）；
+   > `publish/` **8 个**；`.github/ISSUE_TEMPLATE/` **3 个**；`landing.html` 的 **8 个 `href` 全指向真实仓库**
+   > （`github.com/auui-LDAH/ShardVase-demo/releases` / `ShardVase-docs` / `issues/new?template=eval.yml` / `…consult.yml` / `blob/main/boundaries.md`）。
+   > ⇒ 这条**不是「未开工」，是陈旧标记**；真正剩下的是第 1/3 两条**人工**动作。
+3. [ ] 发布检查（红线：无内核/工具代码混入）—— **仍是人工动作**
 4. [ ] 后续：文章发布节奏（周更）+ 演示包版本更新
