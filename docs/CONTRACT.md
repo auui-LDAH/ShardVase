@@ -53,12 +53,20 @@ build/             [构建产物] demo.exe
 - **FNV-1a 64**：offset `14695981039346656037`，prime `1099511628211`。
 - **xorshift64**：`x ^= x<<13; x ^= x>>7; x ^= x<<17`（uint64 回绕）。
 - **常量**：`0x9E3779B97F4A7C15`（黄金比例）。
-- **烧录标记**：**3 组** 16 字节 marker（`magic[8] + crc u32 + reserved u32`，LE），
-  位于专用只读段 `.protcrc`（`#pragma section` + `__declspec(allocate)`，不被任何
+- **烧录标记**：**基座 4 组 + 每构建随机 K 组（阶段 4）** 16 字节 marker
+  （`magic[8] + crc u32 + reserved u32`，LE），位于专用只读段
+  `.protcrc`（`#pragma section` + `__declspec(allocate)`，不被任何
   段 CRC 覆盖，避免自引用）：
-  `PROTCRCP`(.text) / `PROTCRCD`(.rdata) / `PROTCRDP`(.pdata)。
-  下标顺序与 `tools/hashpatch.py` 的 `MAGICS` 完全一致。运行期经
-  `integrity.c` 的 `g_prot_baked_crc[3]` 读取（volatile 防 /O2 常量折叠）。
+  基座固定 4 组 `PROTCRCP`(.text) / `PROTCRCD`(.rdata) / `PROTCRDP`(.pdata) /
+  `PROTCRCX`(PROT_SEC_XEC 随机名)；额外 K 组（K∈[1,3]，由构建 seed 决定）
+  从运行期稳定池 `{.rsrc, .reloc, protpad}` 采样（`.data` 运行期被改写、
+  `.protcry` 自解密自改写、`.fptable` CRT 归属，均排除）。
+  基座下标顺序与 `tools/hashpatch.py` 的 `MAGICS` 完全一致；额外组清单经
+  生成物 `prot_sections.json` 的 `crc_extra` 键传递。运行期经
+  `integrity.c` 的 `g_prot_baked_crc[PROT_CRC_COUNT]` 读取
+  （volatile 防 /O2 常量折叠）。Linux/ELF 侧 K 恒为 0（显式不对称，
+  `build.sh` 传 `--extra-crc 0`）。跨五方一致性由
+  `tools/check_crc_targets.py`（18 判据 + 11 变异）守卫。
 
 ## 4. VM (src/vm.c) — 实现 prot_vm_run
 
