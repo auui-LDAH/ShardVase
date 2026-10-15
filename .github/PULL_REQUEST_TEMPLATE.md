@@ -13,7 +13,7 @@
 
 ## 如何验证 *
 
-- [ ] `tools/release_check.ps1` **43/43 PASS**（默认；发版前另跑 `-WithSkeleton -WithMutation -WithMigration`，共 46 项）
+- [ ] `tools/release_check.ps1` **44/44 PASS**（默认；发版前另跑 `-WithSkeleton -WithMutation -WithMigration`，共 47 项）
 - [ ] `python tools/modcheck.py` 无漂移
 - [ ] （新增模块）已按 `docs/MODULE_GUIDE.md` 五步走完
 - [ ] （新增模块）已在 **两个宿主**（`demo/main.c` + `prot_sdk/skeleton/app_main.c`）加 `#ifdef`
