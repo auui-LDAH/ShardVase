@@ -5250,7 +5250,7 @@ license_build_message `0x004c70→0x004470`、selfcrypt_init `0x022800→0x022a0
 `build/_m3dbg.py` 留在系统临时目录的一对构建：
 
 ```
-C:\Users\devuser\AppData\Local\Temp\m3dbg_35833og9\
+C:\Users\<user>\AppData\Local\Temp\m3dbg_35833og9\
 ```
 
 事后复访，该目录已 **`PermissionError [WinError 5] 拒绝访问`** —— A.exe / A.map /
