@@ -5,8 +5,51 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-16
+
+**主题**: Studio 调试平台 + SDK/签发体系 + 门禁扩到 47 项 + 开源收尾
+（1.1.0 之后 267 个提交，攻防演练 drill6/sdk1-sdk3 全部实证收口）。
+
+### Added
+
+**Studio 调试平台（ST3→ST6，零依赖本地浏览器 UI）**
+- 主机级调试面板 + Debug 构建配置（ST3）；.vasm 断点槽 + 调试会话 +
+  影子调用栈（ST5.3/ST5.4）；宿主侧调用栈活体查询（ST5.4b）
+- 问题面板点击跳转（ST5.5）；时间旅行——反向单步（ST6）；前端接线（ST6）
+- 新增门禁项：keep-alive 失步判据（第 43 项）、BOM 判据（第 44 项）、
+  真浏览器判据（第 45 项）、协议契约对账（第 46 项）
+
+**SDK 与离线签发体系（A-1）**
+- `prot_sdk/skeleton`（骨架产物）+ `prot_sdk/wizard`（tkinter 向导）
+- `sdk_service/`：req_gen / issue_from_req / issue_console（GUI 签发台）/
+  verify_license / verify_ledger；台账哈希链（D-D2）、重复 nonce 拦截（D-D1）、
+  字段卫生（D-D4）
+- 攻防演练：drill6（签发链路 S/L/V/T/D/O 六面）、sdk1（骨架 14 项）、
+  sdk2（vmcalc 面 M11/M12）、sdk3（回归全绿含 M4 换机）
+
+**A2 vmcalc 自动 VM 化**
+- `// @vmcalc` 标注业务函数自动翻译为 VM 指令（c2vasm 翻译器 + 桩 +
+  blob 同链；golden 6/6 + flow test 11/11 + 真机 hashcalc 验收）
+
+**合规与完整性**
+- SPDX 标识全覆盖 + 机器判据（门禁第 47 项）：`add_license_headers.py`
+  递归 glob 补齐 95 文件；`spdx_check.py` 三重判据（600 字节窗口 /
+  glob 缺口守卫 / 文件集双向对账）+ 自检 9/9
+- PILLAR2 阶段 4：CRC 覆盖从固定 3 段扩展为**基座 4 组 + 每构建随机
+  K∈{1,2,3} 额外目标**（池: rsrc/reloc/protpad，排除 .data/.protcry/.fptable）；
+  `check_crc_targets.py` 判据 18 项 + 变异 11/11；A4 双构建覆盖集合不同实测
+- 平台隔离 S3/S4/S5：反调试 switch-dispatch 平坦化、字符串收敛入 strcrypt、
+  反调试 +2 维（父进程调试器黑名单 + 墙钟-tick 漂移）
+
 ### Fixed
 - Release 构建反调试误报 (0xDB 自杀): prot_antidebug_apply_policy 在 selfcrypt 解密窗口外调用被加密的 prot_antidebug_scan -> 密文执行误报。修复: main.c 将 apply_policy 调用包入 sc_ext_enter/leave。
+- doccheck/docclaim/gate 系列缺陷：跨文档悬空引用（同型第 20 例）、
+  节序判据盲区、自检可见性三级判据、Studio 自检依赖 gitignored 门禁历史、
+  hashpatch ELF 路径 target_names[i] IndexError 潜伏缺陷
+
+### Security
+- 开源收尾：git 历史脱敏重写（460 提交、11 类标识 0 命中、身份统一 noreply）、
+  工作区泄露清零（oss_release --check 全绿）、公开仓库内容同步（sync_public）
 
 ## [1.1.0] - 2026-09-23
 
