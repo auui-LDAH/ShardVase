@@ -107,6 +107,9 @@ Release 构建: 签名验证通过 (signtool verify /pa); 可复现验证通过
   已落地（golden 6/6 + flow test 11/11 + 真机 hashcalc 验收）。
 - **签发体系**：Ubuntu Server（离线签发机，主机名已脱敏）离线签发 + GUI 签发台（本机
   桌面快捷方式）+ 台账哈希链/重放拦截/字段卫生（D-D1/D-D2/D-D4）。
+  **停用状态（2026-10-16，用户指令：无限期停止）**：本机无签发实例在跑
+  （issue_console GUI 未运行、无计划任务/服务）；cloud-vps 实测无签发部署
+  （无 protsdk 目录/进程/服务/cron/docker 单元）。恢复签发需用户明确解禁。
 - **ShardVase 公开面**：GitHub 仓库（auui-LDAH/ShardVase-*）+ 演示包
   v1.0（hashcalc + 评估授权）+ 文档（能力/边界/攻防记录）。
 - **攻防矩阵**：drill6（签发链路）、sdk1（骨架产物 14 项）、sdk2
