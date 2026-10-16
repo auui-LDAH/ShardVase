@@ -1,7 +1,7 @@
 # 续作计划 — 未完成项排程与验收（CONTINUATION_PLAN）
 
 > 版本：2026-10-02 v7 · 状态：**✅ 全部完成**（Q0 ✅ / Q1 ✅ / Q2 ✅ / Q3 ✅ / Q4 ✅ / Q5 ✅ / **Q6 ✅**）
-> **最后核实**: 2026-10-05 · 方法: `tools/docclaim_check.py` + 门禁默认 **36** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `8d65e87`（R3.2-c 位置抖动 + gate_log T1 调度抖动 + e2e T3 真机验证 + 门禁第 37 项 + S1 revoke 收口 + 门禁第 38 项 Android 交叉编译后）
+> **最后核实**: 2026-10-05 · 方法: `tools/docclaim_check.py` + 门禁默认 **36** 项实跑 + `tools/replica_check.py` **五条**判据（含 6 组单点变异 + 位置抖动）+ `window_check` 负向对照（4/4）+ gate_log 自检 6 项（含 4 负向）+ 逐文件行号复核 + 全库普查探针 · 提交 `66a62e5`（R3.2-c 位置抖动 + gate_log T1 调度抖动 + e2e T3 真机验证 + 门禁第 37 项 + S1 revoke 收口 + 门禁第 38 项 Android 交叉编译后）
 > 依据：`docs/HANDOVER.md` §2.10、`docs/REFINE_PLAN.md`、`docs/DEBUG_CONSOLE_PLAN.md`、
 > `docs/DECISION_REDUNDANCY_PLAN.md` §11.5、`docs/USABILITY_ASSESSMENT.md` §1.6
 > 起于用户指令（m01215）：「按你推荐的来，先生成计划然后按照计划推进」
@@ -15,7 +15,7 @@
 
 | # | 先前说法 | **实测事实** | 证据 |
 |---|---------|-------------|------|
-| **更正 1** | 「A2 = 从零接入 smoke **stderr 缺陷待修**」（列为最高优先） | **已修复**，2026-09-30 提交 `e2aa5a8`。`build_skeleton.ps1:347-353` 已有 `$sErr = smoke_err.log` + 两次 `Remove-Item`；`:381` 已带 `-RedirectStandardError $sErr`；`:394-399` 已合并两流并分别打印。**剩下的是文档没跟上**，不是代码缺陷 | `git log e2aa5a8`；`prot_sdk/skeleton/build_skeleton.ps1:347-399` |
+| **更正 1** | 「A2 = 从零接入 smoke **stderr 缺陷待修**」（列为最高优先） | **已修复**，2026-09-30 提交 `1397001`。`build_skeleton.ps1:347-353` 已有 `$sErr = smoke_err.log` + 两次 `Remove-Item`；`:381` 已带 `-RedirectStandardError $sErr`；`:394-399` 已合并两流并分别打印。**剩下的是文档没跟上**，不是代码缺陷 | `git log e2aa5a8`；`prot_sdk/skeleton/build_skeleton.ps1:347-399` |
 | **更正 2** | 「新发现：源码 mojibake」当作**风险未知**的缺陷 | 范围已探明：**216 行 / 6 文件**（v1 曾低估为 58 行，漏检 73%），**全部是注释与文档，零行为影响**；且已建成**精确 CP936 编解码器 + 三源求解工艺 + 全库回归门禁**。它是本轮**最值得做的真实缺陷**，但**不是**阻断级 | `git status` 干净；坏行与 `HEAD` 逐文件一致（已入库）；判据与实测见 §2 |
 
 > **教训（本轮）**: 上一轮的汇报里有 1 条**已过期**（更正 1）。
@@ -241,7 +241,7 @@ freq_orig >= 5` —— 「像字符的**每一次**出现都落在硬验证候�
 | 文件:行 | 现写 | 应改为 |
 |---------|------|--------|
 | `docs/USABILITY_ASSESSMENT.md:61` | 缺陷④ 状态 `⏳ **已定位，修复待做**` | `✅ **已修**（提交 \`e2aa5a8\`，2026-09-30）` |
-| `docs/REFINE_PLAN.md:124` | 「**从零接入仍未完全跑通**（④ 待修）」 | 「✅ **已完全跑通**（`e2aa5a8` 修 4 处；smoke PASS）」 |
+| `docs/REFINE_PLAN.md:124` | 「**从零接入仍未完全跑通**（④ 待修）」 | 「✅ **已完全跑通**（`1397001` 修 4 处；smoke PASS）」 |
 | `docs/USABILITY_ASSESSMENT.md:88` | 缺陷⑤「低危但影响可用性」 | Q2 实测后据实改写 |
 
 **Q0 验收**: `docclaim_check` + `doccheck` 仍 PASS；三处文案与代码事实一致。
@@ -500,7 +500,7 @@ for m in re.finditer(r'release_check[^\n]*?(\d+)/(\d+)', t):
 （最后一次提交均为 `c941c9c` ⇒ **博客发布稿存底，非活文档**）。
 
 > **2026-10-06 更正**：上句原写的理由「~~无任何文件引用它们~~」**经实测不成立**
-> —— `git grep` 在该判断作出的提交 `fc18ebb` 上**当时就有引用**。
+> —— `git grep` 在该判断作出的提交 `823e389` 上**当时就有引用**。
 > **结论不变，依据换了**：真正成立的是「**无任何机器消费者**」
 > （限定可执行/配置类型搜索零命中、不在 doccheck 扫描面），
 > 叠加「以 `publish/` 为准，旧文件保留作历史」这条既有口径。
@@ -574,7 +574,7 @@ TARGETS 24 个文件 (doccheck 扫描范围)
 
 ### 7.2 交付物（**三个，缺一不可**）
 
-1. `docs/ATTACK_DRILL9.md` —— ✅ **已交付**（2026-10-02，提交 `acbdb94`，244 行）。
+1. `docs/ATTACK_DRILL9.md` —— ✅ **已交付**（2026-10-02，提交 `408690e`，244 行）。
    格式照 `docs/ATTACK_DRILL8.md`（115 行）:
    `# 第九轮 — …（ATTACK_DRILL9）` / `> 版本 · 状态 · 关联` /
    `## 1. 缘起` / `## 2. 复核发现` / `## 3. 实证` /
@@ -601,7 +601,7 @@ TARGETS 24 个文件 (doccheck 扫描范围)
 - **L842** `(void)prot_integrity_check_guards();   /* 首次调用即建立快照 */`（旧记 L814）
 
 > **漂移说明（2026-10-03）**：以上行号整体 +28 —— 因 `src/integrity.c` 在本轮
-> T11 根因修复（`e6917a2`，A5 反调试复核上移到 `prot_selfcrypt_leave(EXT)` 之前）
+> T11 根因修复（`a8b5a1d`，A5 反调试复核上移到 `prot_selfcrypt_leave(EXT)` 之前）
 > 之后插入了注释块与语句。原记的 L609/L610/L630/L645/L684/L696/L704/L814 **均已失效**。
 > 另注：`prot_integrity_check_guards()` 还有一处调用在 `src/integrity.c:253`（A5 复核路径），
 > 以及 `:760` 附近注释提到惰性建立快照的旧实现。
@@ -656,7 +656,7 @@ remote = `https://github.com/jurecoasertkrocket777/shardvase.git`（**PRIVATE**�
 **⑤ 已由第九跑实证（原"诚实边界"已消除）**: 缺陷 7 / 8 的修法先在本机复演通过
 （`build/_def7_repro_sim.py` 用**该轮 CI 真实产物**复演比对逻辑 = PASS；
 `verify_sdk_standalone.py` 由 rc=1 转 rc=0），随后
-**第九跑 `37061070912` / `90b98d4` 四个 job 全绿**：
+**第九跑 `37061070912` / `2b81278` 四个 job 全绿**：
 `build-and-verify` 22/22、`reproducible` 6/6（含 `Compare SHA-256`）、
 `sdk-package` 7/7（含 `Verify SDK is standalone`）、`linux-portability` 5/5。
 ⇒ **Q6 验收达成**（判据是"两 job 至少绿一次"）。

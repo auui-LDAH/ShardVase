@@ -8,7 +8,7 @@
 > `docs/compat-matrix.csv`（环境实测矩阵）。
 > **日期**：2026-09-21
 
-> **最后核实**: 2026-09-29 · 方法: `tools/perf_baseline.py` + `tools/deploy_harden.ps1 -Selftest` · 提交 `1d59ac0`
+> **最后核实**: 2026-09-29 · 方法: `tools/perf_baseline.py` + `tools/deploy_harden.ps1 -Selftest` · 提交 `32e765a`
 
 ---
 
@@ -137,7 +137,7 @@ full:     自检 **+673.32 ms (+4940%)** · 内存 +0.00 MB
 | **①** | `prot_wizard.py` **是 tkinter GUI**，`--help` **挂住 120 秒** | 实测超时；源码 `tk.Tk()` + `mainloop()`，**无 argparse** | **诚实边界**（文档已说"GUI 向导"；但 TUTORIAL 给的命令无 CLI 替代 —— 建议补 `--headless`）|
 | **②** | **`$busSrcs` 路径未加引号** -> 空格拆词 | `cl: warning D9024: 无法识别的源文件类型"D:\specifically"` | ✅ **已修** |
 | **③** | **`$signStep` 路径未加引号** | `vmenc.py: error: unrecognized arguments: for development and work\…` | ✅ **已修** |
-| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ✅ **已修**（提交 `e2aa5a8`，2026-09-30）|
+| **④** | **smoke 只重定向 stdout、未重定向 stderr** | `smoke_out.log` = **0 字节**；分离两流实测: 诊断信息全在 **stderr**（146 B）| ✅ **已修**（提交 `1397001`，2026-09-30）|
 
 #### ②③ 的根因是**同一个**（已在本仓库记名过）
 ```
@@ -159,7 +159,7 @@ smoke 的判据是 `$sText -match 'license: 1'`，而 $sText 来自
    **诊断信息丢失**会把"可修的错误"变成"无从下手的失败"。
 ```
 **修复**（已完成，见上表 ④）: `build_skeleton.ps1` 增加 `$sErr = smoke_err.log`
-并在失败时打印 `$sOutLines` / `$sErrLines` 两流（提交 `e2aa5a8`）。
+并在失败时打印 `$sOutLines` / `$sErrLines` 两流（提交 `1397001`）。
 
 #### ⑤ 附带发现: usage 提示显示**字面宏名** —— ✅ **已修**（Q2，2026-10-02）
 ```

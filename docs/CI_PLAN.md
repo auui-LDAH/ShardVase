@@ -178,13 +178,13 @@ protchain_check.py 独立脚本，删除即回退。
       Release 可复现全绿）。
 7. [x] **CI 远程运行**（2026-10-02 回填）：已推到私库
       `https://github.com/jurecoasertkrocket777/shardvase.git` 并实跑 9 轮。
-      第 8 轮（`37055147715` / `e6917a2`）`build-and-verify` 22/22 与
+      第 8 轮（`37055147715` / `a8b5a1d`）`build-and-verify` 22/22 与
       `linux-portability` 5/5 **全绿**。
       ⚠️ **`reproducible` 与 `sdk-package` 在第 8 轮才首次真正执行**
       （前 7 轮因 `needs: build-and-verify` 红而全部 `skipped`，
       里面的命令从未跑过），随即暴露缺陷 7（产物保留目录结构）与
       缺陷 8（SDK 包缺 `winproc.py` / `mapfile.py`）。
-      **第 9 轮（`37061070912` / `90b98d4`）四个 job 全绿** ——
+      **第 9 轮（`37061070912` / `2b81278`）四个 job 全绿** ——
       `build-and-verify` 22/22、`reproducible` 6/6（含
       `Compare SHA-256 with first build`）、`sdk-package` 7/7（含
       `Verify SDK is standalone`）、`linux-portability` 5/5。

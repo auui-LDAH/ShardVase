@@ -15,7 +15,7 @@
 > `docs/EXTENSION_PLAN.md`（Android SO 保护 A + 跨平台许可服务化 C 延申计划）/
 > `docs/INFRA_PLAN.md`（基础设施完善计划）/ `docs/WIN_ENHANCE.md`（Windows 侧增强计划）。
 > **交接任何事项前务必先读本文档 + CONTRACT。**
-> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **42** 项（默认 39）· 提交 `6c52733`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
+> **最后核实**: 2026-10-06 · 方法: tools/docclaim_check.py（8/8 PASS）+ tools/doccheck.py（0 错误；自计数随文档增长，见 §2.36.7；含门禁结构 + README 清单成员 + **阈值常量 vs 文档声明**对账（§2.45）+ **ci.yml 项数口径**对账（§2.46）+ **源码 file:line 引用**逐条出生对比（§2.47，14 处已修）+ `ci_sim` 工具集 vs `ci.yml`（§2.48，补 5 步 + 3 项明写豁免）+ `run_demo` 超时回收（§2.50，四处同型缺口已修））+ replica_check **五条判据**（含 6 组单点变异 + 全打掉对照 + 位置抖动）+ crc_targets **13 条判据**（含 8 负向变异）+ gate_log 自检 6 项（含 4 负向）+ e2e T1-T30 + android_compile_check T1-T13 + selfcrypt_residency_check **4 条判据**（含 4 负向变异）+ migration_cost **M3adv 7 条用例**（对抗口径诊断，见 2.44）+ 门禁 **42** 项（默认 39）· 提交 `ea69618`（阶段总结 28287ea + 陈旧复选框整理 9e013ff/ed398ac/ed669fe + e2e T29 补齐 80db8ba + e2e T30 补齐 efb81b7 + D2c 收口见 §2.35）
 
 
 ## 1. 项目是什么
@@ -227,12 +227,12 @@ W2 长驻留实跑／T3 真机（需**交互式桌面**，SSH 与计划任务均
 
 | 步 | 内容 | 提交 |
 |----|------|------|
-| 清理 | flat 目录清理（38 文件）+ 2 处隐藏依赖修复 | `d633afa` `fdb2f7e` |
-| D2 | **并发状态锁**（门禁↔ci 互斥，自检 6 项/3 负向） | `8eca3bc` |
-| D3 | **判据盲区固化**（padding⊆json、flat 无残留；自检 6→8） | `4b4a31c` |
-| D1 | **Linux 检查器健康**（mutate 6 健康/0 盲 + 镜像 7 项进 ci） | `98b47e5` |
-| D4 | **攻防矩阵复核**（BREACHED 6→4；PARTIAL 3→BLOCKED；**V2 修复**） | `d6a6219` `b5f3891` |
-| 审计 | 阶段审计 + 计划章节标题回填 | `f5d9395` |
+| 清理 | flat 目录清理（38 文件）+ 2 处隐藏依赖修复 | `df1487d` `f9c42bc` |
+| D2 | **并发状态锁**（门禁↔ci 互斥，自检 6 项/3 负向） | `9539b32` |
+| D3 | **判据盲区固化**（padding⊆json、flat 无残留；自检 6→8） | `9e32c93` |
+| D1 | **Linux 检查器健康**（mutate 6 健康/0 盲 + 镜像 7 项进 ci） | `9dd0d84` |
+| D4 | **攻防矩阵复核**（BREACHED 6→4；PARTIAL 3→BLOCKED；**V2 修复**） | `6603cd1` `13c257d` |
+| 审计 | 阶段审计 + 计划章节标题回填 | `6518b27` |
 
 ### 门禁基线（本轮后）
 
@@ -468,7 +468,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
    > 价值已当场兑现: R3.2 会话里花 3 个失败探针才拿到的 8 个掩码区 + 5 个区内
    > `prot_*` 符号，现在 `mask` **一条命令**给出且**逐字吻合**。
    > 第 2 步（`patch`/`read`/`watch`）、第 4 步（反调试提示）**已于 2026-10-01 交付**
-   > （提交 `5e7340b` + 门禁第 32 项，见下方 **§2.10**）；
+   > （提交 `3a3b005` + 门禁第 32 项，见下方 **§2.10**）；
    > 第 3 步（诊断构建）**降级为可选**（§5 已更新依据）。
 
 4. **门禁现在会落日志**（2026-09-30）—— `tools/gate_log.ps1`
@@ -552,7 +552,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 
 ⑧ ⭐ **门禁自己静默跳过了 10 项，还照打 `PASS`**（2026-10-01，`tools/release_check.ps1`）
    不带任何开关跑，报 `PASS: 19 项检查全通过` —— 而脚本里明明有 **32 个** `Check`。
-   根因（二分 14 个历史 ref 定位）: 提交 `abc5edc`（2026-09-27）把一段**纯注释块**
+   根因（二分 14 个历史 ref 定位）: 提交 `4810f6b`（2026-09-27）把一段**纯注释块**
    插进了 `if ($WithMigration) { … }` 的 body，**吃掉了它的 `} else {`** ——
    于是第 23~32 项**全部被罩进那个 if**，只有显式传 `-WithMigration` 才跑。
    实测对照（同一脚本、同一台机器）:
@@ -583,7 +583,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
       **第 2/4 步 2026-10-01 已交付**: read/patch/watch + 反调试提示，见 §2.10）
       tools/gate_log.ps1（**门禁落日志**: start/-Stop/-Selftest；自检 6 项含 4 负向；
       检测到外层转录时自检自动换子进程；T1 用**有界等待**替代立即断言，见 §2.22）
-修改: tools/release_check.ps1（26–32 项 + **结构修复**: 补回 `abc5edc` 吃掉的
+修改: tools/release_check.ps1（26–32 项 + **结构修复**: 补回 `4810f6b` 吃掉的
       `} else {`，见教训 ⑧）
       tools/doccheck.py（**新增门禁结构断言**: 每个 `Check` 必须在顶层）
       tools/ci_linux.ps1（同步落日志）
@@ -595,7 +595,7 @@ R3.3（PARTIAL 复核）；**R3.2（判定点冗余）出计划并实施前两�
 ### 2.10 增量（2026-10-01）：调试控制台第 2/4 步 + **门禁"静默跳过 10 项"事故**
 
 **本轮完成**：`docs/DEBUG_CONSOLE_PLAN.md` **第 2 步**（`read`/`patch`/`watch`）
-与**第 4 步**（反调试干扰提示）交付（提交 `5e7340b`，门禁第 32 项）；
+与**第 4 步**（反调试干扰提示）交付（提交 `3a3b005`，门禁第 32 项）；
 随后复查中发现并修复**门禁自身静默跳过 10 项**的结构事故（详见教训 ⑧）。
 
 **① 调试控制台第 2/4 步**（`tools/prot_dbg.py`，第 1 步为纯只读）:
@@ -623,7 +623,7 @@ watch <符号> [--seconds S] [--patch <符号>…]   轮询被观测符号**自�
 **② ⚠️ 本轮最重要的发现: 门禁不带开关时会静默跳过 10 项仍报 PASS**
 ```
 现象: `tools\release_check.ps1`（无开关）-> `PASS: 19 项`，而脚本里有 32 个 `Check`
-根因: 提交 `abc5edc`（2026-09-27）把一段**纯注释块**插进了 `if ($WithMigration)`
+根因: 提交 `4810f6b`（2026-09-27）把一段**纯注释块**插进了 `if ($WithMigration)`
       的 body，**吃掉了它的 `} else {`** -> 第 23~32 项全被罩进那个 if
       （二分 14 个历史 ref，该提交处 if body span 从 4 行跳到 32 行）
 实测: 无开关 19 项 / 三开关全开 31 项（同一脚本、同一台机器）
@@ -642,9 +642,9 @@ watch <符号> [--seconds S] [--patch <符号>…]   轮询被观测符号**自�
 ### 2.11 增量（2026-10-02）：Q0/Q1/Q2 —— 216 行 mojibake 修复 + **判据换代** + 缺陷⑤定证
 
 **本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q0–Q2）:
-Q0 文档回填（`1c7604a`）/ Q1 源码 mojibake **216 行**修复 + 新增全库回归门禁第 33 项
-（`4cf2cb6`）/ Q2 缺陷⑤ usage 字面宏名**定证并修复** + 判据 v5 补单字符盲区
-（`efe4f3d`）。
+Q0 文档回填（`bfd9548`）/ Q1 源码 mojibake **216 行**修复 + 新增全库回归门禁第 33 项
+（`6c1a002`）/ Q2 缺陷⑤ usage 字面宏名**定证并修复** + 判据 v5 补单字符盲区
+（`e4b7805`）。
 
 **Q2 收尾实测**: 干净树上全量门禁 `PASS: 30 项检查全通过`
 （`build/logs/release_check_20261002_022916.log`）；`tools/sdk_pack.py --force --zip`
@@ -709,7 +709,7 @@ v1 猜测（已推翻）: "16 处 usage 用的 APP_EXE_NAME_STR 已经过宏展�
 
 ### 2.12 增量（2026-10-02）：Q3 —— `doccheck` 扫描盲区消除 + **7 类语境豁免** + 负向自检
 
-**本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q3，提交 `2f48ab1`）:
+**本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q3，提交 `2da1115`）:
 把 `tools/doccheck.py` 从"只扫对外材料 16 文件"扩到 **24 文件**
 （对外材料 16 + **自声明现时的内部文档 8**），新增 7 类语境豁免与
 **21 项负向自检**，并连带修掉 4 条真缺陷。原计划 §5.2/§5.3 的设计
@@ -814,7 +814,7 @@ tools/comment_lint.py        : PASS（102 个 .c/.h, 0 警告）
 
 ### 2.13 增量（2026-10-02）：Q5 —— DRILL9 端到端实证 + ⚠️ **守卫检查器自身不在 CRC 覆盖内**（真漏洞）
 
-**本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q5，提交 `acbdb94`）:
+**本轮完成**（承 `docs/CONTINUATION_PLAN.md` 的 Q5，提交 `408690e`）:
 补上 `docs/DECISION_REDUNDANCY_PLAN.md:516` 记的"**仍未做**"—— 在**出厂
 `PROT_POLICY_EXIT` 策略下**的端到端演示。`tools/guard_selftest.py` 是靠
 **改策略模拟**段 CRC 被中和；本轮把它**显式化为真的重算**。
@@ -998,7 +998,7 @@ CONTRIBUTING.md:67/:95    13 项 / 13/13 PASS -> 30 项（-With* 共 33）/ 30/3
 （最后提交均 `c941c9c` ⇒ 博客发布稿存底, 非活文档）。
 
 > **2026-10-06 更正**：上句原写的理由「~~无任何文件引用它们~~」**经实测不成立**
-> —— `git grep` 在该判断作出的提交 `fc18ebb` 上**当时就有引用**，
+> —— `git grep` 在该判断作出的提交 `823e389` 上**当时就有引用**，
 > 且 `publish/README.md` 逐字写着「完整技术档案（内部版）：
 > `docs/部署档案-ShardVase.md`（含更多内部细节，发布时按需删减）」。
 > **结论不变，依据换了**：真正成立的是「**无任何机器消费者**」
@@ -1226,7 +1226,7 @@ tools/verify_sdk_standalone.py              : rc=0  构建 ✓ smoke ✓ DONE �
 
 **⑨ 第九跑实证（2026-10-02，本节写作后的补充）**
 
-第九跑 `37061070912` / `90b98d4` **四个 job 全绿**：
+第九跑 `37061070912` / `2b81278` **四个 job 全绿**：
 
 | job | 步数 | 关键步 |
 |---|---|---|
@@ -1361,7 +1361,7 @@ D2a 下 `prot_selfcrypt_enter` 首行即 `return PROT_OK`，`else` 分支不可�
 
 **🔴 负向对照抓出的假阴性（本轮最重要的发现）**：
 `build/_wc_negctl.py`（不入库）把 `git show 18d29da:src/integrity.c`
-（= `e6917a2` 的父提交，A5 块仍在 `leave(EXT)` 之后）放进仓库副本跑同一判据。
+（= `a8b5a1d` 的父提交，A5 块仍在 `leave(EXT)` 之后）放进仓库副本跑同一判据。
 **首跑：修复前的树也只报同样 3 处 §2.16 违规，`src/integrity.c` 一处都没报** ——
 即门禁**不可能**发现 T11。机制：`indirect_call_groups()` 的返回键是**文件**，
 `src/integrity.c` 因定义了组 1 目标且有函数指针调用而**整个文件**被标记；
@@ -1407,7 +1407,7 @@ build/_wc_negctl.py（负向，真实修复前代码） rc=0   4/4 项
 (window_check)`；`[skip]` 0 / `[info]` 3（三个 `-With*` 开关项）。
 另 `tools/mutate_check.py` rc=0、`tests/vmc_tests.py` rc=0、`git diff --check` clean。
 
-**CI 第十跑（`c8a4799` → run `37096941944`）四 job 全绿**：
+**CI 第十跑（`7c28136` → run `37096941944`）四 job 全绿**：
 `linux-portability` 5/5、`build-and-verify` **22/22**（`Full release gate` 步在同一份
 `release_check.ps1` 下通过）、`reproducible` 6/6、`sdk-package` 7/7；
 唯一 `skipped` 仍是 `Publish GitHub Release`（`ci.yml:283` tag 门控，设计如此）。
@@ -1535,14 +1535,14 @@ Check '可复现 (repro_check)' {
 `tests/vmc_tests.py` rc=0 · `comment_lint` rc=0 · `git diff --check` rc=0。
 
 **仍未验证的**：无。门禁的这次改动已在 CI 上验证 ——
-**CI 第十三跑（`82011fe` → run `37107965249`）四个 job 全绿**：
+**CI 第十三跑（`58a20f4` → run `37107965249`）四个 job 全绿**：
 `build-and-verify` **24/24**（含 `Full release gate` 步，用的就是本次改过的
 `release_check.ps1`）、`linux-portability` 8/8、`reproducible` **8/8**
 （含 `Compare SHA-256 with first build`）、`sdk-package` 9/10
 （唯一 `skipped` 仍是 `Publish GitHub Release`，tag 门控，设计如此）。
 ⇒ 门禁内"第 3 项快照 → 第 4 项比对"这条新链路在真实 CI 上生效且不误报；
 CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），两条路径同时绿。
-随后的回填提交（`c32c59f` → run `37109031897`，第十四跑）同为四 job 全绿
+随后的回填提交（`bd3342c` → run `37109031897`，第十四跑）同为四 job 全绿
 （`build-and-verify` 24/24、`linux-portability` 8/8、`reproducible` 8/8、
 `sdk-package` 9/10）。
 
@@ -1606,7 +1606,7 @@ CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），
 
 **⑤ `§7.3 实现落点` 的 `src/integrity.c` 行号整体 +28 失效**
 原记 L609/L610/L630/L645/L684/L696/L704/L814，实测现值
-**L637/L638/L658/L673/674/L712/L724/L732/L842**。根因：T11 根因修复（`e6917a2`）
+**L637/L638/L658/L673/674/L712/L724/L732/L842**。根因：T11 根因修复（`a8b5a1d`）
 在 `watchdog_thread` 里插入了注释块与语句，其后所有行号位移。
 ⇒ 全部换成现值并保留旧值对照。
 
@@ -1626,7 +1626,7 @@ CI 的 `reproducible` job 与本改动正交（它比对 `build_artifacts`），
 **⑧ `docs/DECISION_REDUNDANCY_PLAN.md` 交付状态未回填（且它不受门禁保护）**
 文件头 `:7` 写「v1 · 状态：**📋 待确认**」，`:516`（§11.5 第 3 条）写
 「**仍未做**：在 EXIT 策略下的端到端演示 → 留给 R3.2-d/DRILL9」。
-**但 DRILL9 早已交付**：`acbdb94` → `docs/ATTACK_DRILL9.md`（244 行，
+**但 DRILL9 早已交付**：`408690e` → `docs/ATTACK_DRILL9.md`（244 行，
 判定点 patch + **重算 CRC** 后**仍被守卫抓住**，EXIT 策略端到端实测）。
 ⇒ 文件头状态改为「**🟡 部分交付**」，`:516` 加删除线 + 交付证据，
 文末新增「交付状态注（2026-10-03 复核）」表。
@@ -1800,7 +1800,7 @@ cases=12325 mismatch=0 oracle_bad=0 entry_bad=0 range_bad=0 folded=0
 - **门禁实跑**：`[release_check] PASS: 32 项检查全通过`（35 顶层 = 32 ok + 0 X + 0 skip + 3 info），
   含新增的 `[ok] 判定多副本等价性 (replica_check)`。
 - **3 连建**：build 1/2/3 各 `rc=0`、日志均 `DONE` 且 **0 warning / 0 error**（`/W4 /WX`）。
-- **CI 实跑（`d6f1f8d` + 回填 `7da95f1` → run `37158617592`）四个 job 全绿**：
+- **CI 实跑（`5702a62` + 回填 `da32685` → run `37158617592`）四个 job 全绿**：
   `build-and-verify` 24/24（含用本次改过的 `release_check.ps1` 跑的 `Full release gate`，
   其 `[ok]` 里可见 **`判定多副本等价性 (replica_check)`**）、
   `linux-portability` 8/8、`reproducible` 8/8（含 `Compare SHA-256 with first build`）、
@@ -1895,7 +1895,7 @@ cases=12325 mismatch=0 oracle_bad=0 entry_bad=0 range_bad=0 folded=0
 
 ## 2.22 增量（2026-10-04）：CI 第 16 跑红项 —— `gate_log` T1 是**拿调度抖动当缺陷**
 
-> **缘起**：`04340f4`（位置抖动）推送后，CI 第 16 跑 `37164875743` 的
+> **缘起**：`29d67c6`（位置抖动）推送后，CI 第 16 跑 `37164875743` 的
 > `build-and-verify` job 报 `Full release gate` 失败，门禁 `FAIL: 1/28`。
 > 唯一失败项 = `[X] 门禁日志自检 (gate_log)`，且**只有 T1 红**（T2..T5 全 ok）：
 > `[X] T1 开启转录 rc=0 且返回文件已创建`。
@@ -1969,7 +1969,7 @@ B) build\_glStress.ps1（外层转录 + 40 次 fork，改后）-> ok T1 行 40 /
 > `exists=False` 而 `files=[st.log]` 的并存现象；改后证据是 B 的 `40/40`。
 > 教训：**探针与被测对象都要各自被证伪一次** —— 失败形态与 CI 一致，不等于探针正确。
 
-C) CI 第 17 跑 `37167298806`（head `cc6fbb0`）-> 四个 job 全绿；
+C) CI 第 17 跑 `37167298806`（head `9967e9e`）-> 四个 job 全绿；
    `Full release gate` step 19 success（第 16 跑即败于此步），
    `[gate_log-selftest] PASS: 6 项（含 4 负向）` / `[ok] 门禁日志自检 (gate_log)`
    / `[ok] 判定多副本等价性 (replica_check)` / `[release_check] PASS: 28 项检查全通过`。
@@ -2102,12 +2102,12 @@ e5ea2d5            init baseline      -> tests/e2e.py:120 class DebugAttacher(ob
 15a0dd5 (S6)       只改同区域附近的 preflight，未恢复该类
 ```
 
-- **为何一直没被发现**：`22826c5` 之后 T3 的 preflight 是
+- **为何一直没被发现**：`816ac4e` 之后 T3 的 preflight 是
   `DebugActiveProcess(os.getpid())` —— Windows **禁止进程调试自身** ⇒ preflight
   必然失败 ⇒ 一直走 SKIP，`:509 else:` 分支（`:515 dbg = DebugAttacher()`）
-  **从未被执行过**。`15a0dd5` 把 preflight 改成对**派生子进程**
+  **从未被执行过**。`66e2064` 把 preflight 改成对**派生子进程**
   (`cmd /c timeout /t 3 /nobreak`) 附加后，只要环境允许调试就**必然**走到 `:515`。
-  `git log -G DebugAttacher` 全历史只有 `e5ea2d5`（加）与 `22826c5`（删）两个提交。
+  `git log -G DebugAttacher` 全历史只有 `e5ea2d5`（加）与 `816ac4e`（删）两个提交。
 
 ### 修法：从删它的那个提交的父提交逐字恢复
 
@@ -2147,7 +2147,7 @@ tracer）」，但**该 tracer 从未存在**；本轮只恢复 Windows 路径�
 
 ## 2.25 增量（2026-10-05）：`guard_selftest` 的**假红** —— 拿固定 `sleep` 赌宿主就绪
 
-> **缘起**：CI 第 16 跑（`37164875743`，head `04340f4`）唯一红项
+> **缘起**：CI 第 16 跑（`37164875743`，head `29d67c6`）唯一红项
 > `[X] 判定点快照校验自检 (guard_selftest)`，诊断
 > `| **FAIL** 负向(patch -> hits 必须 > 0)  exit=2989  hits=0  <- 判据未满足`。
 > 本机连跑 **12/12 + 4/4 全绿**（负向 `hits=2/3/4`），**稳定不复现**。
@@ -2370,7 +2370,7 @@ build-and-verify  Full release gate
 
 | # | 事故 | 潜伏期 | 为什么没人发现 |
 |---|---|---|---|
-| 1 | `tests/e2e.py` T3 调用 `DebugAttacher()`，而该类已被 `22826c5`（2026-09-28, C-3）整块删除 | **7 个月** | 旧 preflight 用 `DebugActiveProcess(os.getpid())`，Windows 禁止自附加 ⇒ 那条 `else` 分支从未执行；直到 S6 把 preflight 改成附加派生子进程，它才**第一次**被走到 |
+| 1 | `tests/e2e.py` T3 调用 `DebugAttacher()`，而该类已被 `816ac4e`（2026-09-28, C-3）整块删除 | **7 个月** | 旧 preflight 用 `DebugActiveProcess(os.getpid())`，Windows 禁止自附加 ⇒ 那条 `else` 分支从未执行；直到 S6 把 preflight 改成附加派生子进程，它才**第一次**被走到 |
 | 2 | `tools/guard_selftest.py` 的诊断分支引用 `run_by_hits()` 的局部名 `cont` / `exit_pol` | 同轮 | 诊断分支只在"未能就绪"这条失败路径上执行，本地恒绿 ⇒ 永不可达 |
 
 共同点：**代码只在失败路径 / 异常路径上执行**。这解释了为什么既有防线全都漏掉：
@@ -2759,8 +2759,8 @@ Windows-only（`windows.h`）4 个。它们**全是"本平台不适用"，不是
 
 **处置原则不是拍脑袋定的**：用 `git log --oneline -S '<字面量>'` 逐一回溯，
 发现 `门禁默认 34 项 PASS`、`重跑门禁**（默认 34 项）`、
-`门禁 **37** 项 · 提交见` **三处的最新改动提交统统是 `bc68b11`**
-（即门禁第 37 项那次），`-S '…33 项…'` / `-S '…36 项…'` 同样命中 `bc68b11`。
+`门禁 **37** 项 · 提交见` **三处的最新改动提交统统是 `f3bc423`**
+（即门禁第 37 项那次），`-S '…33 项…'` / `-S '…36 项…'` 同样命中 `f3bc423`。
 ⇒ **仓库既有惯例 = 每轮就地替换数字，不是逐处加注**。故本轮全部就地改为现值。
 
 **唯一例外是漂移测试字面量**：`tools/doccheck.py:823-828` 的
@@ -2840,7 +2840,7 @@ Windows-only（`windows.h`）4 个。它们**全是"本平台不适用"，不是
 
 ### 2.31.1 现象：门禁红在一个"与本次改动无关"的项上
 
-`f4b27f4`（门禁第 38 项）提交并推送后，本地全门禁与 CI 同时在
+`94c4170`（门禁第 38 项）提交并推送后，本地全门禁与 CI 同时在
 **第 14 项 `对外材料 (doccheck)`** 报红：
 
 ```
@@ -2931,7 +2931,7 @@ for good, bad in (('38/38', '36/36'), ('38 项', '36 项')):   # 旧版: ('37/37
    前两次都只在注释里写"记得重挑字面量"，第三次照旧发生。
    这次把不变量的成立条件写进代码（`assert` + 推导），
    **让越界在运行期直接抛错**，而不是留给下一轮的人去记。
-4. 附带事实：`f4b27f4` **是本地门禁报红时提交的** —— 我先跑了 `git commit`
+4. 附带事实：`94c4170` **是本地门禁报红时提交的** —— 我先跑了 `git commit`
    再跑全门禁，实际顺序应当是「全门禁绿 → 提交」。
    该提交本身内容正确（红项在自检字面量，不在其改动），
    但**顺序错了**：若当轮 CI 是准入条件，这次会被挡下。
@@ -2959,14 +2959,14 @@ for good, bad in (('38/38', '36/36'), ('38 项', '36 项')):   # 旧版: ('37/37
 
 | 步 | 交付物 | 位置 |
 |----|--------|------|
-| **总结** | `docs/阶段总结-2026-10-06.md`（363 行） | 提交 `28287ea` |
-| **整理** | `docs/BLUEPRINT.md` §9 + `docs/MODULAR_ARCH.md` 头部/§5 | 提交 `9e013ff` |
+| **总结** | `docs/阶段总结-2026-10-06.md`（363 行） | 提交 `0d51c86` |
+| **整理** | `docs/BLUEPRINT.md` §9 + `docs/MODULAR_ARCH.md` 头部/§5 | 提交 `d4f30be` |
 | **记录** | 本节 | 本提交 |
 | **技术沉淀** | 阶段总结 §3（`3.1`-`3.8`）+ §7 元结论 + 仓外记忆 | 见 §2.32.4 |
 
-**阶段边界**：`9f11975`（2026-09-30）-> `0331f97`（2026-10-06），**72 个提交**，
+**阶段边界**：`886adb9`（2026-09-30）-> `83be0fc`（2026-10-06），**72 个提交**，
 `git diff --shortstat` = `107 files changed, 15970 insertions(+), 977 deletions(-)`。
-前序为 `docs/阶段总结-2026-09-30.md`（`3600ecf` -> `9f11975`，14 提交）。
+前序为 `docs/阶段总结-2026-09-30.md`（`282c63a` -> `886adb9`，14 提交）。
 
 **本阶段门禁 28 -> 38**（新增 10 项、移除 0 项），逐轮：
 
@@ -2983,7 +2983,7 @@ bc68b11 = 37  + 静态未定义名审计 (undef_check)
 f4b27f4 = 38  + Android 交叉编译 (android_compile_check)
 ```
 
-`GATE_TOTAL` / `GATE_DEFAULT` 由 `33/30`（`2f48ab1`）-> `34/31` -> `35/32` -> `36/33`
+`GATE_TOTAL` / `GATE_DEFAULT` 由 `33/30`（`2da1115`）-> `34/31` -> `35/32` -> `36/33`
 -> `37/34` -> `38/35`。gated 3 项 = 第 16 / 23 / 24 项；默认跑 35 项。
 
 ### 2.32.2 「整理」发现的第三种表现：同一文件内的两处记录互相矛盾
@@ -3120,7 +3120,7 @@ demo/main.c:525-529       if (sc != PROT_OK) { MSG_TAMPER; exit(PROT_EXIT_TAMPER
 
 ### 2.33.2 修法与一个关键设计：三跑对照
 
-`tests/e2e.py` 新增 120 行（提交 `80db8ba`）：
+`tests/e2e.py` 新增 120 行（提交 `7cfe36d`）：
 
 1. docstring 用例清单补 T29 一行；
 2. 两个模块级助手 —— `cry_section_name()`（从
@@ -3193,7 +3193,7 @@ T29 落地后，「T1-T28」字样成为陈旧值。全库普查命中 41 处，
 **标签溯源**（`build/_t29label*.py` 逐提交比对）：
 `Check 'e2e T1-T28'` 自门禁创建提交 `e68a762` 起就是 `T1-T28` 且**再未改过**
 （`git log -S "e2e T1-T28" -- tools/release_check.ps1` 只命中 `e68a762` 与
-`f9285bf` 的**文字引述**，后者 `f9285bf^` 与 `f9285bf` 逐字相同）。
+`46d0eef` 的**文字引述**，后者 `f9285bf^` 与 `46d0eef` 逐字相同）。
 `e68a762` 时 e2e 实际 ID 集合 = `[1..8, 11..28]`，`max=T28` ⇒ 标签当时准确。
 ⇒ **本仓库没有"标签随用例增长同步改名"的先例**；但 T1-T28 是**区间上界**，
 加了 T29 后上界变为 T29，故现值为「T1-T29」更诚实。
@@ -3356,11 +3356,11 @@ if any(mrva <= t_va + ctl_off < mrva + mlen for mrva, mlen in ranges):
   `build/logs/release_check_20261006_070951.log`，其中逐字含
   **`[ok]  e2e T1-T30`** —— 证明改名后的门禁标签确实被执行到（不是只改了
   字符串而用例没跑）。
-- **CI**：run `37386864350`（head `7e02954`）`completed success`，
+- **CI**：run `37386864350`（head `0a29de3`）`completed success`，
   四 job 全绿：`build-and-verify|success` / `linux-portability|success` /
   `sdk-package|success` / `reproducible|success`。
-- 提交链：`80db8ba`（T29）→ `ed7d838`（§2.33）→ `efb81b7`（T30）→
-  `7e02954`（§2.34），均已推送 `origin/master`。
+- 提交链：`7cfe36d`（T29）→ `18bae11`（§2.33）→ `b10cc3b`（T30）→
+  `0a29de3`（§2.34），均已推送 `origin/master`。
 - 唯一噪音是 CI 的 Node.js 20 弃用告警
   （`actions/checkout@v4` 等被迫跑在 Node.js 24 上），与本次改动无关。
 
@@ -3572,7 +3572,7 @@ T30 的 `early=yes` 是**必须保住**的一条：它证明密文篡改仍然�
 
 ### 2.35.7 提交后的全门禁与 CI 实测
 
-修法提交 `c2666b9`（`fix(selfcrypt)!: D2c 收口`）后复跑：
+修法提交 `1909ce8`（`fix(selfcrypt)!: D2c 收口`）后复跑：
 
 - **全门禁 `tools/release_check.ps1`：35/35 PASS**（`[release_check] PASS: 35 项检查全通过`，
   日志 `build/logs/release_check_20261006_193841.log`）。
@@ -3580,14 +3580,14 @@ T30 的 `early=yes` 是**必须保住**的一条：它证明密文篡改仍然�
   （改动未提交）—— 提交后该项转绿，其余 34 项两次全绿。
   3 项按设计 SKIP（`-WithMutation` / `-WithSkeleton` / `-WithMigration`），
   门禁日志里显式写作「未验证 != 通过」。
-- **`tools/doccheck.py`**：提交 `c2666b9` 时实测 `检查数字 707 处, 错误 0, 警告 0`，
+- **`tools/doccheck.py`**：提交 `1909ce8` 时实测 `检查数字 707 处, 错误 0, 警告 0`，
   豁免 178 处 ⇒ PASS（改前 699 处）。
   写出本节后又跑一次：**715 处**（本节新增 8 处）⇒ 仍 0 错误、PASS。
   ⇒ 这类「检查器报的自己的计数」**每加一段文档就变**，写进正文必然立刻过期；
   此处两个数字都保留，用来说明该数字**不是**稳定判据。
 - **`tools/docclaim_check.py`**：PASS（8/8）。
 - **`build/_hygiene.py`**：15 文件 0 异常。
-- **CI run `37459442189`（head `c2666b9`）`completed success`**，四个 job 全绿：
+- **CI run `37459442189`（head `1909ce8`）`completed success`**，四个 job 全绿：
   `build-and-verify` 9m32s / `linux-portability` 12s / `reproducible` 49s /
   `sdk-package` 45s。
 
@@ -3784,8 +3784,8 @@ ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
 
 ### 2.36.8 提交与 CI 实测
 
-- 主提交 `7062039`（`feat(gate)!: 门禁第 39 项`）：16 文件 / +821 −31；
-- 补提交 `458c3f5`（`docs: 门禁清单补上第 39 项 + CI py_compile 同步新工具`）。
+- 主提交 `e8601cb`（`feat(gate)!: 门禁第 39 项`）：16 文件 / +821 −31；
+- 补提交 `afbcb60`（`docs: 门禁清单补上第 39 项 + CI py_compile 同步新工具`）。
 
 **本地全门禁**：`tools/release_check.ps1 -SkipDirtyCheck` ⇒
 `[release_check] PASS: 36 项检查全通过`（`[ok]` 36 / `[X]` 0 / `[skip]` 0），
@@ -3794,7 +3794,7 @@ ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
 `tools/doccheck.py` PASS（734 处 0 错误）· `tools/docclaim_check.py` PASS 8/8
 （`gate-count` = **39 项**）· `build/_hygiene.py` 15 文件 0 异常。
 
-**CI run `37631637848`（head `7062039`）`completed success`**，四个 job 全绿：
+**CI run `37631637848`（head `e8601cb`）`completed success`**，四个 job 全绿：
 `build-and-verify` 10m20s / `linux-portability` 17s / `reproducible` 59s /
 `sdk-package` 1m6s。**runner 上实测出现**
 `[ok]  selfcrypt 驻留期密文态 (selfcrypt_residency)` ——
@@ -3813,7 +3813,7 @@ ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
 > 根因是同一个：**能被机器校验的东西（数字）改了，靠人眼维护的枚举漏了**。
 > `tools/doccheck.py` 只判计数、不判这两张清单的成员 ⇒ 两处都不红。
 > 与 §2.32「陈旧复选框」同型 —— **数字对了不等于清单对了**；
-> 修法是补提交 `458c3f5`。
+> 修法是补提交 `afbcb60`。
 
 ## 2.37 `PROTCRYP` 缺口定性：**已记名**的可利用面，首次端到端实证（2026-10-06）
 
@@ -4031,8 +4031,8 @@ tools/guard_selftest.py --quiet
 
 | 提交 | 内容 | 改动面 |
 |------|------|--------|
-| `bdd42cb` | `docs: §2.37 —— PROTCRYP 缺口定性` | `docs/HANDOVER.md` / `docs/N1_PLAN.md`（+200 −2） |
-| `51a49c9` | `fix(guard_selftest): 补齐 Toolhelp32 三件套 ctypes 原型` | `docs/HANDOVER.md` / `tools/guard_selftest.py`（+57） |
+| `30631fe` | `docs: §2.37 —— PROTCRYP 缺口定性` | `docs/HANDOVER.md` / `docs/N1_PLAN.md`（+200 −2） |
+| `bcbc790` | `fix(guard_selftest): 补齐 Toolhelp32 三件套 ctypes 原型` | `docs/HANDOVER.md` / `tools/guard_selftest.py`（+57） |
 
 **本地全门禁**（`-SkipDirtyCheck`）：
 
@@ -4047,8 +4047,8 @@ tools/guard_selftest.py --quiet
 
 | run | head | 结果 |
 |-----|------|------|
-| `37664133662` | `bdd42cb` | `completed success`，四 job 全绿 |
-| `37666667742` | `51a49c9` | `completed success`，四 job 全绿 |
+| `37664133662` | `30631fe` | `completed success`，四 job 全绿 |
+| `37666667742` | `bcbc790` | `completed success`，四 job 全绿 |
 
 ⇒ §2.37.8 的原型补齐在 **CI 的 MSVC 14.51 / Python 3.12** 环境下同样通过
 （本机是 MSVC 14.44 / Python 3.13.13）—— 这一条对本节尤其重要：
@@ -4122,7 +4122,7 @@ run: powershell -Command "python -m py_compile tools\vmenc.py tools\strgen.py ..
 
 ### 2.38.3 修法：从"维护清单"换成"遍历目录"
 
-不是把人眼清单补全 —— 那下一次新增还会漏（`458c3f5` 刚补过
+不是把人眼清单补全 —— 那下一次新增还会漏（`afbcb60` 刚补过
 `selfcrypt_residency_check.py`，历史里同类补丁已发生多次）。
 改成按**目录**遍历，新增文件自动纳入：
 
@@ -4211,11 +4211,11 @@ Step 'py_compile all' {
 （`ci.yml` 与 `ci_sim.ps1`），文档侧零改动。
 ### 2.38.7 提交与 CI 实测（2026-10-06）
 
-提交 **`c1b6703`** `ci(gate)!: 语法检查步从逐字枚举改为 compileall —— 原先只覆盖 23/95 个文件`
+提交 **`59e42b1`** `ci(gate)!: 语法检查步从逐字枚举改为 compileall —— 原先只覆盖 23/95 个文件`
 （3 files / +176 -12：`.github/workflows/ci.yml` + `tools/ci_sim.ps1` +
 `docs/HANDOVER.md`）；`git push origin master` ⇒ `500f08b..c1b6703`。
 
-**CI `37673432129`（head `c1b6703`）`completed success`，四 job 全绿**：
+**CI `37673432129`（head `59e42b1`）`completed success`，四 job 全绿**：
 
 | job | 结果 |
 |-----|------|
@@ -4404,7 +4404,7 @@ job 是 **3.12.3**，`python3 --version` 实测）。改之前那 72 个文件
     全门禁（-SkipDirtyCheck）     : PASS: 36 项检查全通过（[ok] 36 / [X] 0 / [skip] 0）
 ### 2.39.10 提交与 CI 实测
 
-提交 `b0b601e`（3 files / +453 −13）：
+提交 `5e78ef9`（3 files / +453 −13）：
 
 | 文件 | 改动 |
 |---|---|
@@ -4412,7 +4412,7 @@ job 是 **3.12.3**，`python3 --version` 实测）。改之前那 72 个文件
 | `tools/release_check.ps1` | doccheck 项上方注释删掉会过期的用例条数（同 §2.36.7 处置） |
 | `docs/HANDOVER.md` | 本节 |
 
-推送 `a73eeb7..b0b601e`；CI run **`37679557390`**（head `b0b601e`）**`completed success`**，
+推送 `a73eeb7..b0b601e`；CI run **`37679557390`**（head `5e78ef9`）**`completed success`**，
 四 job 全绿（`build-and-verify` / `linux-portability` / `reproducible` / `sdk-package`）。
 
 > ⭐ **关键证据**：`build-and-verify` 的 **`Public-material drift (doccheck)`**
@@ -4619,16 +4619,16 @@ for _p in TARGETS:
 
 | 提交 | 内容 | 规模 |
 |---|---|---|
-| `db3f788` | `feat(doccheck)!: 扫描面从自声明改为位置推导` —— §2.40.1–§2.40.8 与 `build_targets()` 改造、front-door 正向守卫 | 2 files / +215 −11 |
-| `bb3fc6a` | `feat(doccheck): 扫描面反向守卫` —— 按文件名推导的历史快照不得进入面内，外加本节记的三处自我更正 | 2 files / +73 −10 |
+| `917dc7d` | `feat(doccheck)!: 扫描面从自声明改为位置推导` —— §2.40.1–§2.40.8 与 `build_targets()` 改造、front-door 正向守卫 | 2 files / +215 −11 |
+| `b5074fa` | `feat(doccheck): 扫描面反向守卫` —— 按文件名推导的历史快照不得进入面内，外加本节记的三处自我更正 | 2 files / +73 −10 |
 
 两次都是先本地跑完四道复核再提交，提交后立即 `git push origin master`
 （`8a4fbc7..db3f788`、`db3f788..bb3fc6a`，两次 rc=0），再 `gh run watch '<id>' --exit-status` 等 CI。
 
 | CI run | head | 结果 |
 |---|---|---|
-| `37688754737` | `db3f788` | `completed success`，四 job 全绿 |
-| `37694044916` | `bb3fc6a` | `completed success`，四 job 全绿 |
+| `37688754737` | `917dc7d` | `completed success`，四 job 全绿 |
+| `37694044916` | `b5074fa` | `completed success`，四 job 全绿 |
 
 两次的 `build-and-verify` 里都有两个 step 直接关涉本轮改动，且都是 **success**：
 
@@ -5633,7 +5633,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
 
 ### 2.45.8 CI 实测
 
-提交 `cd01626`，CI run `37765383185`：四 job（`build-and-verify` / `linux-portability` /
+提交 `e7787fe`，CI run `37765383185`：四 job（`build-and-verify` / `linux-portability` /
 `reproducible` / `sdk-package`）全绿。
 
 关键点：`build-and-verify` 里的 `Full release gate` 步会真的跑到
@@ -5683,9 +5683,9 @@ CI 上 `Migration cost gate` 是**独立一步**（`.github/workflows/ci.yml:105
 
 | 提交 | 变更 | 注释更新为 |
 |---|---|---|
-| `2d16b61` `.protxec` 段成为第 4 个 CRC 目标 | 门禁 35/32 → 36/33 | 「2026-10-03 更新」→ 静态 36 / 默认 33 |
-| `bc68b11` 门禁第 37 项（`undef_check`） | 36/33 → 37/34 | 「2026-10-05 更新」→ 静态 37 / 默认 34 |
-| `f4b27f4` → `7062039` 第 38/39 项（Android、`selfcrypt_residency`） | 37/34 → 39/36 | **没有再动这段注释** |
+| `05c4acd` `.protxec` 段成为第 4 个 CRC 目标 | 门禁 35/32 → 36/33 | 「2026-10-03 更新」→ 静态 36 / 默认 33 |
+| `f3bc423` 门禁第 37 项（`undef_check`） | 36/33 → 37/34 | 「2026-10-05 更新」→ 静态 37 / 默认 34 |
+| `94c4170` → `e8601cb` 第 38/39 项（Android、`selfcrypt_residency`） | 37/34 → 39/36 | **没有再动这段注释** |
 
 ⇒ 停在 **37/34**，而真值已是 **39/36**。每次新增门禁项都会让它静默过期一次，
 只能靠人偶然看见。
@@ -5840,12 +5840,12 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 
 ### 2.46.10 CI 实测
 
-提交 `590f2bf`（`fix(doccheck)!: ci.yml 门禁项数口径的机器对账`，3 files /
+提交 `204621d`（`fix(doccheck)!: ci.yml 门禁项数口径的机器对账`，3 files /
 +337 −7）推送后：
 
 | 项 | 结果 |
 |---|---|
-| CI run | **`37780396166`**（head `590f2bf`）**`completed success`** |
+| CI run | **`37780396166`**（head `204621d`）**`completed success`** |
 | 四 job | `linux-portability` / `build-and-verify` / `reproducible` / `sdk-package` **全部 success** |
 | `Public-material drift (doccheck)` 步 | success ⇒ **新判据 0d 在 MSVC 14.51.36231 / Python 3.12.10 的 runner 上同样执行** |
 
@@ -5929,8 +5929,8 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 | `tests/e2e.py:851` | `src/selfcrypt.c:347` | **`:389`** | `sc_do_range(i, 0); /* 重加密 (对称 XOR), 不校验 */` |
 | `tools/window_check.py:29` | `src/antidebug.c:548` | **`:559`** | `prot_antidebug_scan(&rep);` |
 | `tools/window_check.py:699` | `src/antidebug.c:548` | **`:559`** | 同上 |
-| `tools/window_check.py:28` | 骨架**仍是**修复前的老写法 | 骨架**当时也是**老写法（已在本提交一并修复） | 时态断言：`c8a47994` 同一提交就修好了骨架 |
-| `tools/window_check.py:62-63` | 那里的违规是**潜伏**的; 仍要修 | 那里**若出现**违规也是**潜伏**的 (不会当场崩), 但仍必须纳入扫描 | 原句在 `c8a47994` 修完违规后已无"违规可潜伏" |
+| `tools/window_check.py:28` | 骨架**仍是**修复前的老写法 | 骨架**当时也是**老写法（已在本提交一并修复） | 时态断言：`7c281365` 同一提交就修好了骨架 |
+| `tools/window_check.py:62-63` | 那里的违规是**潜伏**的; 仍要修 | 那里**若出现**违规也是**潜伏**的 (不会当场崩), 但仍必须纳入扫描 | 原句在 `7c281365` 修完违规后已无"违规可潜伏" |
 
 **第二批 8 处**（同日稍后，由全库重跑普查发现的额外真漂移）：
 
@@ -5959,16 +5959,16 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
    ⇒ 语义正确。
 2. `tools/check_undef.py:12` 与 `tools/release_check.ps1:969` 的
    「调用点却留在 `tests/e2e.py:515`」—— 实测 `tests/e2e.py:515` 在
-   **`5d601c5`（2026-10-02）** 时**真的**等于 `dbg = DebugAttacher()`
+   **`22a4330`（2026-10-02）** 时**真的**等于 `dbg = DebugAttacher()`
    （遍历全历史，仅此一个 revision 命中），而 `tools/check_undef.py` 诞生于
-   **`bc68b1129b`（2026-10-05）** ⇒ **写下时正确**，是描述当时事故的历史句。
+   **`f3bc4234be`（2026-10-05）** ⇒ **写下时正确**，是描述当时事故的历史句。
    （`DebugAttacher` 调用点现址 = `tests/e2e.py:694`，类定义现址 = `:521`。）
 3. `tools/docclaim_check.py:124` 的 `> **行号更正（2026-10-03）**：上述示例文本
    **当时**在 `tools/release_check.ps1:79`，现值在 **`:170`**`
    —— **显式带"当时/现值"双行号**，`release_check.ps1:170` 现值实测吻合 ⇒ 自洽。
 4. `tools/docclaim_check.py:127` 的 `` `tools/doccheck.py:156-163` `` —— 描述的是
    **该函数当时**的行锚定实现（现已移到 `:451 actual_gate_count()`）⇒ 历史叙述。
-5. 各处的 `22826c5` / `5d601c5` 提交号 —— 历史事实。
+5. 各处的 `816ac4e` / `22a4330` 提交号 —— 历史事实。
 
 ⇒ **探针只比"目标行现在 vs 出生时刻"，不读引用行是否自带"当时/现值"语境**
 —— 这正是它产生假阳性的原因，也是它**不能升格为门禁判据**的第二个理由。
@@ -6010,12 +6010,12 @@ RE_GATE_N  = re.compile(r'(?:release_check|门禁)[^\n]{0,24}?(\d+)(?:\*\*)?\s*�
 
 ### 2.47.9 CI 实测
 
-提交 `b01cb8d`（`docs+fix: 源码注释里 file:line 交叉引用逐条核对 —— 14 处已漂移`，
+提交 `ab6af69`（`docs+fix: 源码注释里 file:line 交叉引用逐条核对 —— 14 处已漂移`，
 9 files / +169 −16）推送后：
 
 | 项 | 结果 |
 |---|---|
-| CI run | **`37797447952`**（head `b01cb8d`）**`completed success`** |
+| CI run | **`37797447952`**（head `ab6af69`）**`completed success`** |
 | job | `linux-portability` 15s / `build-and-verify` / `reproducible` / `sdk-package` **全部 success** |
 
 ⚠️ 本轮改动**只改注释里的行号数字**，未触碰任何可执行逻辑（6 个文件
@@ -6211,11 +6211,11 @@ if _got != {'modcheck.py'}:
 
 ### 2.48.9 CI 实测
 
-提交 `c3902bc`（3 files / +446 −5）推送后：
+提交 `a9b1f60`（3 files / +446 −5）推送后：
 
 | 项 | 结果 |
 |---|---|
-| CI run | **`37810000352`**（head `c3902bc`）**`completed success`** |
+| CI run | **`37810000352`**（head `a9b1f60`）**`completed success`** |
 | 四 job | `build-and-verify` / `linux-portability` / `reproducible` / `sdk-package` **全部 success** |
 | 门禁日志 | `build/logs/release_check_20261008_*.log` ⇒ `[release_check] PASS: 36 项检查全通过` |
 
@@ -6341,7 +6341,7 @@ B 行报了**两条**（批次被清空 + 总数低于下限），这是对的�
 
 ### 2.50.1 缘起：一条"重跑就好"的 CI 失败
 
-`1873d4c`（§2.49）推送后，CI run **37816072820** 在 `build-and-verify`
+`751e1ba`（§2.49）推送后，CI run **37816072820** 在 `build-and-verify`
 的 **`Checker mutation test`** 步**失败**，而**同一提交 `gh run rerun
 --failed` 之后四 job 全绿**。此前 `37811713791`（同提交族）该步也是绿的。
 
@@ -6534,8 +6534,8 @@ except subprocess.TimeoutExpired:
 5. **没有为这一条加门禁判据**：要判"超时路径是否回收"需要有意识地
    制造超时（要起真进程 + 等），成本与收益不成比例；且 A 用例已经
    是**可复现的探针**。⇒ 与 §2.47.6 同类的"刻意不做"。
-6. **§2.49 的提交 `1873d4c` 当时撞上了这个偶发失败**。时序：
-   `1873d4c` 推送 → CI `37816072820` 失败（本节的机制）→
+6. **§2.49 的提交 `751e1ba` 当时撞上了这个偶发失败**。时序：
+   `751e1ba` 推送 → CI `37816072820` 失败（本节的机制）→
    `gh run rerun --failed` → 全绿。**§2.49 本身从未有过缺陷**，
    它的代码与判据与本节的改动无关。
 
@@ -6557,7 +6557,7 @@ except subprocess.TimeoutExpired:
 
 ### 2.50.12 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-`49ad462` 推送后的 CI run **37823314673**（head
+`c5ee556` 推送后的 CI run **37823314673**（head
 `49ad46283559fd829d6d39ab99f6320712191d7d`）状态是 `failure`，
 但**四个 job 一个都没真的运行**。`gh run view 37823314673` 逐字：
 
@@ -6594,9 +6594,9 @@ X The job was not started because recent account payments have failed or
 
 ## 诚实边界（这条比"CI 绿"更重要）
 
-1. **这条修复没有 CI 证据**。上次 CI 真跑成功的是 `1873d4c`
-   （run 37816072820，重跑后全绿）与 `9987bdd`（37811713791）；
-   `49ad462` 之后的 run 全部止步于调度层。
+1. **这条修复没有 CI 证据**。上次 CI 真跑成功的是 `751e1ba`
+   （run 37816072820，重跑后全绿）与 `dba67e0`（37811713791）；
+   `c5ee556` 之后的 run 全部止步于调度层。
 2. **CI 绿本来也不能证明"偶发已被消除"**：失败前提是 e2e 某用例
    超时，而超时本身是偶发的，绿只说明"这一次没触发"。
    真正的证据始终是 2.50.8 的**机制**差分 —— 超时路径现在会回收
@@ -6819,16 +6819,16 @@ if l.lstrip().startswith(FENCE):
 判成代码块（于是**整类代码块豁免失效**）。这不是一处误报，是**一整个豁免机制
 静默反转**。
 
-### 2.52.3 引入提交：`da5f906` 多写了一行 ```
+### 2.52.3 引入提交：`dd533fd` 多写了一行 ```
 
-`build/_fence2.py` / `_fence3.py`：HEAD（`ab04716`）行 6608 / 围栏 **283（奇数）**；
+`build/_fence2.py` / `_fence3.py`：HEAD（`e367552`）行 6608 / 围栏 **283（奇数）**；
 工作树 6789 / 289（仍奇数）。前 283 个围栏**逐位相同** ⇒ 缺陷在 HEAD 里就存在，
 我新加的 6 个围栏（3 个配对块）本身是配平的，只是**落进了被反转的区间**，
 于是第一次把它暴露出来。
 
 孤立围栏定位在 **`docs/HANDOVER.md:5839`**（`:5838` 空行 / `:5839` = ``` / `:5840`
 空行），位于 `### 2.46.9 验证` 的表格之后、`### 2.46.10` 之前。用 `git log -L` +
-`git log -S` 锁定来源 = 提交 **`da5f906`**（`docs: §2.46.10 —— CI 实测…`，
+`git log -S` 锁定来源 = 提交 **`dd533fd`**（`docs: §2.46.10 —— CI 实测…`，
 2026-10-08），其 diff hunk `@@ -5836,4 +5836,24 @@` 逐字为
 `-*2026-10-06 v20*` → `+``` `（多写的这一行）+ `+### 2.46.10 CI 实测` + …
 
@@ -6836,15 +6836,15 @@ if l.lstrip().startswith(FENCE):
 
 | 提交 | 围栏数 | 带标记围栏错位数 |
 |---|---|---|
-| `590f2bf` 及之前 | 偶数 | 0 |
-| **`da5f906`** | **253（奇）** | 0 |
-| `b01cb8d` / `3858fe1` | 255 | 1 |
-| `c3902bc` / `9987bdd` | 265 | 2 |
-| `1873d4c` | 273 | 4 |
-| `49ad462` | 281 | 5 |
-| `ab04716` | 283 | 5 |
+| `204621d` 及之前 | 偶数 | 0 |
+| **`dd533fd`** | **253（奇）** | 0 |
+| `ab6af69` / `f06e31b` | 255 | 1 |
+| `a9b1f60` / `dba67e0` | 265 | 2 |
+| `751e1ba` | 273 | 4 |
+| `c5ee556` | 281 | 5 |
+| `e367552` | 283 | 5 |
 
-⇒ 从 `da5f906` 起，**每新增一个带 `python` 标记的围栏就多一条错位** ——
+⇒ 从 `dd533fd` 起，**每新增一个带 `python` 标记的围栏就多一条错位** ——
 缺陷在累积，只是没有任何判据在看它。
 
 ### 2.52.4 修法 A：删掉孤立围栏 + 删掉 §2.50 里过期的数字
@@ -7019,11 +7019,11 @@ if l.lstrip().startswith(FENCE):
    （干净树上都是 PASS）。即：本轮修的是"红了以后你看不懂为什么"，
    不是"该红没红"。
 5. 第 40 项在**注入轮**里红、在**干净树**上绿；CI 侧**仍未取得证据**
-   （提交 `3e09018` 的 run 仍因帐单问题未启动 job，见 §2.52.12）。
+   （提交 `6036462` 的 run 仍因帐单问题未启动 job，见 §2.52.12）。
 
 ### 2.52.12 CI 实测：**仍然没有拿到证据**（帐单问题，非代码）
 
-提交 `3e09018` 的 run **`37841965706`** 结论 `failure`，但它**不是代码问题**：
+提交 `6036462` 的 run **`37841965706`** 结论 `failure`，但它**不是代码问题**：
 
 | job | conclusion | started | completed |
 |---|---|---|---|
@@ -7255,7 +7255,7 @@ M4 正常 / M5 传递可达 / M6 中间一跳不带参 / M7 子命令形态 / M8
 
 ### 2.53.9 CI 实测：**又是调度层失败，没有拿到证据**
 
-提交 `88b01f7` 推送后 CI run `37851588013`：
+提交 `13703c3` 推送后 CI run `37851588013`：
 
 | job | conclusion | started | completed |
 |---|---|---|---|
@@ -7548,7 +7548,7 @@ v32 起的做法就是把这个区分显式写进代码，并给它配了一个�
 
 | 文件:行 | 声称 | 最后修改 |
 |---|---|---|
-| `docs/BLUEPRINT.md:128` | 39 项 | **2026-10-07** (`7062039`) |
+| `docs/BLUEPRINT.md:128` | 39 项 | **2026-10-07** (`e8601cb`) |
 | `docs/ATTACK_FRAMEWORK.md:29` | 18 项 | 2026-09-25 |
 | `docs/LINUX_PORT_PLAN.md:28` | 21 项 | 2026-09-26 |
 | `docs/OSS_TAIL_PLAN.md:21`/`:71`/`:103`/`:264` | 14 / 4 / 14 / 14 | 2026-09-2x |
@@ -7762,7 +7762,7 @@ rc=1  报错 17 条
 
 ### 2.55.13 CI 实测：**没有拿到证据**（调度层失败，非代码）
 
-提交 `ba7dcde` 之后 CI run `37916467674`：
+提交 `ec8c3c4` 之后 CI run `37916467674`：
 
 | job | status | conclusion |
 |---|---|---|
@@ -7958,7 +7958,7 @@ publish/01-关于ShardVase.md:63 / publish/02-项目档案.md:116 / :168
 本轮**CI 仍未给出可用证据**：GitHub 帐单 / 支出上限未处理，提交后的 run 属调度层失败，
 与 §2.50.12 / §2.53.9 / §2.55.13 同一形态。
 
-提交后的 run = `37938124478`（head `c2c68c4`）：四 job 中
+提交后的 run = `37938124478`（head `8769916`）：四 job 中
 `build-and-verify` failure 3s / `linux-portability` failure 4s / `reproducible` skipped / `sdk-package` skipped，
 注解逐字：
 
@@ -8164,7 +8164,7 @@ gate   len=51 key1=0x34905bb1247ad0ee sem0=1 insns=23 src=23 MATCH
 
 ### 2.57.12 CI 实测：仍无证据
 
-提交 `7259dbb` 后 CI 仍为**调度层失败**（GitHub 帐单 / 支出上限），
+提交 `ae0224c` 后 CI 仍为**调度层失败**（GitHub 帐单 / 支出上限），
 与 §2.50.12 / §2.53.9 / §2.55.13 / §2.56.13 同一形态。
 本节证据链**不依赖 CI**：39 条自检、四个镜像比对、9 个 `.vasm`、
 全门禁 39 项均在本机跑出。
@@ -8633,7 +8633,7 @@ UI 拿不到它，就会把每个模块都渲染成「无已知局限」—— �
 > 两个自检调用（**计数 42/39 不变**）
 
 而**这次提交根本没有这个文件**。那四个自检调用分别来自
-ST0（`c2c68c4`，`studio_core` + `studio_cli`）、ST4（`vm_debug`）、
+ST0（`8769916`，`studio_core` + `studio_cli`）、ST4（`vm_debug`）、
 ST2（`gate_results`）—— ST1 一行都没加。同表的 `studio_core.py` 大小
 也写错了（记 62701，实际 60893，是我改完又回退前的中间值）。
 
@@ -8655,7 +8655,7 @@ ST2（`gate_results`）—— ST1 一行都没加。同表的 `studio_core.py` �
 
 ### 2.59.13 CI 实测：**没有拿到证据**（调度层失败，非代码）
 
-CI run `38033743710`（head `0dadf0f`）四个 job：
+CI run `38033743710`（head `227c3c8`）四个 job：
 
 | job | 结论 | 起始 |
 |---|---|---|
@@ -8906,7 +8906,7 @@ ICF 合并，与保护机制的方向一致，**不是缺陷**。
 
 ### 2.60.11 CI 实测：**没有拿到证据**（调度层失败，非代码）
 
-CI run `38033743710`（head `0dadf0f`）四个 job 中
+CI run `38033743710`（head `227c3c8`）四个 job 中
 `linux-portability` / `build-and-verify` 均为 `failure`（3 秒内），
 `reproducible` / `sdk-package` 为 `skipped`，`--log-failed` 报
 `log not found: 114159798237` ⇒ **一个 step 都没跑**。
@@ -9089,7 +9089,7 @@ job 未启动。**本条对本节的结论没有任何影响** —— 证据链�
 
 ## 2.62 ST5 交付后审计：一个真缺陷、两条度量错、一句错的不变量（2026-10-10）
 
-> 本节是 §2.61 的**收尾核对**, 不是新功能。§2.61 提交为 `8e11938`。
+> 本节是 §2.61 的**收尾核对**, 不是新功能。§2.61 提交为 `c8ec5a0`。
 > 核对方式是**在这套东西自己身上用一遍**: 把「Studio 能不能真的调到我做的东西」
 > 当作待验证命题, 而不是默认它成立。
 
@@ -9320,7 +9320,7 @@ PS 5.1 就会以 GBK 解读那些字节, 表现为**莫名其妙的语法错误*
 ### 2.62.12 CI 实测：**没有拿到证据**（调度层失败, 非代码）
 
 与 §2.50.12 / §2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 同形态：GitHub 帐单/支出上限。
-CI run `38053117322`（head `8e11938`）`completed / failure`,
+CI run `38053117322`（head `c8ec5a0`）`completed / failure`,
 `build-and-verify` 与 `linux-portability` 均 **steps=0**（**一个步骤都没执行**）,
 `reproducible` / `sdk-package` `skipped` —— 即**调度层失败, 不是代码失败**。
 **对本节结论无影响**: 全部证据链（自检 / e2e / 承重验证 / 全门禁）都是本机实跑。
@@ -9520,7 +9520,7 @@ C 编译器与 `json.loads` 都按 UTF-8 处理，BOM 与否无影响。
 ```
 
 这一条**不是 **flake：本机连续两跑都复现。它也不是本轮引入的 ——
-`git log -L` 把它归到 `424fbcb`（`feat(studio)!: ST2 —— 门禁的机器可读出口`）。
+`git log -L` 把它归到 `a5d2267`（`feat(studio)!: ST2 —— 门禁的机器可读出口`）。
 
 ### 2.64.2 触发点与它写下的理由
 
@@ -9732,20 +9732,20 @@ tools\release_check.ps1 -SkipDirtyCheck`，后台作业执行）⇒ **rc=0**：
 `release_check_20261010_235103` —— 新断言在红轮上同样成立（两出口的 `pass`
 都是 40），所以**不需要先跑出一轮绿再覆盖**，这一次就直接转绿了。
 
-提交 `268f738`：`fix(gate)!: BOM 判据 (第 44 项) + 「同一真值两个出口」的断言换量`
+提交 `23c9bd6`：`fix(gate)!: BOM 判据 (第 44 项) + 「同一真值两个出口」的断言换量`
 （**17 files / +776 −28**，create `tools/bom_check.py`），push
 `8c83840..268f738` rc=0，`git status --short` 干净，
 `build/_hygiene.py` ⇒ 25 个文件 0 处异常。
 
 #### 2.64.13.1 ⚠️ CI：**没有证据**（又一次调度层失败）
 
-CI run `38069974506`（head `268f738`）`completed / failure`，四个 job 全部
+CI run `38069974506`（head `23c9bd6`）`completed / failure`，四个 job 全部
 **`steps=0`**（一个步骤都没执行）：`build-and-verify` / `linux-portability`
 `conclusion=failure`，`reproducible` / `sdk-package` `skipped`。
 `gh run view --log-failed` 报 `log not found: 114265217013`。
 
 这与 §2.50.12 / §2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 同形态，也与前一提交
-`8c83840`（run `38059590559`，同样 4 s / `failure`）一致 ⇒ **不是代码问题**，
+`2c88d47`（run `38059590559`，同样 4 s / `failure`）一致 ⇒ **不是代码问题**，
 是 GitHub 帐单/支出上限导致的调度层拒绝。
 
 同时本轮期间有一段时间连 `gh run list` 都报
@@ -10218,8 +10218,8 @@ ST0-ST5 期间 `_check_real_ui()` 只查两件事：资产里**有没有**引用
   ⇒ **`items` 键不存在**。
 - 后果：**「关于」页从 ST5 起一直是空的**。唯一的表现是一个 **unhandled rejection**
   （`TypeError: Cannot read properties of undefined (reading 'forEach')`）。
-- 归属：`git log -S loadCaps` ⇒ 引入于 **`8e11938`**（ST5）；`git log -S "'capabilities':"`
-  ⇒ 后端形态引入于 **`c2c68c4`**（ST0）⇒ **前端从一开始就写错了**。
+- 归属：`git log -S loadCaps` ⇒ 引入于 **`c8ec5a0`**（ST5）；`git log -S "'capabilities':"`
+  ⇒ 后端形态引入于 **`8769916`**（ST0）⇒ **前端从一开始就写错了**。
 
 ### 2.68.4 ⭐ 为什么三条既有判据全都看不见（本节的要点）
 | 既有判据 | 它问的问题 | 为什么问不到 |
@@ -10481,7 +10481,7 @@ B 正是 §2.68 真缺陷的**反向注入** —— 把文档改回错的形态�
 
 ### 2.69.13 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-提交 `50ebdc8` 推送成功（`862848e..50ebdc8`）。CI run **`38118630779`**
+提交 `25e6beb` 推送成功（`862848e..50ebdc8`）。CI run **`38118630779`**
 `completed / failure`，四个 job 的 `steps` **全是 0**：
 
 | job | 结论 | steps |
@@ -10505,7 +10505,7 @@ B 正是 §2.68 真缺陷的**反向注入** —— 把文档改回错的形态�
 真正的证据是判据本身在门禁里**每轮都跑**；③ 帐单属**外部基础设施状态**，
 不在本仓库可修范围。
 
-**上一次 CI 真跑成功**的提交是 `1873d4c`（run `37816072820`）与 `9987bdd`
+**上一次 CI 真跑成功**的提交是 `751e1ba`（run `37816072820`）与 `dba67e0`
 （run `37811713791`）。
 
 ## 2.70 协议文档的 `args` 列：响应键有判据了，参数名仍然没人看（2026-10-11）
@@ -10653,7 +10653,7 @@ return` 只看真假值 ⇒ `debug.read` / `debug.patch` 会**真的去拉起/�
 
 ### 2.70.11 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-提交 `9e6daaf` 推送后，run `38121232878`（head `9e6daaf`）`completed / failure`：
+提交 `3fbd2c4` 推送后，run `38121232878`（head `3fbd2c4`）`completed / failure`：
 
 | job | 结论 | steps |
 |---|---|---|
@@ -11371,9 +11371,9 @@ rc=0 且**没有判据⑥ 这一行** ⇒ 构成干净差分。
 
 ### 2.76.13 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-推送 `b8fb235` 之后 `gh run list --limit 3` 显示最近三轮（`38177560267` /
+推送 `28a2e8b` 之后 `gh run list --limit 3` 显示最近三轮（`38177560267` /
 `38162641961` / `38151809268`）全部 `completed / failure` 且耗时都是 **4 s**。
-逐 job 读 `38177560267`（head `b8fb235`）：
+逐 job 读 `38177560267`（head `28a2e8b`）：
 
 | job | conclusion | steps |
 |---|---|---|
@@ -11596,7 +11596,7 @@ spending limit needs to be increased`。
 
 ### 2.77.12 CI 实测：**没有拿到证据**
 
-提交 `82bdc98` 后 CI run **`38202367058`**（`completed / failure`，耗时 **5 s**）：
+提交 `225318c` 后 CI run **`38202367058`**（`completed / failure`，耗时 **5 s**）：
 
 | job | 结论 | steps |
 |---|---|---|
@@ -11841,7 +11841,7 @@ ho8 扫描面为空必报（失锚）/ ho9 兄弟组太少必报（失锚）。
 
 ### 2.78.14 CI 实测：**没有拿到证据**（GitHub 帐单问题，非代码）
 
-提交 `9c0a012` 推送后 `gh run list` 得 run **`38267687378`**（`completed / failure`，
+提交 `cca1f54` 推送后 `gh run list` 得 run **`38267687378`**（`completed / failure`，
 **耗时 6 s**）。`gh run view 38267687378 --json status,conclusion,jobs` 逐字：
 
 | job | conclusion | steps |
@@ -12052,7 +12052,7 @@ xd6 走查面为空 / xd7 引用数太少。
 
 ### 2.79.13 CI 实测：**没有拿到证据**
 
-run `38380760086`（head `1edd5d6`）`completed / failure`，**耗时 5 s**。
+run `38380760086`（head `93fe8db`）`completed / failure`，**耗时 5 s**。
 `gh run view --json status,conclusion,jobs` 逐字：
 
 | job | 结论 | steps |
@@ -12281,7 +12281,7 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 §2.53.9 / §2.55.13 / §2.59.13 / §2.61.11 / §2.69.13 / §2.77.12 /
 §2.78.14 / §2.79.13 的调度层失败；**第 10 次才真跑。**）
 
-本节提交后 CI **第一次真的跑起来了**（run `38415066713`，head `345cc32`，
+本节提交后 CI **第一次真的跑起来了**（run `38415066713`，head `475889f`，
 `in_progress` 持续 1m55s+ —— 此前连续 **9 次**都是 4–6 s 的调度层失败）。
 结论：`✓ Skeleton regression` / `✓ Checker mutation test` / `✓ Migration cost gate` /
 **`X Full release gate`**，`[json] 双面对照: pass=38 fail=1 skip=4 not-run=3`。
@@ -12344,7 +12344,7 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 **本节的证据链**：本机（§2.80.8 / §2.80.12 的实测与门禁）
 + CI 的**修前**现场（run `38415066713`）。
 
-⚠️ **修后的 CI 证据没有拿到**：提交 `c0d967c`（修法）触发的 run
+⚠️ **修后的 CI 证据没有拿到**：提交 `9ede816`（修法）触发的 run
 `38425792493` 又是**调度层失败**（4 job 全部 `steps=0`，耗时 5–8 s），
 `gh run rerun --failed` 重试 **3 次**全部同样结论。
 ⇒ 修法本身只有**本机**证据（`build/_ci_sim_gap.py` 把 `LOG_DIR` 指向空目录
@@ -12489,7 +12489,7 @@ RegionSize(8) State(4) Protect(4) Type(4) pad(4)`，而代码读 `Protect@32 / S
 
 ### 2.81.10 CI 实测：**没有拿到证据**
 
-提交 `0231437` 触发的 run `38493253880` 是**调度层失败**（4 s，4 job 全部
+提交 `2f3c103` 触发的 run `38493253880` 是**调度层失败**（4 s，4 job 全部
 `steps=0`）；`gh run rerun --failed` 重试 **4 次**全部同样结论。
 ⇒ 本节的证据链完全由**本机**构成：
 
@@ -12676,7 +12676,7 @@ vs `studio_core` 三参）—— 我又踩了第三次。
    回退按钮（与 §2.81 之前的 `debug.stack` 处境相同 —— 这是**已知**的下一步）。
 ### 2.82.11 CI 实测：**没有拿到证据**
 
-run `38557516058`（head `4aa1ca2`）是**调度层失败**（4 s，4 job 全部 `steps=0`）
+run `38557516058`（head `60e71c6`）是**调度层失败**（4 s，4 job 全部 `steps=0`）
 ⇒ 本节证据链**完全由本机构成**（§2.82.8 的五个真实变异 + §2.82.9 的六项验证）。
 
 ⚠️ 一条连续记录值得留：自 §2.80 那次真跑（`38415066713`，`build-and-verify`
@@ -12847,8 +12847,8 @@ run `38557516058`（head `4aa1ca2`）是**调度层失败**（4 s，4 job 全部
    `host` 那条）。
 ### 2.83.9 CI 实测：**没有拿到证据**
 
-提交前的最后两次 run（`38557516058` head `4aa1ca2` / `38559846198` head
-`0d93a98`）都是**调度层失败**（4–5 s，4 job 全部 `steps=0`）
+提交前的最后两次 run（`38557516058` head `60e71c6` / `38559846198` head
+`fda37cb`）都是**调度层失败**（4–5 s，4 job 全部 `steps=0`）
 ⇒ 本节证据链完全由本机构成（§2.83.4 六方向承重 + §2.83.5 活体
 `info.travel='steps 4 -> 3'` + §2.83.7 的九项验证）。
 
