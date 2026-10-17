@@ -71,7 +71,7 @@ SYNC = [
     ('ShardVase-docs', 'landing.html', 'docs/marketing/landing.html'),
     ('ShardVase-website', 'index.html', 'docs/marketing/landing.html'),
     ('ShardVase-demo', 'README.md',
-     'build/release-staging/hashcalc-demo/README.md'),
+     'docs/marketing/DEMO_README.md'),
     # W2/W6(2026-09-23): **协议层**文档 —— 面向第三方实现者。
     #
     # 只同步"协议层"，**不同步"防护层"**:

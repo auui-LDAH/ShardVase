@@ -38,6 +38,12 @@
 - PILLAR2 阶段 4：CRC 覆盖从固定 3 段扩展为**基座 4 组 + 每构建随机
   K∈{1,2,3} 额外目标**（池: rsrc/reloc/protpad，排除 .data/.protcry/.fptable）；
   `check_crc_targets.py` 判据 18 项 + 变异 11/11；A4 双构建覆盖集合不同实测
+- PILLAR2 阶段 4.3：**链式 CRC**（改一处须重算整链）——entry0 保持 raw、
+  entry i≥1 = crc32(raw||前槽位值)，hashpatch 与 integrity.c 两侧逐字节一致折叠；
+  `check_crc_targets.py` 判据 20 项 + 变异 13/13；Release 构建+smoke 实证通过
+- `tools/pack_release.ps1`：发版一键脚本（委托构建 → dumpbin 三查（无 CODEVIEW /
+  无 PDB / 无 COFF 符号表）→ 签名+verify /pa → 组装 `build/release-vX.Y.Z/`
+  （demo.exe/vm.blob/license.txt/ReadMe.txt/SHA256SUMS）+ 校验和自校验）
 - 平台隔离 S3/S4/S5：反调试 switch-dispatch 平坦化、字符串收敛入 strcrypt、
   反调试 +2 维（父进程调试器黑名单 + 墙钟-tick 漂移）
 

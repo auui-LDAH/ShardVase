@@ -9,7 +9,7 @@
 | 仓库 | 内容来源 |
 |------|----------|
 | `<你的账号>/ShardVase-docs` | `docs/marketing/README.md`（首页）、`boundaries.md`、`attack-record.md`、`landing.html`、3 个 Issue 模板（放 `.github/ISSUE_TEMPLATE/`）|
-| `<你的账号>/ShardVase-demo` | `build/release-staging/hashcalc-demo-v1.zip` → Releases（v1.0）+ 包内 README 作为仓库 README |
+| `<你的账号>/ShardVase-demo` | `build/release-v1.2.0/` 打包 zip → Releases（v1.2.0）+ 包内 ReadMe.txt 作为仓库 README |
 | `<你的账号>/ShardVase-website`（可选）| `landing.html` → GitHub Pages |
 
 用 gh（示例，先在 `ShardVase-docs` 目录放好内容文件）：
@@ -24,8 +24,8 @@ cd ShardVase-docs && git init -b main && git add . && git commit -m init && git 
 （eval/consult/security 三份）→ Issues → New issue 自动识别。
 
 ## 三、演示包 Release
-`ShardVase-demo` 仓库 → Releases → Draft → Tag `v1.0.0` →
-上传 `hashcalc-demo-v1.zip` → 公告粘贴包内 README 简介。
+`ShardVase-demo` 仓库 → Releases → Draft → Tag `v1.2.0` →
+上传打包 zip（含 demo.exe / vm.blob / license.txt / ReadMe.txt / SHA256SUMS）→ 公告粘贴包内 ReadMe.txt 简介。
 
 ## 四、Pages（可选，推荐）
 `ShardVase-website` → Settings → Pages → Deploy from branch → root →
@@ -41,7 +41,7 @@ README/landing 链接换成实际地址。
 - [ ] 目录没有 `src/ include/ tools/` 内文件（保护内核）；
 - [ ] 没有攻击工具（vm_reduce / procdump / attack_drill*）；
 - [ ] 没有私钥/台账/服务器地址/真机地址；
-- [ ] 品牌/邮箱一致；演示包 `license_eval.txt` 未过期。
+- [ ] 品牌/邮箱一致；演示包 `license.txt` 为当期签发（机器绑定）。
 
 ## 七、内容节奏
 - 每周 1 篇（docs/marketing/ 3 篇初稿可发）：知乎/掘金/V2EX/GitHub Discussions；

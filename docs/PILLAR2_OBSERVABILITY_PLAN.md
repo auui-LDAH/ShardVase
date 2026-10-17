@@ -237,7 +237,7 @@ A3: 产物中不含 PROTCRC 字面量；magic 每构建不同
 |----|------|---------|
 | 4.1 | 覆盖扩展到**全部节**（含 `.data` `.protcry` `.fptable` 等当前未覆盖区）| ✅ 但按 7.4 风险**收窄池**：只选**运行期稳定**节 `{.rsrc, .reloc, protpad}`。`.data`（运行期被改写→误报）、`.protcry`（selfcrypt 自改写→7.4 首行风险）、`.fptable`（CRT 归属，见 gen_sections S3）**明确排除**并注释在案 |
 | 4.2 | **每构建随机**选择覆盖哪些段（攻击者不知边界）| ✅ K∈[1,3] 由构建 seed 采样（`gen_sections.py --extra-crc`，默认随机；Linux `build.sh` 传 `--extra-crc 0` 显式关闭=第 ⑥ 条判据式不对称）|
-| 4.3 | CRC **链式**：段间互相依赖（改一处须重算整链）| ⬜ 未做（计划自定的"可选增量"）|
+| 4.3 | CRC **链式**：段间互相依赖（改一处须重算整链）| ✅ 已实施（2026-10-16）：entry0 存 raw（`protchain_check` 只读 entry0 不受影响），entry i≥1 存 `crc32(raw_le4 ‖ prev_le4)`。烧录端 `hashpatch.chain_crc()` 与校验端 `integrity.c` `prot_crc32(fold, 8u)` 逐字节一致（zlib 同语义）；**槽位值两侧对称**——校验端读前一槽位 baked 值，缺段/跳过槽位保持 0，两侧同规则。实测：Release 构建 7 项 entry0=raw、6 项 `[chained]`，smoke 运行期校验 PASS。守卫：`check_crc_targets.py` 判据 ⑧ ×2 + 变异 M12/M13（判据 20、变异 13） |
 | 4.4 | `.protcrc` 条目数随之变化（不再固定 3 条）| ✅ 基座 4 + K，经生成头 `PROT_CRC_COUNT`/`PROT_CRC_EXTRA_ENTRIES`/`PROT_CRC_EXTRA_TARGET_NAMES` 三宏道传递，C 侧 `g_prot_baked_crc[PROT_CRC_COUNT]` |
 
 ### 7.3 验收
@@ -247,7 +247,8 @@ A4: 未覆盖节数 = 0（或按随机策略 ≥N）；两次构建的覆盖集�
 ✅ **实测**（2026-10-16）：20 个种子 → **7 种不同覆盖集合**，K 分布 {1:12, 2:6, 3:2}；
 两次完整构建均 PASS smoke（K=3 时集合唯一属设计内巧合）；条目 0-6 共 7 项 =
 `PROT_CRC_COUNT=7u` 运行期校验通过。跨五方一致性由 `check_crc_targets.py`
-18 判据 + 11 变异守卫（M9-M11 新增：表尾宏道/JSON 键/消费端）。
+20 判据 + 13 变异守卫（M9-M11 额外通道：表尾宏道/JSON 键/消费端；
+M12-M13 链式折叠：烧录端 <II> 打包 / 校验端 fold）。
 
 ### 7.4 风险
 | 风险 | 应对 |
