@@ -32,7 +32,7 @@
 | 2.2 | selftest 扩充：两档判定各带正/负/边界用例（12.0/12.1 与 18.0/18.1），并保留「已知劣化点必须被拦」回归（20.6、55.9 对 18 档；20.6 对 12 档）。`_MUT_FLOOR` 思路不变：用例数与判据数同步 | ✅ 2026-10-17：**25 项全绿**（13 旧 + 12 新分档用例：14.44/14.50→legacy、14.51/15.00→modern、None→12、旧档 15.6 过/18.0 过/18.1 拦/20.6 拦/55.9 拦、docstring 含 18%） |
 | 2.3 | 三处口径同步（doccheck 有硬判据「常量改 15、文档仍 12 → 两处各报一条」）：migration_gate 文件头+docstring、`release_check.ps1` 注释块、`docs/HANDOVER.md §2.43`（补记分档依据与生效条件） | ✅ 2026-10-17：三处已同步（分档叙述用**裸 18% 写法**避开 doccheck `<= N%` 漂移判据——`_LE_PCT` 只认 `<=/≤` 形态）；HANDOVER 新增 **§2.43.10**（升级前后对照表 15.6→6.2、M3adv 81.2%→87.5% 补测兑现"未验证项"、分档三常量）；doccheck selftest 85/85 + main **1460 处 0 错**（迁移成本阈值对账行绿） |
 | 2.4 | 故意违规验证（self-testing-gates 纪律）：临时把分档边界调错 → 门禁必须红；改回 → 绿。留日志证据 | ✅ 2026-10-17 真文件注入双违规：V1 docstring `<= 12%`→15% → doccheck rc=1 报 `migration_gate.py docstring:24 M3 阈值写作 15%，但真值源 MAX_M3 = 12% —— 文档已漂移`；V2 `TIER_BOUNDARY=(14,40)` → selftest rc=1 报 `MSVC 14.44 -> 旧档 got=modern want=legacy`；还原后 doccheck rc=0 + selftest rc=0 → **VIOLATION-TEST: PASS** |
-| 2.5 | 验收：`migration_gate --selftest` 全绿 + 门禁含 `-WithMigration` 在新工具链下 PASS（M3 ≤ 12 档）；doccheck 自检+主检 PASS | 🔄 selftest 25/25 ✅ + doccheck ✅；新代码端到端 main 实测（打印工具链/档位行）后台运行中，`-WithMigration` 门禁随阶段 5 全量门禁复验 |
+| 2.5 | 验收：`migration_gate --selftest` 全绿 + 门禁含 `-WithMigration` 在新工具链下 PASS（M3 ≤ 12 档）；doccheck 自检+主检 PASS | ✅ selftest **28/28**（含 dirname 回归真树用例）+ doccheck 85/85+main 1462 处 0 错 + 新代码端到端 PASS `工具链: MSVC 14.51 -> 档位 新档, M3=6.2% M1=5.8%`；门禁级 With* 复验随阶段 5 |
 
 ## 阶段 3：攻防公开证据表回填实测数据
 
@@ -47,10 +47,10 @@
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 4.1 | 顺序：阶段 1–3 全部提交后 → `pack_release.ps1` 完整重打（新工具链产物；ReadMe.txt「源码提交」= 当时 HEAD）→ dumpbin/签名/SHA256SUMS 自校验复验 | ⬜ |
-| 4.2 | 本地重打 tag：`git tag -d v1.2.0` + `git tag -a v1.2.0 <最终 HEAD> -F <msg>`，使 **tag 覆盖全部发版工程**（工具链分档、证据表、打包修复 a0aa172、landing 1666f23 及本计划各阶段提交）；ReadMe 源码行与 tag 同一提交 | ⬜ |
-| 4.3 | 更新 release notes 草稿（新 SHA256SUMS，`$env:TEMP\v120-notes.md` 留档）；**资产上传、notes 应用暂缓** | ⬜ |
-| 4.4 | 验收：`git status` 净（build/ 已忽略）；`oss_release --check` 全绿；本地 tag 指向 == ReadMe 源码行 | ⬜ |
+| 4.1 | 顺序：阶段 1–3 全部提交后 → `pack_release.ps1` 完整重打（新工具链产物；ReadMe.txt「源码提交」= 当时 HEAD）→ dumpbin/签名/SHA256SUMS 自校验复验 | ✅ 2026-10-17：pack PASS rc=0 @ HEAD `bd4193b`（VS2026 vcvars、smoke PASS、三查 OK、SHA256SUMS 自校验 4 文件；demo.exe `72ec11e4…`、vm.blob `50165ba9…`、zip 209705B=`1F659195…`）；ReadMe.txt 源码行=**bd4193b** |
+| 4.2 | 本地重打 tag：`git tag -d v1.2.0` + `git tag -a v1.2.0 <最终 HEAD> -F <msg>`，使 **tag 覆盖全部发版工程**（工具链分档、证据表、打包修复 a0aa172、landing 1666f23 及本计划各阶段提交）；ReadMe 源码行与 tag 同一提交 | ✅ 2026-10-17：旧 tag `feb1d2d` 已删 → annotated tag 对象 `1b982f1` → **bd4193b**（与 ReadMe 源码行一致）；消息涵盖工具链/分档/证据表/打包修复；远端 tag 仍指 feb1d2d（推送队列待代理） |
+| 4.3 | 更新 release notes 草稿（新 SHA256SUMS，`$env:TEMP\v120-notes.md` 留档）；**资产上传、notes 应用暂缓** | ✅ 草稿留档 `%TEMP%\v120-notes-v2.md`（新哈希+zip 哈希；**未上传**）；资产替换排队阶段 6 |
+| 4.4 | 验收：`git status` 净（build/ 已忽略）；`oss_release --check` 全绿；本地 tag 指向 == ReadMe 源码行 | ✅ 工作树净 + oss --check ✓ 已就绪 rc=0 + tag==ReadMe 行 |
 
 ## 阶段 5：全量回归（本地）
 
