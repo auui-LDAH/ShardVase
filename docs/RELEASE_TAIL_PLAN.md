@@ -56,19 +56,19 @@
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 5.1 | 完整默认门禁（44 项）at 最终 HEAD → PASS exit=0 | ⬜ |
-| 5.2 | `-WithMutation -WithSkeleton -WithMigration` 三开关门禁 → 期望 **47/47 全绿**（新工具链下 migration 转绿是本计划核心验收）| ⬜ |
-| 5.3 | `sync_public`（不带 --apply）干跑比对，列出待推清单 | ⬜ |
+| 5.1 | 完整默认门禁（44 项）at 最终 HEAD → PASS exit=0 | ✅ 2026-10-17：**44/44 PASS exit=0**（log `release_check_20261017_222703` @9c226f3；首轮唯一红灯=本文件状态回填未提交导致「工作区脏」，提交 `9c226f3` 后复跑全绿） |
+| 5.2 | `-WithMutation -WithSkeleton -WithMigration` 三开关门禁 → 期望 **47/47 全绿**（新工具链下 migration 转绿是本计划核心验收）| ✅ 2026-10-17：**47/47 PASS，fail=0，not-run=0，exit=0**（log `release_check_20261017_223453`）—— migration_gate 分档后首次门禁级全绿（14.51 新档 6.2% ≤ 12），mutation/skeleton 同绿 |
+| 5.3 | `sync_public`（不带 --apply）干跑比对，列出待推清单 | ✅ dry-run rc=0：待同步 3 项 = ShardVase-docs `boundaries.md`（3014B）、`attack-record.md`（4190B）、`protocol-governance.md`（远程无此文件，将新建——既有遗留）→ 全部入阶段 6 队列 |
 
 ## 阶段 6：推送队列（**阻塞：等代理恢复**，用户裁决）
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 6.1 | `git push`（全部新提交，`-c http.proxy=… -c http.sslBackend=openssl`） | ⬜ 阻塞 |
-| 6.2 | `git push -f origin refs/tags/v1.2.0`（远端 tag 强推到新对象） | ⬜ 阻塞 |
-| 6.3 | `gh release upload --clobber` 新 zip + `gh release edit --notes-file` 新哈希 + 远端下载哈希复验 match=True | ⬜ 阻塞 |
-| 6.4 | `sync_public --apply`（attack-record 等变更 → ShardVase-docs/website）+ 线上 marker 复验 | ⬜ 阻塞 |
-| 6.5 | 推送后终检：`oss_release --check` 全绿 + gh release view 哈希一致 | ⬜ 阻塞 |
+| 6.1 | `git push`（全部新提交，`-c http.proxy=… -c http.sslBackend=openssl`） | 🚧 阻塞（用户裁决等代理）——队列就绪：待推 `063b178`/`bd4193b`/`9c226f3`（远程 master 停在 `1666f23`） |
+| 6.2 | `git push -f origin refs/tags/v1.2.0`（远端 tag 强推到新对象） | 🚧 阻塞——队列就绪：本地 annotated `1b982f1`→`bd4193b`（远程仍 `feb1d2d`→`fb9e600`），需 `-f` |
+| 6.3 | `gh release upload --clobber` 新 zip + `gh release edit --notes-file` 新哈希 + 远端下载哈希复验 match=True | 🚧 阻塞——队列就绪：`build\shardvase-demo-v1.2.0-win64.zip`（209705B，sha256 `1F659195…`）；notes 草稿 `%TEMP%\v120-notes-v2.md`（demo.exe `72ec11e4…`/vm.blob `50165ba9…`/ReadMe `ae4af16d…`） |
+| 6.4 | `sync_public --apply`（attack-record 等变更 → ShardVase-docs/website）+ 线上 marker 复验 | 🚧 阻塞——队列就绪：boundaries.md + attack-record.md + protocol-governance.md（新建，既有遗留）；apply 后需复验 docs 仓库两页 + attack-record 累计行线上可见 |
+| 6.5 | 推送后终检：`oss_release --check` 全绿 + gh release view 哈希一致 | 🚧 阻塞——本地侧已绿（oss ✓ rc=0 @打包后）；远端侧待 6.1-6.4 执行后做 |
 
 ## 风险与纪律
 
