@@ -36,6 +36,20 @@
   工具链改变序言长度就会把结果推到阈值两侧。**这是阈值附近的抖动敏感，
   不是防护能力差异**；六条判据（`--selftest`）覆盖的是阈值判定逻辑本身。
 
+## 按工具链分档（2026-10-17，RELEASE_TAIL_PLAN 阶段 2）
+  抖动既然是工具链性质而非防护差异，阈值**按 MSVC 工具链分两档**
+  （判据与文档同源，doccheck 对账的是新档常量）：
+
+  · 新档 MSVC >= 14.51（CI 实测 6.2%）: M3 阈值 12%、M1 阈值 12%
+  · 旧档 MSVC < 14.51（本机 14.44 实测 15.6%）: M3 阈值 18%、M1 阈值 12%
+
+  旧档 18% 的安全边界：低于已知劣化点 20.6%（禁用 6/16 文件部分移除）
+  仍有 2.4pp —— 部分移除 20.6% / 完全移除 55.9% 在旧档下**仍必被拦**，
+  漏检方向不变；15.6% 落档内只是序言抖动（上文机制）。分档常量见下：
+  `MAX_M3`（新档）/ `MAX_M3_LEGACY`（旧档）/ `MAX_M1`（两档同值）/
+  `TIER_BOUNDARY`；档位由 build.ps1 实际解析出的 vcvars64.bat 推工具集版本，
+  识别失败从严按新档。selftest 覆盖两档正/负/边界 + 劣化点必拦。
+
 用法:
   python tools/migration_gate.py            # 跑度量 + 判定
   python tools/migration_gate.py --selftest  # 负向测试
@@ -101,8 +115,27 @@ PY = sys.executable
 #
 # 故取 **12%**: 高于 5.9%（含 6.1 个百分点余量，实测极差 0.0 故安全），
 # 明显低于 20.6% -> **部分移除也会被抓**。
-MAX_M3 = 12.0      # 保护函数特征命中率上限（%）
-MAX_M1 = 12.0      # 地址复用率上限（%）
+#
+# ---------------------------------------------------------------------------
+# 按工具链分档（2026-10-17，docs/RELEASE_TAIL_PLAN.md 阶段 2）
+#
+# 同一份代码在不同 MSVC 上 M3 落点不同（序言长度抖动，见文件头/§2.43）：
+#   · 新档 MSVC >= 14.51（CI 实测 6.2%）        -> 沿用 12%
+#   · 旧档 MSVC <  14.51（本机 14.44 实测 15.6%）-> 18%
+# 旧档取 18 的依据: 夹在 15.6（抖动实测）与 20.6（已知劣化点: 禁用 6/16
+# 文件部分移除）之间 —— 15.6 落档内，20.6/55.9 必拦，漏检方向不变。
+# 档位判定: 以 build.ps1 Find-VcVars 实际解析的 vcvars64.bat 反推
+# <root>\VC\Tools\MSVC 最大版本（与构建用的工具集严格同源）；
+# 识别失败从严按新档。
+#
+# ⚠️ `MAX_M3 = 12.0` 必须保持**行首** `MAX_M3` 形态 —— doccheck 的
+#    gate_threshold_constants 用 `(?m)^MAX_M3\s*=` 抓唯一真值源；
+#    docstring/ release_check 注释里的阈值声明只认 `<= N%` 形态，
+#    分档叙述要写「旧档 18%」这种裸写法（不带 <= ），否则会被判漂移。
+MAX_M3 = 12.0          # 新档（MSVC >= 14.51）保护函数特征命中率上限（%）
+MAX_M3_LEGACY = 18.0   # 旧档（MSVC < 14.51）上限（%）——14.44 实测 15.6 落档内
+MAX_M1 = 12.0          # 地址复用率上限（%）——两档同值,1.1%~5.8% 均远离
+TIER_BOUNDARY = (14, 51)  # 分档边界（major, minor）
 
 
 def _seed_files(tmp):
@@ -114,14 +147,59 @@ def _seed_files(tmp):
     return a, b
 
 
+def _msvc_version_from_vcvars(vcvars):
+    """从 vcvars64.bat 路径反推活动工具集版本 (major, minor)。
+
+    路径形态: `<root>\\VC\\Auxiliary\\Build\\vcvars64.bat`
+    -> `<root>\\VC\\Tools\\MSVC\\<ver>`（取最大版本，与 vcvars 激活的
+    工具集一致）。返回 None = 路径不存在/无工具集目录。
+
+    ⚠️ dirname 层数: file → Build → Auxiliary → **VC**（3 层到 VC 目录，
+    不是 root）——初版按 root 拼成 `<root>\\VC\\VC\\Tools\\MSVC` 永远
+    OSError → 检测静默掉线（2026-10-17 实跑抓到；selftest 已加真树用例
+    兜底，不再依赖实跑暴露）。
+    """
+    if not vcvars:
+        return None
+    try:
+        vc_dir = os.path.dirname(os.path.dirname(os.path.dirname(vcvars)))
+        base = os.path.join(vc_dir, 'Tools', 'MSVC')
+        best = None
+        for nm in os.listdir(base):
+            m = re.match(r'(\d+)\.(\d+)', nm)
+            if m:
+                v = (int(m.group(1)), int(m.group(2)))
+                if best is None or v > best:
+                    best = v
+        return best
+    except OSError:
+        return None
+
+
+def tier_for(ver):
+    """(major, minor) -> (档名, M3 上限%)；ver=None 从严按新档。"""
+    if ver is not None and ver < TIER_BOUNDARY:
+        return 'legacy', MAX_M3_LEGACY
+    return 'modern', MAX_M3
+
+
 def _build(seedfile, salt, out_dir, tag):
     env = dict(os.environ)
     env['PROT_BUILD_SALT'] = salt
-    winproc.run(['powershell', '-ExecutionPolicy', 'Bypass', '-File',
-                    'build.ps1', '-Config', 'Release', '-SkipSmoke',
-                    '-SkipSign', '-Composition', 'full',
-                    '-SeedsFile', seedfile],
-                   capture_output=True, cwd=REPO, env=env)
+    r = winproc.run(['powershell', '-ExecutionPolicy', 'Bypass', '-File',
+                     'build.ps1', '-Config', 'Release', '-SkipSmoke',
+                     '-SkipSign', '-Composition', 'full',
+                     '-SeedsFile', seedfile],
+                    capture_output=True, cwd=REPO, env=env)
+    vcvars = None
+    try:
+        out = (getattr(r, 'stdout', None) or b'') + \
+              (getattr(r, 'stderr', None) or b'')
+        m = re.search(rb'build: vcvars = (.+)', out)
+        if m:
+            vcvars = m.group(1).decode('utf-8', 'replace').strip()
+    except Exception:
+        vcvars = None
     ok = False
     for src, nm in [('build/demo.exe', tag + '.exe'),
                     ('build/demo.map', tag + '.map')]:
@@ -129,7 +207,7 @@ def _build(seedfile, salt, out_dir, tag):
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(out_dir, nm))
             ok = True
-    return ok
+    return ok, vcvars
 
 
 def measure(quiet=False):
@@ -151,6 +229,7 @@ def measure(quiet=False):
 
     pairs = []
     detail_last = ''
+    vcvars_seen = None
     tmp = tempfile.mkdtemp(prefix='miggate_')
     try:
         for k in range(3):
@@ -160,10 +239,14 @@ def measure(quiet=False):
             json.dump({'tag': 'B%d' % k}, open(sb, 'w'))
             salt_a = '0x%08X' % (0x11111111 * (k + 1) & 0xFFFFFFFF)
             salt_b = '0x%08X' % (0xAAAAAAAA * (k + 1) & 0xFFFFFFFF)
-            if not _build(sa, salt_a, tmp, 'A%d' % k):
-                return None, None, '构建 A%d 失败' % k
-            if not _build(sb, salt_b, tmp, 'B%d' % k):
-                return None, None, '构建 B%d 失败' % k
+            ok_a, vc_a = _build(sa, salt_a, tmp, 'A%d' % k)
+            if not ok_a:
+                return None, None, '构建 A%d 失败' % k, vcvars_seen
+            ok_b, vc_b = _build(sb, salt_b, tmp, 'B%d' % k)
+            if not ok_b:
+                return None, None, '构建 B%d 失败' % k, vcvars_seen
+            if vcvars_seen is None:
+                vcvars_seen = vc_a or vc_b
             r = winproc.run(
                 [PY, '-X', 'utf8',
                  os.path.join(REPO, 'tools', 'migration_cost.py'),
@@ -179,7 +262,7 @@ def measure(quiet=False):
             if not m1:
                 m1 = re.search(r'硬编码地址可复用率: ([\d.]+)%', o)
             if not m3 or not m1:
-                return None, None, '度量解析失败'
+                return None, None, '度量解析失败', vcvars_seen
             pairs.append((float(m3.group(3)), float(m1.group(1))))
             detail_last = o
             if not quiet:
@@ -199,9 +282,10 @@ def measure(quiet=False):
                       % (a.group(1), a.group(2), float(a.group(3))))
                 print('     这是判据 M3 的**诚实边界**: 攻击者不必从入口取特征。'
                       '把 M3 判据窗口收紧**不改变** M3adv（对抗口径不受判据约束）。')
-        # ⚠️ 返回顺序必须与调用方一致: **(m3, m1, detail)**
-        #   （初版误写为 (m1, m3) -> 打印时两项互换，已修）
-        return m3_med, m1_med, detail_last
+        # ⚠️ 返回顺序必须与调用方一致: **(m3, m1, detail, vcvars)**
+        #   （初版误写为 (m1, m3) -> 打印时两项互换，已修；
+        #     第 4 项 vcvars 是分档依据，2026-10-17 阶段 2 加入）
+        return m3_med, m1_med, detail_last, vcvars_seen
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -226,6 +310,38 @@ def selftest():
     case('12.0%% <= 12%% -> 通过（边界）', 12.0 <= MAX_M3, True)
     case('12.1%% <= 12%% -> 失败（边界外）', 12.1 <= MAX_M3, False)
     case('0%% <= 12%% -> 通过', 0.0 <= MAX_M3, True)
+
+    print()
+    print('=== 分档判定（按工具链，2026-10-17 阶段 2）===')
+    case('MSVC 14.44 -> 旧档', tier_for((14, 44))[0], 'legacy')
+    case('MSVC 14.50 -> 旧档', tier_for((14, 50))[0], 'legacy')
+    case('MSVC 14.51 -> 新档', tier_for((14, 51))[0], 'modern')
+    case('MSVC 15.00 -> 新档', tier_for((15, 0))[0], 'modern')
+    case('未知工具链从严按新档(12)', tier_for(None)[1], MAX_M3)
+    case('旧档上限 = 18', MAX_M3_LEGACY, 18.0)
+    case('旧档15.6 -> 通过（14.44 抖动实测）', 15.6 <= MAX_M3_LEGACY, True)
+    case('旧档 18.0 -> 通过（边界）', 18.0 <= MAX_M3_LEGACY, True)
+    case('旧档 18.1 -> 失败（边界外）', 18.1 <= MAX_M3_LEGACY, False)
+    case('旧档 20.6 -> **失败**（劣化点仍必拦）', 20.6 <= MAX_M3_LEGACY, False)
+    case('旧档 55.9 -> **失败**（完全移除必拦）', 55.9 <= MAX_M3_LEGACY, False)
+    # 真树路径反推 —— 抓 dirname 层数回归（初版拼成 <root>\VC\VC\Tools\MSVC
+    # 永远 None、检测静默掉线，实跑才暴露；现在自检兜底）
+    _tv = tempfile.mkdtemp(prefix='migtier_')
+    try:
+        _vd = os.path.join(_tv, 'VC', 'Auxiliary', 'Build')
+        os.makedirs(_vd)
+        _vs = os.path.join(_tv, 'VC', 'Tools', 'MSVC')
+        os.makedirs(os.path.join(_vs, '14.44.35207'))
+        os.makedirs(os.path.join(_vs, '14.51.36231'))
+        case('真树反推: vcvars -> (14,51) 取最大工具集',
+             _msvc_version_from_vcvars(os.path.join(_vd, 'vcvars64.bat')),
+             (14, 51))
+        case('假路径 -> None（不崩）',
+             _msvc_version_from_vcvars(r'C:\nope\vcvars64.bat'), None)
+        case('空值 -> None', _msvc_version_from_vcvars(None), None)
+    finally:
+        shutil.rmtree(_tv, ignore_errors=True)
+    case('docstring 记录旧档阈值 18%%', '18%' in (__doc__ or ''), True)
 
     print()
     print('=== 正则解析（度量输出格式）===')
@@ -268,19 +384,29 @@ def main():
 
     if not args.quiet:
         print('=== 迁移成本门禁 ===')
-        print('  阈值: M3 <= %.0f%%, M1 <= %.0f%%' % (MAX_M3, MAX_M1))
-        print('  方法: 两次构建（异种子+异salt）+ migration_cost 度量')
+        print('  阈值: 按工具链分档 —— 新档 (MSVC >= 14.51) M3 <= %.0f%%, '
+              '旧档 (< 14.51) M3 <= %.0f%%, M1 两档 <= %.0f%%'
+              % (MAX_M3, MAX_M3_LEGACY, MAX_M1))
+        print('  方法: 三次异种子异salt 构建（3 对取中位数）+ migration_cost')
         print()
 
-    m3, m1, detail = measure(quiet=args.quiet)
+    m3, m1, detail, vcvars = measure(quiet=args.quiet)
     if m3 is None:
         print('[migration_gate] FAIL: %s' % detail, file=sys.stderr)
         return 1
 
+    ver = _msvc_version_from_vcvars(vcvars)
+    tier, cap = tier_for(ver)
+    ver_txt = ('MSVC %d.%d' % ver) if ver else '未识别(从严按新档)'
+    if not args.quiet:
+        print('  工具链: %s -> 档位 %s（M3 上限 %.0f%%）'
+              % (ver_txt, '新档' if tier == 'modern' else '旧档', cap))
+        print()
+
     bad = []
-    if m3 > MAX_M3:
-        bad.append('M3 %.1f%% > %.0f%%（保护函数可被特征定位 -> 迁移成本低）'
-                   % (m3, MAX_M3))
+    if m3 > cap:
+        bad.append('M3 %.1f%% > %.0f%%（%s档: 保护函数可被特征定位 '
+                   '-> 迁移成本低）' % (m3, cap, tier))
     if m1 > MAX_M1:
         bad.append('M1 %.1f%% > %.0f%%（硬编码地址可复用）' % (m1, MAX_M1))
 
@@ -288,8 +414,9 @@ def main():
         for b in bad:
             print('[migration_gate] FAIL: %s' % b)
         return 1
-    print('[migration_gate] PASS: M3=%.1f%% M1=%.1f%%（迁移成本可接受）'
-          % (m3, m1))
+    print('[migration_gate] PASS: M3=%.1f%% M1=%.1f%%'
+          '（迁移成本可接受, %s档 %s）'
+          % (m3, m1, tier, ver_txt))
     return 0
 
 

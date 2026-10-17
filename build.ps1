@@ -273,6 +273,11 @@ function Find-VcVars {
         return $Explicit
     }
     $candidates = @(
+        # RELEASE_TAIL_PLAN §1.2 (2026-10-17): VS2026 (MSVC 14.51, 与 CI 同版)
+        # 必须排在所有 VS2022 候选之前 —— 否则本机既有的
+        # D:\environment\VS2022BuildTools 永远先命中, vswhere -latest 分支
+        # 永远走不到, 升级等于白装。其它机器/CI 无此路径 -> Test-Path 跳过。
+        'D:\environment\VS2026BuildTools\VC\Auxiliary\Build\vcvars64.bat',
         'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat',
         'C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
         'C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat',
