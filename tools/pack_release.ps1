@@ -41,9 +41,12 @@ try {
     # ---- §4.1 步3: Release 构建（-SkipBuild 时复用现有产物）----
     if (-not $SkipBuild) {
         Write-Host 'pack: [3/7] build.ps1 -Config Release -RecordSeeds ...'
-        $bargs = @('-Config', 'Release', '-RecordSeeds')
-        if ($SkipSign)  { $bargs += '-SkipSign' }
-        if ($VcVars)    { $bargs += @('-VcVars', $VcVars) }
+        # 注意: Windows PowerShell 5.1 数组 splat 按**位置**绑定 ——
+        # @('-Config','Release') 会把 '-Config' 塞进第一个参数 $MachineId
+        # （实测 'build FAILED: -MachineId invalid: -Config'）。必须用哈希 splat。
+        $bargs = @{ Config = 'Release'; RecordSeeds = $true }
+        if ($SkipSign)  { $bargs.SkipSign = $true }
+        if ($VcVars)    { $bargs.VcVars = $VcVars }
         & (Join-Path $repo 'build.ps1') @bargs
         if ($LASTEXITCODE -ne 0) { Fail "build.ps1 rc=$LASTEXITCODE" }
     } else {
