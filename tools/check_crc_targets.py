@@ -397,15 +397,31 @@ def verify(srcs):
         'load_crc_extra(sections_json)' in hpt,
         'load_crc_extra 缺失或未调用 -> 额外目标静默不烧')
 
+    # ## 阶段 4.3（2026-10-16）: CRC 链式判据
+    #   烧录端与校验端必须**同时**实现折叠 —— 只有一侧实现则每次自检
+    #   必然 0xBAD（build 即红）, 两侧都"实现但退化"则链式形同虚设、
+    #   §7.4「改一处须重算整链」静默失效。判据盯**实际折叠动作**
+    #   （<II> 双字打包 / prot_crc32 fold 调用 / 前一槽位读取）, 不盯
+    #   函数名（改名/空壳函数蒙混不过）。
+    igt = srcs[P_INTEGRITY]
+    chk('⑧ hashpatch 链式折叠（chain_crc 用 <II> 双字打包）',
+        bool(re.search(r'^def chain_crc\s*\(', hpt, re.M)) and
+        "struct.pack('<II'" in hpt and 'chain_crc(crc, prev)' in hpt,
+        'chain_crc 缺失/未调用/退化为单字 -> 无链式')
+    chk('⑧ integrity 链式折叠（fold(raw, 前一槽位 baked)）',
+        'prot_crc32(fold, 8u)' in igt and 'read_baked_crc(j - 1u)' in igt,
+        'fold 缺失或不读前一槽位 -> 逐段独立 CRC, 链式静默失效')
+
     return checks
 
 
 # 变异表下限 —— `total = len(mutations)` 是**长度比较**，清空整表后
 # `caught == total` 变成 `0 == 0`，自检会**静默变绿**且报文与基线逐字相同
-# （2026-10-12 实测，§2.76）。紧贴当前值 11，不留余量：
+# （2026-10-12 实测，§2.76）。紧贴当前值 13，不留余量：
 # 留余量会让这条守卫对它要防的那件事失明（§2.49 的教训）。
 # 阶段4（2026-10-15）: 8 -> 11（M4/M5/M7 锚点换宏形式 + 新增 M9-M11 额外通道）。
-_MUT_FLOOR = 11
+# 阶段4.3（2026-10-16）: 11 -> 13（M12/M13 链式折叠退化）。
+_MUT_FLOOR = 13
 
 
 def selftest():
@@ -448,6 +464,11 @@ def selftest():
         ('M11 hashpatch 消费点改成空表（额外目标不烧）',
          P_HASHPATCH, 'crc_extra = load_crc_extra(sections_json)',
          'crc_extra = []'),
+        ('M12 烧录端折叠退化为单字打包（链式名存实亡）',
+         P_HASHPATCH, "struct.pack('<II', raw & 0xFFFFFFFF",
+         "struct.pack('<I', raw & 0xFFFFFFFF"),
+        ('M13 校验端不折叠（退回逐段独立 CRC）',
+         P_INTEGRITY, 'expect = prot_crc32(fold, 8u);', 'expect = crc;'),
     ]
 
     caught = 0

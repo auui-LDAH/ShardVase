@@ -331,6 +331,11 @@ if (Test-Path -LiteralPath "$outDir\selfcrypt_mask.txt") {
 #      完整性校验, 没有 CRC 需要烧录)。属预期而非缺陷。
 $hasIntegrity = $compSrcs -match 'integrity\.c$'
 if ($hasIntegrity) {
+    # 注意: 骨架是**静态默认节**构建（无 PROT_USE_GENERATED_SECTIONS,
+    # 节名/.protcrc/4 组 magic 全为 prot_sections.h 默认值）, 故**不能**传
+    # --sections-json —— 那会把 demo 的随机节名/magic 注进静态产物 -> 反而
+    # magic mismatch。两侧同为默认值才是一致（2026-10-16 skeleton_check
+    # 实跑 PASS 验证; 若骨架将来改用生成节, 此处必须同步改为传 json）。
     & $py "$REPO\tools\hashpatch.py" "$outDir\$appName.exe" @maskArgs
     if ($LASTEXITCODE -ne 0) { throw 'build_skeleton FAILED: hashpatch' }
 } else {

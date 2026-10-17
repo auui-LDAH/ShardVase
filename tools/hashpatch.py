@@ -485,6 +485,10 @@ def main(argv=None):
             raise HashpatchError('.protcrc section too small (%d bytes)' %
                                  prot['size_raw'])
 
+        # 阶段4.3 链式 (2026-10-16): prev = 前一**槽位**写入值。
+        #   entry0 存 raw; entry i≥1 存 crc32(raw_le4 || prev_le4)。
+        #   与 integrity.c 校验端 fold 严格对称 (缺段/跳过 -> 槽位 0)。
+        prev = 0
         for i, magic in enumerate(active_magics):
             off = prot['ptr_raw'] + i * ENTRY_SIZE
             if off + ENTRY_SIZE > len(data):
@@ -503,40 +507,55 @@ def main(argv=None):
             if i >= len(target_names):
                 print('hashpatch: entry %d has no target name on this '
                       'platform — skip (CRC left 0)' % i)
+                prev = 0      # 链式: 槽位 i 保持 0 -> 下一项折叠 0 (两侧对称)
                 continue
 
             target = next((s for s in secs if s['name'] == target_names[i]), None)
             if target is None:
                 print('hashpatch: %s section absent — skip' % target_names[i])
+                prev = 0      # 链式: 槽位 i 保持 0 -> 下一项折叠 0 (两侧对称)
                 continue
 
             crc, size_crc = (elf_compute_section_crc(data, secs, target)
                              if is_elf_file else
                              compute_section_crc(data, secs, target))
+            # 阶段4.3 链式: entry0 存 raw, i≥1 折叠前一槽位值 (prev)。
+            stored = crc if i == 0 else chain_crc(crc, prev)
             field_off = off + 8
             current = struct.unpack_from('<I', data, field_off)[0]
 
             if current == 0:
-                patched = (data[:field_off] + struct.pack('<I', crc) +
+                patched = (data[:field_off] + struct.pack('<I', stored) +
                            data[field_off + 4:])
                 with open(exe_path, 'wb') as f:
                     f.write(patched)
                 data = patched
-                print('hashpatch: patched %s crc=0x%08x at offset %d (magic at %d)'
-                      % (target_names[i], crc, field_off, off))
+                print('hashpatch: patched %s crc=0x%08x at offset %d (magic at %d)%s'
+                      % (target_names[i], stored, field_off, off,
+                         '' if i == 0 else ' [chained]'))
             else:
-                if current != crc:
+                if current != stored:
                     raise HashpatchError(
-                        '%s crc mismatch: baked=0x%08x, computed=0x%08x (%s)'
-                        % (target_names[i], current, crc, exe_path))
+                        '%s crc mismatch: baked=0x%08x, computed=0x%08x raw=0x%08x (%s)'
+                        % (target_names[i], current, stored, crc, exe_path))
                 print('hashpatch: verified %s crc=0x%08x at offset %d (already baked)'
                       % (target_names[i], current, field_off))
-            print('hashpatch: %s raw [%d, +%d) -> crc32 0x%08x'
-                  % (target_names[i], target['ptr_raw'], size_crc, crc))
+            print('hashpatch: %s raw [%d, +%d) -> crc32 0x%08x%s'
+                  % (target_names[i], target['ptr_raw'], size_crc, crc,
+                     '' if i == 0 else ' -> chained 0x%08x' % stored))
+            prev = stored
     except (HashpatchError, OSError, struct.error) as e:
         print('hashpatch: error: %s' % e, file=sys.stderr)
         return 1
     return 0
+
+
+def chain_crc(raw, prev):
+    """阶段4.3 链式 (2026-10-16): 折叠 = crc32(raw_le4 || prev_le4)。
+    与 src/integrity.c 校验端 prot_crc32(fold, 8u) 逐字节一致 (zlib 同语义)。
+    entry0 不折叠 (存 raw, protchain_check 只读 entry0)。"""
+    return zlib.crc32(struct.pack('<II', raw & 0xFFFFFFFF,
+                                  prev & 0xFFFFFFFF)) & 0xFFFFFFFF
 
 
 if __name__ == '__main__':

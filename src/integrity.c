@@ -497,6 +497,9 @@ prot_status prot_integrity_check_self(void) {
             uint32_t crc;
             const char* tname = prot_plat_crc_target_name(j);
             uint32_t len;
+            uint32_t expect;
+            uint8_t fold[8];
+            uint32_t prev;
             if (tname == NULL)
                 continue;
             if (!sec_name_eq(&secs[i], tname))
@@ -512,11 +515,30 @@ prot_status prot_integrity_check_self(void) {
             build_reloc_mask(base, mask, (uint32_t)secs[i].rva, len);
             build_selfcrypt_mask(mask, (uint32_t)secs[i].rva, len); /* N1 D1b */
             crc = section_crc_masked(base, mask, (uint32_t)secs[i].rva, len);
-            IDBG("[IDBG] sec=%s rva=0x%x len=%u got=0x%08x want=0x%08x %s\n",
+            /* 阶段4.3 链式 (2026-10-16): entry0 折 raw; j≥1 期望 =
+             * fold(raw, 前一槽位 baked 值)。槽位值两侧对称 —— hashpatch
+             * 烧入的 stored 即本函数读到的 baked; 改早先任一槽/段, 其后
+             * 全部条目断链 (计划 §7.4「改一处须重算整链」)。与
+             * tools/hashpatch.py chain_crc() 逐字节一致 (zlib 同语义)。 */
+            expect = crc;
+            if (j > 0u) {
+                prev = read_baked_crc(j - 1u);
+                fold[0] = (uint8_t)(crc & 0xFFu);
+                fold[1] = (uint8_t)((crc >> 8) & 0xFFu);
+                fold[2] = (uint8_t)((crc >> 16) & 0xFFu);
+                fold[3] = (uint8_t)((crc >> 24) & 0xFFu);
+                fold[4] = (uint8_t)(prev & 0xFFu);
+                fold[5] = (uint8_t)((prev >> 8) & 0xFFu);
+                fold[6] = (uint8_t)((prev >> 16) & 0xFFu);
+                fold[7] = (uint8_t)((prev >> 24) & 0xFFu);
+                expect = prot_crc32(fold, 8u);
+            }
+            IDBG("[IDBG] sec=%s rva=0x%x len=%u raw=0x%08x chained=0x%08x want=0x%08x %s\n",
                  tname, (unsigned)secs[i].rva, (unsigned)len,
-                 (unsigned)crc, (unsigned)read_baked_crc(j),
-                 (crc == read_baked_crc(j)) ? "OK" : "**MISMATCH**");
-            if (crc != read_baked_crc(j)) {
+                 (unsigned)crc, (unsigned)expect,
+                 (unsigned)read_baked_crc(j),
+                 (expect == read_baked_crc(j)) ? "OK" : "**MISMATCH**");
+            if (expect != read_baked_crc(j)) {
                 return PROT_ERR_INTEGRITY;
             }
             found |= (1u << j);

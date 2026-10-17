@@ -84,7 +84,7 @@ NAME_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 #   · 额外目标的 magic 追加在 4 个基础 magic **之后**（下标 4 起），
 #     C 侧烧录表 g_prot_baked_crc[] 用生成头的条目数宏对齐
 #   · Linux/ELF 侧不参与随机扩展（hashpatch ELF 路径只认 3 个基础名），
-#     build.sh 不传 --extra-crc -> 恒为 0（显式不对称, 与判据 ⑥ 同思路）
+#     build.sh 显式传 --extra-crc 0（恒为 0，显式不对称, 与判据 ⑥ 同思路）
 EXTRA_POOL = ('rsrc', 'reloc', 'protpad')
 # 逻辑名 -> 节名来源: None = 标准名('.rsrc'), 'protpad' = sections 映射名
 EXTRA_LOGICAL = {'protpad': 'protpad'}
