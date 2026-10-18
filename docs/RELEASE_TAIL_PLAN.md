@@ -64,11 +64,11 @@
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 6.1 | `git push`（全部新提交，`-c http.proxy=… -c http.sslBackend=openssl`） | 🚧 阻塞（用户裁决等代理）——队列就绪：待推 `063b178`/`bd4193b`/`9c226f3`（远程 master 停在 `1666f23`） |
-| 6.2 | `git push -f origin refs/tags/v1.2.0`（远端 tag 强推到新对象） | 🚧 阻塞——队列就绪：本地 annotated `1b982f1`→`bd4193b`（远程仍 `feb1d2d`→`fb9e600`），需 `-f` |
-| 6.3 | `gh release upload --clobber` 新 zip + `gh release edit --notes-file` 新哈希 + 远端下载哈希复验 match=True | 🚧 阻塞——队列就绪：`build\shardvase-demo-v1.2.0-win64.zip`（209705B，sha256 `1F659195…`）；notes 草稿 `%TEMP%\v120-notes-v2.md`（demo.exe `72ec11e4…`/vm.blob `50165ba9…`/ReadMe `ae4af16d…`） |
-| 6.4 | `sync_public --apply`（attack-record 等变更 → ShardVase-docs/website）+ 线上 marker 复验 | 🚧 阻塞——队列就绪：boundaries.md + attack-record.md + protocol-governance.md（新建，既有遗留）；apply 后需复验 docs 仓库两页 + attack-record 累计行线上可见 |
-| 6.5 | 推送后终检：`oss_release --check` 全绿 + gh release view 哈希一致 | 🚧 阻塞——本地侧已绿（oss ✓ rc=0 @打包后）；远端侧待 6.1-6.4 执行后做 |
+| 6.1 | `git push`（全部新提交，`-c http.proxy=… -c http.sslBackend=openssl`） | ✅ 2026-10-17 代理恢复后执行：`1666f23..db31b65` master 推送 rc=0，ls-remote 复核 |
+| 6.2 | `git push -f origin refs/tags/v1.2.0`（远端 tag 强推到新对象） | ✅ `+ feb1d2d...1b982f1 v1.2.0 (forced update)`，ls-remote 确认 `1b982f1` |
+| 6.3 | `gh release upload --clobber` 新 zip + `gh release edit --notes-file` 新哈希 + 远端下载哈希复验 match=True | ✅ upload rc=0 / edit rc=0；远端下载复验 **`1F659195…` == 本地** match=True（资产 209705B） |
+| 6.4 | `sync_public --apply`（attack-record 等变更 → ShardVase-docs/website）+ 线上 marker 复验 | ✅ 首跑 2 成功 1「失败」（protocol-governance 新建分支 422 —— 实为未带 env 代理时 GET 抖动被 `remote_content` 吞成「不存在」，远端其实已有同内容文件）；**带 HTTPS_PROXY 重跑 0 需同步 0 失败 rc=0**（8 文件全一致）；线上 raw 复验 attack-record 第六/九轮行 + 新累计 40/30/5 可见 |
+| 6.5 | 推送后终检：`oss_release --check` 全绿 + gh release view 哈希一致 | ✅ oss **✓ 已就绪** rc=0；gh release view v1.2.0 单资产 209705B 非 prerelease |
 
 ## 风险与纪律
 
