@@ -249,3 +249,18 @@ publish/        对外材料（能力与边界）
 ---
 
 *ShardVase · 机制公开，接受挑战*
+
+---
+
+## 镜像说明（本仓库）
+
+本仓库是主仓的**单向公开镜像**，与主仓同源（AGPL-3.0-or-later），但**剔除了以下内容**：
+
+- `archive/attack-drill*.json`（攻防演练过程归档）
+- `tests/attack_*.py`（演练脚本）
+
+原因见公开页 [attack-record](https://github.com/auui-LDAH/ShardVase-docs/blob/main/attack-record.md)
+的既有承诺：**攻击工具不公开（防武器化）**；过程证据在私有通道按需提供。
+其余源码、构建工具链、门禁、工程文档与主仓一致。因路径剔除会重写历史，
+本镜像 SHA 与主仓不同源（主仓 v1.2.0 = `bd4193b`，本镜像对应提交见
+`git log` 顶部），发行物 ReadMe 内引用的源码提交以主仓为准。
